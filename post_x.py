@@ -447,6 +447,10 @@ def generate_weekly_summary():
 
 def generate_jockey_ranking():
     """火曜: 騎手ランキング（3ツイート）"""
+    today = datetime.now()
+    start_date = today - timedelta(days=30)
+    period = f"{start_date.month}/{start_date.day}〜{today.month}/{today.day}"
+
     with get_db() as conn:
         top_jockeys = conn.execute("""
             SELECT j.jockey_name,
@@ -467,13 +471,14 @@ def generate_jockey_ranking():
     if not top_jockeys:
         return generate_analysis_column()
 
-    t1 = "🏆 直近30日の騎手成績TOP5\n\n"
+    t1 = f"🏆 騎手 複勝率ランキング\n"
+    t1 += f"集計期間: {period}\n\n"
     t1 += "3着以内に入る確率が高い騎手は？\n"
-    t1 += "AIが実データから集計しました\n\n"
+    t1 += "10騎乗以上の騎手を集計\n\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     medals = ["🥇", "🥈", "🥉", " 4.", " 5."]
-    t2 = "📊 複勝率ランキング\n\n"
+    t2 = f"📊 複勝率ランキング({period})\n\n"
     for i, j in enumerate(top_jockeys):
         rate = round(j["top3"] / j["rides"] * 100, 1)
         win_rate = round(j["wins"] / j["rides"] * 100, 1)
@@ -558,12 +563,17 @@ def generate_pickup_horse():
     if not top_horses:
         return generate_analysis_column()
 
-    t1 = "🐴 最近安定して好走している馬たち\n\n"
-    t1 += "直近60日で複数回3着以内の馬は\n"
+    today = datetime.now()
+    start_date = today - timedelta(days=60)
+    period = f"{start_date.month}/{start_date.day}〜{today.month}/{today.day}"
+
+    t1 = f"🐴 好走馬ピックアップ\n"
+    t1 += f"集計期間: {period}\n\n"
+    t1 += "複数回3着以内に入った馬は\n"
     t1 += "次走も注目する価値大\n\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
-    t2 = "📊 好走馬リスト(60日)\n\n"
+    t2 = f"📊 好走馬リスト({period})\n\n"
     for h in top_horses:
         avg = round(h["avg_pos"], 1)
         t2 += f"⭐{h['horse_name']}\n"
