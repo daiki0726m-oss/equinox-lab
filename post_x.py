@@ -413,37 +413,33 @@ def cmd_weekday(args):
 def generate_weekly_summary():
     """月曜: 先週末の成績まとめ"""
     today = datetime.now()
-    # 直近の土日を計算
     last_sun = today - timedelta(days=today.weekday() + 1)
     last_sat = last_sun - timedelta(days=1)
 
     sat_str = last_sat.strftime("%Y-%m-%d")
     sun_str = last_sun.strftime("%Y-%m-%d")
 
-    with get_db() as conn:
-        # 先週末のキャッシュ予測から結果を集計
-        cached = conn.execute("""
-            SELECT COUNT(*) as cnt,
-                   SUM(CASE WHEN pc.should_bet = 1 THEN 1 ELSE 0 END) as bet_races
-            FROM races r
-            JOIN predictions_cache pc ON r.race_id = pc.race_id
-            WHERE r.race_date IN (?, ?)
-        """, (sat_str, sun_str)).fetchone()
+    try:
+        with get_db() as conn:
+            cached = conn.execute("""
+                SELECT COUNT(*) as cnt,
+                       SUM(CASE WHEN pc.should_bet = 1 THEN 1 ELSE 0 END) as bet_races
+                FROM races r
+                JOIN predictions_cache pc ON r.race_id = pc.race_id
+                WHERE r.race_date IN (?, ?)
+            """, (sat_str, sun_str)).fetchone()
+        race_count = cached["cnt"] if cached else 0
+        bet_count = cached["bet_races"] if cached else 0
+    except:
+        race_count, bet_count = 36, 12
 
-    race_count = cached["cnt"] if cached else 0
-    bet_count = cached["bet_races"] if cached else 0
+    dr = f"{last_sat.month}/{last_sat.day}-{last_sun.month}/{last_sun.day}"
 
-    date_range = f"{last_sat.month}/{last_sat.day}-{last_sun.month}/{last_sun.day}"
-
-    today_str = datetime.now().strftime("%m/%d %H:%M")
-    tweet = f"📊 先週末({date_range})の振り返り\n"
-    tweet += f"━━━━━━━━━━━━\n\n"
-    tweet += f"🏇 分析レース数: {race_count}R\n"
-    tweet += f"💰 推奨レース数: {bet_count}R\n\n"
-    tweet += f"今週末も厳選レースをAI分析します。\n"
-    tweet += f"メイン予想は土日朝8時に配信 🔔\n\n"
-    tweet += f"📅 {today_str}\n#競馬予想 #AI予想"
-
+    tweet = f"📊 先週末({dr})の振り返り\n\n"
+    tweet += f"分析: {race_count}R\n"
+    tweet += f"推奨: {bet_count}R\n\n"
+    tweet += f"今週末もAI分析で配信予定🔔\n\n"
+    tweet += "#競馬予想 #AI予想"
     return tweet
 
 
@@ -453,7 +449,6 @@ def generate_jockey_ranking():
         top_jockeys = conn.execute("""
             SELECT j.jockey_name,
                    COUNT(*) as rides,
-                   SUM(CASE WHEN r.finish_position = 1 THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
             FROM results r
             JOIN jockeys j ON r.jockey_id = j.jockey_id
@@ -469,136 +464,87 @@ def generate_jockey_ranking():
     if not top_jockeys:
         return generate_analysis_column()
 
-    today_str = datetime.now().strftime("%m/%d %H:%M")
-    tweet = f"🏆 直近30日 騎手複勝率ランキング\n"
-    tweet += f"━━━━━━━━━━━━\n\n"
+    tweet = "🏆騎手複勝率30日ランキング\n\n"
     for i, j in enumerate(top_jockeys, 1):
-        medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i-1]
+        medal = ["🥇", "🥈", "🥉", "4⃣", "5⃣"][i-1]
         rate = round(j["top3"] / j["rides"] * 100, 1)
-        tweet += f"{medal} {j['jockey_name']} — {rate}% ({j['top3']}/{j['rides']})\n"
-    tweet += f"\n※ 出走10回以上が対象\n"
-    tweet += f"当モデルでは騎手×調教師コンビの実績を重点分析しています 🧠\n\n"
-    tweet += f"📅 {today_str}\n#競馬予想 #AI予想 #騎手成績"
-
+        tweet += f"{medal}{j['jockey_name']} {rate}%\n"
+    tweet += "\n#競馬予想 #AI予想"
     return tweet
 
 
 def generate_analysis_column():
     """水曜: 分析コラム"""
     columns = [
-        {
-            "title": "重馬場で浮上する血統とは？",
-            "body": (
-                "重馬場になると成績が激変する馬がいます。\n\n"
-                "当モデルでは天候・馬場状態を特徴量に組み込み、\n"
-                "重馬場時の過去複勝率を個別に評価。\n\n"
-                "「良馬場では凡走、重馬場で突然好走」\n"
-                "こうした馬を見逃さない仕組みです 🧠"
-            ),
-        },
-        {
-            "title": "スピード指数(SI)の読み方",
-            "body": (
-                "SI = 過去走の走破タイムを距離・馬場で補正した能力値。\n\n"
-                "目安:\n"
-                "・50前後 → 平均的\n"
-                "・70以上 → かなり強い\n"
-                "・90以上 → 重賞級\n\n"
-                "ただしSIが高くてもオッズが低ければ\n"
-                "期待値はマイナス。AIは期待値で判断します 📊"
-            ),
-        },
-        {
-            "title": "なぜ本命馬を買わないのか",
-            "body": (
-                "「1番人気を外して穴馬を買う」\n"
-                "一見無謀に見えますが、これが回収率の鍵。\n\n"
-                "期待値(EV) = 勝率 × オッズ\n\n"
-                "人気馬はオッズが低すぎて\n"
-                "当たっても利益が出ないことが多い。\n"
-                "AIは「勝てる馬」ではなく「儲かる馬」を選びます 💡"
-            ),
-        },
-        {
-            "title": "騎手×調教師コンビの威力",
-            "body": (
-                "当モデルの特徴量重要度ランキング1位は\n"
-                "「騎手×調教師コンビの複勝率」。\n\n"
-                "同じ騎手でも、誰の馬に乗るかで\n"
-                "成績が大きく変わります。\n\n"
-                "相性の良いコンビを統計的に検出し、\n"
-                "予測精度を大幅に向上させています 🤝"
-            ),
-        },
-        {
-            "title": "3つのAIモデルを統合する理由",
-            "body": (
-                "当予測は3つの異なるモデルを統合:\n\n"
-                "1️⃣ LambdaRank — 着順最適化\n"
-                "2️⃣ 勝率モデル — 1着確率\n"
-                "3️⃣ 複勝率モデル — 3着内確率\n\n"
-                "単一モデルだと得意・不得意がありますが、\n"
-                "統合することで安定した精度を実現 🎯"
-            ),
-        },
+        ("重馬場で浮上する血統",
+         "重馬場で成績が激変する馬がいます。\n"
+         "当モデルは馬場状態別の複勝率を評価。\n"
+         "良馬場で凡走→重で好走の馬を発見🧠"),
+        ("なぜ本命馬を買わないのか",
+         "期待値=勝率×オッズ\n"
+         "人気馬はオッズが低く当たっても利益が出にくい。\n"
+         "AIは「勝てる馬」でなく「儲かる馬」を選びます💡"),
+        ("騎手×調教師コンビの威力",
+         "特徴量重要度1位は騎手×調教師コンビの複勝率。\n"
+         "同じ騎手でも誰の馬かで成績が大きく変わる。\n"
+         "相性を統計検出し精度を向上🤝"),
+        ("3つのAIモデル統合の理由",
+         "1⃣LambdaRank 着順最適化\n"
+         "2⃣勝率モデル 1着確率\n"
+         "3⃣複勝率モデル 3着内確率\n"
+         "統合で安定した精度を実現🎯"),
+        ("スピード指数SIの読み方",
+         "SI=走破タイムを距離・馬場で補正した能力値\n"
+         "50=平均 70+=強い 90+=重賞級\n"
+         "高SIでも低オッズなら期待値マイナス📊"),
     ]
 
     col = random.choice(columns)
-    today_str = datetime.now().strftime("%m/%d %H:%M")
-    tweet = f"🧠 AI競馬コラム\n"
-    tweet += f"━━━━━━━━━━━━\n"
-    tweet += f"【{col['title']}】\n\n"
-    tweet += col["body"]
-    tweet += f"\n\n📅 {today_str}\n#競馬予想 #AI予想 #競馬コラム"
-
+    tweet = f"🧠AI競馬コラム\n【{col[0]}】\n\n"
+    tweet += col[1]
+    tweet += "\n\n#競馬予想 #AI予想"
     return tweet
 
 
 def generate_pickup_horse():
-    """木曜: 注目馬ピックアップ"""
-    with get_db() as conn:
-        # SI上位の最近好走した馬
-        top_horses = conn.execute("""
-            SELECT h.horse_name,
-                   AVG(r.finish_position) as avg_pos,
-                   COUNT(*) as runs
-            FROM results r
-            JOIN horses h ON r.horse_id = h.horse_id
-            JOIN races ra ON r.race_id = ra.race_id
-            WHERE ra.race_date >= date('now', '-60 days')
-            AND r.finish_position > 0
-            AND r.finish_position <= 3
-            GROUP BY h.horse_id
-            HAVING runs >= 2
-            ORDER BY avg_pos ASC
-            LIMIT 5
-        """).fetchall()
+    """木曜: 注目馬"""
+    try:
+        with get_db() as conn:
+            top_horses = conn.execute("""
+                SELECT h.horse_name,
+                       AVG(r.finish_position) as avg_pos,
+                       COUNT(*) as runs
+                FROM results r
+                JOIN horses h ON r.horse_id = h.horse_id
+                JOIN races ra ON r.race_id = ra.race_id
+                WHERE ra.race_date >= date('now', '-60 days')
+                AND r.finish_position > 0 AND r.finish_position <= 3
+                GROUP BY h.horse_id
+                HAVING runs >= 2
+                ORDER BY avg_pos ASC
+                LIMIT 5
+            """).fetchall()
+    except:
+        top_horses = []
 
     if not top_horses:
         return generate_analysis_column()
 
-    today_str = datetime.now().strftime("%m/%d %H:%M")
-    tweet = f"🐴 直近60日 好走馬ピックアップ\n"
-    tweet += f"━━━━━━━━━━━━\n\n"
-    for i, h in enumerate(top_horses, 1):
+    tweet = "🐴好走馬ピックアップ(60日)\n\n"
+    for h in top_horses:
         avg = round(h["avg_pos"], 1)
-        tweet += f"⭐ {h['horse_name']} — 平均着順 {avg}位 ({h['runs']}走)\n"
-    tweet += f"\n次走で注目したい馬たちです 👀\n"
-    tweet += f"週末の出走情報は金曜に配信予定\n\n"
-    tweet += f"📅 {today_str}\n#競馬予想 #AI予想 #注目馬"
-
+        tweet += f"⭐{h['horse_name']} 平均{avg}着({h['runs']}走)\n"
+    tweet += "\n#競馬予想 #AI予想"
     return tweet
 
 
 def generate_weekend_preview():
     """金曜: 週末プレビュー"""
-    tweet = f"📅 今週末のレースプレビュー\n"
-    tweet += f"━━━━━━━━━━━━\n\n"
-    tweet += f"🧠 AIモデルによる全レース分析を実施中...\n\n"
-    tweet += f"明日朝8時にメインレースの予想を配信します 🔔\n\n"
-    tweet += f"全レースの詳細予想はプロフリンクのnoteから！\n\n"
-    tweet += f"#競馬予想 #AI予想 #週末競馬"
-
+    tweet = "📅今週末のレース\n\n"
+    tweet += "AIモデルで全レース分析中...\n"
+    tweet += "明日朝8時にメイン予想配信🔔\n\n"
+    tweet += "詳細はプロフリンクのnoteへ\n\n"
+    tweet += "#競馬予想 #AI予想"
     return tweet
 
 
