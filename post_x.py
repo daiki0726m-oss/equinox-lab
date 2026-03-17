@@ -435,13 +435,14 @@ def generate_weekly_summary():
 
     date_range = f"{last_sat.month}/{last_sat.day}-{last_sun.month}/{last_sun.day}"
 
+    today_str = datetime.now().strftime("%m/%d")
     tweet = f"📊 先週末({date_range})の振り返り\n"
     tweet += f"━━━━━━━━━━━━\n\n"
     tweet += f"🏇 分析レース数: {race_count}R\n"
     tweet += f"💰 推奨レース数: {bet_count}R\n\n"
     tweet += f"今週末も厳選レースをAI分析します。\n"
     tweet += f"メイン予想は土日朝8時に配信 🔔\n\n"
-    tweet += f"#競馬予想 #AI予想"
+    tweet += f"📅 {today_str}\n#競馬予想 #AI予想"
 
     return tweet
 
@@ -468,6 +469,7 @@ def generate_jockey_ranking():
     if not top_jockeys:
         return generate_analysis_column()
 
+    today_str = datetime.now().strftime("%m/%d")
     tweet = f"🏆 直近30日 騎手複勝率ランキング\n"
     tweet += f"━━━━━━━━━━━━\n\n"
     for i, j in enumerate(top_jockeys, 1):
@@ -476,7 +478,7 @@ def generate_jockey_ranking():
         tweet += f"{medal} {j['jockey_name']} — {rate}% ({j['top3']}/{j['rides']})\n"
     tweet += f"\n※ 出走10回以上が対象\n"
     tweet += f"当モデルでは騎手×調教師コンビの実績を重点分析しています 🧠\n\n"
-    tweet += f"#競馬予想 #AI予想 #騎手成績"
+    tweet += f"📅 {today_str}\n#競馬予想 #AI予想 #騎手成績"
 
     return tweet
 
@@ -542,11 +544,12 @@ def generate_analysis_column():
     ]
 
     col = random.choice(columns)
+    today_str = datetime.now().strftime("%m/%d")
     tweet = f"🧠 AI競馬コラム\n"
     tweet += f"━━━━━━━━━━━━\n"
     tweet += f"【{col['title']}】\n\n"
     tweet += col["body"]
-    tweet += f"\n\n#競馬予想 #AI予想 #競馬コラム"
+    tweet += f"\n\n📅 {today_str}\n#競馬予想 #AI予想 #競馬コラム"
 
     return tweet
 
@@ -574,6 +577,7 @@ def generate_pickup_horse():
     if not top_horses:
         return generate_analysis_column()
 
+    today_str = datetime.now().strftime("%m/%d")
     tweet = f"🐴 直近60日 好走馬ピックアップ\n"
     tweet += f"━━━━━━━━━━━━\n\n"
     for i, h in enumerate(top_horses, 1):
@@ -581,7 +585,7 @@ def generate_pickup_horse():
         tweet += f"⭐ {h['horse_name']} — 平均着順 {avg}位 ({h['runs']}走)\n"
     tweet += f"\n次走で注目したい馬たちです 👀\n"
     tweet += f"週末の出走情報は金曜に配信予定\n\n"
-    tweet += f"#競馬予想 #AI予想 #注目馬"
+    tweet += f"📅 {today_str}\n#競馬予想 #AI予想 #注目馬"
 
     return tweet
 
