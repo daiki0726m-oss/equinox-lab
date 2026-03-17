@@ -477,7 +477,8 @@ def generate_jockey_ranking():
     for i, j in enumerate(top_jockeys):
         rate = round(j["top3"] / j["rides"] * 100, 1)
         win_rate = round(j["wins"] / j["rides"] * 100, 1)
-        t2 += f"{medals[i]}{j['jockey_name']}\n"
+        name = j['jockey_name'].lstrip('▲△★☆')
+        t2 += f"{medals[i]}{name}\n"
         t2 += f"  複勝率{rate}% 勝率{win_rate}%({j['rides']}騎乗)\n"
 
     t3 = "💡 馬券に活かすポイント\n\n"
