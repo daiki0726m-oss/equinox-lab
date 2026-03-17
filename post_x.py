@@ -435,7 +435,7 @@ def generate_weekly_summary():
 
     date_range = f"{last_sat.month}/{last_sat.day}-{last_sun.month}/{last_sun.day}"
 
-    today_str = datetime.now().strftime("%m/%d")
+    today_str = datetime.now().strftime("%m/%d %H:%M")
     tweet = f"📊 先週末({date_range})の振り返り\n"
     tweet += f"━━━━━━━━━━━━\n\n"
     tweet += f"🏇 分析レース数: {race_count}R\n"
@@ -469,7 +469,7 @@ def generate_jockey_ranking():
     if not top_jockeys:
         return generate_analysis_column()
 
-    today_str = datetime.now().strftime("%m/%d")
+    today_str = datetime.now().strftime("%m/%d %H:%M")
     tweet = f"🏆 直近30日 騎手複勝率ランキング\n"
     tweet += f"━━━━━━━━━━━━\n\n"
     for i, j in enumerate(top_jockeys, 1):
@@ -544,7 +544,7 @@ def generate_analysis_column():
     ]
 
     col = random.choice(columns)
-    today_str = datetime.now().strftime("%m/%d")
+    today_str = datetime.now().strftime("%m/%d %H:%M")
     tweet = f"🧠 AI競馬コラム\n"
     tweet += f"━━━━━━━━━━━━\n"
     tweet += f"【{col['title']}】\n\n"
@@ -577,7 +577,7 @@ def generate_pickup_horse():
     if not top_horses:
         return generate_analysis_column()
 
-    today_str = datetime.now().strftime("%m/%d")
+    today_str = datetime.now().strftime("%m/%d %H:%M")
     tweet = f"🐴 直近60日 好走馬ピックアップ\n"
     tweet += f"━━━━━━━━━━━━\n\n"
     for i, h in enumerate(top_horses, 1):
