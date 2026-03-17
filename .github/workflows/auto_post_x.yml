@@ -1,0 +1,90 @@
+name: 🐦 Auto Post to X
+
+on:
+  schedule:
+    # 毎日 朝8時(JST) = 前日23:00 UTC
+    - cron: '0 23 * * *'
+    # 土日 17時(JST) = 08:00 UTC (的中報告)
+    - cron: '0 8 * * 0,6'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '投稿モード'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - weekday
+          - predict
+          - results
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install tweepy lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
+
+      - name: Determine post type
+        id: determine
+        run: |
+          DOW=$(TZ=Asia/Tokyo date +%u)  # 1=Mon ... 7=Sun
+          HOUR=$(TZ=Asia/Tokyo date +%H)
+          TODAY_YYYYMMDD=$(TZ=Asia/Tokyo date +%Y%m%d)
+
+          # 手動実行の場合
+          if [ "${{ github.event.inputs.mode }}" != "" ] && [ "${{ github.event.inputs.mode }}" != "auto" ]; then
+            echo "type=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+            echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 自動判定
+          if [ "$HOUR" -ge 12 ]; then
+            # 午後 → 的中報告（土日のみ）
+            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
+              echo "type=results" >> $GITHUB_OUTPUT
+            else
+              echo "type=skip" >> $GITHUB_OUTPUT
+            fi
+          elif [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
+            # 土日朝 → 予想
+            echo "type=predict" >> $GITHUB_OUTPUT
+          else
+            # 平日朝 → 平日コンテンツ
+            echo "type=weekday" >> $GITHUB_OUTPUT
+          fi
+
+          echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
+
+      - name: Post to X
+        if: steps.determine.outputs.type != 'skip'
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+        run: |
+          TYPE="${{ steps.determine.outputs.type }}"
+          DATE="${{ steps.determine.outputs.date }}"
+
+          echo "📬 投稿タイプ: $TYPE / 日付: $DATE"
+
+          if [ "$TYPE" = "weekday" ]; then
+            python post_x.py weekday
+          elif [ "$TYPE" = "predict" ]; then
+            python post_x.py predict --date "$DATE"
+          elif [ "$TYPE" = "results" ]; then
+            python post_x.py results --date "$DATE"
+          fi

@@ -1,0 +1,1231 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AI KEIBA PREDICTOR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ─── Design System ─── */
+:root {
+  --bg-primary: #0B1426;
+  --bg-card: #111B2E;
+  --bg-elevated: #162236;
+  --bg-hover: #1A2A42;
+  --border: #1E3050;
+  --border-light: #253B5A;
+  --text-primary: #E8ECF5;
+  --text-secondary: #8899B4;
+  --text-muted: #4A5E7A;
+  --gold: #D4A843;
+  --gold-light: #E8C86A;
+  --gold-dim: rgba(212,168,67,0.15);
+  --green: #34D399;
+  --green-dim: rgba(52,211,153,0.12);
+  --red: #F87171;
+  --red-dim: rgba(248,113,113,0.12);
+  --conf-s: #EF4444;
+  --conf-a: #F59E0B;
+  --conf-b: #3B82F6;
+  --conf-c: #6B7280;
+  --conf-d: #4B5563;
+  --bet-tansho: #EF4444;
+  --bet-fukusho: #F59E0B;
+  --bet-wide: #10B981;
+  --bet-umaren: #3B82F6;
+  --bet-sanrenpuku: #8B5CF6;
+  --bet-sanrentan: #EC4899;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 100px;
+  --shadow: 0 2px 12px rgba(0,0,0,0.3);
+  --transition: 0.2s cubic-bezier(0.4,0,0.2,1);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+html { font-size: 14px; }
+body {
+  font-family: 'Inter','Noto Sans JP',-apple-system,sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* ─── Header ─── */
+.header {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(17,27,46,0.92);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+}
+.header-top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 8px;
+}
+.logo {
+  font-size: 15px; font-weight: 800;
+  background: linear-gradient(135deg, var(--gold), var(--gold-light));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  white-space: nowrap;
+}
+.header-controls {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.input-date, .input-budget {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border var(--transition);
+}
+.input-date { width: 130px; }
+.input-budget { width: 80px; text-align: right; }
+.input-date:focus, .input-budget:focus { border-color: var(--gold); }
+.budget-label { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+.budget-unit { font-size: 12px; color: var(--text-secondary); }
+.btn-predict {
+  background: linear-gradient(135deg, var(--gold), #C6963A);
+  color: #0B1426;
+  border: none; border-radius: var(--radius-sm);
+  padding: 7px 18px;
+  font-size: 13px; font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.btn-predict:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(212,168,67,0.3); }
+.btn-predict:active { transform: translateY(0); }
+.btn-predict:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+/* ─── Bet Type Selector ─── */
+.bet-selector {
+  position: sticky; top: 56px; z-index: 90;
+  background: rgba(11,20,38,0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
+  display: flex; gap: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.bet-selector::-webkit-scrollbar { display: none; }
+.bet-chip {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
+  font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  transition: all var(--transition);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.bet-chip:active { transform: scale(0.96); }
+.bet-chip[data-type="単勝"].active { background: var(--bet-tansho); color: #fff; border-color: var(--bet-tansho); }
+.bet-chip[data-type="複勝"].active { background: var(--bet-fukusho); color: #fff; border-color: var(--bet-fukusho); }
+.bet-chip[data-type="ワイド"].active { background: var(--bet-wide); color: #fff; border-color: var(--bet-wide); }
+.bet-chip[data-type="馬連"].active { background: var(--bet-umaren); color: #fff; border-color: var(--bet-umaren); }
+.bet-chip[data-type="三連複"].active { background: var(--bet-sanrenpuku); color: #fff; border-color: var(--bet-sanrenpuku); }
+.bet-chip[data-type="三連単"].active { background: var(--bet-sanrentan); color: #fff; border-color: var(--bet-sanrentan); }
+
+/* ─── Lock Banner ─── */
+.lock-banner {
+  display: none;
+  align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 16px;
+  background: var(--gold-dim);
+  border-bottom: 1px solid rgba(212,168,67,0.2);
+  font-size: 11px; color: var(--gold);
+  font-weight: 600;
+}
+.lock-banner.visible { display: flex; }
+
+/* ─── Summary Strip ─── */
+.summary-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  margin: 12px 16px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.summary-item {
+  background: var(--bg-card);
+  padding: 12px 8px;
+  text-align: center;
+}
+.summary-value {
+  font-size: 20px; font-weight: 800;
+  color: var(--gold);
+  line-height: 1.2;
+}
+.summary-label {
+  font-size: 10px; color: var(--text-muted);
+  margin-top: 2px;
+}
+.summary-item.clickable {
+  cursor: pointer;
+  transition: background var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.summary-item.clickable:hover { background: var(--bg-elevated); }
+.summary-item.clickable.active {
+  background: var(--gold-dim);
+  box-shadow: inset 0 -2px 0 var(--gold);
+}
+
+/* ─── Venue Tabs ─── */
+.venue-tabs {
+  display: flex; gap: 0; margin: 0 16px 12px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.venue-tab {
+  flex: 1;
+  padding: 8px 12px;
+  text-align: center;
+  font-size: 12px; font-weight: 600;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  transition: all var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.venue-tab:last-child { border-right: none; }
+.venue-tab.active {
+  background: var(--bg-elevated);
+  color: var(--gold);
+  box-shadow: inset 0 -2px 0 var(--gold);
+}
+
+/* ─── Main Content ─── */
+.main { padding: 0 16px 100px; max-width: 900px; margin: 0 auto; }
+
+/* ─── Race Card ─── */
+.race-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  margin-bottom: 10px;
+  overflow: hidden;
+  transition: border-color var(--transition);
+}
+.race-card:hover { border-color: var(--border-light); }
+.race-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.race-left { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.race-num {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: 12px; font-weight: 800;
+  color: var(--gold);
+  flex-shrink: 0;
+}
+.race-info { min-width: 0; }
+.race-name-line {
+  font-size: 13px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.race-meta {
+  font-size: 10px; color: var(--text-muted);
+  display: flex; gap: 8px; margin-top: 2px;
+}
+.race-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.conf-badge {
+  padding: 3px 10px; border-radius: var(--radius-pill);
+  font-size: 11px; font-weight: 700; color: #fff;
+}
+.conf-badge.S { background: var(--conf-s); }
+.conf-badge.A { background: var(--conf-a); }
+.conf-badge.B { background: var(--conf-b); }
+.conf-badge.C { background: var(--conf-c); }
+.conf-badge.D { background: var(--conf-d); }
+.toggle-icon {
+  font-size: 10px; color: var(--text-muted);
+  transition: transform var(--transition);
+}
+.race-card.open .toggle-icon { transform: rotate(180deg); }
+.result-badge {
+  font-size: 10px; font-weight: 600;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+  background: var(--green-dim); color: var(--green);
+}
+.locked-badge {
+  font-size: 10px; font-weight: 600;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+  background: var(--gold-dim); color: var(--gold);
+}
+
+/* ─── Race Body ─── */
+.race-body { display: none; border-top: 1px solid var(--border); }
+.race-card.open .race-body { display: block; }
+
+/* Tab bar */
+.tab-bar {
+  display: flex; border-bottom: 1px solid var(--border);
+}
+.tab-btn {
+  flex: 1; padding: 10px;
+  text-align: center; font-size: 12px; font-weight: 600;
+  color: var(--text-secondary);
+  background: none; border: none;
+  cursor: pointer; position: relative;
+  transition: color var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.tab-btn.active { color: var(--gold); }
+.tab-btn.active::after {
+  content: ''; position: absolute;
+  bottom: 0; left: 20%; right: 20%;
+  height: 2px; background: var(--gold);
+  border-radius: 1px;
+}
+
+/* ─── Horse List ─── */
+.horse-list { padding: 8px 12px; }
+.horse-row {
+  display: grid;
+  grid-template-columns: 24px 28px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(30,48,80,0.4);
+}
+.horse-row:last-child { border-bottom: none; }
+.horse-mark {
+  font-size: 14px; font-weight: 800;
+  text-align: center;
+  line-height: 1;
+}
+.mark-honmei { color: var(--conf-s); }
+.mark-taikou { color: var(--conf-a); }
+.mark-tanana { color: var(--conf-b); }
+.mark-renshita { color: var(--text-secondary); }
+.mark-chuui { color: #A855F7; }
+.horse-number {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  font-size: 11px; font-weight: 800;
+  background: var(--bg-elevated);
+  border: 1.5px solid var(--border-light);
+  color: var(--text-primary);
+}
+.horse-detail { min-width: 0; }
+.horse-name-row {
+  display: flex; align-items: baseline; gap: 6px;
+}
+.horse-name { font-size: 13px; font-weight: 700; }
+.horse-jockey { font-size: 10px; color: var(--text-muted); }
+.horse-stats {
+  display: flex; gap: 6px; margin-top: 3px; flex-wrap: wrap;
+}
+.stat { font-size: 10px; color: var(--text-secondary); }
+.stat-val { font-weight: 700; color: var(--text-primary); }
+.stat-val.hot { color: var(--green); }
+.stat-val.warn { color: var(--red); }
+.horse-prob {
+  text-align: right;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+}
+.prob-value {
+  font-size: 14px; font-weight: 800;
+  color: var(--gold);
+}
+.prob-label {
+  font-size: 9px; color: var(--text-muted);
+}
+.rank-bar {
+  width: 48px; height: 4px;
+  background: var(--bg-primary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.rank-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--gold), var(--gold-light));
+  transition: width 0.4s ease;
+}
+.horse-reasons {
+  grid-column: 1 / -1;
+  padding: 4px 0 0 60px;
+}
+.reason-tag {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  margin: 2px 4px 2px 0;
+}
+.show-all-btn {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-top: 1px solid rgba(30,48,80,0.4);
+  cursor: pointer;
+  transition: color var(--transition);
+}
+.show-all-btn:hover { color: var(--text-secondary); }
+
+/* ─── Bets Section ─── */
+.bets-section { padding: 12px; }
+.bets-title {
+  font-size: 12px; font-weight: 700;
+  color: var(--gold);
+  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 6px;
+}
+.bet-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.bet-card.hit {
+  border-color: var(--green);
+  background: var(--green-dim);
+}
+.bet-card.miss {
+  border-color: var(--red);
+  background: var(--red-dim);
+  opacity: 0.7;
+}
+.bet-type-label {
+  font-size: 10px; font-weight: 700;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  color: #fff;
+}
+.bet-detail-text { font-size: 13px; font-weight: 600; margin-left: 8px; }
+.bet-amount {
+  font-size: 14px; font-weight: 800;
+  color: var(--gold);
+}
+.bet-hit-label {
+  font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+}
+.bet-hit-label.hit { background: var(--green-dim); color: var(--green); }
+.bet-hit-label.miss { background: var(--red-dim); color: var(--red); }
+.bet-payout {
+  font-size: 12px; font-weight: 700; color: var(--green);
+  margin-top: 4px;
+}
+.no-bets {
+  text-align: center;
+  padding: 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.bets-roi {
+  text-align: right;
+  padding: 8px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+.roi-positive { color: var(--green); }
+.roi-negative { color: var(--red); }
+
+/* ─── Results Tab ─── */
+.results-section { padding: 12px; }
+.podium { margin-bottom: 16px; }
+.podium-row {
+  display: grid;
+  grid-template-columns: 30px 32px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid rgba(30,48,80,0.3);
+}
+.podium-rank { font-size: 12px; font-weight: 800; text-align: center; }
+.rank-1 { color: #FFD700; }
+.rank-2 { color: #C0C0C0; }
+.rank-3 { color: #CD7F32; }
+
+/* ─── Payout Grid ─── */
+.payout-section { margin-top: 12px; }
+.payout-title {
+  font-size: 13px; font-weight: 700; margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--green);
+}
+.payout-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 11px; border-radius: var(--radius-md); overflow: hidden;
+}
+.payout-table td {
+  padding: 5px 8px; border: 1px solid var(--border);
+  background: var(--bg-card); white-space: nowrap;
+}
+.payout-table .pt-type {
+  font-weight: 700; font-size: 10px; color: #fff;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+  display: inline-block; min-width: 36px; text-align: center;
+}
+.payout-table .pt-combo { color: var(--text-primary); font-weight: 600; }
+.payout-table .pt-amount { color: var(--gold); font-weight: 700; text-align: right; }
+.payout-table .pt-pop { color: var(--text-muted); font-size: 10px; text-align: right; }
+
+/* Category Badges */
+.cat-badges { display: inline-flex; gap: 3px; margin-left: 8px; flex-wrap: wrap; }
+.cat-badge {
+  font-size: 9px; font-weight: 700; padding: 1px 5px;
+  border-radius: 4px; line-height: 1.4; letter-spacing: -0.3px;
+}
+.cat-badge.rank-s { background: rgba(212,168,67,0.25); color: #D4A843; }
+.cat-badge.rank-a { background: rgba(52,211,153,0.2); color: #34D399; }
+.cat-badge.rank-b { background: rgba(59,130,246,0.2); color: #60A5FA; }
+.cat-badge.rank-c { background: rgba(100,116,139,0.2); color: #94A3B8; }
+.cat-badge.rank-d { background: rgba(239,68,68,0.15); color: #F87171; }
+@media (max-width: 480px) {
+  .cat-badges { margin-left: 0; margin-top: 3px; display: flex; }
+}
+
+/* Confidence Filter */
+.conf-filter {
+  display: none; padding: 6px 16px; gap: 6px;
+  justify-content: center; flex-wrap: wrap;
+}
+.conf-filter.visible { display: flex; }
+.conf-filter-btn {
+  padding: 4px 14px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 700;
+  cursor: pointer; border: 1px solid var(--border); background: var(--bg-card); color: var(--text-secondary);
+  transition: all 0.2s;
+}
+.conf-filter-btn:hover { border-color: var(--gold); }
+.conf-filter-btn.active { background: var(--gold); color: #000; border-color: var(--gold); }
+.conf-filter-btn .filter-count { font-weight: 400; opacity: 0.7; margin-left: 3px; }
+
+/* ─── Loading ─── */
+.loading-overlay {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(11,20,38,0.85);
+  backdrop-filter: blur(8px);
+  z-index: 1000;
+  flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 16px;
+}
+.loading-overlay.visible { display: flex; }
+.spinner {
+  width: 40px; height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { font-size: 13px; color: var(--text-secondary); }
+.loading-progress { font-size: 11px; color: var(--text-muted); }
+
+/* ─── Empty State ─── */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+}
+.empty-icon { font-size: 48px; margin-bottom: 12px; }
+.empty-title { font-size: 16px; font-weight: 700; color: var(--text-secondary); }
+.empty-desc { font-size: 12px; margin-top: 8px; }
+
+/* ─── Responsive: Desktop ─── */
+@media (min-width: 769px) {
+  .main { max-width: 900px; }
+  .payout-grid { grid-template-columns: 1fr 1fr 1fr; }
+  .summary-strip { grid-template-columns: repeat(5, 1fr); }
+}
+@keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+
+/* ─── Responsive: Small phone ─── */
+@media (max-width: 380px) {
+  html { font-size: 13px; }
+  .header-top { flex-wrap: wrap; }
+  .input-date { width: 110px; }
+  .input-budget { width: 70px; }
+  .summary-strip { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <div class="header-top">
+    <div class="logo">🏇 AI KEIBA</div>
+    <div class="header-controls">
+      <input type="date" id="dateInput" class="input-date" value="{{ target_date[:4] }}-{{ target_date[4:6] }}-{{ target_date[6:8] }}">
+      <span class="budget-label">予算</span>
+      <input type="number" id="budgetInput" class="input-budget" value="1000" min="100" max="100000" step="100">
+      <span class="budget-unit">円</span>
+      <button id="predictBtn" class="btn-predict" onclick="loadPredictions()">予測実行</button>
+    </div>
+  </div>
+</header>
+
+<!-- Bet Type Selector -->
+<div class="bet-selector" id="betSelector">
+  <div class="bet-chip active" data-type="単勝" onclick="selectBetType(this)">単勝</div>
+  <div class="bet-chip" data-type="複勝" onclick="selectBetType(this)">複勝</div>
+  <div class="bet-chip" data-type="ワイド" onclick="selectBetType(this)">ワイド</div>
+  <div class="bet-chip" data-type="馬連" onclick="selectBetType(this)">馬連</div>
+  <div class="bet-chip" data-type="三連複" onclick="selectBetType(this)">三連複</div>
+  <div class="bet-chip" data-type="三連単" onclick="selectBetType(this)">三連単</div>
+</div>
+
+<!-- Lock Banner -->
+<div class="lock-banner" id="lockBanner">🔒 10:00に予想確定済み</div>
+
+<!-- Summary Strip -->
+<div class="summary-strip" id="summaryStrip" style="display:none;">
+  <div class="summary-item"><div class="summary-value" id="sumRaces">0</div><div class="summary-label">レース数</div></div>
+  <div class="summary-item clickable" id="sumBetsItem" onclick="toggleBetsFilter()"><div class="summary-value" id="sumBets">0</div><div class="summary-label">推奨数 ▼</div></div>
+  <div class="summary-item"><div class="summary-value" id="sumAmount">¥0</div><div class="summary-label">合計投資</div></div>
+  <div class="summary-item"><div class="summary-value" id="sumROI">-</div><div class="summary-label">ROI</div></div>
+</div>
+
+<!-- Confidence Filter -->
+<div class="conf-filter" id="confFilter">
+  <button class="conf-filter-btn" onclick="setConfFilter('ALL')">全て</button>
+  <button class="conf-filter-btn" onclick="setConfFilter('S')">S</button>
+  <button class="conf-filter-btn" onclick="setConfFilter('A')">A以上</button>
+  <button class="conf-filter-btn" onclick="setConfFilter('B')">B以上</button>
+  <button class="conf-filter-btn" onclick="setConfFilter('C')">C以上</button>
+</div>
+
+<!-- Venue Tabs -->
+<div class="venue-tabs" id="venueTabs" style="display:none;"></div>
+
+<!-- Main -->
+<div class="main" id="mainContent">
+  <div class="empty-state">
+    <div class="empty-icon">🏇</div>
+    <div class="empty-title">AI競馬予測</div>
+    <div class="empty-desc">日付を選択して「予測実行」をタップ</div>
+  </div>
+</div>
+
+<!-- Loading -->
+<div class="loading-overlay" id="loading">
+  <div class="spinner"></div>
+  <div class="loading-text">AI予測を実行中...</div>
+  <div class="loading-progress" id="loadingProgress"></div>
+</div>
+
+<script>
+// ─── State Management ───
+const state = {
+  allData: null,           // 全APIレスポンス
+  activeBetType: '単勝',   // 選択中の券種
+  activeVenue: null,        // 選択中の会場
+  budget: 1000,             // 予算
+  isLocked: false,
+  filterBetsOnly: false,
+  confFilter: 'ALL',  // ALL, S, A, B, C   // 推奨ありのみ表示
+};
+
+function toggleBetsFilter() {
+  state.filterBetsOnly = !state.filterBetsOnly;
+  document.getElementById('sumBetsItem').classList.toggle('active', state.filterBetsOnly);
+  if (state.allData) renderAll();
+}
+
+function setConfFilter(level) {
+  state.confFilter = state.confFilter === level ? 'ALL' : level;
+  document.querySelectorAll('.conf-filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.startsWith(level === 'ALL' ? '全て' : level));
+  });
+  if (state.allData) renderRaceCards();
+}
+
+const BET_COLORS = {
+  '単勝': 'var(--bet-tansho)', '複勝': 'var(--bet-fukusho)',
+  'ワイド': 'var(--bet-wide)', '馬連': 'var(--bet-umaren)',
+  '三連複': 'var(--bet-sanrenpuku)', '三連単': 'var(--bet-sanrentan)',
+};
+const CONF_ICONS = { S: '🔥', A: '★', B: '📊', C: '△', D: '—' };
+
+// ─── Bet Type Selector (Instant, no API call) ───
+function selectBetType(chip) {
+  document.querySelectorAll('.bet-chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  state.activeBetType = chip.dataset.type;
+  if (state.allData) renderAll();
+}
+
+// ─── Budget Change (Instant recalc) ───
+document.getElementById('budgetInput').addEventListener('input', function() {
+  state.budget = Math.max(100, Math.min(parseInt(this.value) || 1000, 100000));
+  if (state.allData) renderAll();
+});
+
+
+// ─── Load Predictions ───
+async function loadPredictions() {
+  const dateInput = document.getElementById('dateInput');
+  const dateStr = dateInput.value.replace(/[-\/]/g, '');
+  state.budget = parseInt(document.getElementById('budgetInput').value) || 1000;
+
+  const btn = document.getElementById('predictBtn');
+  btn.disabled = true;
+  btn.textContent = '読込中...';
+
+  document.getElementById('loading').classList.add('visible');
+
+  try {
+    const url = `/api/predict-date/${dateStr}?budget=${state.budget}`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+
+    state.allData = data;
+    state.isLocked = data.is_locked || false;
+
+    // Set first venue as active
+    const venueNames = Object.keys(data.venues || {});
+    state.activeVenue = venueNames[0] || null;
+
+    renderAll();
+  } catch (e) {
+    alert('予測の取得に失敗しました: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '予測実行';
+    document.getElementById('loading').classList.remove('visible');
+  }
+}
+
+// ─── Render All ───
+function renderAll() {
+  const data = state.allData;
+  if (!data) return;
+
+  // Lock banner
+  const lockBanner = document.getElementById('lockBanner');
+  lockBanner.classList.toggle('visible', state.isLocked);
+
+  // Venue tabs
+  renderVenueTabs(data.venues);
+
+  // Summary
+  renderSummary(data);
+
+  // Race cards
+  renderRaceCards();
+}
+
+function renderVenueTabs(venues) {
+  const container = document.getElementById('venueTabs');
+  const names = Object.keys(venues || {});
+  if (names.length === 0) { container.style.display = 'none'; return; }
+
+  container.style.display = 'flex';
+  document.getElementById('confFilter').classList.add('visible');
+  container.innerHTML = names.map(v => {
+    const count = venues[v].length;
+    const cls = v === state.activeVenue ? 'active' : '';
+    return `<div class="venue-tab ${cls}" onclick="switchVenue('${v}')">${v} ${count}R</div>`;
+  }).join('');
+}
+
+function switchVenue(venue) {
+  state.activeVenue = venue;
+  renderAll();
+}
+
+function renderSummary(data) {
+  const strip = document.getElementById('summaryStrip');
+  strip.style.display = 'grid';
+
+  const allRaces = [];
+  Object.values(data.venues || {}).forEach(vr => allRaces.push(...vr));
+
+  const bt = state.activeBetType;
+  let totalBets = 0, totalAmount = 0, totalPayout = 0;
+  let hasAnyResults = false;
+
+  allRaces.forEach(race => {
+    const bets = (race.all_bets || {})[bt] || [];
+    const scaledBets = scaleBets(bets, state.budget);
+    totalBets += scaledBets.length;
+    scaledBets.forEach(b => {
+      totalAmount += b.amount;
+      if (race.has_results) {
+        hasAnyResults = true;
+        const result = checkBetHit(b, race);
+        totalPayout += result.payout;
+      }
+    });
+  });
+
+  document.getElementById('sumRaces').textContent = allRaces.length;
+  document.getElementById('sumBets').textContent = totalBets;
+  document.getElementById('sumAmount').textContent = `¥${totalAmount.toLocaleString()}`;
+
+  const roiEl = document.getElementById('sumROI');
+  if (hasAnyResults && totalAmount > 0) {
+    const roi = Math.round(totalPayout / totalAmount * 100);
+    roiEl.textContent = `${roi}%`;
+    roiEl.className = 'summary-value ' + (roi >= 100 ? 'roi-positive' : 'roi-negative');
+  } else {
+    roiEl.textContent = '-';
+    roiEl.className = 'summary-value';
+  }
+}
+
+// ─── Scale bets to budget ───
+function scaleBets(bets, budget) {
+  if (!bets || bets.length === 0) return [];
+  const originalTotal = bets.reduce((s, b) => s + (b.amount || 100), 0);
+  if (originalTotal === 0) return bets;
+
+  const ratio = budget / originalTotal;
+  return bets.map(b => ({
+    ...b,
+    amount: Math.max(100, Math.round((b.amount || 100) * ratio / 100) * 100),
+  }));
+}
+
+// ─── Check if bet hit ───
+function checkBetHit(bet, race) {
+  const NO_HIT = { hit: false, payout: 0, source: 'none' };
+  if (!race.has_results) return NO_HIT;
+
+  const bt = bet.type || bet.bet_type || state.activeBetType;
+  const detail = bet.detail || bet.bet_detail || '';
+  const horses = race.horses || [];
+
+  // --- 1. payouts がある場合: 配当テーブルから正確な払戻金を取得 ---
+  // ※ payouts テーブルは¥100あたりの配当。賭け金に応じて倍率計算
+  const betMultiplier = (bet.amount || 100) / 100;
+  if (race.payouts && race.payouts.length > 0) {
+    for (const p of race.payouts) {
+      if (p.bet_type === bt) {
+        const combo = String(p.combination).replace(/[→\-]/g, '-');
+        const betCombo = String(detail).replace(/[→\-]/g, '-');
+        // 馬連・ワイド: 順序問わず比較
+        if (bt === '馬連' || bt === 'ワイド' || bt === '三連複') {
+          const comboSorted = combo.split('-').map(Number).sort((a,b)=>a-b).join('-');
+          const betSorted = betCombo.split('-').map(Number).sort((a,b)=>a-b).join('-');
+          if (comboSorted === betSorted) {
+            return { hit: true, payout: Math.round((p.payout || 0) * betMultiplier), source: 'payout' };
+          }
+        } else {
+          if (combo === betCombo) {
+            return { hit: true, payout: Math.round((p.payout || 0) * betMultiplier), source: 'payout' };
+          }
+        }
+      }
+    }
+    return { hit: false, payout: 0, source: 'payout' };
+  }
+
+  // --- 2. payouts がない場合: 着順ベースで判定 (払戻金はオッズから概算) ---
+  const winNums = horses.filter(h => h.finish === 1).map(h => h.horse_number);
+  const top2Nums = horses.filter(h => h.finish >= 1 && h.finish <= 2).map(h => h.horse_number);
+  const top3Nums = horses.filter(h => h.finish >= 1 && h.finish <= 3).map(h => h.horse_number);
+  const betNums = String(detail).replace(/[→]/g, '-').split('-').map(Number).filter(n => n > 0);
+
+  let isHit = false;
+  let estimatedPayout = 0;
+
+  switch (bt) {
+    case '単勝':
+      isHit = betNums.length === 1 && winNums.includes(betNums[0]);
+      if (isHit) {
+        const h = horses.find(x => x.horse_number === betNums[0]);
+        estimatedPayout = bet.amount * (h?.actual_odds || bet.odds || 1);
+      }
+      break;
+    case '複勝':
+      isHit = betNums.length === 1 && top3Nums.includes(betNums[0]);
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 1.5);
+      break;
+    case 'ワイド':
+      isHit = betNums.length === 2 && betNums.every(n => top3Nums.includes(n));
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 2);
+      break;
+    case '馬連':
+      isHit = betNums.length === 2 && betNums.every(n => top2Nums.includes(n));
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 5);
+      break;
+    case '三連複':
+      isHit = betNums.length === 3 && betNums.every(n => top3Nums.includes(n));
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 10);
+      break;
+    case '三連単':
+      if (betNums.length === 3) {
+        const sorted1 = [...top3Nums].sort((a,b) => {
+          const ha = horses.find(x => x.horse_number === a);
+          const hb = horses.find(x => x.horse_number === b);
+          return (ha?.finish || 99) - (hb?.finish || 99);
+        });
+        isHit = betNums[0] === sorted1[0] && betNums[1] === sorted1[1] && betNums[2] === sorted1[2];
+      }
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 30);
+      break;
+  }
+
+  return { hit: isHit, payout: Math.round(estimatedPayout), source: 'estimate' };
+}
+
+// ─── Render Race Cards ───
+function renderRaceCards() {
+  const container = document.getElementById('mainContent');
+  const venues = state.allData.venues || {};
+  let races = venues[state.activeVenue] || [];
+
+  // 推奨フィルター
+  if (state.filterBetsOnly) {
+    const bt = state.activeBetType;
+    races = races.filter(race => {
+      const bets = (race.all_bets || {})[bt] || [];
+      return bets.length > 0;
+    });
+  }
+
+  // 信頼度フィルター
+  if (state.confFilter !== 'ALL') {
+    const ranks = ['S','A','B','C','D'];
+    const minIdx = ranks.indexOf(state.confFilter);
+    races = races.filter(race => {
+      const rIdx = ranks.indexOf(race.confidence || 'D');
+      return rIdx <= minIdx;
+    });
+  }
+
+  if (races.length === 0) {
+    const msg = state.filterBetsOnly ? '推奨ありのレースがありません（フィルター解除: 推奨数をタップ）' : 'レースがありません';
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-title">${msg}</div></div>`;
+    return;
+  }
+
+  container.innerHTML = races.map(race => createRaceCard(race)).join('');
+}
+
+function createRaceCard(race) {
+  const confClass = race.confidence || 'C';
+  const confIcon = CONF_ICONS[confClass] || '';
+  const hasResults = race.has_results;
+  const isLocked = race.prediction_locked;
+
+  let badges = '';
+  if (hasResults) badges += `<span class="result-badge">✅ 確定</span>`;
+  if (isLocked) badges += `<span class="locked-badge">🔒 確定</span>`;
+
+  return `
+    <div class="race-card" id="race-${race.race_id}">
+      <div class="race-header" onclick="toggleRace('${race.race_id}')">
+        <div class="race-left">
+          <div class="race-num">${race.race_number}R</div>
+          <div class="race-info">
+            <div class="race-name-line">${race.race_name || '未定'} ${badges}</div>
+            <div class="race-meta">
+              <span>${race.surface || ''}</span>
+              <span>${race.distance || 0}m</span>
+              <span>${race.horse_count || 0}頭</span>
+              <span>${race.track_condition || ''}</span>
+              ${race.race_tendency ? `<span style="color:var(--text-secondary)">│ ${race.race_tendency}</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="race-right">
+          <span class="conf-badge ${confClass}">${confIcon}${confClass}</span>
+          <span class="toggle-icon">▼</span>
+        </div>
+      </div>
+      <div class="race-body">
+        <div class="tab-bar">
+          <button class="tab-btn active" onclick="switchTab(this,'${race.race_id}','pred')">📊 予測</button>
+          ${hasResults ? `<button class="tab-btn" onclick="switchTab(this,'${race.race_id}','result')">✅ 結果</button>` : ''}
+        </div>
+        <div class="tab-content" id="tab-pred-${race.race_id}">${renderPredTab(race)}</div>
+        <div class="tab-content" id="tab-result-${race.race_id}" style="display:none;">${hasResults ? renderResultTab(race) : ''}</div>
+      </div>
+    </div>`;
+}
+
+function toggleRace(raceId) {
+  document.getElementById('race-' + raceId).classList.toggle('open');
+}
+
+function switchTab(btn, raceId, tab) {
+  const card = document.getElementById('race-' + raceId);
+  card.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  card.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+  document.getElementById(`tab-${tab}-${raceId}`).style.display = 'block';
+}
+
+// ─── Prediction Tab ───
+function renderPredTab(race) {
+  const horses = race.horses || [];
+  const sorted = [...horses].sort((a, b) => b.pred_win - a.pred_win);
+
+  // Compute category rankings (S/A/B/C/D) within race
+  const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
+  const CAT_LABELS = ['能','血','騎','場','績','天'];
+  CAT_KEYS.forEach((key, idx) => {
+    const vals = sorted.map(h => h[key] || 0).sort((a,b) => b - a);
+    const n = vals.length;
+    sorted.forEach(h => {
+      const v = h[key] || 0;
+      const rank = vals.indexOf(v);
+      const pct = n > 1 ? rank / (n - 1) : 0.5;
+      let grade;
+      if (pct <= 0.1) grade = 'S';
+      else if (pct <= 0.25) grade = 'A';
+      else if (pct <= 0.5) grade = 'B';
+      else if (pct <= 0.75) grade = 'C';
+      else grade = 'D';
+      if (!h._catGrades) h._catGrades = [];
+      h._catGrades[idx] = { label: CAT_LABELS[idx], grade };
+    });
+  });
+
+  const top3 = sorted.slice(0, 3);
+  const rest = sorted.slice(3);
+  const bt = state.activeBetType;
+  const bets = scaleBets((race.all_bets || {})[bt] || [], state.budget);
+
+  let html = '<div class="horse-list">';
+  top3.forEach(h => { html += renderHorseRow(h, true); });
+  if (rest.length > 0) {
+    html += `<div id="rest-${race.race_id}" style="display:none;">`;
+    rest.forEach(h => { html += renderHorseRow(h, false); });
+    html += '</div>';
+    html += `<button class="show-all-btn" onclick="toggleRestHorses('${race.race_id}', this)">▼ 全${horses.length}頭を表示</button>`;
+  }
+  html += '</div>';
+
+  // Bets section
+  html += '<div class="bets-section">';
+  html += `<div class="bets-title">💰 ${bt}の推奨買い目</div>`;
+
+  if (bets.length === 0) {
+    html += '<div class="no-bets">この券種の推奨はありません</div>';
+  } else {
+    let totalIn = 0, totalOut = 0;
+    bets.forEach(b => {
+      const result = race.has_results ? checkBetHit(b, race) : { hit: false, payout: 0, source: 'none' };
+      const isHit = result.hit;
+      const hitPayout = result.payout;
+      const isEstimate = result.source === 'estimate';
+      const cls = race.has_results ? (isHit ? 'hit' : 'miss') : '';
+      totalIn += b.amount;
+      if (isHit) totalOut += hitPayout;
+
+      const payoutLabel = isHit
+        ? (isEstimate ? `→ 約¥${hitPayout.toLocaleString()} (概算)` : `→ ¥${hitPayout.toLocaleString()}`)
+        : '';
+      const hitLabel = isHit ? '✅ 的中' : '❌ 不的中';
+
+      html += `<div class="bet-card ${cls}">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="bet-type-label" style="background:${BET_COLORS[bt]}">${bt}</span>
+          <span class="bet-detail-text">${b.detail || b.bet_detail || ''}</span>
+          ${b.horse_name ? `<span style="font-size:10px;color:var(--text-muted)">${b.horse_name}</span>` : ''}
+        </div>
+        <div style="text-align:right;">
+          <div class="bet-amount">¥${b.amount.toLocaleString()}</div>
+          ${race.has_results ? `<span class="bet-hit-label ${isHit?'hit':'miss'}">${hitLabel}</span>` : ''}
+          ${payoutLabel ? `<div class="bet-payout">${payoutLabel}</div>` : ''}
+        </div>
+      </div>`;
+    });
+
+    if (race.has_results && totalIn > 0) {
+      const roi = Math.round(totalOut / totalIn * 100);
+      html += `<div class="bets-roi ${roi >= 100 ? 'roi-positive' : 'roi-negative'}">
+        投資 ¥${totalIn.toLocaleString()} → 払戻 ¥${totalOut.toLocaleString()} (ROI: ${roi}%)
+      </div>`;
+    }
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderHorseRow(h, showReasons) {
+  const markClass = h.mark === '◎' ? 'mark-honmei' : h.mark === '○' ? 'mark-taikou' : h.mark === '▲' ? 'mark-tanana' : h.mark === '注' ? 'mark-chuui' : 'mark-renshita';
+
+  // Rank bar width (normalize rank_score to 0-100%)
+  const rankScore = h.rank_score || 0;
+  const rankPct = Math.max(0, Math.min(100, (rankScore + 2) * 25)); // map ~[-2, +2] to [0, 100]
+
+  // Win rate / Top3 rate color coding
+  const wr = h.win_rate || 0;
+  const t3r = h.top3_rate || 0;
+  const wrClass = wr >= 20 ? 'hot' : '';
+  const t3rClass = t3r >= 40 ? 'hot' : '';
+
+  let html = `<div class="horse-row">
+    <div class="horse-mark ${markClass}">${h.mark || ''}</div>
+    <div class="horse-number">${h.horse_number}</div>
+    <div class="horse-detail">
+      <div class="horse-name-row">
+        <span class="horse-name">${h.horse_name || '不明'}</span>
+        <span class="horse-jockey">${h.jockey_name || ''}</span>
+        ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
+      </div>
+      <div class="horse-stats">
+        <span class="stat">SI <span class="stat-val">${h.si_avg || 0}</span></span>
+        <span class="stat">複勝 <span class="stat-val">${h.pred_top3 || 0}%</span></span>
+        <span class="stat">勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
+        <span class="stat">連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>
+        ${h.odds_win ? `<span class="stat">Odds <span class="stat-val">${h.odds_win}</span></span>` : ''}
+      </div>
+    </div>
+    <div class="horse-prob">
+      <div class="prob-value">${h.pred_win || 0}%</div>
+      <div class="prob-label">勝率予測</div>
+      <div class="rank-bar"><div class="rank-bar-fill" style="width:${rankPct}%"></div></div>
+    </div>
+  </div>`;
+
+  if (showReasons && h.reasons && h.reasons.length > 0) {
+    html += `<div class="horse-reasons">${h.reasons.map(r => `<span class="reason-tag">${r}</span>`).join('')}</div>`;
+  }
+
+  return html;
+}
+
+function toggleRestHorses(raceId, btn) {
+  const rest = document.getElementById('rest-' + raceId);
+  if (rest.style.display === 'none') {
+    rest.style.display = 'block';
+    btn.textContent = '▲ 上位3頭のみ表示';
+  } else {
+    rest.style.display = 'none';
+    const card = document.getElementById('race-' + raceId);
+    const total = card.querySelectorAll('.horse-row').length;
+    btn.textContent = `▼ 全${total}頭を表示`;
+  }
+}
+
+// ─── Results Tab ───
+function renderResultTab(race) {
+  if (!race.has_results) return '';
+  const horses = [...(race.horses || [])].filter(h => h.finish > 0).sort((a, b) => a.finish - b.finish);
+
+  let html = '<div class="results-section">';
+
+  // Podium with prediction marks
+  html += '<div class="podium">';
+  horses.slice(0, 5).forEach(h => {
+    const rankClass = h.finish <= 3 ? `rank-${h.finish}` : '';
+    const mark = h.mark || '';
+    const markClass = mark === '◎' ? 'mark-honmei' : mark === '○' ? 'mark-taikou' : mark === '▲' ? 'mark-tanana' : 'mark-renshita';
+    html += `<div class="podium-row">
+      <div class="podium-rank ${rankClass}">${h.finish}着</div>
+      <div class="horse-number">${h.horse_number}</div>
+      <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;">
+        ${mark ? `<span class="horse-mark ${markClass}" style="font-size:14px;">${mark}</span>` : ''}
+        ${h.horse_name || ''}
+      </div>
+      <div style="font-size:11px;color:var(--text-secondary);">${h.time || ''}</div>
+      <div style="font-size:11px;color:var(--text-muted);">${h.actual_odds || ''}倍</div>
+    </div>`;
+  });
+  html += '</div>';
+
+  // Payout Table (netkeiba style)
+  if (race.payouts && race.payouts.length > 0) {
+    html += '<div class="payout-section"><div class="payout-title">💰 払戻金</div>';
+
+    // Group payouts into 3 columns: left, center, right
+    const colL = ['単勝', '複勝'];
+    const colC = ['枠連', 'ワイド'];
+    const colR = ['馬連', '馬単', '三連複', '三連単'];
+
+    const grouped = {};
+    race.payouts.forEach(p => {
+      if (!grouped[p.bet_type]) grouped[p.bet_type] = [];
+      grouped[p.bet_type].push(p);
+    });
+
+    const getCol = (types) => {
+      const rows = [];
+      types.forEach(t => {
+        if (grouped[t]) {
+          grouped[t].forEach((p, i) => {
+            rows.push({ type: i === 0 ? t : '', ...p });
+          });
+        }
+      });
+      return rows;
+    };
+
+    const left = getCol(colL);
+    const center = getCol(colC);
+    const right = getCol(colR);
+    const maxRows = Math.max(left.length, center.length, right.length);
+
+    html += '<table class="payout-table">';
+    for (let i = 0; i < maxRows; i++) {
+      html += '<tr>';
+      [left[i], center[i], right[i]].forEach(p => {
+        if (p) {
+          const bg = BET_COLORS[p.bet_type] || 'var(--text-muted)';
+          const typeLabel = p.type ? `<span class="pt-type" style="background:${bg}">${p.type}</span>` : '';
+          html += `<td>${typeLabel}</td><td class="pt-combo">${p.combination}</td><td class="pt-amount">${p.payout.toLocaleString()}円</td><td class="pt-pop">${p.popularity}人気</td>`;
+        } else {
+          html += '<td></td><td></td><td></td><td></td>';
+        }
+      });
+      html += '</tr>';
+    }
+    html += '</table></div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// ─── Init ───
+document.addEventListener('DOMContentLoaded', () => {
+  // Auto-load if we have a date
+  const dateInput = document.getElementById('dateInput');
+  if (dateInput.value) {
+    // Ready state - user clicks predict
+  }
+});
+</script>
+</body>
+</html>

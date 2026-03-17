@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ race.race_name or 'レース詳細' }} — 競馬予想AI</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-card: #1a1f35;
+            --bg-card-hover: #222847;
+            --accent: #6366f1;
+            --accent-light: #818cf8;
+            --green: #10b981;
+            --red: #ef4444;
+            --gold: #f59e0b;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: #2d3553;
+            --gradient-1: linear-gradient(135deg, #6366f1, #8b5cf6);
+        }
+
+        * { margin:0; padding:0; box-sizing:border-box; }
+
+        body {
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .header {
+            background: linear-gradient(180deg, rgba(99,102,241,0.15) 0%, transparent 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem 2rem;
+            backdrop-filter: blur(20px);
+        }
+
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .back-btn {
+            color: var(--accent-light);
+            text-decoration: none;
+            font-size: 0.9rem;
+            padding: 0.4rem 0.8rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .back-btn:hover { background: var(--bg-card); border-color: var(--accent); }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 2rem; }
+
+        /* レース情報ヘッダー */
+        .race-header {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .race-header::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 4px;
+            background: var(--gradient-1);
+        }
+
+        .race-title {
+            font-size: 1.6rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .race-meta {
+            display: flex;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .race-meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+
+        /* 結果テーブル */
+        .results-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            overflow: hidden;
+            margin-bottom: 2rem;
+        }
+
+        .results-card h2 {
+            padding: 1rem 1.5rem;
+            font-size: 1.1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        table { width: 100%; border-collapse: collapse; }
+
+        th {
+            background: rgba(99,102,241,0.1);
+            padding: 0.7rem 0.8rem;
+            text-align: left;
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--border);
+        }
+
+        td {
+            padding: 0.7rem 0.8rem;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            font-size: 0.85rem;
+        }
+
+        tr:hover td { background: var(--bg-card-hover); }
+
+        .pos-1 { color: var(--gold); font-weight: 700; }
+        .pos-2 { color: #c0c0c0; font-weight: 600; }
+        .pos-3 { color: #cd7f32; font-weight: 600; }
+
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        .badge-turf { background: rgba(16,185,129,0.2); color: var(--green); }
+        .badge-dirt { background: rgba(245,158,11,0.2); color: var(--gold); }
+
+        /* 予測ボタン */
+        .predict-btn {
+            background: var(--gradient-1);
+            color: white;
+            border: none;
+            padding: 0.8rem 2rem;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 2rem;
+        }
+
+        .predict-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(99,102,241,0.4);
+        }
+
+        .predict-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* 予測結果 */
+        #predictionResult {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            display: none;
+        }
+
+        #predictionResult.active { display: block; }
+
+        .bet-card {
+            background: rgba(16,185,129,0.1);
+            border: 1px solid rgba(16,185,129,0.3);
+            border-radius: 12px;
+            padding: 1rem;
+            margin: 0.5rem 0;
+        }
+
+        .bet-type {
+            font-weight: 700;
+            color: var(--green);
+        }
+
+        .ev-badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .ev-high { background: rgba(16,185,129,0.2); color: var(--green); }
+        .ev-mid { background: rgba(245,158,11,0.2); color: var(--gold); }
+
+        @media (max-width: 768px) {
+            .container { padding: 1rem; }
+            .race-meta { flex-direction: column; gap: 0.5rem; }
+            table { font-size: 0.78rem; }
+            th, td { padding: 0.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <a href="/" class="back-btn">← ダッシュボード</a>
+            <span style="color: var(--text-secondary);">レース分析</span>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- レース情報 -->
+        <div class="race-header">
+            <div class="race-title">
+                {{ race.race_name or (race.venue + " " + race.race_number|string + "R") }}
+            </div>
+            <div class="race-meta">
+                <span class="race-meta-item">📅 {{ race.race_date }}</span>
+                <span class="race-meta-item">📍 {{ race.venue }} {{ race.race_number }}R</span>
+                <span class="race-meta-item">
+                    <span class="badge {{ 'badge-turf' if race.surface == '芝' else 'badge-dirt' }}">
+                        {{ race.surface }}
+                    </span>
+                    {{ race.distance }}m
+                </span>
+                <span class="race-meta-item">🌤 {{ race.weather or '—' }}</span>
+                <span class="race-meta-item">🏟 {{ race.track_condition or '—' }}</span>
+                <span class="race-meta-item">🐎 {{ race.horse_count or results|length }}頭</span>
+            </div>
+        </div>
+
+        <!-- AI予測ボタン -->
+        <button class="predict-btn" onclick="runPrediction()" id="predictBtn">
+            🤖 AI予測を実行
+        </button>
+
+        <!-- 予測結果 -->
+        <div id="predictionResult"></div>
+
+        <!-- レース結果テーブル -->
+        <div class="results-card">
+            <h2>📊 レース結果</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>着</th>
+                        <th>枠</th>
+                        <th>馬番</th>
+                        <th>馬名</th>
+                        <th>騎手</th>
+                        <th>調教師</th>
+                        <th>斤量</th>
+                        <th>タイム</th>
+                        <th>上3F</th>
+                        <th>通過</th>
+                        <th>オッズ</th>
+                        <th>人気</th>
+                        <th>体重</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in results %}
+                    <tr>
+                        <td class="{{ 'pos-1' if r.finish_position == 1 else 'pos-2' if r.finish_position == 2 else 'pos-3' if r.finish_position == 3 else '' }}">
+                            {{ r.finish_position if r.finish_position > 0 else '除外' }}
+                        </td>
+                        <td>{{ r.post_position or '—' }}</td>
+                        <td><strong>{{ r.horse_number }}</strong></td>
+                        <td>{{ r.horse_name or '—' }}</td>
+                        <td>{{ r.jockey_name or '—' }}</td>
+                        <td>{{ r.trainer_name or '—' }}</td>
+                        <td>{{ r.impost or '—' }}</td>
+                        <td>{{ r.finish_time or '—' }}</td>
+                        <td>{{ r.last_3f or '—' }}</td>
+                        <td>{{ r.passing_order or '—' }}</td>
+                        <td>{{ r.odds or '—' }}</td>
+                        <td>{{ r.popularity or '—' }}</td>
+                        <td>
+                            {% if r.weight %}
+                                {{ r.weight }}
+                                {% if r.weight_change %}
+                                    <span class="{{ 'positive' if r.weight_change > 0 else 'negative' if r.weight_change < 0 else '' }}">
+                                        ({{ "+" if r.weight_change > 0 else "" }}{{ r.weight_change }})
+                                    </span>
+                                {% endif %}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 馬券履歴 -->
+        {% if bets %}
+        <div class="results-card">
+            <h2>🎫 馬券履歴</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>券種</th>
+                        <th>買い目</th>
+                        <th>金額</th>
+                        <th>オッズ</th>
+                        <th>結果</th>
+                        <th>払戻</th>
+                        <th>EV</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for b in bets %}
+                    <tr>
+                        <td><span class="bet-type">{{ b.bet_type }}</span></td>
+                        <td>{{ b.bet_detail }}</td>
+                        <td>¥{{ "{:,}".format(b.amount) }}</td>
+                        <td>{{ b.odds or '—' }}</td>
+                        <td>
+                            {% if b.is_hit %}
+                                <span class="positive">✅ 的中</span>
+                            {% else %}
+                                <span class="negative">✕ 不的中</span>
+                            {% endif %}
+                        </td>
+                        <td class="{{ 'positive' if b.payout > 0 else '' }}">
+                            ¥{{ "{:,}".format(b.payout) }}
+                        </td>
+                        <td>
+                            <span class="ev-badge {{ 'ev-high' if b.expected_value >= 1.2 else 'ev-mid' }}">
+                                {{ "%.2f"|format(b.expected_value) if b.expected_value else '—' }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        async function runPrediction() {
+            const btn = document.getElementById('predictBtn');
+            const result = document.getElementById('predictionResult');
+            btn.disabled = true;
+            btn.textContent = '⏳ 分析中...';
+
+            try {
+                const resp = await fetch('/api/predict/{{ race.race_id }}');
+                const data = await resp.json();
+
+                if (data.error) {
+                    result.innerHTML = `<p style="color: var(--red);">❌ ${data.error}</p>`;
+                    result.classList.add('active');
+                    return;
+                }
+
+                let html = '<h3 style="margin-bottom:1rem;">🤖 AI予測結果</h3>';
+
+                // 予測順位
+                html += '<table><thead><tr><th>順位</th><th>馬番</th><th>馬名</th><th>勝率</th><th>複勝率</th><th>SI</th></tr></thead><tbody>';
+                data.predictions.sort((a, b) => b.pred_win - a.pred_win);
+                data.predictions.forEach((p, i) => {
+                    html += `<tr>
+                        <td><strong>${i+1}</strong></td>
+                        <td>${p.horse_number}</td>
+                        <td>${p.horse_name}</td>
+                        <td>${(p.pred_win * 100).toFixed(1)}%</td>
+                        <td>${(p.pred_top3 * 100).toFixed(1)}%</td>
+                        <td>${p.si_avg.toFixed(1)}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+
+                // 推奨馬券
+                if (data.bets && data.bets.bets && data.bets.bets.length > 0) {
+                    html += `<h3 style="margin:1.5rem 0 1rem;">💰 推奨馬券 (予算 ¥${data.bets.budget.toLocaleString()} / 合計 ¥${data.bets.total_amount.toLocaleString()})</h3>`;
+                    data.bets.bets.forEach(b => {
+                        const evEmoji = b.ev >= 2.0 ? '🔥' : b.ev >= 1.5 ? '⭐' : '✅';
+                        html += `<div class="bet-card">
+                            <span class="bet-type">${b.type}</span>
+                            <strong>${b.detail}</strong>
+                            ¥${b.amount.toLocaleString()}
+                            <span class="ev-badge ev-high">${evEmoji} EV:${b.ev.toFixed(2)}</span>
+                            <span style="color:var(--text-secondary); font-size:0.8rem;">
+                                (確率:${(b.prob*100).toFixed(1)}% / オッズ:${b.odds})
+                            </span>
+                        </div>`;
+                    });
+                } else {
+                    html += '<p style="margin-top:1rem; color:var(--gold);">⚠️ 期待値の高い馬券が見つかりませんでした。見送りを推奨します。</p>';
+                }
+
+                result.innerHTML = html;
+                result.classList.add('active');
+
+            } catch (e) {
+                result.innerHTML = `<p style="color: var(--red);">❌ エラー: ${e.message}</p>`;
+                result.classList.add('active');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🤖 AI予測を実行';
+            }
+        }
+    </script>
+</body>
+</html>

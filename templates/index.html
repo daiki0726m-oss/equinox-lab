@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🏇 競馬予想AI ダッシュボード</title>
+    <meta name="description" content="AI駆動の競馬予想システム — 6つの分析エンジンとLightGBMで期待値の高い馬券を自動選定">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-secondary: #111827;
+            --bg-card: #1a1f35;
+            --bg-card-hover: #222847;
+            --accent: #6366f1;
+            --accent-light: #818cf8;
+            --accent-glow: rgba(99, 102, 241, 0.3);
+            --green: #10b981;
+            --green-glow: rgba(16, 185, 129, 0.3);
+            --red: #ef4444;
+            --red-glow: rgba(239, 68, 68, 0.3);
+            --gold: #f59e0b;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: #2d3553;
+            --gradient-1: linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7);
+            --gradient-2: linear-gradient(135deg, #10b981, #06b6d4);
+            --gradient-3: linear-gradient(135deg, #f59e0b, #ef4444);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        /* ヘッダー */
+        .header {
+            background: linear-gradient(180deg, rgba(99,102,241,0.15) 0%, transparent 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(20px);
+        }
+
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .logo-emoji { -webkit-text-fill-color: initial; font-size: 1.8rem; }
+
+        .header-stats {
+            display: flex;
+            gap: 1.5rem;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .header-stat strong {
+            color: var(--text-primary);
+            margin-left: 0.3rem;
+        }
+
+        /* メインコンテナ */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* カードグリッド */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.2rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            border-radius: 16px 16px 0 0;
+        }
+
+        .stat-card:nth-child(1)::before { background: var(--gradient-1); }
+        .stat-card:nth-child(2)::before { background: var(--gradient-2); }
+        .stat-card:nth-child(3)::before { background: var(--gradient-3); }
+        .stat-card:nth-child(4)::before { background: linear-gradient(135deg, #ec4899, #f43f5e); }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: var(--accent);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .stat-sub {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.3rem;
+        }
+
+        .positive { color: var(--green); }
+        .negative { color: var(--red); }
+
+        /* セクション */
+        .section {
+            margin-bottom: 2rem;
+        }
+
+        .section-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* チャートカード */
+        .chart-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        /* テーブル */
+        .table-wrapper {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: rgba(99, 102, 241, 0.1);
+            padding: 0.75rem 1rem;
+            text-align: left;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--border);
+        }
+
+        td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            font-size: 0.9rem;
+        }
+
+        tr:hover td {
+            background: var(--bg-card-hover);
+        }
+
+        .race-link {
+            color: var(--accent-light);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .race-link:hover {
+            color: #a5b4fc;
+            text-decoration: underline;
+        }
+
+        /* バッジ */
+        .badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        .badge-turf { background: rgba(16,185,129,0.2); color: var(--green); }
+        .badge-dirt { background: rgba(245,158,11,0.2); color: var(--gold); }
+        .badge-g1 { background: rgba(239,68,68,0.2); color: var(--red); }
+
+        /* ステータスバー */
+        .status-bar {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1rem 1.5rem;
+            margin-bottom: 2rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.active { background: var(--green); box-shadow: 0 0 10px var(--green-glow); }
+        .status-dot.inactive { background: var(--red); box-shadow: 0 0 10px var(--red-glow); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* 使い方ガイド */
+        .guide {
+            background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(139,92,246,0.1));
+            border: 1px solid rgba(99,102,241,0.3);
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .guide h3 {
+            font-size: 1.1rem;
+            margin-bottom: 1rem;
+            color: var(--accent-light);
+        }
+
+        .guide-steps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .guide-step {
+            background: rgba(0,0,0,0.2);
+            border-radius: 12px;
+            padding: 1.2rem;
+        }
+
+        .guide-step-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--gradient-1);
+            font-size: 0.8rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .guide-step h4 {
+            font-size: 0.9rem;
+            margin-bottom: 0.3rem;
+        }
+
+        .guide-step p {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .guide-step code {
+            background: rgba(0,0,0,0.3);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.72rem;
+            color: var(--accent-light);
+        }
+
+        /* レスポンシブ */
+        @media (max-width: 768px) {
+            .container { padding: 1rem; }
+            .header { padding: 0.8rem 1rem; }
+            .header-stats { display: none; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 0.8rem; }
+            .stat-value { font-size: 1.5rem; }
+            .guide-steps { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <!-- ヘッダー -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <span class="logo-emoji">🏇</span>
+                競馬予想AI
+            </div>
+            <div class="header-stats">
+                <span class="header-stat">レース <strong>{{ stats.races | default(0) }}</strong></span>
+                <span class="header-stat">データ <strong>{{ stats.results | default(0) }}</strong></span>
+                <span class="header-stat">馬 <strong>{{ stats.horses | default(0) }}</strong></span>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- ステータスバー -->
+        <div class="status-bar">
+            <div class="status-dot {{ 'active' if model_exists else 'inactive' }}"></div>
+            <span>
+                {% if model_exists %}
+                    モデル学習済み — 予測可能
+                {% else %}
+                    モデル未学習 — <code>python predict.py train</code> で学習してください
+                {% endif %}
+            </span>
+        </div>
+
+        <!-- 収支サマリー -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">総投資額</div>
+                <div class="stat-value">¥{{ "{:,}".format(bet_summary.total_invested or 0) }}</div>
+                <div class="stat-sub">{{ bet_summary.total_bets or 0 }} 件の馬券</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">総回収額</div>
+                <div class="stat-value">¥{{ "{:,}".format((bet_summary.total_payout or 0)|int) }}</div>
+                <div class="stat-sub">{{ bet_summary.total_hits or 0 }} 件的中</div>
+            </div>
+            <div class="stat-card">
+                {% set profit = (bet_summary.total_payout or 0) - (bet_summary.total_invested or 0) %}
+                <div class="stat-label">損益</div>
+                <div class="stat-value {{ 'positive' if profit >= 0 else 'negative' }}">
+                    {{ "+" if profit >= 0 else "" }}¥{{ "{:,}".format(profit|int) }}
+                </div>
+                <div class="stat-sub">
+                    {% if bet_summary.total_invested and bet_summary.total_invested > 0 %}
+                        回収率 {{ "%.1f"|format((bet_summary.total_payout or 0) / bet_summary.total_invested * 100) }}%
+                    {% else %}
+                        データなし
+                    {% endif %}
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">的中率</div>
+                <div class="stat-value">
+                    {% if bet_summary.total_bets and bet_summary.total_bets > 0 %}
+                        {{ "%.1f"|format((bet_summary.total_hits or 0) / bet_summary.total_bets * 100) }}%
+                    {% else %}
+                        -
+                    {% endif %}
+                </div>
+                <div class="stat-sub">{{ bet_summary.total_bets or 0 }} 中 {{ bet_summary.total_hits or 0 }} 的中</div>
+            </div>
+        </div>
+
+        <!-- 収支推移チャート -->
+        {% if monthly %}
+        <div class="section">
+            <h2 class="section-title">📈 収支推移</h2>
+            <div class="chart-card">
+                <div id="profitChart" style="height: 300px;"></div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- 使い方ガイド -->
+        {% if stats.races == 0 %}
+        <div class="guide">
+            <h3>🚀 はじめに — 3ステップで予測開始</h3>
+            <div class="guide-steps">
+                <div class="guide-step">
+                    <div class="guide-step-number">1</div>
+                    <h4>データ収集</h4>
+                    <p>過去のレースデータを収集します</p>
+                    <p><code>python predict.py collect --start-year 2024</code></p>
+                </div>
+                <div class="guide-step">
+                    <div class="guide-step-number">2</div>
+                    <h4>モデル学習</h4>
+                    <p>AIモデルをトレーニングします</p>
+                    <p><code>python predict.py train</code></p>
+                </div>
+                <div class="guide-step">
+                    <div class="guide-step-number">3</div>
+                    <h4>予測開始</h4>
+                    <p>レースを予測して馬券を選定</p>
+                    <p><code>python predict.py predict --date 20250315</code></p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- 直近レース一覧 -->
+        {% if recent_races %}
+        <div class="section">
+            <h2 class="section-title">🏁 直近のレース</h2>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>日付</th>
+                            <th>競馬場</th>
+                            <th>R</th>
+                            <th>レース名</th>
+                            <th>条件</th>
+                            <th>距離</th>
+                            <th>馬場</th>
+                            <th>頭数</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for race in recent_races %}
+                        <tr>
+                            <td>{{ race.race_date }}</td>
+                            <td>{{ race.venue }}</td>
+                            <td>{{ race.race_number }}</td>
+                            <td>
+                                <a href="/race/{{ race.race_id }}" class="race-link">
+                                    {{ race.race_name or '—' }}
+                                </a>
+                            </td>
+                            <td>
+                                {% if race.grade %}
+                                    <span class="badge badge-g1">{{ race.grade }}</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <span class="badge {{ 'badge-turf' if race.surface == '芝' else 'badge-dirt' }}">
+                                    {{ race.surface }}
+                                </span>
+                                {{ race.distance }}m
+                            </td>
+                            <td>{{ race.track_condition or '—' }}</td>
+                            <td>{{ race.horse_count or '—' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- チャートスクリプト -->
+    {% if monthly %}
+    <script>
+        const monthly = {{ monthly | tojson }};
+
+        if (monthly.length > 0) {
+            const months = monthly.map(m => m.month).reverse();
+            const invested = monthly.map(m => m.invested || 0).reverse();
+            const payouts = monthly.map(m => m.payout || 0).reverse();
+            const profits = monthly.map(m => (m.payout || 0) - (m.invested || 0)).reverse();
+
+            // 累計損益
+            let cumulative = [];
+            let sum = 0;
+            profits.forEach(p => { sum += p; cumulative.push(sum); });
+
+            Plotly.newPlot('profitChart', [
+                {
+                    x: months, y: cumulative, type: 'scatter',
+                    mode: 'lines+markers', name: '累計損益',
+                    line: { color: '#6366f1', width: 3 },
+                    marker: { size: 8 },
+                    fill: 'tozeroy',
+                    fillcolor: 'rgba(99,102,241,0.1)',
+                },
+                {
+                    x: months, y: profits, type: 'bar', name: '月別損益',
+                    marker: {
+                        color: profits.map(p => p >= 0 ? '#10b981' : '#ef4444'),
+                    },
+                    opacity: 0.7,
+                }
+            ], {
+                paper_bgcolor: 'transparent',
+                plot_bgcolor: 'transparent',
+                font: { color: '#94a3b8', family: 'Inter' },
+                xaxis: { gridcolor: 'rgba(255,255,255,0.05)' },
+                yaxis: {
+                    gridcolor: 'rgba(255,255,255,0.05)',
+                    tickprefix: '¥', tickformat: ','
+                },
+                legend: { x: 0, y: 1.15, orientation: 'h' },
+                margin: { t: 30, r: 20, b: 40, l: 80 },
+                barmode: 'overlay',
+            }, { responsive: true });
+        }
+    </script>
+    {% endif %}
+</body>
+</html>
