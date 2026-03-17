@@ -93,10 +93,10 @@ def post_tweet(client, text, reply_to=None, dry_run=False):
             tweet_ids.append(f"dry-run-{i}")
         else:
             try:
-                result = client.create_tweet(
-                    text=chunk,
-                    in_reply_to_tweet_id=parent_id
-                )
+                kwargs = {"text": chunk}
+                if parent_id:
+                    kwargs["in_reply_to_tweet_id"] = parent_id
+                result = client.create_tweet(**kwargs)
                 tid = result.data["id"]
                 tweet_ids.append(tid)
                 parent_id = tid
