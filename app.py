@@ -6,9 +6,7 @@ Flask Webアプリケーション
 import os
 import sys
 import json
-import threading
-import time as time_mod
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -17,190 +15,6 @@ from database import init_db, get_db
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "keiba-prediction-2025"
-
-JST = timezone(timedelta(hours=9))
-
-
-def _bg_result_fetcher():
-    """バックグラウンドで5分ごとにレース結果＆オッズを取得"""
-    import requests as bg_requests
-    from scraper import NetkeibaScraper
-    scraper = NetkeibaScraper()
-
-    while True:
-        try:
-            now = datetime.now(JST)
-            hour = now.hour
-
-            # 9:00〜17:30 のみ動作
-            if 9 <= hour <= 17:
-                today_str = now.strftime("%Y-%m-%d")
-
-                with get_db() as conn:
-                    all_today = conn.execute("""
-                        SELECT DISTINCT ra.race_id, ra.race_name, ra.venue, ra.race_number
-                        FROM races ra
-                        WHERE ra.race_date = ?
-                        ORDER BY ra.venue, ra.race_number
-                    """, (today_str,)).fetchall()
-
-                for race in all_today:
-                    rid = race['race_id']
-
-                    # ── レース確定済みならスキップ（オッズ更新も不要） ──
-                    with get_db() as conn:
-                        pending_count = conn.execute(
-                            "SELECT COUNT(*) as c FROM results WHERE race_id=? AND finish_position=0", (rid,)
-                        ).fetchone()['c']
-                        total_count = conn.execute(
-                            "SELECT COUNT(*) as c FROM results WHERE race_id=?", (rid,)
-                        ).fetchone()['c']
-
-                    if pending_count == 0 and total_count > 0:
-                        # 全馬の結果が確定済み → このレースはスキップ
-                        continue
-
-                    # ── リアルタイムオッズ更新（未確定レースのみ） ──
-                    try:
-                        api_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={rid}&type=1&action=update"
-                        api_headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://race.netkeiba.com/"}
-                        resp = bg_requests.get(api_url, headers=api_headers, timeout=8)
-                        data = resp.json()
-                        if data.get("data", {}).get("odds", {}).get("1"):
-                            odds_raw = data["data"]["odds"]["1"]
-                            with get_db() as conn:
-                                for hn_str, vals in odds_raw.items():
-                                    if isinstance(vals, list) and len(vals) >= 3:
-                                        ov = float(vals[0]) if vals[0] and vals[0] != '---.-' else 0
-                                        pv = int(vals[2]) if vals[2] else 0
-                                        if ov > 0:
-                                            conn.execute("UPDATE results SET odds=?, popularity=? WHERE race_id=? AND horse_number=?",
-                                                         (ov, pv, rid, int(hn_str)))
-                                # predictions_cache更新
-                                cache = conn.execute("SELECT predictions_json FROM predictions_cache WHERE race_id=?", (rid,)).fetchone()
-                                if cache:
-                                    preds = json.loads(cache['predictions_json'])
-                                    for p in preds:
-                                        hn = str(p['horse_number']).zfill(2)
-                                        if hn in odds_raw:
-                                            v = odds_raw[hn]
-                                            if isinstance(v, list) and len(v) >= 3:
-                                                p['odds_win'] = float(v[0]) if v[0] and v[0] != '---.-' else p.get('odds_win', 0)
-                                                p['popularity'] = int(v[2]) if v[2] else p.get('popularity', 0)
-                                    conn.execute("UPDATE predictions_cache SET predictions_json=? WHERE race_id=?",
-                                                 (json.dumps(preds, ensure_ascii=False), rid))
-                    except Exception:
-                        pass
-
-                    # ── 結果取得（上のチェックでpending > 0が保証済み） ──
-                    if pending_count > 0:
-                        try:
-                            data = scraper.scrape_race_result(rid)
-                            if data and data.get("results") and len(data["results"]) > 0:
-                                first = data["results"][0]
-                                if first.get("finish_position", 0) > 0:
-                                    with get_db() as conn:
-                                        for r in data["results"]:
-                                            conn.execute("""
-                                                UPDATE results SET
-                                                    finish_position=?, finish_time=?, finish_time_seconds=?,
-                                                    margin=?, last_3f=?, passing_order=?,
-                                                    weight=?, weight_change=?,
-                                                    odds=CASE WHEN ?> 0 THEN ? ELSE odds END,
-                                                    popularity=CASE WHEN ?>0 THEN ? ELSE popularity END
-                                                WHERE race_id=? AND horse_number=?
-                                            """, (
-                                                r.get("finish_position", 0), r.get("finish_time", ""),
-                                                r.get("finish_time_seconds", 0), r.get("margin", ""),
-                                                r.get("last_3f", 0), r.get("passing_order", ""),
-                                                r.get("weight", 0), r.get("weight_change", 0),
-                                                r.get("odds", 0), r.get("odds", 0),
-                                                r.get("popularity", 0), r.get("popularity", 0),
-                                                rid, r.get("horse_number", 0)
-                                            ))
-                                    print(f"  🏁 結果取得: {race['venue']}R{race['race_number']} {race['race_name']}")
-                                    # 払戻金も保存
-                                    if data.get("payouts"):
-                                        with get_db() as conn:
-                                            for p in data["payouts"]:
-                                                conn.execute("""
-                                                    INSERT OR REPLACE INTO payouts
-                                                    (race_id, bet_type, combination, payout_amount, popularity)
-                                                    VALUES (?, ?, ?, ?, ?)
-                                                """, (
-                                                    rid, p["bet_type"], p["combination"],
-                                                    p["payout_amount"], p.get("popularity", 0)
-                                                ))
-                        except Exception as e:
-                            print(f"  ⚠️ 結果取得エラー {rid}: {e}")
-
-                    time_mod.sleep(0.5)
-
-                print(f"  🔄 {now.strftime('%H:%M')} オッズ・結果更新完了 ({len(all_today)}レース)")
-
-                # ── GitHub Pages用JSONを結果＆オッズで更新＆push ──
-                try:
-                    import subprocess
-                    today_str = now.strftime("%Y%m%d")
-                    json_path = os.path.join(os.path.dirname(__file__), "docs", "data", f"predictions_{today_str}.json")
-                    if os.path.exists(json_path):
-                        with open(json_path, "r", encoding="utf-8") as f:
-                            gh_data = json.load(f)
-                        
-                        patched = 0
-                        with get_db() as conn:
-                            for venue_name, races in gh_data.get("venues", {}).items():
-                                for race in races:
-                                    rid = race.get("race_id", "")
-                                    # オッズ更新
-                                    odds_rows = conn.execute("SELECT horse_number, odds, popularity FROM results WHERE race_id=?", (rid,)).fetchall()
-                                    odds_map = {r["horse_number"]: r for r in odds_rows}
-                                    for h in race.get("horses", []):
-                                        db_r = odds_map.get(h["horse_number"])
-                                        if db_r:
-                                            if db_r["odds"] and db_r["odds"] > 0: h["odds_win"] = db_r["odds"]
-                                            if db_r["popularity"] and db_r["popularity"] > 0: h["popularity"] = db_r["popularity"]
-                                    # 結果反映
-                                    res_rows = conn.execute("SELECT horse_number, finish_position, finish_time, odds, popularity, last_3f, margin FROM results WHERE race_id=? AND finish_position>0", (rid,)).fetchall()
-                                    if res_rows:
-                                        res_map = {r["horse_number"]: r for r in res_rows}
-                                        for h in race.get("horses", []):
-                                            res = res_map.get(h["horse_number"])
-                                            if res:
-                                                h["finish"] = res["finish_position"]
-                                                h["time"] = res["finish_time"] or ""
-                                                h["actual_odds"] = res["odds"] or 0
-                                                if res["popularity"] and res["popularity"] > 0: h["popularity"] = res["popularity"]
-                                                h["last_3f"] = res["last_3f"] or 0
-                                                h["margin"] = res["margin"] or ""
-                                        if not race.get("has_results"):
-                                            race["has_results"] = True
-                                            patched += 1
-                                        # 配当
-                                        payouts = conn.execute("SELECT bet_type, combination, payout_amount, popularity FROM payouts WHERE race_id=? ORDER BY bet_type, popularity", (rid,)).fetchall()
-                                        if payouts:
-                                            race["payouts"] = [{"bet_type": p["bet_type"], "combination": p["combination"], "payout": p["payout_amount"], "popularity": p["popularity"]} for p in payouts]
-                        
-                        gh_data["exported_at"] = now.isoformat()
-                        with open(json_path, "w", encoding="utf-8") as f:
-                            json.dump(gh_data, f, ensure_ascii=False, separators=(",", ":"))
-                        
-                        repo_dir = os.path.dirname(__file__)
-                        subprocess.run(["git", "add", "docs/data/"], cwd=repo_dir, capture_output=True, timeout=10)
-                        result = subprocess.run(["git", "commit", "-m", f"auto: update results {now.strftime('%H:%M')}"], cwd=repo_dir, capture_output=True, timeout=10)
-                        if result.returncode == 0:
-                            subprocess.run(["git", "push", "origin", "main"], cwd=repo_dir, capture_output=True, timeout=30)
-                            print(f"  📤 GitHub Pages更新: +{patched}R確定")
-                except Exception as e:
-                    print(f"  ⚠️ GitHub Pages更新エラー: {e}")
-
-            # 5分待機
-            time_mod.sleep(300)
-
-        except Exception as e:
-            print(f"⚠️ BG結果フェッチャーエラー: {e}")
-            time_mod.sleep(60)
-
 
 
 @app.route("/")
@@ -324,8 +138,6 @@ def api_predict(race_id):
                 "horse_number": hn,
                 "horse_name": r_info.get("horse_name", ""),
                 "pred_win": float(row["pred_win_norm"]),
-                # #95: 表示用シャープ化勝率 (温度×3)。UI の「AI勝率」はこちらを優先
-                "pred_win_display": float(row.get("pred_win_display", row["pred_win_norm"])),
                 "pred_top3": float(row["pred_top3_norm"] / 3),
                 "odds_win": odds_win,
                 "odds_place": max(odds_win * 0.3, 1.1) if odds_win else 1.5,
@@ -487,11 +299,7 @@ def api_performance():
 def predict_page():
     """予測ダッシュボード"""
     target_date = request.args.get("date", datetime.now().strftime("%Y%m%d"))
-    response = app.make_response(render_template("predict.html", target_date=target_date))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
+    return render_template("predict.html", target_date=target_date)
 
 
 @app.route("/api/predict-date/<date_str>")
@@ -553,38 +361,6 @@ def api_predict_date(date_str):
                 conf_reason = cached["conf_reason"] or ""
                 should_bet = bool(cached["should_bet"])
                 bet_reason = cached["bet_reason"] or ""
-
-                # レース情報はDBから取得
-                with get_db() as conn:
-                    race = conn.execute(
-                        "SELECT * FROM races WHERE race_id = ?", (race_id,)
-                    ).fetchone()
-                if not race:
-                    continue
-                race_info = dict(race)
-
-                # キャッシュの馬にDB最新のオッズ・人気をマージ
-                with get_db() as conn:
-                    db_results = conn.execute(
-                        "SELECT horse_number, odds, popularity FROM results WHERE race_id = ?",
-                        (race_id,)
-                    ).fetchall()
-                odds_map = {r['horse_number']: r for r in db_results}
-                for h in horses:
-                    # キー正規化（pred_win_pct→pred_win等）
-                    if 'pred_win' not in h and 'pred_win_pct' in h:
-                        h['pred_win'] = h['pred_win_pct']
-                    # #95: 表示チャネル正規化 (旧cacheは display 無し → pred_win に落ちる)
-                    if 'pred_win_display' not in h:
-                        h['pred_win_display'] = h.get('pred_win_display_pct') or h.get('pred_win') or h.get('pred_win_pct', 0)
-                    if 'pred_top3' not in h and 'pred_top3_pct' in h:
-                        h['pred_top3'] = h['pred_top3_pct']
-                    db_r = odds_map.get(h['horse_number'])
-                    if db_r:
-                        if db_r['odds'] and db_r['odds'] > 0:
-                            h['odds_win'] = db_r['odds']
-                        if db_r['popularity'] and db_r['popularity'] > 0:
-                            h['popularity'] = db_r['popularity']
                 # キャッシュからレース傾向を再計算
                 sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
                 top_p = sorted_probs[0] if sorted_probs else 0
@@ -595,33 +371,6 @@ def api_predict_date(date_str):
                 elif top3_t >= 55: race_tendency = "上位拮抗（実力伯仲）"
                 elif top_p <= 12: race_tendency = "波乱含み（大混戦）"
                 else: race_tendency = "普通（中穴狙い可）"
-
-                # キャッシュからmyomi再計算
-                max_ev = 0.0
-                for bt_key, bt_bets in all_bets.items():
-                    for b in bt_bets:
-                        ev = b.get("ev", 0)
-                        if ev > max_ev:
-                            max_ev = ev
-                # 妙味判定 v2 (2026-05-17): 信頼度を考慮
-                # 旧版は max_ev のみで判定 → S レース (堅軸推奨) でも ★★★ になり
-                # 「予想固いのに大穴チャンス」と矛盾していた。
-                # 新版は信頼度 S/A では ★★★ を出さない (堅軸 vs 大穴の矛盾解消)。
-                conf_for_myomi = locals().get('confidence', 'C')
-                if conf_for_myomi in ('S', 'A'):
-                    if max_ev >= 5.0: myomi = "💎★★"
-                    elif max_ev >= 3.0: myomi = "💎★"
-                    else: myomi = ""
-                elif conf_for_myomi == 'B':
-                    if max_ev >= 5.0: myomi = "💎★★★"
-                    elif max_ev >= 2.5: myomi = "💎★★"
-                    elif max_ev >= 1.5: myomi = "💎★"
-                    else: myomi = ""
-                else:  # C/D
-                    if max_ev >= 4.0: myomi = "💎★★★"
-                    elif max_ev >= 2.0: myomi = "💎★★"
-                    elif max_ev >= 1.2: myomi = "💎★"
-                    else: myomi = ""
             else:
                 # ── 出馬表確保 ──
                 with get_db() as conn:
@@ -636,8 +385,8 @@ def api_predict_date(date_str):
                             conn.execute("""
                                 INSERT OR REPLACE INTO races
                                 (race_id, race_date, venue, race_number, race_name, grade,
-                                 distance, surface, direction, weather, track_condition, horse_count, start_time)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 distance, surface, direction, weather, track_condition, horse_count)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """, (
                                 race_id, shutuba.get("race_date", ""),
                                 shutuba.get("venue", ""), shutuba.get("race_number", 0),
@@ -645,8 +394,7 @@ def api_predict_date(date_str):
                                 shutuba.get("distance", 0), shutuba.get("surface", ""),
                                 shutuba.get("direction", ""), shutuba.get("weather", ""),
                                 shutuba.get("track_condition", ""),
-                                len(shutuba.get("entries", [])),
-                                shutuba.get("start_time", "")
+                                len(shutuba.get("entries", []))
                             ))
                             for e in shutuba.get("entries", []):
                                 if e.get("horse_id"):
@@ -697,28 +445,6 @@ def api_predict_date(date_str):
                 if not race:
                     continue
 
-                # ── 過去走データ自動補完（SI=0対策）──
-                try:
-                    with get_db() as conn:
-                        no_history = conn.execute("""
-                            SELECT DISTINCT r.horse_id FROM results r
-                            WHERE r.race_id = ?
-                            AND r.horse_id NOT IN (
-                                SELECT DISTINCT r2.horse_id FROM results r2
-                                JOIN races ra2 ON r2.race_id = ra2.race_id
-                                WHERE r2.finish_time_seconds > 0
-                                AND ra2.race_id != ?
-                            )
-                        """, (race_id, race_id)).fetchall()
-                    if no_history:
-                        for nh in no_history:
-                            try:
-                                scraper.collect_horse_history(nh['horse_id'], limit=5)
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-
                 # ── ML予測 ──
                 try:
                     pred_df = model.predict_race(race_id)
@@ -748,7 +474,6 @@ def api_predict_date(date_str):
                     jockey_name = ""
                     trainer_name = ""
                     odds_win = 0
-                    popularity = 0
 
                     for r in results:
                         if r["horse_number"] == hn:
@@ -756,24 +481,22 @@ def api_predict_date(date_str):
                             jockey_name = r["jockey_name"] or ""
                             trainer_name = r["trainer_name"] or ""
                             odds_win = r["odds"] or 0
-                            popularity = r["popularity"] or 0
                             break
 
                     pred_win = float(row["pred_win_norm"])
-                    pred_top3 = float(row.get("pred_top3_norm", pred_win * 2.5))
+                    pred_top3 = float(row["pred_top3_norm"] / 3)
 
-                    # オッズ取得
+                    # リアルタイムオッズがあれば優先使用
                     if odds_win <= 0 and hn in live_odds:
                         odds_win = live_odds[hn].get("win_odds", 0)
-                    place_min = live_odds.get(hn, {}).get("place_min", 0)
-                    place_max = live_odds.get(hn, {}).get("place_max", 0)
-                    if place_min > 0 and place_max > 0:
-                        odds_place = (place_min + place_max) / 2
-                    else:
-                        odds_place = max(odds_win * 0.3, 1.1) if odds_win else 1.5
-                    if odds_win <= 0 and pred_win > 0:
-                        # 推定オッズ
+                        place_min = live_odds[hn].get("place_odds_min", 0)
+                        place_max = live_odds[hn].get("place_odds_max", 0)
+                        odds_place = (place_min + place_max) / 2 if place_min > 0 else max(odds_win * 0.3, 1.1)
+                    elif odds_win <= 0 and pred_win > 0:
+                        # 推定オッズ: JRA控除率(20-25%)を考慮した妥当な推定
                         odds_win = max(round(1.0 / pred_win, 1), 1.5)
+                        odds_place = max(round(1.0 / pred_top3, 1), 1.1) if pred_top3 > 0 else 1.5
+                    else:
                         odds_place = max(odds_win * 0.3, 1.1) if odds_win else 1.5
 
                     horses.append({
@@ -782,14 +505,12 @@ def api_predict_date(date_str):
                         "jockey_name": jockey_name,
                         "trainer_name": trainer_name,
                         "pred_win": round(pred_win * 100, 1),
-                        "pred_win_display": round(float(row.get("pred_win_display", row["pred_win_norm"])) * 100, 1),
                         "pred_top3": round(pred_top3 * 100, 1),
                         "rank_score": round(float(row.get("rank_score", 0)), 2),
                         "si_avg": round(float(row.get("si_avg", 0)), 1),
                         "win_rate": round(float(row.get("win_rate_10r", 0)) * 100, 1),
                         "top3_rate": round(float(row.get("top3_rate_10r", 0)) * 100, 1),
                         "odds_win": odds_win,
-                        "popularity": popularity,
                         # Category scores for badge evaluation
                         "cat_ability": round(float(row.get("si_avg", 0)) + float(row.get("si_latest", 0)), 2),
                         "cat_pedigree": round(float(row.get("pedigree_score", 0)), 3),
@@ -869,23 +590,8 @@ def api_predict_date(date_str):
                     for bt in strategy.ALL_BET_TYPES:
                         all_bets[bt] = []
 
-                # ── 信頼度: confidence.py(共通モジュール)に委譲 ──
-                # v4 (2026-05-25): 旧 hard-coded 閾値(30/20/15/10%)を撤廃。
-                # ROI 期待値ベース v4 ロジック (predict.py / generate_note.py と同基準) に統一。
-                from confidence import evaluate_from_horses
-                _conf = evaluate_from_horses(
-                    horses,
-                    grade=race_info.get('grade'),
-                    win_key='pred_win',
-                    top3_key='pred_top3',
-                    odds_key='odds_win',
-                )
-                confidence = _conf['confidence']
-                conf_reason = _conf['reason']
-                honmei = next((h for h in horses if h.get('mark') == '◎'), None)
-                honmei_win = honmei['pred_win'] if honmei else 0
-
-                # ── 妙味（EVベース）──
+                # ── 信頼度（EVベース）──
+                # 全券種の買い目から最大期待値を取得
                 max_ev = 0.0
                 for bt_key, bt_bets in all_bets.items():
                     for b in bt_bets:
@@ -894,14 +600,15 @@ def api_predict_date(date_str):
                             max_ev = ev
 
                 if max_ev >= 5.0:
-                    myomi = "💎★★★"
+                    confidence, conf_reason = "S", f"期待値が非常に高い (EV {max_ev:.1f})"
                 elif max_ev >= 2.5:
-                    myomi = "💎★★"
+                    confidence, conf_reason = "A", f"十分なプラス期待値 (EV {max_ev:.1f})"
                 elif max_ev >= 1.5:
-                    myomi = "💎★"
+                    confidence, conf_reason = "B", f"やや期待できる (EV {max_ev:.1f})"
+                elif max_ev >= 1.0:
+                    confidence, conf_reason = "C", f"トントン、慎重に (EV {max_ev:.1f})"
                 else:
-                    myomi = ""
-                conf_reason += f" / 妙味:{myomi or 'なし'}(EV{max_ev:.1f})"
+                    confidence, conf_reason = "D", f"期待値低め (EV {max_ev:.1f})"
 
                 # ── レース傾向（堅い/混戦/波乱）──
                 sorted_probs = sorted([h["pred_win"] for h in horses], reverse=True)
@@ -1014,15 +721,14 @@ def api_predict_date(date_str):
                     h['finish'] = res['finish']
                     h['time'] = res['time']
                     h['actual_odds'] = res['odds']
-                    if res['popularity'] and res['popularity'] > 0:
-                        h['popularity'] = res['popularity']
+                    h['popularity'] = res['popularity']
                     h['last_3f'] = res['last_3f']
                     h['margin'] = res['margin']
                 else:
                     h['finish'] = 0
                     h['time'] = ''
                     h['actual_odds'] = 0
-                    # popularity は上書きしない（DBから取得済み）
+                    h['popularity'] = 0
                     h['last_3f'] = 0
                     h['margin'] = ''
 
@@ -1035,7 +741,6 @@ def api_predict_date(date_str):
                 "distance": race_info.get("distance", 0),
                 "surface": race_info.get("surface", ""),
                 "track_condition": race_info.get("track_condition", "良"),
-                "start_time": race_info.get("start_time", ""),
                 "horse_count": len(horses),
                 "horses": horses,
                 "all_bets": all_bets,        # ← 全6券種
@@ -1043,28 +748,11 @@ def api_predict_date(date_str):
                 "bet_reason": bet_reason,
                 "confidence": confidence,
                 "conf_reason": conf_reason,
-                "myomi": myomi,
-                "max_ev": round(max_ev, 1),
                 "race_tendency": race_tendency,
                 "has_results": has_results,
                 "payouts": race_payouts if has_results else [],
                 "prediction_locked": is_locked and cached is not None,
             })
-
-        # ── 妙味を相対パーセンタイルで再計算 ──
-        if len(all_races) >= 2:
-            ev_values = sorted([r["max_ev"] for r in all_races])
-            for r in all_races:
-                rank = ev_values.index(r["max_ev"])
-                pct = rank / (len(ev_values) - 1) if len(ev_values) > 1 else 0.5
-                if pct >= 0.80:
-                    r["myomi"] = "💎★★★"
-                elif pct >= 0.50:
-                    r["myomi"] = "💎★★"
-                elif pct >= 0.20:
-                    r["myomi"] = "💎★"
-                else:
-                    r["myomi"] = ""
 
         # 会場でグループ化
         venues = {}
@@ -1166,12 +854,5 @@ if __name__ == "__main__":
     print("🏇 競馬予想ダッシュボード起動中...")
     print("   http://localhost:5001")
     print("   予測ダッシュボード: http://localhost:5001/predict")
-
-    # 注: バックグラウンド結果取得は GitHub Actions 側に一本化(課題#10解消)
-    # 旧: bg_thread = threading.Thread(target=_bg_result_fetcher, daemon=True); bg_thread.start()
-    # 結果取得は race_day_runner.yml (日中loop) / collect_results.yml (夜間スイープ) が担当
-    # app.py はダッシュボード閲覧専用に縮小
-    print("   ℹ️  結果自動取得は GitHub Actions(race_day_runner.yml/collect_results.yml)に委譲")
-
     app.run(debug=True, host="0.0.0.0", port=5001)
 

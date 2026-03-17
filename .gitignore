@@ -24,16 +24,3 @@ Thumbs.db
 
 # Gemini
 .gemini/
-
-# Database — #64 (2026-06-10): git の正本は keiba.db.gz (raw は 100MB 制限超過のため)
-# 作業ファイル keiba.db は untracked。pull 後は scripts/db_unpack.sh で展開、
-# commit 前は scripts/db_pack.sh で圧縮する
-keiba.db
-# WAL/SHM のみ無視
-keiba.db-shm
-keiba.db-wal
-
-# Temp files
-.post_history.json
-scrape_log.txt
-train_log.txt

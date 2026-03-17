@@ -459,28 +459,6 @@ body {
 .roi-positive { color: var(--green); }
 .roi-negative { color: var(--red); }
 
-/* Myomi Badge */
-.myomi-badge {
-  display: inline-flex; align-items: center; gap: 2px;
-  padding: 2px 8px; border-radius: 10px;
-  font-size: 11px; font-weight: 700; white-space: nowrap;
-}
-.myomi-3 { background: linear-gradient(135deg, #f39c12, #e67e22); color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.3); animation: myomi-glow 2s ease-in-out infinite alternate; }
-.myomi-2 { background: linear-gradient(135deg, #3498db, #2980b9); color: #fff; }
-.myomi-1 { background: rgba(255,255,255,0.1); color: var(--text-secondary); border: 1px solid rgba(255,255,255,0.15); }
-@keyframes myomi-glow {
-  from { box-shadow: 0 0 4px rgba(243,156,18,0.3); }
-  to { box-shadow: 0 0 10px rgba(243,156,18,0.6); }
-}
-
-/* Results indicator */
-.result-badge {
-  font-size: 10px; padding: 1px 6px; border-radius: 8px;
-  font-weight: 600;
-}
-.result-badge.done { background: var(--green-dim); color: var(--green); }
-.result-badge.pending { background: rgba(255,255,255,0.06); color: var(--text-muted); }
-
 /* ─── Results Tab ─── */
 .results-section { padding: 12px; }
 .podium { margin-bottom: 16px; }
@@ -592,159 +570,15 @@ body {
 }
 @keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
 
-/* ─── Responsive: Mobile (up to 600px) ─── */
-@media (max-width: 600px) {
-  html { font-size: 14px; }
-
-  /* Header: 2段レイアウトに */
-  .header { padding: 10px 12px; }
-  .header-top {
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .logo { font-size: 14px; flex-shrink: 0; }
-  .header-controls {
-    width: 100%;
-    display: grid;
-    grid-template-columns: 1fr auto auto auto;
-    align-items: center;
-    gap: 6px;
-  }
-  .input-date {
-    grid-column: 1 / -1;
-    width: 100%;
-    font-size: 15px;
-    padding: 10px 10px;
-  }
-  .budget-label { font-size: 12px; }
-  .input-budget {
-    width: 80px;
-    font-size: 15px;
-    padding: 10px 8px;
-  }
-  .budget-unit { font-size: 12px; }
-  .btn-predict {
-    padding: 10px 18px;
-    font-size: 14px;
-    font-weight: 700;
-    flex-shrink: 0;
-  }
-
-  /* Bet selector */
-  .bet-selector {
-    top: 95px;
-    padding: 8px 10px;
-    gap: 6px;
-  }
-  .bet-chip {
-    padding: 8px 14px;
-    font-size: 13px;
-  }
-
-  /* Summary strip */
-  .summary-strip {
-    margin: 8px 10px;
-    grid-template-columns: repeat(4, 1fr);
-  }
-  .summary-item { padding: 10px 4px; }
-  .summary-value { font-size: 16px; }
-  .summary-label { font-size: 9px; }
-
-  /* Venue tabs */
-  .venue-tabs { margin: 0 10px 8px; }
-  .venue-tab { padding: 7px 8px; font-size: 11px; }
-
-  /* Main content area */
-  .main { padding: 0 8px 100px; }
-
-  /* Race card */
-  .race-card { margin-bottom: 8px; }
-  .race-header { padding: 10px 10px; }
-  .race-left { gap: 8px; }
-  .race-num { width: 28px; height: 28px; font-size: 11px; }
-  .race-name-line { font-size: 12px; }
-  .race-meta { font-size: 9px; gap: 5px; }
-  .conf-badge { padding: 2px 8px; font-size: 10px; }
-
-  /* Horse list - tighter grid */
-  .horse-list { padding: 6px 8px; }
-  .horse-row {
-    grid-template-columns: 20px 24px 1fr auto;
-    gap: 6px;
-    padding: 7px 2px;
-  }
-  .horse-mark { font-size: 13px; }
-  .horse-number { width: 24px; height: 24px; font-size: 10px; }
-  .horse-name { font-size: 12px; }
-  .horse-jockey { font-size: 9px; }
-  .horse-stats { gap: 4px; }
-  .stat { font-size: 9px; }
-  .prob-value { font-size: 13px; }
-  .prob-label { font-size: 8px; }
-  .rank-bar { width: 40px; }
-  .horse-reasons { padding: 3px 0 0 50px; }
-  .reason-tag { font-size: 9px; padding: 2px 6px; }
-
-  /* Bets section */
-  .bets-section { padding: 8px; }
-  .bet-card {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-    padding: 8px 10px;
-  }
-  .bet-card > div:first-child {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-  }
-  .bet-detail-text { font-size: 12px; margin-left: 6px; }
-  .bet-amount { font-size: 13px; }
-
-  /* Payout table: scrollable */
-  .payout-section { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .payout-table { font-size: 10px; min-width: 300px; }
-  .payout-table td { padding: 4px 6px; }
-
-  /* Results podium */
-  .podium-row {
-    grid-template-columns: 24px 28px 1fr auto auto;
-    gap: 6px;
-    padding: 5px 2px;
-    font-size: 11px;
-  }
-
-  /* Tab bar inside race */
-  .tab-btn { padding: 8px 4px; font-size: 11px; }
-
-  /* Confidence filter */
-  .conf-filter { padding: 4px 10px; gap: 4px; }
-  .conf-filter-btn { padding: 4px 10px; font-size: 10px; }
-
-  /* Myomi badges */
-  .myomi-badge { font-size: 10px; padding: 1px 6px; }
-}
-
-/* ─── Responsive: Small phone (〜380px) ─── */
+/* ─── Responsive: Small phone ─── */
 @media (max-width: 380px) {
   html { font-size: 13px; }
-  .header-controls { flex-wrap: wrap; }
-  .input-date { width: 100%; }
-  .input-budget { width: 65px; }
-  .btn-predict { width: 100%; margin-top: 4px; }
+  .header-top { flex-wrap: wrap; }
+  .input-date { width: 110px; }
+  .input-budget { width: 70px; }
   .summary-strip { grid-template-columns: repeat(2, 1fr); }
-  .horse-row {
-    grid-template-columns: 18px 22px 1fr auto;
-    gap: 4px;
-  }
-  .horse-name { font-size: 11px; }
-  .prob-value { font-size: 12px; }
-  .rank-bar { width: 32px; }
-  .bet-chip { padding: 6px 10px; font-size: 11px; }
 }
 </style>
-
 </head>
 <body>
 
@@ -1114,6 +948,7 @@ function createRaceCard(race) {
 
   let badges = '';
   if (hasResults) badges += `<span class="result-badge">✅ 確定</span>`;
+  if (isLocked) badges += `<span class="locked-badge">🔒 確定</span>`;
 
   return `
     <div class="race-card" id="race-${race.race_id}">
@@ -1123,7 +958,6 @@ function createRaceCard(race) {
           <div class="race-info">
             <div class="race-name-line">${race.race_name || '未定'} ${badges}</div>
             <div class="race-meta">
-              ${race.start_time ? `<span style="color:#f0c040;font-weight:600">🕐${race.start_time}</span>` : ''}
               <span>${race.surface || ''}</span>
               <span>${race.distance || 0}m</span>
               <span>${race.horse_count || 0}頭</span>
@@ -1133,9 +967,7 @@ function createRaceCard(race) {
           </div>
         </div>
         <div class="race-right">
-          ${race.myomi ? `<span class="myomi-badge ${race.myomi.includes('★★★') ? 'myomi-3' : race.myomi.includes('★★') ? 'myomi-2' : 'myomi-1'}">${race.myomi}</span>` : ''}
           <span class="conf-badge ${confClass}">${confIcon}${confClass}</span>
-          <span class="result-badge ${race.has_results ? 'done' : 'pending'}">${race.has_results ? '確定' : '未確定'}</span>
           <span class="toggle-icon">▼</span>
         </div>
       </div>
@@ -1273,19 +1105,23 @@ function renderHorseRow(h, showReasons) {
         ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
       </div>
       <div class="horse-stats">
-        ${h.odds_win && h.popularity ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span>${h.popularity ? `<span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span>` : ''}</span>` : (h.odds_win ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">推定${h.odds_win}倍</span></span>` : '')}
         <span class="stat">SI <span class="stat-val">${h.si_avg || 0}</span></span>
-        <span class="stat">AI複勝 <span class="stat-val">${h.pred_top3 || 0}%</span></span>
-        <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
-        <span class="stat">過去連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>
+        <span class="stat">複勝 <span class="stat-val">${h.pred_top3 || 0}%</span></span>
+        <span class="stat">勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
+        <span class="stat">連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>
+        ${h.odds_win ? `<span class="stat">Odds <span class="stat-val">${h.odds_win}</span></span>` : ''}
       </div>
     </div>
     <div class="horse-prob">
-      <div class="prob-value">${h.pred_win_display || h.pred_win || 0}%</div>
+      <div class="prob-value">${h.pred_win || 0}%</div>
       <div class="prob-label">勝率予測</div>
       <div class="rank-bar"><div class="rank-bar-fill" style="width:${rankPct}%"></div></div>
     </div>
   </div>`;
+
+  if (showReasons && h.reasons && h.reasons.length > 0) {
+    html += `<div class="horse-reasons">${h.reasons.map(r => `<span class="reason-tag">${r}</span>`).join('')}</div>`;
+  }
 
   return html;
 }
