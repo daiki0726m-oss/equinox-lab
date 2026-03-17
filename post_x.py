@@ -70,37 +70,40 @@ def load_x_client():
     return client
 
 
-def post_tweet(client, text, reply_to=None, dry_run=False):
-    """ツイートを投稿（280文字超えの場合はスレッド化）"""
-    MAX_LEN = 270  # 余裕を持たせる
+def x_weighted_len(text):
+    """X APIの文字数カウント（日本語/絵文字=2, ASCII=1）"""
+    count = 0
+    for c in text:
+        count += 2 if ord(c) > 127 else 1
+    return count
 
-    # テキストをチャンクに分割
-    if len(text) <= MAX_LEN:
-        chunks = [text]
-    else:
-        chunks = split_text(text, MAX_LEN)
 
+def post_thread(client, tweets, dry_run=False):
+    """ツイートのリスト（スレッド）を投稿"""
     tweet_ids = []
-    parent_id = reply_to
+    parent_id = None
 
-    for i, chunk in enumerate(chunks):
+    for i, text in enumerate(tweets):
+        wlen = x_weighted_len(text)
         if dry_run:
             label = "ツイート" if i == 0 else f"└ リプライ{i}"
-            print(f"\n📝 {label} ({len(chunk)}文字):")
+            print(f"\n📝 {label} ({len(text)}文字 / X:{wlen}):")
             print(f"{'─'*40}")
-            print(chunk)
+            print(text)
             print(f"{'─'*40}")
             tweet_ids.append(f"dry-run-{i}")
         else:
+            if wlen > 280:
+                print(f"  ⚠️ ツイート{i+1}が{wlen}文字（上限280）。短縮が必要です。")
             try:
-                kwargs = {"text": chunk}
+                kwargs = {"text": text}
                 if parent_id:
                     kwargs["in_reply_to_tweet_id"] = parent_id
                 result = client.create_tweet(**kwargs)
                 tid = result.data["id"]
                 tweet_ids.append(tid)
                 parent_id = tid
-                print(f"  ✅ 投稿完了 (ID: {tid}, {len(chunk)}文字)")
+                print(f"  ✅ 投稿完了 (ID: {tid}, X:{wlen}文字)")
             except Exception as e:
                 print(f"  ❌ 投稿失敗: {e}")
                 break
@@ -108,24 +111,11 @@ def post_tweet(client, text, reply_to=None, dry_run=False):
     return tweet_ids
 
 
-def split_text(text, max_len):
-    """テキストを行単位で分割"""
-    lines = text.split("\n")
-    chunks = []
-    current = ""
-
-    for line in lines:
-        test = current + line + "\n" if current else line + "\n"
-        if len(test) > max_len and current:
-            chunks.append(current.strip())
-            current = line + "\n"
-        else:
-            current = test
-
-    if current.strip():
-        chunks.append(current.strip())
-
-    return chunks if chunks else [text[:max_len]]
+def post_tweet(client, text, reply_to=None, dry_run=False):
+    """単一ツイートまたは自動分割して投稿"""
+    if isinstance(text, list):
+        return post_thread(client, text, dry_run=dry_run)
+    return post_thread(client, [text], dry_run=dry_run)
 
 
 # ─── レース当日: メインレース予想 ───
@@ -411,7 +401,7 @@ def cmd_weekday(args):
 
 
 def generate_weekly_summary():
-    """月曜: 先週末の成績まとめ"""
+    """月曜: 先週末の成績まとめ（3ツイート）"""
     today = datetime.now()
     last_sun = today - timedelta(days=today.weekday() + 1)
     last_sat = last_sun - timedelta(days=1)
@@ -435,20 +425,33 @@ def generate_weekly_summary():
 
     dr = f"{last_sat.month}/{last_sat.day}-{last_sun.month}/{last_sun.day}"
 
-    tweet = f"📊 先週末({dr})の振り返り\n\n"
-    tweet += f"分析: {race_count}R\n"
-    tweet += f"推奨: {bet_count}R\n\n"
-    tweet += f"今週末もAI分析で配信予定🔔\n\n"
-    tweet += "#競馬予想 #AI予想"
-    return tweet
+    t1 = f"📊 先週末({dr})のAI予測まとめ\n\n"
+    t1 += f"全{race_count}レースをAIで分析し\n"
+    t1 += f"期待値プラスの{bet_count}レースを厳選\n\n"
+    t1 += "#競馬予想 #AI予想 🧵↓"
+
+    t2 = "🧠 予測の仕組み\n\n"
+    t2 += "3つのAIモデルを統合して予測\n"
+    t2 += "・着順予測(LambdaRank)\n"
+    t2 += "・勝率予測\n"
+    t2 += "・複勝率予測\n\n"
+    t2 += "オッズと比較し期待値が高い馬だけを推奨"
+
+    t3 = "🔔 今週末の配信予定\n\n"
+    t3 += "土日の朝8時にメインレース予想を配信\n"
+    t3 += "全レースの詳細はnoteで無料公開中\n\n"
+    t3 += "フォローして通知ONで見逃さない👀"
+
+    return [t1, t2, t3]
 
 
 def generate_jockey_ranking():
-    """火曜: 騎手ランキング"""
+    """火曜: 騎手ランキング（3ツイート）"""
     with get_db() as conn:
         top_jockeys = conn.execute("""
             SELECT j.jockey_name,
                    COUNT(*) as rides,
+                   SUM(CASE WHEN r.finish_position = 1 THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
             FROM results r
             JOIN jockeys j ON r.jockey_id = j.jockey_id
@@ -464,56 +467,80 @@ def generate_jockey_ranking():
     if not top_jockeys:
         return generate_analysis_column()
 
-    tweet = "🏆騎手複勝率30日ランキング\n\n"
-    for i, j in enumerate(top_jockeys, 1):
-        medal = ["🥇", "🥈", "🥉", "4⃣", "5⃣"][i-1]
+    t1 = "🏆 直近30日の騎手成績TOP5\n\n"
+    t1 += "3着以内に入る確率が高い騎手は？\n"
+    t1 += "AIが実データから集計しました\n\n"
+    t1 += "#競馬予想 #AI予想 🧵↓"
+
+    medals = ["🥇", "🥈", "🥉", " 4.", " 5."]
+    t2 = "📊 複勝率ランキング\n\n"
+    for i, j in enumerate(top_jockeys):
         rate = round(j["top3"] / j["rides"] * 100, 1)
-        tweet += f"{medal}{j['jockey_name']} {rate}%\n"
-    tweet += "\n#競馬予想 #AI予想"
-    return tweet
+        win_rate = round(j["wins"] / j["rides"] * 100, 1)
+        t2 += f"{medals[i]}{j['jockey_name']}\n"
+        t2 += f"  複勝率{rate}% 勝率{win_rate}%({j['rides']}騎乗)\n"
+
+    t3 = "💡 馬券に活かすポイント\n\n"
+    t3 += "複勝率が高い騎手の馬は堅実\n"
+    t3 += "ただし人気馬に乗ることが多く\n"
+    t3 += "オッズが低くなりがち\n\n"
+    t3 += "AIは騎手だけでなく\n"
+    t3 += "調教師との相性も分析しています🧠"
+
+    return [t1, t2, t3]
 
 
 def generate_analysis_column():
-    """水曜: 分析コラム"""
+    """水曜: 分析コラム（3ツイート）"""
     columns = [
-        ("重馬場で浮上する血統",
-         "重馬場で成績が激変する馬がいます。\n"
-         "当モデルは馬場状態別の複勝率を評価。\n"
-         "良馬場で凡走→重で好走の馬を発見🧠"),
-        ("なぜ本命馬を買わないのか",
-         "期待値=勝率×オッズ\n"
-         "人気馬はオッズが低く当たっても利益が出にくい。\n"
-         "AIは「勝てる馬」でなく「儲かる馬」を選びます💡"),
-        ("騎手×調教師コンビの威力",
-         "特徴量重要度1位は騎手×調教師コンビの複勝率。\n"
-         "同じ騎手でも誰の馬かで成績が大きく変わる。\n"
-         "相性を統計検出し精度を向上🤝"),
-        ("3つのAIモデル統合の理由",
-         "1⃣LambdaRank 着順最適化\n"
-         "2⃣勝率モデル 1着確率\n"
-         "3⃣複勝率モデル 3着内確率\n"
-         "統合で安定した精度を実現🎯"),
-        ("スピード指数SIの読み方",
-         "SI=走破タイムを距離・馬場で補正した能力値\n"
-         "50=平均 70+=強い 90+=重賞級\n"
-         "高SIでも低オッズなら期待値マイナス📊"),
+        {
+            "title": "重馬場になると穴馬が走る理由",
+            "t1_body": "雨で馬場が悪化すると\n人気馬が凡走することがあります\n\nなぜでしょう？",
+            "t2_body": "📊 重馬場のポイント\n\n・パワーが必要になり小柄な馬は不利\n・泥を被ると嫌がる馬がいる\n・重馬場巧者の血統がある\n\n良馬場の実績だけでは判断できない",
+            "t3_body": "💡 AIの対応\n\n当モデルは馬場状態ごとの\n過去成績を個別に分析\n\n「良馬場では凡走→重で好走」\nこういう馬をデータから発見します🧠",
+        },
+        {
+            "title": "なぜ人気馬を買わない方がいいのか",
+            "t1_body": "1番人気の勝率は約30%\nつまり70%は1番人気以外が勝つ\n\nでも多くの人は人気馬ばかり買う",
+            "t2_body": "📊 回収率の現実\n\n1番人気の平均回収率は約80%\n→ 長期的には20%損する\n\n一方、穴馬の中には\n期待値が100%を超える馬もいる",
+            "t3_body": "💡 AIが見るのは「期待値」\n\n期待値 = 勝率 × オッズ\n\nAIは勝率とオッズを比較し\n市場が過小評価している馬を発見\n\nこれが回収率187%の理由です📊",
+        },
+        {
+            "title": "騎手と調教師の相性が成績を左右する",
+            "t1_body": "同じ騎手でも\n調教師によって成績が全く違う\n\nこの「コンビ力」知ってますか？",
+            "t2_body": "📊 コンビの重要性\n\n・調教方針と騎乗スタイルの相性\n・コミュニケーションの質\n・レース前の作戦共有\n\n実はAIの最重要特徴量がこれ",
+            "t3_body": "💡 データで見ると\n\n当モデルの予測で最も影響力が大きい\nのが騎手×調教師コンビの複勝率\n\n人が見落としがちな相性を\nAIは数万レースから検出します🤝",
+        },
+        {
+            "title": "3つのAIモデルを組み合わせる理由",
+            "t1_body": "当予測は1つではなく\n3つのAIモデルを組み合わせています\n\nなぜ1つではダメなのか？",
+            "t2_body": "📊 3モデル統合の仕組み\n\n1. LambdaRank→着順を直接予測\n2. 勝率モデル→1着の確率\n3. 複勝率モデル→3着以内の確率\n\n得意分野が異なる=弱点を補い合う",
+            "t3_body": "💡 なぜ精度が上がる？\n\n例えばモデル1が◎でもモデル2,3が\n低評価なら危険信号\n\n3つが一致して高評価→信頼度が高い\nこの仕組みで安定した予測を実現🎯",
+        },
     ]
 
     col = random.choice(columns)
-    tweet = f"🧠AI競馬コラム\n【{col[0]}】\n\n"
-    tweet += col[1]
-    tweet += "\n\n#競馬予想 #AI予想"
-    return tweet
+
+    t1 = f"🧠 {col['title']}\n\n"
+    t1 += col["t1_body"]
+    t1 += "\n\n#競馬予想 #AI予想 🧵↓"
+
+    t2 = col["t2_body"]
+
+    t3 = col["t3_body"]
+
+    return [t1, t2, t3]
 
 
 def generate_pickup_horse():
-    """木曜: 注目馬"""
+    """木曜: 注目馬（3ツイート）"""
     try:
         with get_db() as conn:
             top_horses = conn.execute("""
                 SELECT h.horse_name,
                        AVG(r.finish_position) as avg_pos,
-                       COUNT(*) as runs
+                       COUNT(*) as runs,
+                       MIN(r.finish_position) as best
                 FROM results r
                 JOIN horses h ON r.horse_id = h.horse_id
                 JOIN races ra ON r.race_id = ra.race_id
@@ -530,22 +557,47 @@ def generate_pickup_horse():
     if not top_horses:
         return generate_analysis_column()
 
-    tweet = "🐴好走馬ピックアップ(60日)\n\n"
+    t1 = "🐴 最近安定して好走している馬たち\n\n"
+    t1 += "直近60日で複数回3着以内の馬は\n"
+    t1 += "次走も注目する価値大\n\n"
+    t1 += "#競馬予想 #AI予想 🧵↓"
+
+    t2 = "📊 好走馬リスト(60日)\n\n"
     for h in top_horses:
         avg = round(h["avg_pos"], 1)
-        tweet += f"⭐{h['horse_name']} 平均{avg}着({h['runs']}走)\n"
-    tweet += "\n#競馬予想 #AI予想"
-    return tweet
+        t2 += f"⭐{h['horse_name']}\n"
+        t2 += f" →平均{avg}着 / {h['runs']}走 / 最高{h['best']}着\n"
+
+    t3 = "💡 週末の馬券に活かす\n\n"
+    t3 += "安定して好走中の馬が出走したら\n"
+    t3 += "複勝や相手馬として狙い目\n\n"
+    t3 += "土曜朝にメインレービの\n"
+    t3 += "AI予想を配信予定🔔"
+
+    return [t1, t2, t3]
 
 
 def generate_weekend_preview():
-    """金曜: 週末プレビュー"""
-    tweet = "📅今週末のレース\n\n"
-    tweet += "AIモデルで全レース分析中...\n"
-    tweet += "明日朝8時にメイン予想配信🔔\n\n"
-    tweet += "詳細はプロフリンクのnoteへ\n\n"
-    tweet += "#競馬予想 #AI予想"
-    return tweet
+    """金曜: 週末プレビュー（3ツイート）"""
+    t1 = "📅 明日から週末競馬！\n\n"
+    t1 += "AIが全レースを分析中です\n"
+    t1 += "厳選レースを明朝配信\n\n"
+    t1 += "#競馬予想 #AI予想 🧵↓"
+
+    t2 = "🧠 AIの分析内容\n\n"
+    t2 += "・スピード指数(過去の能力値)\n"
+    t2 += "・騎手×調教師の相性\n"
+    t2 += "・馬場状態への適性\n"
+    t2 += "・血統の距離適性\n\n"
+    t2 += "これらを統合してレースごとに予測"
+
+    t3 = "🔔 配信予定\n\n"
+    t3 += "土日 朝8時にメインレース予想\n"
+    t3 += "全レースの詳細はnoteで無料公開\n\n"
+    t3 += "よければフォロー&通知ONで\n"
+    t3 += "見逃さないようにしてください👀"
+
+    return [t1, t2, t3]
 
 
 def main():
