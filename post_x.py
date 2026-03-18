@@ -449,9 +449,25 @@ def generate_jockey_ranking():
     """火曜: 騎手ランキング（3ツイート）"""
     today = datetime.now()
     start_date = today - timedelta(days=30)
-    period = f"{start_date.month}/{start_date.day}〜{today.month}/{today.day}"
 
     with get_db() as conn:
+        # 集計期間の最終開催日を取得（未来のレースは除外）
+        last_race = conn.execute("""
+            SELECT MAX(ra.race_date) as last_date FROM races ra
+            JOIN results r ON ra.race_id = r.race_id
+            WHERE ra.race_date >= date('now', '-30 days')
+            AND ra.race_date <= date('now')
+            AND r.finish_position > 0
+        """).fetchone()
+        if last_race and last_race["last_date"]:
+            end_str = last_race["last_date"]
+            try:
+                end_dt = datetime.strptime(end_str, "%Y-%m-%d")
+            except:
+                end_dt = today
+        else:
+            end_dt = today
+
         top_jockeys = conn.execute("""
             SELECT j.jockey_name,
                    COUNT(*) as rides,
@@ -470,6 +486,8 @@ def generate_jockey_ranking():
 
     if not top_jockeys:
         return generate_analysis_column()
+
+    period = f"{start_date.year}/{start_date.month}/{start_date.day}〜{end_dt.year}/{end_dt.month}/{end_dt.day}"
 
     t1 = f"🏆 騎手 複勝率ランキング\n"
     t1 += f"集計期間: {period}\n\n"
@@ -565,7 +583,25 @@ def generate_pickup_horse():
 
     today = datetime.now()
     start_date = today - timedelta(days=60)
-    period = f"{start_date.month}/{start_date.day}〜{today.month}/{today.day}"
+
+    # 最終開催日を取得
+    try:
+        with get_db() as conn:
+            last_race = conn.execute("""
+                SELECT MAX(ra.race_date) as last_date FROM races ra
+                JOIN results r ON ra.race_id = r.race_id
+                WHERE ra.race_date >= date('now', '-60 days')
+                AND ra.race_date <= date('now')
+                AND r.finish_position > 0
+            """).fetchone()
+        if last_race and last_race["last_date"]:
+            end_dt = datetime.strptime(last_race["last_date"], "%Y-%m-%d")
+        else:
+            end_dt = today
+    except:
+        end_dt = today
+
+    period = f"{start_date.year}/{start_date.month}/{start_date.day}〜{end_dt.year}/{end_dt.month}/{end_dt.day}"
 
     t1 = f"🐴 好走馬ピックアップ\n"
     t1 += f"集計期間: {period}\n\n"
