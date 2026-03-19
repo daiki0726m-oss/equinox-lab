@@ -409,115 +409,347 @@ def cmd_weekday(args):
 
 
 def generate_weekly_summary():
-    """月曜: 先週末の成績まとめ（3ツイート）"""
+    """月曜: 先週末11Rの的中結果（3ツイート）"""
     today = now_jst()
     last_sun = today - timedelta(days=today.weekday() + 1)
     last_sat = last_sun - timedelta(days=1)
 
     sat_str = last_sat.strftime("%Y-%m-%d")
     sun_str = last_sun.strftime("%Y-%m-%d")
+    dr = f"{last_sat.month}/{last_sat.day}-{last_sun.month}/{last_sun.day}"
 
     try:
         with get_db() as conn:
-            cached = conn.execute("""
-                SELECT COUNT(*) as cnt,
-                       SUM(CASE WHEN pc.should_bet = 1 THEN 1 ELSE 0 END) as bet_races
-                FROM races r
-                JOIN predictions_cache pc ON r.race_id = pc.race_id
-                WHERE r.race_date IN (?, ?)
-            """, (sat_str, sun_str)).fetchone()
-        race_count = cached["cnt"] if cached else 0
-        bet_count = cached["bet_races"] if cached else 0
+            # 先週末11Rの予測と結果を照合
+            races_11r = conn.execute("""
+                SELECT ra.race_id, ra.race_name, ra.venue, ra.race_date,
+                       pc.predictions_json
+                FROM races ra
+                JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                WHERE ra.race_date IN (?, ?)
+                AND ra.race_number = 11
+                ORDER BY ra.race_date, ra.venue
+            """, (sat_str, sun_str)).fetchall()
+
+            results_list = []
+            for race in races_11r:
+                preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
+                # AI◎の馬（1位）の着順を取得
+                if preds:
+                    top_horse = preds[0]
+                    horse_num = top_horse.get('horse_number', 0)
+                    # 実際の着順取得
+                    actual = conn.execute("""
+                        SELECT r.finish_position, r.odds FROM results r
+                        WHERE r.race_id = ? AND r.horse_number = ?
+                        AND r.finish_position > 0
+                    """, (race['race_id'], horse_num)).fetchone()
+
+                    results_list.append({
+                        'venue': race['venue'],
+                        'race_name': race['race_name'],
+                        'horse_name': top_horse.get('horse_name', '?'),
+                        'finish': actual['finish_position'] if actual else '?',
+                        'odds': actual['odds'] if actual else 0,
+                        'mark': top_horse.get('mark', '◎'),
+                    })
     except:
-        race_count, bet_count = 36, 12
+        results_list = []
 
-    dr = f"{last_sat.month}/{last_sat.day}-{last_sun.month}/{last_sun.day}"
+    if not results_list:
+        # データがない場合はコラムに切替
+        return generate_analysis_column()
 
-    t1 = f"📊 先週末({dr})のAI予測まとめ\n\n"
-    t1 += f"全{race_count}レースをAIで分析し\n"
-    t1 += f"期待値プラスの{bet_count}レースを厳選\n\n"
+    # 的中数計算（3着以内を的中とする）
+    hits = sum(1 for r in results_list if isinstance(r['finish'], int) and r['finish'] <= 3)
+    total = len(results_list)
+    hit_rate = round(hits / total * 100) if total > 0 else 0
+
+    t1 = f"📊 先週末({dr}) AI予測の結果\n"
+    t1 += f"対象: メインレース(11R) {total}レース\n\n"
+    t1 += f"AI本命(◎)の複勝的中率: {hits}/{total} ({hit_rate}%)\n\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
-    t2 = "🧠 予測の仕組み\n\n"
-    t2 += "3つのAIモデルを統合して予測\n"
-    t2 += "・着順予測(LambdaRank)\n"
-    t2 += "・勝率予測\n"
-    t2 += "・複勝率予測\n\n"
-    t2 += "オッズと比較し期待値が高い馬だけを推奨"
+    t2 = "📋 各レース結果\n\n"
+    for r in results_list:
+        if isinstance(r['finish'], int) and r['finish'] <= 3:
+            t2 += f"✅ {r['venue']} {r['race_name']}\n"
+            t2 += f" {r['horse_name']} → {r['finish']}着\n"
+        else:
+            pos = r['finish'] if r['finish'] != '?' else '?'
+            t2 += f"❌ {r['venue']} {r['race_name']}\n"
+            t2 += f" {r['horse_name']} → {pos}着\n"
 
-    t3 = "🔔 今週末の配信予定\n\n"
-    t3 += "土日の朝8時にメインレース予想を配信\n"
-    t3 += "全レースの詳細はnoteで無料公開中\n\n"
-    t3 += "フォローして通知ONで見逃さない👀"
+    t3 = "💡 来週に向けて\n\n"
+    if hit_rate >= 50:
+        t3 += f"複勝的中率{hit_rate}%は好調\n"
+        t3 += "引き続きデータを蓄積していきます\n\n"
+    else:
+        t3 += "的中率は改善の余地あり\n"
+        t3 += "モデルの精度向上に取り組みます\n\n"
+    t3 += "土日朝8時にメインレースAI予想を配信\n"
+    t3 += "フォロー&通知ONで見逃さない🔔"
 
     return [t1, t2, t3]
 
 
 def generate_jockey_ranking():
-    """火曜: 騎手ランキング（3ツイート）"""
+    """火曜: データ系ローテーション（4週サイクル）"""
+    today = now_jst()
+    week_num = today.isocalendar()[1] % 4  # 0-3でローテーション
+
+    if week_num == 0:
+        return _generate_trainer_ranking()
+    elif week_num == 1:
+        return _generate_jt_combo()
+    elif week_num == 2:
+        return _generate_course_analysis()
+    else:
+        return _generate_distance_specialty()
+
+
+def _generate_trainer_ranking():
+    """調教師ランキング"""
     today = now_jst()
     start_date = today - timedelta(days=30)
 
     with get_db() as conn:
-        # 集計期間の最終開催日を取得（未来のレースは除外）
         last_race = conn.execute("""
-            SELECT MAX(ra.race_date) as last_date FROM races ra
+            SELECT MAX(ra.race_date) as d FROM races ra
             JOIN results r ON ra.race_id = r.race_id
+            WHERE r.finish_position > 0 AND ra.race_date <= date('now')
+        """).fetchone()
+        end_dt = datetime.strptime(last_race['d'], "%Y-%m-%d") if last_race and last_race['d'] else today
+
+        trainers = conn.execute("""
+            SELECT t.trainer_name,
+                   COUNT(*) as entries,
+                   SUM(CASE WHEN r.finish_position = 1 THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
+            FROM results r
+            JOIN trainers t ON r.trainer_id = t.trainer_id
+            JOIN races ra ON r.race_id = ra.race_id
             WHERE ra.race_date >= date('now', '-30 days')
             AND ra.race_date <= date('now')
             AND r.finish_position > 0
-        """).fetchone()
-        if last_race and last_race["last_date"]:
-            end_str = last_race["last_date"]
-            try:
-                end_dt = datetime.strptime(end_str, "%Y-%m-%d")
-            except:
-                end_dt = today
-        else:
-            end_dt = today
+            GROUP BY t.trainer_id
+            HAVING entries >= 10
+            ORDER BY CAST(wins AS FLOAT)/entries DESC
+            LIMIT 5
+        """).fetchall()
 
-        top_jockeys = conn.execute("""
-            SELECT j.jockey_name,
+    if not trainers:
+        return generate_analysis_column()
+
+    period = f"{start_date.year}/{start_date.month}/{start_date.day}〜{end_dt.year}/{end_dt.month}/{end_dt.day}"
+
+    t1 = f"🏆 調教師 勝率ランキング\n"
+    t1 += f"集計期間: {period}\n\n"
+    t1 += "勝率が高い=仕上げ力がある厩舎\n"
+    t1 += "10頭以上出走の調教師を集計\n\n"
+    t1 += "#競馬予想 #AI予想 🧵↓"
+
+    medals = ["🥇", "🥈", "🥉", " 4.", " 5."]
+    t2 = f"📊 勝率ランキング({period})\n\n"
+    for i, t in enumerate(trainers):
+        win_rate = round(t['wins']/t['entries']*100, 1)
+        top3_rate = round(t['top3']/t['entries']*100, 1)
+        t2 += f"{medals[i]}{t['trainer_name']}\n"
+        t2 += f"  勝率{win_rate}% 複勝率{top3_rate}%({t['entries']}頭)\n"
+
+    t3 = "💡 馬券に活かすポイント\n\n"
+    t3 += "勝率が高い厩舎は仕上げが上手い\n"
+    t3 += "特に休み明けの馬に注目\n\n"
+    t3 += "AIは騎手×調教師の相性も\n"
+    t3 += "モデルに組み込んでいます🧠"
+
+    return [t1, t2, t3]
+
+
+def _generate_jt_combo():
+    """騎手×調教師コンビ好成績"""
+    today = now_jst()
+    start_date = today - timedelta(days=90)
+
+    with get_db() as conn:
+        last_race = conn.execute("""
+            SELECT MAX(ra.race_date) as d FROM races ra
+            JOIN results r ON ra.race_id = r.race_id
+            WHERE r.finish_position > 0 AND ra.race_date <= date('now')
+        """).fetchone()
+        end_dt = datetime.strptime(last_race['d'], "%Y-%m-%d") if last_race and last_race['d'] else today
+
+        combos = conn.execute("""
+            SELECT j.jockey_name, t.trainer_name,
                    COUNT(*) as rides,
                    SUM(CASE WHEN r.finish_position = 1 THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
             FROM results r
             JOIN jockeys j ON r.jockey_id = j.jockey_id
+            JOIN trainers t ON r.trainer_id = t.trainer_id
             JOIN races ra ON r.race_id = ra.race_id
-            WHERE ra.race_date >= date('now', '-30 days')
+            WHERE ra.race_date >= date('now', '-90 days')
+            AND ra.race_date <= date('now')
             AND r.finish_position > 0
-            GROUP BY j.jockey_id
-            HAVING rides >= 10
-            ORDER BY CAST(top3 AS FLOAT) / rides DESC
+            GROUP BY r.jockey_id, r.trainer_id
+            HAVING rides >= 5
+            ORDER BY CAST(top3 AS FLOAT)/rides DESC
             LIMIT 5
         """).fetchall()
 
-    if not top_jockeys:
+    if not combos:
         return generate_analysis_column()
 
     period = f"{start_date.year}/{start_date.month}/{start_date.day}〜{end_dt.year}/{end_dt.month}/{end_dt.day}"
 
-    t1 = f"🏆 騎手 複勝率ランキング\n"
+    t1 = "🤝 騎手×調教師 好相性コンビTOP5\n"
     t1 += f"集計期間: {period}\n\n"
-    t1 += "3着以内に入る確率が高い騎手は？\n"
-    t1 += "10騎乗以上の騎手を集計\n\n"
+    t1 += "同じ騎手でも調教師との相性で\n"
+    t1 += "成績が大きく変わる\n\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
-    medals = ["🥇", "🥈", "🥉", " 4.", " 5."]
-    t2 = f"📊 複勝率ランキング({period})\n\n"
-    for i, j in enumerate(top_jockeys):
-        rate = round(j["top3"] / j["rides"] * 100, 1)
-        win_rate = round(j["wins"] / j["rides"] * 100, 1)
-        name = j['jockey_name'].lstrip('▲△★☆')
-        t2 += f"{medals[i]}{name}\n"
-        t2 += f"  複勝率{rate}% 勝率{win_rate}%({j['rides']}騎乗)\n"
+    t2 = f"📊 複勝率が高いコンビ\n\n"
+    for i, c in enumerate(combos, 1):
+        jname = c['jockey_name'].lstrip('▲△★☆')
+        rate = round(c['top3']/c['rides']*100)
+        t2 += f"{i}. {jname}×{c['trainer_name']}\n"
+        t2 += f"  複勝率{rate}% ({c['top3']}/{c['rides']})\n"
+
+    t3 = "💡 コンビ力の見方\n\n"
+    t3 += "好相性コンビの馬が出走したら\n"
+    t3 += "人気がなくても要注意\n\n"
+    t3 += "AIの最重要特徴量がこの\n"
+    t3 += "騎手×調教師コンビの実績です🧠"
+
+    return [t1, t2, t3]
+
+
+def _generate_course_analysis():
+    """コース別成績分析"""
+    today = now_jst()
+
+    # 今週末の開催場を取得
+    with get_db() as conn:
+        venues = conn.execute("""
+            SELECT DISTINCT venue FROM races
+            WHERE race_date > date('now') AND race_date <= date('now', '+7 days')
+        """).fetchall()
+
+        if not venues:
+            return generate_analysis_column()
+
+        venue_name = venues[0]['venue']
+
+        # そのコースでの枠番別成績
+        frame_data = conn.execute("""
+            SELECT
+                CASE WHEN r.horse_number <= 4 THEN '内枠(1-4)'
+                     WHEN r.horse_number <= 8 THEN '中枠(5-8)'
+                     ELSE '外枠(9-)' END as frame_group,
+                COUNT(*) as runs,
+                SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
+            FROM results r
+            JOIN races ra ON r.race_id = ra.race_id
+            WHERE ra.venue = ?
+            AND ra.race_date >= date('now', '-90 days')
+            AND ra.race_date <= date('now')
+            AND r.finish_position > 0
+            GROUP BY frame_group
+            ORDER BY frame_group
+        """, (venue_name,)).fetchall()
+
+        # 脚質別成績
+        pace_data = conn.execute("""
+            SELECT
+                CASE WHEN r.passing_order LIKE '1-%' OR r.passing_order LIKE '2-%' THEN '先行'
+                     ELSE '差し・追込' END as style,
+                COUNT(*) as runs,
+                SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
+            FROM results r
+            JOIN races ra ON r.race_id = ra.race_id
+            WHERE ra.venue = ?
+            AND ra.race_date >= date('now', '-90 days')
+            AND ra.race_date <= date('now')
+            AND r.finish_position > 0
+            AND r.passing_order != ''
+            GROUP BY style
+        """, (venue_name,)).fetchall()
+
+    t1 = f"🏟️ {venue_name}コース傾向分析\n"
+    t1 += f"直近90日のデータから\n\n"
+    t1 += f"今週末の{venue_name}開催に向けて\n"
+    t1 += "コースバイアスをチェック\n\n"
+    t1 += "#競馬予想 #AI予想 🧵↓"
+
+    t2 = f"📊 {venue_name}の傾向\n\n"
+    if frame_data:
+        t2 += "【枠番別複勝率】\n"
+        for f in frame_data:
+            rate = round(f['top3']/f['runs']*100, 1) if f['runs'] > 0 else 0
+            t2 += f"・{f['frame_group']}: {rate}%({f['runs']}走)\n"
+    if pace_data:
+        t2 += "\n【脚質別複勝率】\n"
+        for p in pace_data:
+            rate = round(p['top3']/p['runs']*100, 1) if p['runs'] > 0 else 0
+            t2 += f"・{p['style']}: {rate}%({p['runs']}走)\n"
 
     t3 = "💡 馬券に活かすポイント\n\n"
-    t3 += "複勝率が高い騎手の馬は堅実\n"
-    t3 += "ただし人気馬に乗ることが多く\n"
-    t3 += "オッズが低くなりがち\n\n"
-    t3 += "AIは騎手だけでなく\n"
-    t3 += "調教師との相性も分析しています🧠"
+    t3 += f"{venue_name}のバイアスを把握して\n"
+    t3 += "有利な条件の馬を狙うのが基本\n\n"
+    t3 += "AIもコース傾向を加味して\n"
+    t3 += "予測しています🧠"
+
+    return [t1, t2, t3]
+
+
+def _generate_distance_specialty():
+    """距離替わり成功率データ"""
+    with get_db() as conn:
+        # 距離短縮/延長時の成績
+        dist_data = conn.execute("""
+            WITH race_pairs AS (
+                SELECT r.horse_id, ra.distance as dist,
+                       LAG(ra.distance) OVER (PARTITION BY r.horse_id ORDER BY ra.race_date) as prev_dist,
+                       r.finish_position
+                FROM results r
+                JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.finish_position > 0
+                AND ra.race_date >= date('now', '-180 days')
+                AND ra.race_date <= date('now')
+            )
+            SELECT
+                CASE WHEN dist > prev_dist THEN '距離延長'
+                     WHEN dist < prev_dist THEN '距離短縮'
+                     ELSE '同距離' END as change_type,
+                COUNT(*) as runs,
+                SUM(CASE WHEN finish_position <= 3 THEN 1 ELSE 0 END) as top3
+            FROM race_pairs
+            WHERE prev_dist IS NOT NULL
+            GROUP BY change_type
+            ORDER BY change_type
+        """).fetchall()
+
+    if not dist_data:
+        return generate_analysis_column()
+
+    t1 = "📏 距離変更と成績の関係\n\n"
+    t1 += "距離を延長/短縮した馬は\n"
+    t1 += "成績にどう影響する？\n"
+    t1 += "半年分のデータで検証\n\n"
+    t1 += "#競馬予想 #AI予想 🧵↓"
+
+    t2 = "📊 距離変更別の複勝率\n\n"
+    for d in dist_data:
+        rate = round(d['top3']/d['runs']*100, 1) if d['runs'] > 0 else 0
+        t2 += f"・{d['change_type']}: 複勝率{rate}%({d['runs']}走)\n"
+    t2 += "\n※ 直近180日の全レース対象"
+
+    t3 = "💡 馬券に活かすポイント\n\n"
+    t3 += "距離変更は重要なファクター\n"
+    t3 += "木曜の注目馬でも\n"
+    t3 += "条件替わりの馬をピックアップ中\n\n"
+    t3 += "AIは過去の距離別成績を\n"
+    t3 += "個別に評価しています🧠"
 
     return [t1, t2, t3]
 
@@ -746,23 +978,73 @@ def generate_pickup_horse():
 
 
 def generate_weekend_preview():
-    """金曜: 週末プレビュー（3ツイート）"""
-    t1 = "📅 明日から週末競馬！\n\n"
-    t1 += "AIが全レースを分析中です\n"
-    t1 += "厳選レースを明朝配信\n\n"
+    """金曜: 今週末の重賞＋AI注目馬（3ツイート）"""
+    today = now_jst()
+
+    with get_db() as conn:
+        # 今週末のレース（11R）を取得
+        races_11r = conn.execute("""
+            SELECT ra.race_id, ra.race_name, ra.venue, ra.distance,
+                   ra.surface, ra.race_date
+            FROM races ra
+            WHERE ra.race_date > date('now') AND ra.race_date <= date('now', '+7 days')
+            AND ra.race_number = 11
+            ORDER BY ra.race_date, ra.venue
+        """).fetchall()
+
+        if not races_11r:
+            return generate_analysis_column()
+
+        # 各レースのAI予測上位を取得
+        race_picks = []
+        for race in races_11r:
+            pred = conn.execute("""
+                SELECT predictions_json FROM predictions_cache
+                WHERE race_id = ?
+            """, (race['race_id'],)).fetchone()
+
+            top_horses = []
+            if pred and pred['predictions_json']:
+                preds = json.loads(pred['predictions_json'])
+                top_horses = [p.get('horse_name', '?') for p in preds[:2]]
+
+            race_picks.append({
+                'venue': race['venue'],
+                'name': race['race_name'],
+                'surface': race['surface'],
+                'distance': race['distance'],
+                'date': race['race_date'],
+                'picks': top_horses,
+            })
+
+        # 開催場所
+        venues = list(set(r['venue'] for r in races_11r))
+        dates = sorted(set(r['race_date'] for r in races_11r))
+        date_str = "・".join([f"{datetime.strptime(d,'%Y-%m-%d').month}/{datetime.strptime(d,'%Y-%m-%d').day}" for d in dates])
+
+    # ツイート1: フック
+    t1 = f"📅 今週末({date_str})のレース\n"
+    t1 += f"開催: {'・'.join(venues)}\n\n"
+    t1 += "各メインレースのAI注目馬を\n"
+    t1 += "一足先にチラ見せ\n\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
-    t2 = "🧠 AIの分析内容\n\n"
-    t2 += "・スピード指数(過去の能力値)\n"
-    t2 += "・騎手×調教師の相性\n"
-    t2 += "・馬場状態への適性\n"
-    t2 += "・血統の距離適性\n\n"
-    t2 += "これらを統合してレースごとに予測"
+    # ツイート2: 各レースのAI上位
+    t2 = ""
+    for rp in race_picks:
+        t2 += f"🏇 {rp['venue']} {rp['name']}\n"
+        t2 += f"  {rp['surface']}{rp['distance']}m\n"
+        if rp['picks']:
+            t2 += f"  AI注目: {' / '.join(rp['picks'])}\n"
+        else:
+            t2 += "  AI注目: 分析中\n"
+        t2 += "\n"
 
-    t3 = "🔔 配信予定\n\n"
-    t3 += "土日 朝8時にメインレース予想\n"
-    t3 += "全レースの詳細はnoteで無料公開\n\n"
-    t3 += "よければフォロー&通知ONで\n"
+    # ツイート3: 配信案内
+    t3 = "🔔 明日朝8時に詳細予想を配信\n\n"
+    t3 += "各レースの◎○▲△と\n"
+    t3 += "買い目まで公開します\n\n"
+    t3 += "フォロー&通知ONで\n"
     t3 += "見逃さないようにしてください👀"
 
     return [t1, t2, t3]
