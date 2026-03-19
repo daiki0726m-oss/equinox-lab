@@ -42,11 +42,13 @@ jobs:
           DOW=$(TZ=Asia/Tokyo date +%u)  # 1=Mon ... 7=Sun
           HOUR=$(TZ=Asia/Tokyo date +%H)
           TODAY_YYYYMMDD=$(TZ=Asia/Tokyo date +%Y%m%d)
+          TODAY_HYPHEN=$(TZ=Asia/Tokyo date +%Y-%m-%d)
 
           # 手動実行の場合
           if [ "${{ github.event.inputs.mode }}" != "" ] && [ "${{ github.event.inputs.mode }}" != "auto" ]; then
             echo "type=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
             echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
+            echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -67,6 +69,17 @@ jobs:
           fi
 
           echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
+          echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
+
+      # 土日はスクレイプ→予測が必要
+      - name: Scrape and predict (weekend only)
+        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'results'
+        run: |
+          DATE="${{ steps.determine.outputs.date }}"
+          echo "📥 ${DATE} のデータをスクレイプ..."
+          python predict.py collect --date "$DATE" || echo "⚠️ スクレイプ完了（一部エラーあり）"
+          echo "🧠 予測を実行..."
+          python predict.py predict --date "$DATE" || echo "⚠️ 予測完了（一部エラーあり）"
 
       - name: Post to X
         if: steps.determine.outputs.type != 'skip'
