@@ -21,7 +21,14 @@ import sys
 import os
 import json
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# JST タイムゾーン
+JST = timezone(timedelta(hours=9))
+
+def now_jst():
+    """日本時間の現在時刻を返す"""
+    return datetime.now(JST)
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -371,8 +378,9 @@ def cmd_results(args):
 # ─── 平日コンテンツ ───
 def cmd_weekday(args):
     """平日用の自動コンテンツを生成・投稿"""
-    today = datetime.now()
+    today = now_jst()
     dow = today.weekday()  # 0=月, 4=金
+    print(f"📅 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
 
     if dow == 0:
         tweet = generate_weekly_summary()
@@ -402,7 +410,7 @@ def cmd_weekday(args):
 
 def generate_weekly_summary():
     """月曜: 先週末の成績まとめ（3ツイート）"""
-    today = datetime.now()
+    today = now_jst()
     last_sun = today - timedelta(days=today.weekday() + 1)
     last_sat = last_sun - timedelta(days=1)
 
@@ -447,7 +455,7 @@ def generate_weekly_summary():
 
 def generate_jockey_ranking():
     """火曜: 騎手ランキング（3ツイート）"""
-    today = datetime.now()
+    today = now_jst()
     start_date = today - timedelta(days=30)
 
     with get_db() as conn:
@@ -581,7 +589,7 @@ def generate_pickup_horse():
     if not top_horses:
         return generate_analysis_column()
 
-    today = datetime.now()
+    today = now_jst()
     start_date = today - timedelta(days=60)
 
     # 最終開催日を取得
@@ -618,7 +626,7 @@ def generate_pickup_horse():
     t3 = "💡 週末の馬券に活かす\n\n"
     t3 += "安定して好走中の馬が出走したら\n"
     t3 += "複勝や相手馬として狙い目\n\n"
-    t3 += "土曜朝にメインレービの\n"
+    t3 += "土曜朝にメインレースの\n"
     t3 += "AI予想を配信予定🔔"
 
     return [t1, t2, t3]
