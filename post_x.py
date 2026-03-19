@@ -1020,24 +1020,36 @@ def generate_weekend_preview():
         # 開催場所
         venues = list(set(r['venue'] for r in races_11r))
         dates = sorted(set(r['race_date'] for r in races_11r))
-        date_str = "・".join([f"{datetime.strptime(d,'%Y-%m-%d').month}/{datetime.strptime(d,'%Y-%m-%d').day}" for d in dates])
+        dow_labels = {5: '土', 6: '日', 0: '月'}
+        date_parts = []
+        for d in dates:
+            dt = datetime.strptime(d, '%Y-%m-%d')
+            dow = dow_labels.get(dt.weekday(), '')
+            date_parts.append(f"{dt.month}/{dt.day}({dow})")
+        date_str = "・".join(date_parts)
 
     # ツイート1: フック
-    t1 = f"📅 今週末({date_str})のレース\n"
+    t1 = f"📅 今週末のレース\n"
+    t1 += f"{date_str}\n"
     t1 += f"開催: {'・'.join(venues)}\n\n"
-    t1 += "各メインレースのAI注目馬を\n"
+    t1 += "メインレースのAI注目馬を\n"
     t1 += "一足先にチラ見せ\n\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
-    # ツイート2: 各レースのAI上位
+    # ツイート2: 日付別にグループ化
     t2 = ""
-    for rp in race_picks:
-        t2 += f"🏇 {rp['venue']} {rp['name']}\n"
-        t2 += f"  {rp['surface']}{rp['distance']}m\n"
-        if rp['picks']:
-            t2 += f"  AI注目: {' / '.join(rp['picks'])}\n"
-        else:
-            t2 += "  AI注目: 分析中\n"
+    from itertools import groupby
+    for date_key, group in groupby(race_picks, key=lambda x: x['date']):
+        dt = datetime.strptime(date_key, '%Y-%m-%d')
+        dow = dow_labels.get(dt.weekday(), '')
+        t2 += f"📆 {dt.month}/{dt.day}({dow})\n"
+        for rp in group:
+            t2 += f"🏇{rp['venue']} {rp['name']}\n"
+            t2 += f" {rp['surface']}{rp['distance']}m"
+            if rp['picks']:
+                t2 += f" AI注目:{'/'.join(rp['picks'])}\n"
+            else:
+                t2 += " AI注目:分析中\n"
         t2 += "\n"
 
     # ツイート3: 配信案内
