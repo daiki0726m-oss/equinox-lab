@@ -565,67 +565,180 @@ def generate_analysis_column():
 
 
 def generate_pickup_horse():
-    """木曜: 注目馬（3ツイート）"""
-    try:
-        with get_db() as conn:
-            top_horses = conn.execute("""
-                SELECT h.horse_name,
-                       AVG(r.finish_position) as avg_pos,
-                       COUNT(*) as runs,
-                       MIN(r.finish_position) as best
-                FROM results r
-                JOIN horses h ON r.horse_id = h.horse_id
-                JOIN races ra ON r.race_id = ra.race_id
-                WHERE ra.race_date >= date('now', '-60 days')
-                AND r.finish_position > 0 AND r.finish_position <= 3
-                GROUP BY h.horse_id
-                HAVING runs >= 2
-                ORDER BY avg_pos ASC
-                LIMIT 5
-            """).fetchall()
-    except:
-        top_horses = []
+    """木曜: 今週末の注目馬（3つの切り口）"""
+    today = now_jst()
 
-    if not top_horses:
+    # 今週末のレース日を特定
+    with get_db() as conn:
+        weekend = conn.execute("""
+            SELECT DISTINCT race_date FROM races
+            WHERE race_date > date('now') AND race_date <= date('now', '+7 days')
+            ORDER BY race_date LIMIT 2
+        """).fetchall()
+
+    if not weekend:
         return generate_analysis_column()
 
-    today = now_jst()
-    start_date = today - timedelta(days=60)
+    weekend_dates = [w['race_date'] for w in weekend]
+    weekend_str = "・".join([f"{datetime.strptime(d,'%Y-%m-%d').month}/{datetime.strptime(d,'%Y-%m-%d').day}" for d in weekend_dates])
 
-    # 最終開催日を取得
-    try:
-        with get_db() as conn:
-            last_race = conn.execute("""
-                SELECT MAX(ra.race_date) as last_date FROM races ra
-                JOIN results r ON ra.race_id = r.race_id
-                WHERE ra.race_date >= date('now', '-60 days')
-                AND ra.race_date <= date('now')
-                AND r.finish_position > 0
-            """).fetchone()
-        if last_race and last_race["last_date"]:
-            end_dt = datetime.strptime(last_race["last_date"], "%Y-%m-%d")
-        else:
-            end_dt = today
-    except:
-        end_dt = today
+    with get_db() as conn:
+        # ① 条件替わり: 前走は不得意条件で凡走→今週は得意条件
+        dist_change = conn.execute("""
+            WITH weekend_entries AS (
+                SELECT r.horse_id, ra.race_name, ra.distance, ra.surface
+                FROM results r
+                JOIN races ra ON r.race_id = ra.race_id
+                WHERE ra.race_date > date('now') AND ra.race_date <= date('now', '+7 days')
+                AND r.finish_position = 0
+            ),
+            last_race AS (
+                SELECT r.horse_id, ra.distance as last_dist, ra.surface as last_surf,
+                       r.finish_position as last_pos,
+                       ROW_NUMBER() OVER (PARTITION BY r.horse_id ORDER BY ra.race_date DESC) as rn
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.finish_position > 0
+            ),
+            good_cond AS (
+                SELECT r.horse_id, ra.distance, ra.surface,
+                       COUNT(*) as runs,
+                       SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.finish_position > 0
+                GROUP BY r.horse_id, ra.distance, ra.surface
+                HAVING runs >= 2 AND top3 >= 1
+            )
+            SELECT h.horse_name, we.race_name,
+                   lr.last_surf||lr.last_dist||'m' as last_cond, lr.last_pos,
+                   we.surface||we.distance||'m' as this_cond,
+                   gc.runs, gc.top3
+            FROM weekend_entries we
+            JOIN horses h ON we.horse_id = h.horse_id
+            JOIN last_race lr ON we.horse_id = lr.horse_id AND lr.rn = 1
+            JOIN good_cond gc ON we.horse_id = gc.horse_id
+                AND gc.distance = we.distance AND gc.surface = we.surface
+            WHERE (we.distance != lr.last_dist OR we.surface != lr.last_surf)
+            AND lr.last_pos >= 4
+            ORDER BY CAST(gc.top3 AS FLOAT)/gc.runs DESC
+            LIMIT 3
+        """).fetchall()
 
-    period = f"{start_date.year}/{start_date.month}/{start_date.day}〜{end_dt.year}/{end_dt.month}/{end_dt.day}"
+        # ③ ベストタイム上位なのに前走凡走
+        si_adv = conn.execute("""
+            WITH weekend_entries AS (
+                SELECT r.horse_id, ra.race_id, ra.race_name, ra.distance, ra.surface
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE ra.race_date > date('now') AND ra.race_date <= date('now', '+7 days')
+                AND r.finish_position = 0
+            ),
+            best_time AS (
+                SELECT r.horse_id, MIN(r.finish_time_seconds) as bt, ra.distance, ra.surface
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.finish_position > 0 AND r.finish_time_seconds > 0
+                GROUP BY r.horse_id, ra.distance, ra.surface
+            ),
+            ranked AS (
+                SELECT we.race_id, we.race_name, we.horse_id, bt.bt,
+                       RANK() OVER (PARTITION BY we.race_id ORDER BY bt.bt) as rnk,
+                       COUNT(*) OVER (PARTITION BY we.race_id) as total
+                FROM weekend_entries we
+                JOIN best_time bt ON we.horse_id = bt.horse_id
+                    AND bt.distance = we.distance AND bt.surface = we.surface
+            ),
+            last_race AS (
+                SELECT r.horse_id, r.finish_position as last_pos,
+                       ROW_NUMBER() OVER (PARTITION BY r.horse_id ORDER BY ra.race_date DESC) as rn
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.finish_position > 0
+            )
+            SELECT h.horse_name, rk.race_name, rk.rnk, rk.total, lr.last_pos
+            FROM ranked rk
+            JOIN horses h ON rk.horse_id = h.horse_id
+            JOIN last_race lr ON rk.horse_id = lr.horse_id AND lr.rn = 1
+            WHERE rk.rnk <= 2 AND lr.last_pos >= 4 AND rk.total >= 3
+            ORDER BY rk.race_name, rk.rnk
+            LIMIT 3
+        """).fetchall()
 
-    t1 = f"🐴 好走馬ピックアップ\n"
-    t1 += f"集計期間: {period}\n\n"
-    t1 += "複数回3着以内に入った馬は\n"
-    t1 += "次走も注目する価値大\n\n"
+        # ④ コース替わり: 得意競馬場に替わる
+        venue_change = conn.execute("""
+            WITH weekend_entries AS (
+                SELECT r.horse_id, ra.race_name, ra.venue
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE ra.race_date > date('now') AND ra.race_date <= date('now', '+7 days')
+                AND r.finish_position = 0
+            ),
+            last_race AS (
+                SELECT r.horse_id, ra.venue as last_venue, r.finish_position as last_pos,
+                       ROW_NUMBER() OVER (PARTITION BY r.horse_id ORDER BY ra.race_date DESC) as rn
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.finish_position > 0
+            ),
+            venue_rec AS (
+                SELECT r.horse_id, ra.venue, COUNT(*) as runs,
+                       SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.finish_position > 0
+                GROUP BY r.horse_id, ra.venue
+                HAVING runs >= 2 AND top3 >= 1
+            )
+            SELECT h.horse_name, we.race_name, we.venue,
+                   lr.last_venue, lr.last_pos, vr.runs, vr.top3
+            FROM weekend_entries we
+            JOIN horses h ON we.horse_id = h.horse_id
+            JOIN last_race lr ON we.horse_id = lr.horse_id AND lr.rn = 1
+            JOIN venue_rec vr ON we.horse_id = vr.horse_id AND vr.venue = we.venue
+            WHERE we.venue != lr.last_venue AND lr.last_pos >= 4
+            ORDER BY CAST(vr.top3 AS FLOAT)/vr.runs DESC
+            LIMIT 3
+        """).fetchall()
+
+    # データがなければコラムに切替
+    if not dist_change and not si_adv and not venue_change:
+        return generate_analysis_column()
+
+    # ── ツイート1: フック ──
+    t1 = f"🔍 今週末({weekend_str})の注目馬\n\n"
+    t1 += "前走凡走でも今回条件が変わる馬を\n"
+    t1 += "3つの切り口でAIがピックアップ\n\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
-    t2 = f"📊 好走馬リスト({period})\n\n"
-    for h in top_horses:
-        avg = round(h["avg_pos"], 1)
-        t2 += f"⭐{h['horse_name']}\n"
-        t2 += f" →平均{avg}着 / {h['runs']}走 / 最高{h['best']}着\n"
+    # ── ツイート2: データ ──
+    t2 = ""
+    if dist_change:
+        t2 += "🔄 条件替わりで好走期待\n"
+        for h in dist_change:
+            rate = round(h['top3']/h['runs']*100)
+            t2 += f"・{h['horse_name']}({h['race_name']})\n"
+            t2 += f" 前走{h['last_cond']}{h['last_pos']}着→今週{h['this_cond']}\n"
+            t2 += f" 同条件{h['runs']}走 複勝率{rate}%\n"
 
-    t3 = "💡 週末の馬券に活かす\n\n"
-    t3 += "安定して好走中の馬が出走したら\n"
-    t3 += "複勝や相手馬として狙い目\n\n"
+    if venue_change:
+        if t2:
+            t2 += "\n"
+        t2 += "🏟️ 得意競馬場に替わる\n"
+        for h in venue_change:
+            rate = round(h['top3']/h['runs']*100)
+            t2 += f"・{h['horse_name']}({h['race_name']})\n"
+            t2 += f" 前走{h['last_venue']}{h['last_pos']}着→今週{h['venue']}\n"
+            t2 += f" {h['venue']}{h['runs']}走 複勝率{rate}%\n"
+
+    if si_adv:
+        if t2:
+            t2 += "\n"
+        t2 += "⏱️ タイム上位なのに前走凡走\n"
+        for h in si_adv:
+            t2 += f"・{h['horse_name']}({h['race_name']})\n"
+            t2 += f" 前走{h['last_pos']}着→同距離ベスト{h['total']}頭中{h['rnk']}位\n"
+
+    if not t2:
+        t2 = "今週はデータ該当馬が少なめ。\n週末のAI予想をお待ちください。"
+
+    # ── ツイート3: 解説 ──
+    t3 = "💡 なぜ前走凡走馬に注目？\n\n"
+    t3 += "前走の着順が悪いと人気が落ちる\n"
+    t3 += "→ オッズが高くなる\n"
+    t3 += "→ 条件が合えば期待値が跳ねる\n\n"
     t3 += "土曜朝にメインレースの\n"
     t3 += "AI予想を配信予定🔔"
 
