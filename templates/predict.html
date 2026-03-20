@@ -1105,12 +1105,12 @@ function renderHorseRow(h, showReasons) {
         ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
       </div>
       <div class="horse-stats">
-        <span class="stat">SI <span class="stat-val">${h.si_avg || 0}</span></span>
-        <span class="stat">複勝 <span class="stat-val">${h.pred_top3 || 0}%</span></span>
-        <span class="stat">勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
-        <span class="stat">連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>
         ${h.odds_win ? `<span class="stat">オッズ <span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span></span>` : ''}
         ${h.popularity ? `<span class="stat">${h.popularity <= 3 ? '<span class="stat-val" style="background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px">' : '<span class="stat-val">'}${h.popularity}人気</span></span>` : ''}
+        <span class="stat">SI <span class="stat-val">${h.si_avg || 0}</span></span>
+        <span class="stat">AI複勝 <span class="stat-val">${h.pred_top3 || 0}%</span></span>
+        <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
+        <span class="stat">過去連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>
       </div>
     </div>
     <div class="horse-prob">
