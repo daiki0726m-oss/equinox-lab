@@ -4,6 +4,7 @@
 """
 
 import argparse
+import json
 import sys
 import os
 from datetime import datetime
@@ -279,6 +280,23 @@ def cmd_predict(args):
                 "odds_win": odds_win,
                 "odds_place": odds_place,
             })
+
+        # predictions_cache に保存
+        sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
+        cache_json = json.dumps([{
+            "horse_number": p["horse_number"],
+            "horse_name": p["horse_name"],
+            "pred_win_pct": round(p["pred_win"] * 100, 1),
+            "pred_top3_pct": round(p["pred_top3"] * 100, 1),
+        } for p in sorted_preds], ensure_ascii=False)
+
+        with get_db() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO predictions_cache
+                (race_id, predictions_json, all_bets_json, confidence, should_bet, created_at)
+                VALUES (?, ?, '{}', 'C', 1, datetime('now'))
+            """, (race_id, cache_json))
+        print(f"  💾 予測キャッシュを保存")
 
         # 馬券推奨
         should_bet, reason = strategy.should_bet_race(predictions)
