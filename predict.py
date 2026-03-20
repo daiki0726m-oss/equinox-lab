@@ -31,8 +31,59 @@ def cmd_collect(args):
         for i, rid in enumerate(race_ids):
             print(f"  [{i+1}/{len(race_ids)}] {rid}")
             data = scraper.scrape_race_result(rid)
-            if data:
+            if data and data.get("results"):
                 scraper.save_race_to_db(data)
+            else:
+                # 未来のレース: 出馬表から取得
+                shutuba = scraper.scrape_shutuba(rid)
+                if shutuba and shutuba.get("entries"):
+                    with get_db() as conn:
+                        conn.execute("""
+                            INSERT OR REPLACE INTO races
+                            (race_id, race_date, venue, race_number, race_name, grade,
+                             distance, surface, direction, weather, track_condition, horse_count)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            rid, shutuba.get("race_date", ""),
+                            shutuba.get("venue", ""), shutuba.get("race_number", 0),
+                            shutuba.get("race_name", ""), shutuba.get("grade", ""),
+                            shutuba.get("distance", 0), shutuba.get("surface", ""),
+                            shutuba.get("direction", ""), shutuba.get("weather", ""),
+                            shutuba.get("track_condition", ""),
+                            len(shutuba.get("entries", []))
+                        ))
+                        for e in shutuba.get("entries", []):
+                            if e.get("horse_id"):
+                                conn.execute("""
+                                    INSERT OR IGNORE INTO horses (horse_id, horse_name, sex)
+                                    VALUES (?, ?, ?)
+                                """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", "")))
+                            if e.get("jockey_id"):
+                                conn.execute("""
+                                    INSERT OR IGNORE INTO jockeys (jockey_id, jockey_name)
+                                    VALUES (?, ?)
+                                """, (e["jockey_id"], e.get("jockey_name", "")))
+                            if e.get("trainer_id"):
+                                conn.execute("""
+                                    INSERT OR IGNORE INTO trainers (trainer_id, trainer_name)
+                                    VALUES (?, ?)
+                                """, (e["trainer_id"], e.get("trainer_name", "")))
+                            conn.execute("""
+                                INSERT OR REPLACE INTO results
+                                (race_id, horse_id, jockey_id, trainer_id,
+                                 post_position, horse_number, odds, popularity,
+                                 finish_position, finish_time, finish_time_seconds,
+                                 margin, last_3f, passing_order, weight, weight_change, impost)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                rid, e.get("horse_id", ""),
+                                e.get("jockey_id", ""), e.get("trainer_id", ""),
+                                e.get("post_position", 0), e.get("horse_number", 0),
+                                0, 0, 0, "", 0, "", 0, "", 0, 0, e.get("impost", 0)
+                            ))
+                    print(f"  📋 出馬表保存: {len(shutuba['entries'])}頭")
+                else:
+                    print(f"  ⚠️ データ取得失敗: {rid}")
     else:
         # 期間指定で収集
         start_y = args.start_year or 2024
