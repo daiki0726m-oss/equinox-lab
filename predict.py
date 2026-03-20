@@ -281,13 +281,19 @@ def cmd_predict(args):
                 "odds_place": odds_place,
             })
 
-        # predictions_cache に保存
+        # predictions_cache に保存（推定オッズ・人気を含む）
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
+        # 人気順 = オッズが低い順
+        by_odds = sorted(sorted_preds, key=lambda x: x.get("odds_win", 999))
+        popularity_map = {p["horse_number"]: i+1 for i, p in enumerate(by_odds)}
+
         cache_json = json.dumps([{
             "horse_number": p["horse_number"],
             "horse_name": p["horse_name"],
             "pred_win_pct": round(p["pred_win"] * 100, 1),
             "pred_top3_pct": round(p["pred_top3"] * 100, 1),
+            "odds_win": round(p.get("odds_win", 0), 1),
+            "popularity": popularity_map.get(p["horse_number"], 0),
         } for p in sorted_preds], ensure_ascii=False)
 
         with get_db() as conn:
