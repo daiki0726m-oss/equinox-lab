@@ -174,20 +174,16 @@ def cmd_predict(args):
     for race in cached_races:
         preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
         rname = race['race_name']
-        surface = race['surface'] or ''
-        dist = race['distance'] or 0
-        cond = race['track_condition'] or '良'
 
         t2 += f"🏟️{race['venue']} {rname}\n"
-        t2 += f" {surface}{dist}m/{cond}\n"
 
         marks = ["◎", "○", "▲"]
         for i, p in enumerate(preds[:3]):
             mark = marks[i] if i < 3 else ""
             hname = p.get('horse_name', '?')
             hn = p.get('horse_number', 0)
-            t2 += f" {mark}{hn}番{hname}\n"
-        t2 += "\n"
+            t2 += f"{mark}{hn}{hname} "
+        t2 = t2.rstrip() + "\n\n"
 
     # ── ツイート3: 買い目＋配信案内 ──
     t3 = "💡 買い目のポイント\n\n"
