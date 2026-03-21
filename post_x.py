@@ -232,15 +232,30 @@ def cmd_results(args):
             print(f"❌ {date_str} の予測データがありません")
             return
 
-        # 各レースのAI◎の着順を取得
+        # 各レースのAI◎○▲の着順を取得
         results_list = []
         for race in races:
             preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
             if not preds:
                 continue
 
-            top = preds[0]
-            horse_num = top.get('horse_number', 0)
+            # mark == '◎' の馬を探す（preds[0]ではなく）
+            marks = {'◎': None, '○': None, '▲': None}
+            for p in preds:
+                m = p.get('mark', '')
+                if m in marks and marks[m] is None:
+                    marks[m] = p
+
+            # ◎が見つからなければpred_winで最上位を使用
+            honmei = marks['◎']
+            if not honmei:
+                sorted_preds = sorted(preds, key=lambda x: x.get('pred_win', 0), reverse=True)
+                honmei = sorted_preds[0] if sorted_preds else None
+
+            if not honmei:
+                continue
+
+            horse_num = honmei.get('horse_number', 0)
             actual = conn.execute("""
                 SELECT finish_position, odds FROM results
                 WHERE race_id = ? AND horse_number = ?
@@ -250,8 +265,9 @@ def cmd_results(args):
             results_list.append({
                 'venue': race['venue'],
                 'race_name': race['race_name'],
-                'horse_name': top.get('horse_name', '?'),
-                'horse_num': horse_num,
+                'honmei': honmei,
+                'taikou': marks['○'],
+                'tanketsu': marks['▲'],
                 'finish': actual['finish_position'] if actual else None,
                 'odds': actual['odds'] if actual else 0,
             })
@@ -278,15 +294,25 @@ def cmd_results(args):
     # ── ツイート2: 各レース結果 ──
     t2 = f"📋 各レース結果\n\n"
     for r in results_list:
+        h = r['honmei']
+        mark_line = f"◎{h['horse_number']}{h['horse_name']}"
+        if r['taikou']:
+            mark_line += f" ○{r['taikou']['horse_number']}{r['taikou']['horse_name']}"
+        if r['tanketsu']:
+            mark_line += f" ▲{r['tanketsu']['horse_number']}{r['tanketsu']['horse_name']}"
+
         if r['finish'] and r['finish'] <= 3:
             t2 += f"✅ {r['venue']} {r['race_name']}\n"
-            t2 += f" ◎{r['horse_name']} → {r['finish']}着\n"
+            t2 += f" {mark_line}\n"
+            t2 += f" → ◎{r['finish']}着的中\n"
         elif r['finish']:
             t2 += f"❌ {r['venue']} {r['race_name']}\n"
-            t2 += f" ◎{r['horse_name']} → {r['finish']}着\n"
+            t2 += f" {mark_line}\n"
+            t2 += f" → ◎{r['finish']}着\n"
         else:
             t2 += f"⏳ {r['venue']} {r['race_name']}\n"
-            t2 += f" ◎{r['horse_name']} → 結果待ち\n"
+            t2 += f" {mark_line}\n"
+            t2 += f" → 結果待ち\n"
 
     # ── ツイート3: 総括 ──
     t3 = "💡 振り返り\n\n"
