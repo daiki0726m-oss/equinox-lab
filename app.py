@@ -22,7 +22,8 @@ JST = timezone(timedelta(hours=9))
 
 
 def _bg_result_fetcher():
-    """バックグラウンドで5分ごとにレース結果を取得"""
+    """バックグラウンドで5分ごとにレース結果＆オッズを取得"""
+    import requests as bg_requests
     from scraper import NetkeibaScraper
     scraper = NetkeibaScraper()
 
@@ -31,62 +32,91 @@ def _bg_result_fetcher():
             now = datetime.now(JST)
             hour = now.hour
 
-            # 10:00〜17:30 のみ動作（土日判定なし＝いつでもレース日なら動く）
-            if 10 <= hour <= 17:
+            # 9:00〜17:30 のみ動作
+            if 9 <= hour <= 17:
                 today_str = now.strftime("%Y-%m-%d")
 
                 with get_db() as conn:
-                    # 今日のレースで結果未取得のもの
-                    pending = conn.execute("""
+                    all_today = conn.execute("""
                         SELECT DISTINCT ra.race_id, ra.race_name, ra.venue, ra.race_number
                         FROM races ra
-                        JOIN results r ON ra.race_id = r.race_id
                         WHERE ra.race_date = ?
-                          AND r.finish_position = 0
                         ORDER BY ra.venue, ra.race_number
                     """, (today_str,)).fetchall()
 
-                if pending:
-                    for race in pending:
-                        rid = race['race_id']
+                for race in all_today:
+                    rid = race['race_id']
+
+                    # ── リアルタイムオッズ更新 ──
+                    try:
+                        api_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={rid}&type=1&action=update"
+                        api_headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://race.netkeiba.com/"}
+                        resp = bg_requests.get(api_url, headers=api_headers, timeout=8)
+                        data = resp.json()
+                        if data.get("data", {}).get("odds", {}).get("1"):
+                            odds_raw = data["data"]["odds"]["1"]
+                            with get_db() as conn:
+                                for hn_str, vals in odds_raw.items():
+                                    if isinstance(vals, list) and len(vals) >= 3:
+                                        ov = float(vals[0]) if vals[0] and vals[0] != '---.-' else 0
+                                        pv = int(vals[2]) if vals[2] else 0
+                                        if ov > 0:
+                                            conn.execute("UPDATE results SET odds=?, popularity=? WHERE race_id=? AND horse_number=?",
+                                                         (ov, pv, rid, int(hn_str)))
+                                # predictions_cache更新
+                                cache = conn.execute("SELECT predictions_json FROM predictions_cache WHERE race_id=?", (rid,)).fetchone()
+                                if cache:
+                                    preds = json.loads(cache['predictions_json'])
+                                    for p in preds:
+                                        hn = str(p['horse_number']).zfill(2)
+                                        if hn in odds_raw:
+                                            v = odds_raw[hn]
+                                            if isinstance(v, list) and len(v) >= 3:
+                                                p['odds_win'] = float(v[0]) if v[0] and v[0] != '---.-' else p.get('odds_win', 0)
+                                                p['popularity'] = int(v[2]) if v[2] else p.get('popularity', 0)
+                                    conn.execute("UPDATE predictions_cache SET predictions_json=? WHERE race_id=?",
+                                                 (json.dumps(preds, ensure_ascii=False), rid))
+                    except Exception:
+                        pass
+
+                    # ── 結果取得（finish_position=0のレースのみ） ──
+                    with get_db() as conn:
+                        has_pending = conn.execute(
+                            "SELECT COUNT(*) as c FROM results WHERE race_id=? AND finish_position=0", (rid,)
+                        ).fetchone()['c']
+
+                    if has_pending > 0:
                         try:
                             data = scraper.scrape_race_result(rid)
                             if data and data.get("results") and len(data["results"]) > 0:
-                                # 結果が入っていれば更新
                                 first = data["results"][0]
                                 if first.get("finish_position", 0) > 0:
                                     with get_db() as conn:
                                         for r in data["results"]:
                                             conn.execute("""
                                                 UPDATE results SET
-                                                    finish_position = ?,
-                                                    finish_time = ?,
-                                                    finish_time_seconds = ?,
-                                                    margin = ?,
-                                                    last_3f = ?,
-                                                    passing_order = ?,
-                                                    weight = ?,
-                                                    weight_change = ?,
-                                                    odds = CASE WHEN ? > 0 THEN ? ELSE odds END,
-                                                    popularity = CASE WHEN ? > 0 THEN ? ELSE popularity END
-                                                WHERE race_id = ? AND horse_number = ?
+                                                    finish_position=?, finish_time=?, finish_time_seconds=?,
+                                                    margin=?, last_3f=?, passing_order=?,
+                                                    weight=?, weight_change=?,
+                                                    odds=CASE WHEN ?> 0 THEN ? ELSE odds END,
+                                                    popularity=CASE WHEN ?>0 THEN ? ELSE popularity END
+                                                WHERE race_id=? AND horse_number=?
                                             """, (
-                                                r.get("finish_position", 0),
-                                                r.get("finish_time", ""),
-                                                r.get("finish_time_seconds", 0),
-                                                r.get("margin", ""),
-                                                r.get("last_3f", 0),
-                                                r.get("passing_order", ""),
-                                                r.get("weight", 0),
-                                                r.get("weight_change", 0),
+                                                r.get("finish_position", 0), r.get("finish_time", ""),
+                                                r.get("finish_time_seconds", 0), r.get("margin", ""),
+                                                r.get("last_3f", 0), r.get("passing_order", ""),
+                                                r.get("weight", 0), r.get("weight_change", 0),
                                                 r.get("odds", 0), r.get("odds", 0),
                                                 r.get("popularity", 0), r.get("popularity", 0),
                                                 rid, r.get("horse_number", 0)
                                             ))
                                     print(f"  🏁 結果取得: {race['venue']}R{race['race_number']} {race['race_name']}")
-                            time_mod.sleep(1)
                         except Exception as e:
                             print(f"  ⚠️ 結果取得エラー {rid}: {e}")
+
+                    time_mod.sleep(0.5)
+
+                print(f"  🔄 {now.strftime('%H:%M')} オッズ・結果更新完了 ({len(all_today)}レース)")
 
             # 5分待機
             time_mod.sleep(300)
@@ -830,6 +860,7 @@ def api_predict_date(date_str):
                 "distance": race_info.get("distance", 0),
                 "surface": race_info.get("surface", ""),
                 "track_condition": race_info.get("track_condition", "良"),
+                "start_time": race_info.get("start_time", ""),
                 "horse_count": len(horses),
                 "horses": horses,
                 "all_bets": all_bets,        # ← 全6券種
