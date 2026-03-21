@@ -737,11 +737,11 @@ def api_predict_date(date_str):
                         if ev > max_ev:
                             max_ev = ev
 
-                if max_ev >= 5.0:
+                if max_ev >= 8.0:
                     confidence, conf_reason = "S", f"期待値が非常に高い (EV {max_ev:.1f})"
-                elif max_ev >= 2.5:
+                elif max_ev >= 4.0:
                     confidence, conf_reason = "A", f"十分なプラス期待値 (EV {max_ev:.1f})"
-                elif max_ev >= 1.5:
+                elif max_ev >= 2.0:
                     confidence, conf_reason = "B", f"やや期待できる (EV {max_ev:.1f})"
                 elif max_ev >= 1.0:
                     confidence, conf_reason = "C", f"トントン、慎重に (EV {max_ev:.1f})"
