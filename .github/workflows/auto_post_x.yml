@@ -4,6 +4,8 @@ on:
   schedule:
     # 毎日 朝8時(JST) = 前日23:00 UTC
     - cron: '0 23 * * *'
+    # 土日 9:55(JST) = 00:55 UTC (ロック前オッズ確定)
+    - cron: '55 0 * * 0,6'
     # 土日 17時(JST) = 08:00 UTC (的中報告)
     - cron: '0 8 * * 0,6'
   workflow_dispatch:
@@ -18,6 +20,7 @@ on:
           - weekday
           - predict
           - results
+          - refresh_odds
 
 jobs:
   post:
@@ -41,6 +44,7 @@ jobs:
         run: |
           DOW=$(TZ=Asia/Tokyo date +%u)  # 1=Mon ... 7=Sun
           HOUR=$(TZ=Asia/Tokyo date +%H)
+          MINUTE=$(TZ=Asia/Tokyo date +%M)
           TODAY_YYYYMMDD=$(TZ=Asia/Tokyo date +%Y%m%d)
           TODAY_HYPHEN=$(TZ=Asia/Tokyo date +%Y-%m-%d)
 
@@ -57,6 +61,13 @@ jobs:
             # 午後 → 的中報告（土日のみ）
             if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
               echo "type=results" >> $GITHUB_OUTPUT
+            else
+              echo "type=skip" >> $GITHUB_OUTPUT
+            fi
+          elif [ "$HOUR" -eq 9 ] || ([ "$HOUR" -eq 10 ] && [ "$MINUTE" -le 5 ]); then
+            # 9:50-10:05 → オッズ確定更新（土日のみ）
+            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
+              echo "type=refresh_odds" >> $GITHUB_OUTPUT
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
@@ -81,8 +92,16 @@ jobs:
           echo "🧠 予測を実行..."
           python predict.py predict --date "$DATE" || echo "⚠️ 予測完了（一部エラーあり）"
 
+      # ロック前にオッズ確定
+      - name: Refresh odds before lock
+        if: steps.determine.outputs.type == 'refresh_odds' || steps.determine.outputs.type == 'predict'
+        run: |
+          DATE="${{ steps.determine.outputs.date }}"
+          echo "📡 ${DATE} の最新オッズを取得..."
+          python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ更新完了（一部エラーあり）"
+
       - name: Post to X
-        if: steps.determine.outputs.type != 'skip'
+        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'weekday' || steps.determine.outputs.type == 'results'
         env:
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
