@@ -480,6 +480,21 @@ def api_predict_date(date_str):
                 if not race:
                     continue
                 race_info = dict(race)
+
+                # キャッシュの馬にDB最新のオッズ・人気をマージ
+                with get_db() as conn:
+                    db_results = conn.execute(
+                        "SELECT horse_number, odds, popularity FROM results WHERE race_id = ?",
+                        (race_id,)
+                    ).fetchall()
+                odds_map = {r['horse_number']: r for r in db_results}
+                for h in horses:
+                    db_r = odds_map.get(h['horse_number'])
+                    if db_r:
+                        if db_r['odds'] and db_r['odds'] > 0:
+                            h['odds_win'] = db_r['odds']
+                        if db_r['popularity'] and db_r['popularity'] > 0:
+                            h['popularity'] = db_r['popularity']
                 # キャッシュからレース傾向を再計算
                 sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
                 top_p = sorted_probs[0] if sorted_probs else 0
@@ -593,6 +608,7 @@ def api_predict_date(date_str):
                     jockey_name = ""
                     trainer_name = ""
                     odds_win = 0
+                    popularity = 0
 
                     for r in results:
                         if r["horse_number"] == hn:
@@ -600,22 +616,24 @@ def api_predict_date(date_str):
                             jockey_name = r["jockey_name"] or ""
                             trainer_name = r["trainer_name"] or ""
                             odds_win = r["odds"] or 0
+                            popularity = r["popularity"] or 0
                             break
 
                     pred_win = float(row["pred_win_norm"])
-                    pred_top3 = float(row["pred_top3_norm"] / 3)
+                    pred_top3 = float(row.get("pred_top3_norm", pred_win * 2.5))
 
-                    # リアルタイムオッズがあれば優先使用
+                    # オッズ取得
                     if odds_win <= 0 and hn in live_odds:
                         odds_win = live_odds[hn].get("win_odds", 0)
-                        place_min = live_odds[hn].get("place_odds_min", 0)
-                        place_max = live_odds[hn].get("place_odds_max", 0)
-                        odds_place = (place_min + place_max) / 2 if place_min > 0 else max(odds_win * 0.3, 1.1)
-                    elif odds_win <= 0 and pred_win > 0:
-                        # 推定オッズ: JRA控除率(20-25%)を考慮した妥当な推定
-                        odds_win = max(round(1.0 / pred_win, 1), 1.5)
-                        odds_place = max(round(1.0 / pred_top3, 1), 1.1) if pred_top3 > 0 else 1.5
+                    place_min = live_odds.get(hn, {}).get("place_min", 0)
+                    place_max = live_odds.get(hn, {}).get("place_max", 0)
+                    if place_min > 0 and place_max > 0:
+                        odds_place = (place_min + place_max) / 2
                     else:
+                        odds_place = max(odds_win * 0.3, 1.1) if odds_win else 1.5
+                    if odds_win <= 0 and pred_win > 0:
+                        # 推定オッズ
+                        odds_win = max(round(1.0 / pred_win, 1), 1.5)
                         odds_place = max(odds_win * 0.3, 1.1) if odds_win else 1.5
 
                     horses.append({
@@ -630,6 +648,7 @@ def api_predict_date(date_str):
                         "win_rate": round(float(row.get("win_rate_10r", 0)) * 100, 1),
                         "top3_rate": round(float(row.get("top3_rate_10r", 0)) * 100, 1),
                         "odds_win": odds_win,
+                        "popularity": popularity,
                         # Category scores for badge evaluation
                         "cat_ability": round(float(row.get("si_avg", 0)) + float(row.get("si_latest", 0)), 2),
                         "cat_pedigree": round(float(row.get("pedigree_score", 0)), 3),
@@ -840,14 +859,15 @@ def api_predict_date(date_str):
                     h['finish'] = res['finish']
                     h['time'] = res['time']
                     h['actual_odds'] = res['odds']
-                    h['popularity'] = res['popularity']
+                    if res['popularity'] and res['popularity'] > 0:
+                        h['popularity'] = res['popularity']
                     h['last_3f'] = res['last_3f']
                     h['margin'] = res['margin']
                 else:
                     h['finish'] = 0
                     h['time'] = ''
                     h['actual_odds'] = 0
-                    h['popularity'] = 0
+                    # popularity は上書きしない（DBから取得済み）
                     h['last_3f'] = 0
                     h['margin'] = ''
 
