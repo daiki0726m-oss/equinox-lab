@@ -6,7 +6,9 @@ Flask Webアプリケーション
 import os
 import sys
 import json
-from datetime import datetime, timedelta
+import threading
+import time as time_mod
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -15,6 +17,84 @@ from database import init_db, get_db
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "keiba-prediction-2025"
+
+JST = timezone(timedelta(hours=9))
+
+
+def _bg_result_fetcher():
+    """バックグラウンドで5分ごとにレース結果を取得"""
+    from scraper import NetkeibaScraper
+    scraper = NetkeibaScraper()
+
+    while True:
+        try:
+            now = datetime.now(JST)
+            hour = now.hour
+
+            # 10:00〜17:30 のみ動作（土日判定なし＝いつでもレース日なら動く）
+            if 10 <= hour <= 17:
+                today_str = now.strftime("%Y-%m-%d")
+
+                with get_db() as conn:
+                    # 今日のレースで結果未取得のもの
+                    pending = conn.execute("""
+                        SELECT DISTINCT ra.race_id, ra.race_name, ra.venue, ra.race_number
+                        FROM races ra
+                        JOIN results r ON ra.race_id = r.race_id
+                        WHERE ra.race_date = ?
+                          AND r.finish_position = 0
+                        ORDER BY ra.venue, ra.race_number
+                    """, (today_str,)).fetchall()
+
+                if pending:
+                    for race in pending:
+                        rid = race['race_id']
+                        try:
+                            data = scraper.scrape_race_result(rid)
+                            if data and data.get("results") and len(data["results"]) > 0:
+                                # 結果が入っていれば更新
+                                first = data["results"][0]
+                                if first.get("finish_position", 0) > 0:
+                                    with get_db() as conn:
+                                        for r in data["results"]:
+                                            conn.execute("""
+                                                UPDATE results SET
+                                                    finish_position = ?,
+                                                    finish_time = ?,
+                                                    finish_time_seconds = ?,
+                                                    margin = ?,
+                                                    last_3f = ?,
+                                                    passing_order = ?,
+                                                    weight = ?,
+                                                    weight_change = ?,
+                                                    odds = CASE WHEN ? > 0 THEN ? ELSE odds END,
+                                                    popularity = CASE WHEN ? > 0 THEN ? ELSE popularity END
+                                                WHERE race_id = ? AND horse_number = ?
+                                            """, (
+                                                r.get("finish_position", 0),
+                                                r.get("finish_time", ""),
+                                                r.get("finish_time_seconds", 0),
+                                                r.get("margin", ""),
+                                                r.get("last_3f", 0),
+                                                r.get("passing_order", ""),
+                                                r.get("weight", 0),
+                                                r.get("weight_change", 0),
+                                                r.get("odds", 0), r.get("odds", 0),
+                                                r.get("popularity", 0), r.get("popularity", 0),
+                                                rid, r.get("horse_number", 0)
+                                            ))
+                                    print(f"  🏁 結果取得: {race['venue']}R{race['race_number']} {race['race_name']}")
+                            time_mod.sleep(1)
+                        except Exception as e:
+                            print(f"  ⚠️ 結果取得エラー {rid}: {e}")
+
+            # 5分待機
+            time_mod.sleep(300)
+
+        except Exception as e:
+            print(f"⚠️ BG結果フェッチャーエラー: {e}")
+            time_mod.sleep(60)
+
 
 
 @app.route("/")
@@ -863,5 +943,11 @@ if __name__ == "__main__":
     print("🏇 競馬予想ダッシュボード起動中...")
     print("   http://localhost:5001")
     print("   予測ダッシュボード: http://localhost:5001/predict")
+
+    # バックグラウンド結果取得スレッド起動
+    bg_thread = threading.Thread(target=_bg_result_fetcher, daemon=True)
+    bg_thread.start()
+    print("   🔄 結果自動取得: ON (5分間隔, 10:00-17:30)")
+
     app.run(debug=True, host="0.0.0.0", port=5001)
 
