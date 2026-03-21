@@ -350,14 +350,14 @@ def generate_article(date_str, featured_races, all_races):
 
         # 予想印
         lines.append("### 🎯 予想印\n")
-        lines.append("| 印 | 馬番 | 馬名 | 勝率予測 | SI | オッズ |")
-        lines.append("|:--:|:----:|------|:-------:|:---:|:-----:|")
+        lines.append("| 印 | 馬番 | 馬名 | 勝率予測 | SI |")
+        lines.append("|:--:|:----:|------|:-------:|:---:|")
         for h in race["horses"][:5]:
             if h["mark"]:
                 lines.append(
                     f"| {h['mark']} | {h['horse_number']} | "
                     f"{h['horse_name']} | {h['pred_win']}% | "
-                    f"{h['si_avg']} | {h['odds_win']}倍 |"
+                    f"{h['si_avg']} |"
                 )
         lines.append("")
 

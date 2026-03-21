@@ -948,7 +948,6 @@ function createRaceCard(race) {
 
   let badges = '';
   if (hasResults) badges += `<span class="result-badge">✅ 確定</span>`;
-  if (isLocked) badges += `<span class="locked-badge">🔒 確定</span>`;
 
   return `
     <div class="race-card" id="race-${race.race_id}">
@@ -958,6 +957,7 @@ function createRaceCard(race) {
           <div class="race-info">
             <div class="race-name-line">${race.race_name || '未定'} ${badges}</div>
             <div class="race-meta">
+              ${race.start_time ? `<span style="color:#f0c040;font-weight:600">🕐${race.start_time}</span>` : ''}
               <span>${race.surface || ''}</span>
               <span>${race.distance || 0}m</span>
               <span>${race.horse_count || 0}頭</span>
