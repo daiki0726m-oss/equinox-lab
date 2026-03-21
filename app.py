@@ -361,6 +361,15 @@ def api_predict_date(date_str):
                 conf_reason = cached["conf_reason"] or ""
                 should_bet = bool(cached["should_bet"])
                 bet_reason = cached["bet_reason"] or ""
+
+                # レース情報はDBから取得
+                with get_db() as conn:
+                    race = conn.execute(
+                        "SELECT * FROM races WHERE race_id = ?", (race_id,)
+                    ).fetchone()
+                if not race:
+                    continue
+                race_info = dict(race)
                 # キャッシュからレース傾向を再計算
                 sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
                 top_p = sorted_probs[0] if sorted_probs else 0
