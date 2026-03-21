@@ -217,10 +217,9 @@ def cmd_results(args):
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
     with get_db() as conn:
-        # 当日11Rの予測＋結果を取得
         races = conn.execute("""
             SELECT ra.race_id, ra.race_name, ra.venue,
-                   pc.predictions_json
+                   pc.predictions_json, pc.all_bets_json
             FROM races ra
             JOIN predictions_cache pc ON ra.race_id = pc.race_id
             WHERE (ra.race_date = ? OR ra.race_date = ?)
@@ -232,95 +231,160 @@ def cmd_results(args):
             print(f"❌ {date_str} の予測データがありません")
             return
 
-        # 各レースのAI◎○▲の着順を取得
-        results_list = []
+        race_results = []
+        total_invested = 0
+        total_payout = 0
+
         for race in races:
             preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
-            if not preds:
-                continue
+            all_bets = json.loads(race['all_bets_json']) if race['all_bets_json'] else {}
 
-            # mark == '◎' の馬を探す（preds[0]ではなく）
+            # 配当情報を取得
+            payouts = conn.execute("""
+                SELECT bet_type, combination, payout_amount
+                FROM payouts WHERE race_id = ?
+            """, (race['race_id'],)).fetchall()
+            payout_map = {}
+            for p in payouts:
+                key = (p['bet_type'], p['combination'])
+                payout_map[key] = p['payout_amount']
+
+            # 着順を取得
+            finishes = conn.execute("""
+                SELECT horse_number, finish_position FROM results
+                WHERE race_id = ? AND finish_position > 0
+            """, (race['race_id'],)).fetchall()
+            finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
+
+            # ◎○▲を特定
             marks = {'◎': None, '○': None, '▲': None}
             for p in preds:
                 m = p.get('mark', '')
                 if m in marks and marks[m] is None:
                     marks[m] = p
 
-            # ◎が見つからなければpred_winで最上位を使用
-            honmei = marks['◎']
-            if not honmei:
-                sorted_preds = sorted(preds, key=lambda x: x.get('pred_win', 0), reverse=True)
-                honmei = sorted_preds[0] if sorted_preds else None
+            # 各推奨買い目の的中チェック
+            race_invest = 0
+            race_payout_total = 0
+            hit_bets = []
+            miss_count = 0
 
-            if not honmei:
-                continue
+            for bt, bt_bets in all_bets.items():
+                for b in bt_bets:
+                    amount = b.get('amount', 100)
+                    race_invest += amount
+                    detail = b.get('detail', '')
 
-            horse_num = honmei.get('horse_number', 0)
-            actual = conn.execute("""
-                SELECT finish_position, odds FROM results
-                WHERE race_id = ? AND horse_number = ?
-                AND finish_position > 0
-            """, (race['race_id'], horse_num)).fetchone()
+                    is_hit = False
+                    actual_payout = 0
 
-            results_list.append({
+                    if bt == '単勝':
+                        hn = b['horse_numbers'][0]
+                        if finish_map.get(hn) == 1:
+                            is_hit = True
+                            actual_payout = payout_map.get(('単勝', str(hn)), 0)
+                    elif bt == '複勝':
+                        hn = b['horse_numbers'][0]
+                        if finish_map.get(hn, 99) <= 3:
+                            is_hit = True
+                            actual_payout = payout_map.get(('複勝', str(hn)), 0)
+                    elif bt == 'ワイド':
+                        hns = sorted(b['horse_numbers'])
+                        combo = '-'.join(str(h) for h in hns)
+                        if all(finish_map.get(h, 99) <= 3 for h in hns):
+                            is_hit = True
+                            actual_payout = payout_map.get(('ワイド', combo), 0)
+                    elif bt == '馬連':
+                        hns = sorted(b['horse_numbers'])
+                        combo = '-'.join(str(h) for h in hns)
+                        top2 = sorted([h for h, f in finish_map.items() if f <= 2])
+                        if hns == top2:
+                            is_hit = True
+                            actual_payout = payout_map.get(('馬連', combo), 0)
+                    elif bt == '三連複':
+                        hns = sorted(set(b['horse_numbers'][:3]))
+                        combo = '-'.join(str(h) for h in hns)
+                        top3 = sorted([h for h, f in finish_map.items() if f <= 3])
+                        if hns == top3:
+                            is_hit = True
+                            actual_payout = payout_map.get(('三連複', combo), 0)
+                    elif bt == '三連単':
+                        hns = b['horse_numbers'][:3]
+                        ordered = [h for h, f in sorted(finish_map.items(), key=lambda x: x[1]) if f <= 3]
+                        if hns == ordered[:3]:
+                            is_hit = True
+                            combo = '-'.join(str(h) for h in hns)
+                            actual_payout = payout_map.get(('三連単', combo), 0)
+
+                    if is_hit and actual_payout > 0:
+                        payout_val = int(actual_payout * (amount / 100))
+                        race_payout_total += payout_val
+                        hit_bets.append({'type': bt, 'detail': detail, 'payout': payout_val})
+                    else:
+                        miss_count += 1
+
+            total_invested += race_invest
+            total_payout += race_payout_total
+
+            race_results.append({
                 'venue': race['venue'],
                 'race_name': race['race_name'],
-                'honmei': honmei,
-                'taikou': marks['○'],
-                'tanketsu': marks['▲'],
-                'finish': actual['finish_position'] if actual else None,
-                'odds': actual['odds'] if actual else 0,
+                'marks': marks,
+                'hit_bets': hit_bets,
+                'miss_count': miss_count,
+                'invested': race_invest,
+                'payout': race_payout_total,
             })
 
-    if not results_list:
+    if not race_results:
         print(f"❌ {date_str} の結果がまだ出ていません")
         return
 
-    # 集計
-    total = len(results_list)
-    hits = sum(1 for r in results_list if r['finish'] and r['finish'] <= 3)
-    hit_rate = round(hits / total * 100) if total > 0 else 0
+    total_races = len(race_results)
+    roi = round(total_payout / total_invested * 100) if total_invested > 0 else 0
+    profit = int(total_payout - total_invested)
+    hit_races = sum(1 for r in race_results if r['hit_bets'])
 
-    # ── ツイート1: 概要 ──
-    t1 = f"📊 {date_label} AI予想の結果\n\n"
-    t1 += f"メインレース(11R) {total}レース\n"
-    t1 += f"AI本命(◎)の複勝的中率: {hits}/{total}\n\n"
-    if hit_rate >= 50:
-        t1 += f"本日は好調でした！🔥\n\n"
+    # ── ツイート1: ROI概要 ──
+    t1 = f"📊 {date_label} AI推奨買い目の結果\n\n"
+    t1 += f"メインレース {total_races}レース\n"
+    t1 += f"投資: {int(total_invested):,}円\n"
+    t1 += f"回収: {int(total_payout):,}円\n"
+    t1 += f"収支: {'+' if profit >= 0 else ''}{profit:,}円\n"
+    t1 += f"ROI: {roi}%\n\n"
+    if roi >= 100:
+        t1 += "プラス回収！📈🔥\n\n"
     else:
-        t1 += f"本日は厳しい結果でした 📈\n\n"
+        t1 += "本日はマイナス。改善します 📉\n\n"
     t1 += "#競馬予想 #AI予想 #競馬結果 🧵↓"
 
     # ── ツイート2: 各レース結果 ──
     t2 = f"📋 各レース結果\n\n"
-    for r in results_list:
-        h = r['honmei']
-        mark_line = f"◎{h['horse_number']}{h['horse_name']}"
-        if r['taikou']:
-            mark_line += f" ○{r['taikou']['horse_number']}{r['taikou']['horse_name']}"
-        if r['tanketsu']:
-            mark_line += f" ▲{r['tanketsu']['horse_number']}{r['tanketsu']['horse_name']}"
+    for r in race_results:
+        m = r['marks']
+        mark_str = ""
+        if m['◎']:
+            mark_str += f"◎{m['◎']['horse_number']}{m['◎']['horse_name']}"
+        if m['○']:
+            mark_str += f" ○{m['○']['horse_number']}{m['○']['horse_name']}"
 
-        if r['finish'] and r['finish'] <= 3:
+        if r['hit_bets']:
             t2 += f"✅ {r['venue']} {r['race_name']}\n"
-            t2 += f" {mark_line}\n"
-            t2 += f" → ◎{r['finish']}着的中\n"
-        elif r['finish']:
-            t2 += f"❌ {r['venue']} {r['race_name']}\n"
-            t2 += f" {mark_line}\n"
-            t2 += f" → ◎{r['finish']}着\n"
+            t2 += f" {mark_str}\n"
+            for hb in r['hit_bets'][:2]:
+                t2 += f" 💰{hb['type']} {hb['detail']}→{hb['payout']:,}円\n"
         else:
-            t2 += f"⏳ {r['venue']} {r['race_name']}\n"
-            t2 += f" {mark_line}\n"
-            t2 += f" → 結果待ち\n"
+            t2 += f"❌ {r['venue']} {r['race_name']}\n"
+            t2 += f" {mark_str}\n"
+            t2 += f" 推奨{r['miss_count']}点 不的中\n"
 
     # ── ツイート3: 総括 ──
     t3 = "💡 振り返り\n\n"
-    if hit_rate >= 50:
-        t3 += f"複勝的中率{hit_rate}%\n"
-        t3 += "引き続きデータを蓄積していきます\n\n"
+    if roi >= 100:
+        t3 += f"ROI {roi}%でプラス回収\n"
+        t3 += f"的中レース: {hit_races}/{total_races}\n\n"
     else:
-        t3 += "的中率は改善の余地あり\n"
+        t3 += f"ROI {roi}%\n"
         t3 += "外れた原因を分析し精度向上します\n\n"
     t3 += "明日もメインレースAI予想を配信\n"
     t3 += "フォロー&通知ONで見逃さない🔔"
