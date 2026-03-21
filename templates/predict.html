@@ -1120,10 +1120,6 @@ function renderHorseRow(h, showReasons) {
     </div>
   </div>`;
 
-  if (showReasons && h.reasons && h.reasons.length > 0) {
-    html += `<div class="horse-reasons">${h.reasons.map(r => `<span class="reason-tag">${r}</span>`).join('')}</div>`;
-  }
-
   return html;
 }
 
