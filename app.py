@@ -736,25 +736,20 @@ def api_predict_date(date_str):
                     for bt in strategy.ALL_BET_TYPES:
                         all_bets[bt] = []
 
-                # ── 信頼度（EVベース）──
-                # 全券種の買い目から最大期待値を取得
-                max_ev = 0.0
-                for bt_key, bt_bets in all_bets.items():
-                    for b in bt_bets:
-                        ev = b.get("ev", 0)
-                        if ev > max_ev:
-                            max_ev = ev
+                # ── 信頼度（◎の予測勝率ベース）──
+                honmei = next((h for h in horses if h.get('mark') == '◎'), None)
+                honmei_win = honmei['pred_win'] if honmei else 0
 
-                if max_ev >= 8.0:
-                    confidence, conf_reason = "S", f"期待値が非常に高い (EV {max_ev:.1f})"
-                elif max_ev >= 4.0:
-                    confidence, conf_reason = "A", f"十分なプラス期待値 (EV {max_ev:.1f})"
-                elif max_ev >= 2.0:
-                    confidence, conf_reason = "B", f"やや期待できる (EV {max_ev:.1f})"
-                elif max_ev >= 1.0:
-                    confidence, conf_reason = "C", f"トントン、慎重に (EV {max_ev:.1f})"
+                if honmei_win >= 25:
+                    confidence, conf_reason = "S", f"◎の勝率が非常に高い ({honmei_win:.1f}%)"
+                elif honmei_win >= 18:
+                    confidence, conf_reason = "A", f"◎の勝率が高い ({honmei_win:.1f}%)"
+                elif honmei_win >= 12:
+                    confidence, conf_reason = "B", f"◎の勝率は標準的 ({honmei_win:.1f}%)"
+                elif honmei_win >= 8:
+                    confidence, conf_reason = "C", f"◎の信頼度やや低い ({honmei_win:.1f}%)"
                 else:
-                    confidence, conf_reason = "D", f"期待値低め (EV {max_ev:.1f})"
+                    confidence, conf_reason = "D", f"◎の信頼度が低い ({honmei_win:.1f}%)"
 
                 # ── レース傾向（堅い/混戦/波乱）──
                 sorted_probs = sorted([h["pred_win"] for h in horses], reverse=True)
