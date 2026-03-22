@@ -510,6 +510,16 @@ def generate_article(date_str, featured_races, all_races):
         lines.append(f"| {icon} **{rname}** | {surface}{distance}m | "
                      f"{hcount}頭 | **{conf}** | {tend} |")
     lines.append("")
+
+    lines.append("\n**AI評価の見方:**")
+    lines.append("| 評価 | 意味 |")
+    lines.append("|:----:|------|")
+    lines.append("| **S** | 最高評価 — 期待値が極めて高い |")
+    lines.append("| **A** | 高評価 — 期待値プラスの買い目あり |")
+    lines.append("| **B** | 標準 — 妙味のある買い目あり |")
+    lines.append("| **C** | やや低 — 買い目は限定的 |")
+    lines.append("| **D** | 見送り推奨 — 期待値プラスの買い目なし |")
+    lines.append("")
     lines.append("---\n")
 
     # ━━━ 6. 無料プレビュー（メインレース1つ） ━━━
@@ -541,78 +551,86 @@ def generate_article(date_str, featured_races, all_races):
         lines.append("---\n")
 
     # ━━━ 7-9. 有料エリアへの誘導 ━━━
+    all_venues = sorted(set(r["race_info"].get("venue", "") for r in all_races))
     lines.append("## 有料エリア: 全レースの買い目＋詳細分析\n")
-    lines.append("ここから先は、**具体的な推奨買い目**を公開します。\n")
+    lines.append(f"ここから先は、**全{len(all_races)}レースの◎○▲＋推奨買い目**を公開します。\n")
     lines.append("### 有料エリアの内容\n")
-    for r in featured_races:
-        rn = r["race_info"].get("race_name", "")
-        lines.append(f"📋 **{rn}** の◎○▲＋推奨買い目（堅実＋妙味の2パターン）")
-    lines.append("📋 各レースの **「消すべき馬」** リスト")
-    lines.append("📋 予算1,000円の **具体的な資金配分**\n")
+    for v in all_venues:
+        v_count = sum(1 for r in all_races if r['race_info'].get('venue') == v)
+        lines.append(f"📋 **{v}** 全{v_count}レースの◎○▲＋推奨買い目")
+    lines.append("📋 各券種（単勝・複勝・ワイド・馬連・三連複）のベスト買い目")
+    lines.append("📋 AI評価D（見送り推奨）レースの明示\n")
 
     lines.append("> ⚡ **今だけ特別価格: 300円**（10部売れたら500円に値上げします）")
     lines.append(">")
-    lines.append("> お気に入りのレースだけでも、1つ当たれば元が取れる価格設定です。\n")
+    lines.append("> 全レースカバー。お気に入りの1レースが当たれば元が取れます。\n")
     lines.append("---\n")
 
     # ━━━ ペイウォール ━━━
     lines.append("## ここから有料エリア ↓\n")
 
-    # ━━━ 有料コンテンツ ━━━
-    for race in featured_races:
-        info = race["race_info"]
-        rname = info.get("race_name", "")
-        surface = info.get("surface", "")
-        distance = info.get("distance", 0)
-        hcount = info.get("horse_count", 0)
-        conf = race["confidence"]
-        tend = race["tendency"]
-        rnum = info.get("race_number", 0)
-        is_main = (rnum == 11 or info.get("grade", "") in ("G1", "G2", "G3"))
-        icon = "🏆" if is_main else "🔥"
+    # ━━━ 有料コンテンツ: 全レース（会場別） ━━━
+    # 会場ごとにグループ化してレース番号順
+    from itertools import groupby
+    sorted_all = sorted(all_races, key=lambda x: (
+        x["race_info"].get("venue", ""),
+        x["race_info"].get("race_number", 0)
+    ))
 
-        lines.append(f"### {icon} {rname} {surface}{distance}m・"
-                     f"{hcount}頭 [AI評価: {conf}]\n")
-        lines.append(f"**レース傾向: {tend}**\n")
+    for venue, venue_races in groupby(sorted_all, key=lambda x: x["race_info"].get("venue", "")):
+        venue_list = list(venue_races)
+        lines.append(f"## 📍 {venue}（全{len(venue_list)}レース）\n")
 
-        lines.append("| 印 | 馬番 | 馬名 | AI勝率 | SI |")
-        lines.append("|:--:|:----:|------|:------:|:---:|")
-        for h in race["horses"][:5]:
-            if h.get("mark"):
-                lines.append(f"| {h['mark']} | {h['horse_number']} | "
-                             f"{h['horse_name']} | {h['pred_win']}% | "
-                             f"{h.get('si_avg', 0)} |")
-        lines.append("")
+        for race in venue_list:
+            info = race["race_info"]
+            rname = info.get("race_name", "")
+            surface = info.get("surface", "")
+            distance = info.get("distance", 0)
+            hcount = info.get("horse_count", 0)
+            conf = race["confidence"]
+            tend = race["tendency"]
+            rnum = info.get("race_number", 0)
+            is_main = (rnum == 11 or info.get("grade", "") in ("G1", "G2", "G3"))
+            icon = "🏆" if is_main else ""
 
-        # 買い目（券種ごとにベスト1つを表示）
-        lines.append("**推奨買い目:**")
+            lines.append(f"### {icon}{rnum}R {rname} {surface}{distance}m・"
+                         f"{hcount}頭 [AI評価: {conf}]\n")
 
-        # 有効な買い目を収集（重複馬番除外）
-        valid_by_type = {}
-        for bt in ["複勝", "単勝", "ワイド", "馬連", "三連複"]:
-            bets = race["all_bets"].get(bt, [])
-            for b in bets:
-                hns = b.get('horse_numbers', [])
-                if len(hns) != len(set(hns)):
-                    continue
-                if bt not in valid_by_type:
-                    valid_by_type[bt] = b
-                elif b.get('ev', 0) > valid_by_type[bt].get('ev', 0):
-                    valid_by_type[bt] = b
-
-        if valid_by_type:
-            for bt in ["複勝", "単勝", "ワイド", "馬連", "三連複"]:
-                if bt in valid_by_type:
-                    b = valid_by_type[bt]
-                    name = b.get('horse_name', b.get('detail', ''))
-                    lines.append(f"- {bt}: {name}")
-        else:
-            lines.append("- このレースは **見送り推奨**"
-                         "（EV基準で有利な買い目なし）")
+            # 予想印
+            lines.append("| 印 | 馬番 | 馬名 | AI勝率 | SI |")
+            lines.append("|:--:|:----:|------|:------:|:---:|")
+            for h in race["horses"][:5]:
+                if h.get("mark"):
+                    lines.append(f"| {h['mark']} | {h['horse_number']} | "
+                                 f"{h['horse_name']} | {h['pred_win']}% | "
+                                 f"{h.get('si_avg', 0)} |")
             lines.append("")
-            lines.append("> 💡 買わないレースを見極めることもROI向上の鍵です。")
 
-        lines.append("\n---\n")
+            # 買い目（券種ごとにベスト1つ・馬番付き）
+            valid_by_type = {}
+            for bt in ["複勝", "単勝", "ワイド", "馬連", "三連複"]:
+                bets = race["all_bets"].get(bt, [])
+                for b in bets:
+                    hns = b.get('horse_numbers', [])
+                    if len(hns) != len(set(hns)):
+                        continue
+                    if bt not in valid_by_type:
+                        valid_by_type[bt] = b
+                    elif b.get('ev', 0) > valid_by_type[bt].get('ev', 0):
+                        valid_by_type[bt] = b
+
+            lines.append("**推奨買い目:**")
+            if valid_by_type:
+                for bt in ["複勝", "単勝", "ワイド", "馬連", "三連複"]:
+                    if bt in valid_by_type:
+                        b = valid_by_type[bt]
+                        detail = b.get('detail', '')
+                        name = b.get('horse_name', '')
+                        lines.append(f"- {bt}: {detail} {name}")
+            else:
+                lines.append("- **見送り推奨**")
+
+            lines.append("\n---\n")
 
     # ━━━ フッター ━━━
     lines.append("## ⚠️ 免責事項\n")
