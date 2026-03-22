@@ -325,30 +325,40 @@ def get_race_predictions(date_str, model, strategy):
 
 
 def select_featured_races(all_races, top_n=3):
-    """厳選レースを選定: EV上位N + メインレース(11R)"""
-    # EV順でソート
-    ev_sorted = sorted(all_races, key=lambda x: x["max_ev"], reverse=True)
-
-    # メインレース(11R)を抽出
+    """厳選レースを選定: メインレース(11R) + 信頼度の高い特別レース(R9-R12)"""
+    # メインレース(11R, 重賞)を必ず含める
     main_races = [r for r in all_races
                   if r["race_info"].get("race_number", 0) == 11
                   or r["race_info"].get("grade", "") in ("G1", "G2", "G3")]
 
-    # EV上位N レース
     featured = []
     featured_ids = set()
-    for r in ev_sorted:
-        if len(featured) >= top_n:
-            break
-        if r["max_ev"] >= 1.0:  # 最低EV 1.0以上
-            featured.append(r)
-            featured_ids.add(r["race_id"])
 
-    # メインレースを追加（重複除外）
+    # 1. メインレースを優先追加
     for r in main_races:
-        if r["race_id"] not in featured_ids:
-            featured.append(r)
-            featured_ids.add(r["race_id"])
+        featured.append(r)
+        featured_ids.add(r["race_id"])
+
+    # 2. 特別レース(R9-R12)から信頼度の高い順に追加
+    #    EVだけでなく信頼度(confidence)とレース番号で選ぶ
+    conf_order = {"S": 4, "A": 3, "B": 2, "C": 1, "D": 0}
+    candidates = [
+        r for r in all_races
+        if r["race_id"] not in featured_ids
+        and r["race_info"].get("race_number", 0) >= 9  # 特別レース以上
+        and r["confidence"] in ("S", "A", "B")  # 信頼度B以上
+        and r["should_bet"]  # 買い目あり
+    ]
+    candidates.sort(key=lambda x: (
+        conf_order.get(x["confidence"], 0),
+        x["race_info"].get("race_number", 0),  # 後半レース優先
+    ), reverse=True)
+
+    for r in candidates:
+        if len(featured) >= len(main_races) + top_n:
+            break
+        featured.append(r)
+        featured_ids.add(r["race_id"])
 
     return featured
 
@@ -574,37 +584,28 @@ def generate_article(date_str, featured_races, all_races):
                              f"{h.get('si_avg', 0)} |")
         lines.append("")
 
-        # 買い目（堅実＋妙味）
-        honmei = next((h for h in race["horses"]
-                       if h.get("mark") == "◎"), None)
-        taikou = next((h for h in race["horses"]
-                       if h.get("mark") == "○"), None)
-        has_bets = any(race["all_bets"].get(bt, [])
-                       for bt in ["単勝", "複勝", "ワイド", "馬連", "三連複", "三連単"])
-
+        # 買い目（券種ごとにベスト1つを表示）
         lines.append("**推奨買い目:**")
-        if has_bets and honmei:
-            lines.append(f"- 🎯堅実: 複勝 {honmei['horse_number']}"
-                         f"{honmei['horse_name']}")
-            if taikou:
-                axis = {honmei['horse_number'], taikou['horse_number']}
-                partners = set()
-                for bt, bets in race["all_bets"].items():
-                    for b in bets:
-                        hns = b.get('horse_numbers', [])
-                        if len(hns) != len(set(hns)):
-                            continue
-                        for hn in hns:
-                            if hn not in axis:
-                                partners.add(hn)
-                plist = sorted(list(partners))[:3]
-                if plist:
-                    pstr = ",".join(str(p) for p in plist)
-                    lines.append(f"- 💎妙味: {honmei['horse_number']}"
-                                 f"{honmei['horse_name']}・"
-                                 f"{taikou['horse_number']}"
-                                 f"{taikou['horse_name']}軸")
-                    lines.append(f"  三連複流し→{pstr}")
+
+        # 有効な買い目を収集（重複馬番除外）
+        valid_by_type = {}
+        for bt in ["複勝", "単勝", "ワイド", "馬連", "三連複"]:
+            bets = race["all_bets"].get(bt, [])
+            for b in bets:
+                hns = b.get('horse_numbers', [])
+                if len(hns) != len(set(hns)):
+                    continue
+                if bt not in valid_by_type:
+                    valid_by_type[bt] = b
+                elif b.get('ev', 0) > valid_by_type[bt].get('ev', 0):
+                    valid_by_type[bt] = b
+
+        if valid_by_type:
+            for bt in ["複勝", "単勝", "ワイド", "馬連", "三連複"]:
+                if bt in valid_by_type:
+                    b = valid_by_type[bt]
+                    name = b.get('horse_name', b.get('detail', ''))
+                    lines.append(f"- {bt}: {name}")
         else:
             lines.append("- このレースは **見送り推奨**"
                          "（EV基準で有利な買い目なし）")
