@@ -288,14 +288,16 @@ def get_race_predictions(date_str, model, strategy):
                         if ev > max_ev:
                             max_ev = ev
 
-            # 信頼度
-            if max_ev >= 5.0:
+            # 信頼度（◎のpred_winベース）
+            honmei_h = next((h for h in sorted_horses if h.get('mark') == '◎'), None)
+            honmei_win = honmei_h['pred_win'] if honmei_h else 0
+            if honmei_win >= 25:
                 confidence = "S"
-            elif max_ev >= 2.5:
+            elif honmei_win >= 18:
                 confidence = "A"
-            elif max_ev >= 1.5:
+            elif honmei_win >= 12:
                 confidence = "B"
-            elif max_ev >= 1.0:
+            elif honmei_win >= 8:
                 confidence = "C"
             else:
                 confidence = "D"
@@ -528,11 +530,11 @@ def generate_article(date_str, featured_races, all_races):
     lines.append("\n**AI評価の見方:**")
     lines.append("| 評価 | 意味 |")
     lines.append("|:----:|------|")
-    lines.append("| **S** | 最高評価 — 期待値が極めて高い |")
-    lines.append("| **A** | 高評価 — 期待値プラスの買い目あり |")
-    lines.append("| **B** | 標準 — 妙味のある買い目あり |")
-    lines.append("| **C** | やや低 — 買い目は限定的 |")
-    lines.append("| **D** | 見送り推奨 — 期待値プラスの買い目なし |")
+    lines.append("| **S** | ◎が非常に強い — 堅いレース |")
+    lines.append("| **A** | ◎の信頼度が高い |")
+    lines.append("| **B** | ◎は標準的 — 相手次第 |")
+    lines.append("| **C** | ◎の信頼度は低め — 波乱含み |")
+    lines.append("| **D** | ◎が弱い — 見送りが無難 |")
     lines.append("")
     lines.append("---\n")
 
