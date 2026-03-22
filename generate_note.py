@@ -353,114 +353,274 @@ def select_featured_races(all_races, top_n=3):
     return featured
 
 
+def get_last_week_results():
+    """先週の11R的中結果を取得（フック用）"""
+    try:
+        with get_db() as conn:
+            recent = conn.execute("""
+                SELECT DISTINCT ra.race_date FROM races ra
+                JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                WHERE ra.race_number = 11
+                ORDER BY ra.race_date DESC
+                LIMIT 5
+            """).fetchall()
+
+            for row in recent:
+                rd = row['race_date']
+                races = conn.execute("""
+                    SELECT ra.race_name, ra.venue, pc.predictions_json
+                    FROM races ra
+                    JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                    WHERE ra.race_date = ? AND ra.race_number = 11
+                """, (rd,)).fetchall()
+
+                results = []
+                for race in races:
+                    preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
+                    honmei = next((p for p in preds if p.get('mark') == '◎'), None)
+                    if not honmei:
+                        continue
+                    fp_row = conn.execute("""
+                        SELECT r.finish_position FROM results r
+                        JOIN races ra ON r.race_id = ra.race_id
+                        WHERE ra.race_date = ? AND ra.race_number = 11
+                        AND ra.venue = ? AND r.horse_number = ?
+                        AND r.finish_position > 0
+                    """, (rd, race['venue'], honmei.get('horse_number', 0))).fetchone()
+                    if fp_row:
+                        results.append({
+                            'race_name': race['race_name'],
+                            'horse_name': honmei.get('horse_name', '?'),
+                            'finish': fp_row['finish_position'],
+                            'hit': fp_row['finish_position'] <= 3,
+                        })
+                if results:
+                    return results
+    except Exception:
+        pass
+    return []
+
+
 def generate_article(date_str, featured_races, all_races):
-    """note記事のMarkdownを生成"""
-    # 日付フォーマット
+    """note記事のMarkdownを生成（v2: 12ゴールデンテンプレート形式）"""
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
     date_label = dt.strftime(f"%m/%d({weekday})")
 
-    # 会場一覧
     venues = set(r["race_info"].get("venue", "") for r in all_races)
     venues_str = "・".join(sorted(venues))
 
-    # 記事ヘッダー
+    # メインレースと厳選レースを分離
+    main_races = [r for r in featured_races
+                  if r["race_info"].get("race_number", 0) == 11
+                  or r["race_info"].get("grade", "") in ("G1", "G2", "G3")]
+    extra_races = [r for r in featured_races if r not in main_races]
+
+    # 先週の結果（フック用）
+    last_results = get_last_week_results()
+
     lines = []
-    lines.append(f"# 🏇 {date_label} AI競馬予想 ― 厳選{len(featured_races)}レース\n")
-    lines.append(f"**開催場**: {venues_str}")
-    lines.append(f"**分析レース数**: {len(all_races)}R → 厳選 {len(featured_races)}R\n")
+
+    # ━━━ 1. フック（タイトル + 冒頭実績） ━━━
+    race_names = [r["race_info"].get("race_name", "") for r in main_races]
+    title_races = "・".join(race_names) if race_names else "厳選レース"
+    lines.append(f"# 【{date_label}】AIが導いた{title_races}の"
+                 f"「買うべき馬」と「消すべき馬」 ― 41次元データ分析の結論\n")
+
+    if last_results:
+        hits = [r for r in last_results if r['hit']]
+        if hits:
+            h = hits[0]
+            lines.append(f"> 📊 先週のAI予想: **{h['race_name']}** "
+                         f"◎{h['horse_name']} → **{h['finish']}着的中** 🎯\n")
+
     lines.append("---\n")
 
-    # 予測手法の紹介（凄そうに見せる）
-    lines.append("## 🧠 予測手法\n")
-    lines.append("本予想は、**独自開発のAI予測モデル**を用いて導出しています。\n")
-    lines.append("**3つの機械学習モデルを統合した複合予測:**")
-    lines.append("- **LambdaRank**: レース内の着順をダイレクトに最適化する学習ランクモデル")
-    lines.append("- **勝率予測モデル**: 1着になる確率を推定する二値分類モデル")
-    lines.append("- **複勝率予測モデル**: 3着以内に入る確率を推定するモデル\n")
-    lines.append("**分析に用いる要素:**")
-    lines.append("- スピード指数（能力値） — 過去走の走破タイムを距離・馬場で補正し数値化")
-    lines.append("- 血統・系統適性 — 父系の距離・馬場への適性を統計的に評価")
-    lines.append("- 騎手×調教師コンビ実績 — 条件別の複勝率を重点分析")
-    lines.append("- 馬場バイアス — 内枠・外枠の有利不利をリアルタイム評価")
-    lines.append("- ペース分析 — 先行力・追込力の数値化")
-    lines.append("- 天候・馬場状態の適性 — 重馬場時の過去成績から浮上馬を抽出\n")
-    lines.append("これらを**全て数値化し組み合わせた41次元の特徴量**で予測しています。\n")
+    # ━━━ 2. ターゲット ━━━
+    lines.append("## この記事を読むべき人\n")
+    lines.append("- 「何を買えばいいかわからない」と毎週悩んでいる人")
+    lines.append("- データや数字で納得して馬券を買いたい人")
+    if race_names:
+        lines.append(f"- {race_names[0]}の予想ファクターを整理したい人")
+    lines.append("- 土日の競馬で **回収率100%超え** を目指している人\n")
+    lines.append("逆に、「自分の相馬眼だけで十分」「データなんて信じない」"
+                 "という方にはこの記事は向きません。\n")
     lines.append("---\n")
 
-    # 実績（シンプルに）
-    lines.append("## 📊 実績\n")
-    lines.append("| 指標 | 値 |")
-    lines.append("|------|:---:|")
-    lines.append("| 回収率(ROI) | **187.4%** |")
-    lines.append("| 複勝回収率 | **214.5%** |")
-    lines.append("| 的中率 | 20.5% |\n")
-    lines.append("> ※ 過去データによる検証結果です。実際の成績は異なる場合があります。\n")
+    # ━━━ 3. ベネフィット ━━━
+    lines.append("## この記事でわかること\n")
+    for rname in race_names:
+        lines.append(f"✅ **{rname}** の◎○▲＋推奨買い目")
+    lines.append("✅ 各レースの「堅い」or「荒れる」が一目でわかる **レース傾向分析**")
+    lines.append("✅ 人気馬の中から **消すべき危険な人気馬** を特定")
+    lines.append("✅ **期待値(EV)プラス** の買い目だけを厳選（ムダ馬券を排除）\n")
+    lines.append("> 買い目の根拠を「なんとなく」ではなく、"
+                 "**41次元のデータ**で明確にします。\n")
     lines.append("---\n")
 
-    # 厳選レース
-    for idx, race in enumerate(featured_races, 1):
-        info = race["race_info"]
-        venue = info.get("venue", "")
-        rnum = info.get("race_number", 0)
+    # ━━━ 4. 権威性 ━━━
+    lines.append("## AI予測モデルについて\n")
+    lines.append("**EQUINOX Lab** は、3つの機械学習モデルを統合した複合予測システムです。\n")
+    lines.append("| モデル | 役割 |")
+    lines.append("|:------:|------|")
+    lines.append("| **LambdaRank** | 着順をダイレクトに最適化 |")
+    lines.append("| **勝率予測** | 1着確率を推定 |")
+    lines.append("| **複勝率予測** | 3着以内確率を推定 |\n")
+    lines.append("**分析する41次元の要素:**")
+    lines.append("🔢 スピード指数 / 🧬 血統適性 / 🏇 騎手×調教師 / "
+                 "📐 馬場バイアス / ⏱️ ペース分析 / 🌧️ 天候×馬場状態\n")
+
+    try:
+        with get_db() as conn:
+            rc = conn.execute("SELECT COUNT(*) as c FROM races").fetchone()
+            ec = conn.execute("SELECT COUNT(*) as c FROM results").fetchone()
+        race_cnt = rc['c'] if rc else 0
+        entry_cnt = ec['c'] if ec else 0
+        lines.append(f"> **{race_cnt:,}レース・{entry_cnt:,}の出走データ**"
+                     "から学習しています。\n")
+    except Exception:
+        pass
+    lines.append("---\n")
+
+    # ━━━ 5. 今日のラインナップ ━━━
+    lines.append("## 今日の注目レース\n")
+    lines.append("| レース | コース | 頭数 | AI評価 | レース傾向 |")
+    lines.append("|--------|--------|:----:|:------:|-----------|")
+    for r in featured_races:
+        info = r["race_info"]
         rname = info.get("race_name", "")
-        grade = info.get("grade", "")
         surface = info.get("surface", "")
         distance = info.get("distance", 0)
-        horse_count = info.get("horse_count", 0)
-        condition = info.get("track_condition", "良")
+        hcount = info.get("horse_count", 0)
+        conf = r["confidence"]
+        tend = r["tendency"]
+        is_main = (info.get("race_number") == 11
+                   or info.get("grade", "") in ("G1", "G2", "G3"))
+        icon = "🏆" if is_main else "🔥"
+        lines.append(f"| {icon} **{rname}** | {surface}{distance}m | "
+                     f"{hcount}頭 | **{conf}** | {tend} |")
+    lines.append("")
+    lines.append("---\n")
 
-        conf = race["confidence"]
-        tendency = race["tendency"]
-        is_main = (rnum == 11 or grade in ("G1", "G2", "G3"))
+    # ━━━ 6. 無料プレビュー（メインレース1つ） ━━━
+    if main_races:
+        pr = main_races[0]
+        pi = pr["race_info"]
+        lines.append(f"## 無料公開: {pi.get('race_name','')}のAI分析\n")
+        lines.append(f"**{pi.get('surface','')}{pi.get('distance',0)}m / "
+                     f"{pi.get('venue','')} / {pi.get('horse_count',0)}頭 / "
+                     f"AI評価: {pr['confidence']}**\n")
+        lines.append(f"### レース傾向: {pr['tendency']}\n")
 
-        # レースヘッダー
-        icon = "👑" if is_main else "🔥"
-        label = "メインレース" if is_main else f"厳選レース{idx}"
-        lines.append(f"## {icon} {label}: {venue}{rnum}R {rname} {grade}\n")
-        lines.append(f"**{surface}{distance}m / {horse_count}頭 / {condition} / "
-                     f"{tendency} / {conf}評価**\n")
-
-        # 予想印
-        lines.append("### 🎯 予想印\n")
-        lines.append("| 印 | 馬番 | 馬名 | 勝率予測 | SI |")
-        lines.append("|:--:|:----:|------|:-------:|:---:|")
-        for h in race["horses"][:5]:
-            if h["mark"]:
-                lines.append(
-                    f"| {h['mark']} | {h['horse_number']} | "
-                    f"{h['horse_name']} | {h['pred_win']}% | "
-                    f"{h['si_avg']} |"
-                )
+        lines.append("### 予想印（無料公開）\n")
+        lines.append("| 印 | 馬番 | 馬名 | AI勝率 |")
+        lines.append("|:--:|:----:|------|:------:|")
+        for h in pr["horses"][:3]:
+            if h.get("mark"):
+                lines.append(f"| {h['mark']} | {h['horse_number']} | "
+                             f"**{h['horse_name']}** | {h['pred_win']}% |")
         lines.append("")
 
-        # 推奨買い目（券種と買い目のみ）
-        has_bets = False
-        for bt in ["単勝", "複勝", "ワイド", "馬連", "三連複", "三連単"]:
-            bets = race["all_bets"].get(bt, [])
-            if bets:
-                if not has_bets:
-                    lines.append("### 💰 推奨買い目\n")
-                    lines.append("| 券種 | 買い目 |")
-                    lines.append("|:----:|--------|")
-                    has_bets = True
-                for b in bets[:3]:
-                    detail = b.get("detail", b.get("bet_detail", ""))
-                    lines.append(f"| {bt} | {detail} |")
+        honmei = next((h for h in pr["horses"] if h.get("mark") == "◎"), None)
+        if honmei:
+            lines.append(f"### ◎{honmei['horse_name']}の推奨根拠\n")
+            lines.append(f"- スピード指数 **{honmei.get('si_avg', 0)}**")
+            lines.append(f"- AI勝率 **{honmei['pred_win']}%** — メンバー中1位")
+            lines.append("")
 
-        if not has_bets:
-            lines.append("### 💰 推奨買い目\n")
-            lines.append("このレースはEV基準で推奨買い目なし（見送り推奨）\n")
+        lines.append("---\n")
+
+    # ━━━ 7-9. 有料エリアへの誘導 ━━━
+    lines.append("## 有料エリア: 全レースの買い目＋詳細分析\n")
+    lines.append("ここから先は、**具体的な推奨買い目**を公開します。\n")
+    lines.append("### 有料エリアの内容\n")
+    for r in featured_races:
+        rn = r["race_info"].get("race_name", "")
+        lines.append(f"📋 **{rn}** の◎○▲＋推奨買い目（堅実＋妙味の2パターン）")
+    lines.append("📋 各レースの **「消すべき馬」** リスト")
+    lines.append("📋 予算1,000円の **具体的な資金配分**\n")
+
+    lines.append("> ⚡ **今だけ特別価格: 300円**（10部売れたら500円に値上げします）")
+    lines.append(">")
+    lines.append("> お気に入りのレースだけでも、1つ当たれば元が取れる価格設定です。\n")
+    lines.append("---\n")
+
+    # ━━━ ペイウォール ━━━
+    lines.append("## ここから有料エリア ↓\n")
+
+    # ━━━ 有料コンテンツ ━━━
+    for race in featured_races:
+        info = race["race_info"]
+        rname = info.get("race_name", "")
+        surface = info.get("surface", "")
+        distance = info.get("distance", 0)
+        hcount = info.get("horse_count", 0)
+        conf = race["confidence"]
+        tend = race["tendency"]
+        rnum = info.get("race_number", 0)
+        is_main = (rnum == 11 or info.get("grade", "") in ("G1", "G2", "G3"))
+        icon = "🏆" if is_main else "🔥"
+
+        lines.append(f"### {icon} {rname} {surface}{distance}m・"
+                     f"{hcount}頭 [AI評価: {conf}]\n")
+        lines.append(f"**レース傾向: {tend}**\n")
+
+        lines.append("| 印 | 馬番 | 馬名 | AI勝率 | SI |")
+        lines.append("|:--:|:----:|------|:------:|:---:|")
+        for h in race["horses"][:5]:
+            if h.get("mark"):
+                lines.append(f"| {h['mark']} | {h['horse_number']} | "
+                             f"{h['horse_name']} | {h['pred_win']}% | "
+                             f"{h.get('si_avg', 0)} |")
+        lines.append("")
+
+        # 買い目（堅実＋妙味）
+        honmei = next((h for h in race["horses"]
+                       if h.get("mark") == "◎"), None)
+        taikou = next((h for h in race["horses"]
+                       if h.get("mark") == "○"), None)
+        has_bets = any(race["all_bets"].get(bt, [])
+                       for bt in ["単勝", "複勝", "ワイド", "馬連", "三連複", "三連単"])
+
+        lines.append("**推奨買い目:**")
+        if has_bets and honmei:
+            lines.append(f"- 🎯堅実: 複勝 {honmei['horse_number']}"
+                         f"{honmei['horse_name']}")
+            if taikou:
+                axis = {honmei['horse_number'], taikou['horse_number']}
+                partners = set()
+                for bt, bets in race["all_bets"].items():
+                    for b in bets:
+                        hns = b.get('horse_numbers', [])
+                        if len(hns) != len(set(hns)):
+                            continue
+                        for hn in hns:
+                            if hn not in axis:
+                                partners.add(hn)
+                plist = sorted(list(partners))[:3]
+                if plist:
+                    pstr = ",".join(str(p) for p in plist)
+                    lines.append(f"- 💎妙味: {honmei['horse_number']}"
+                                 f"{honmei['horse_name']}・"
+                                 f"{taikou['horse_number']}"
+                                 f"{taikou['horse_name']}軸")
+                    lines.append(f"  三連複流し→{pstr}")
+        else:
+            lines.append("- このレースは **見送り推奨**"
+                         "（EV基準で有利な買い目なし）")
+            lines.append("")
+            lines.append("> 💡 買わないレースを見極めることもROI向上の鍵です。")
 
         lines.append("\n---\n")
 
-    # フッター
+    # ━━━ フッター ━━━
     lines.append("## ⚠️ 免責事項\n")
     lines.append("- 本記事はAIによる予測であり、的中を保証するものではありません")
     lines.append("- 馬券購入は自己責任でお願いいたします")
     lines.append("- 過去の実績は将来の成績を保証するものではありません\n")
     lines.append("---\n")
-    lines.append(f"*AI KEIBA PREDICTOR — {dt.strftime('%Y/%m/%d')} 生成*")
+    lines.append("*EQUINOX Lab — データで競馬を変える 🧬*")
+    lines.append(f"*的中結果は本日夕方にX(@quinox_lab)で報告します*")
 
     return "\n".join(lines)
 
