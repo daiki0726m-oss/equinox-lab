@@ -209,27 +209,60 @@ def cmd_predict(args):
                 t2 += f"{mark_str}{p.get('horse_number',0)}{p.get('horse_name','?')} "
         t2 = t2.rstrip() + "\n\n"
 
-    # ── ツイート3: 推奨買い目 ──
+    # ── ツイート3: 推奨買い目（堅実＋妙味） ──
     t3 = "💡 AI推奨買い目\n\n"
     for rd in race_data:
         race = rd['race']
         all_bets = rd['all_bets']
+        m = rd['marks']
         rname = race['race_name']
 
-        # 各券種のベスト買い目をピックアップ（EV上位）
-        best_bets = []
+        # ◎○の馬番・馬名取得
+        honmei = m.get('◎')
+        taikou = m.get('○')
+
+        # 有効な買い目のみフィルタ（重複馬番を除外）
+        valid_bets = []
         for bt, bt_bets in all_bets.items():
             for b in bt_bets:
-                best_bets.append({**b, 'bt': bt})
+                hns = b.get('horse_numbers', [])
+                if len(hns) != len(set(hns)):
+                    continue
+                valid_bets.append({**b, 'bt': bt})
 
-        best_bets.sort(key=lambda x: x.get('ev', 0), reverse=True)
+        if not valid_bets:
+            t3 += f"・{rname}\n 見送り推奨\n"
+            continue
 
         t3 += f"・{rname}\n"
-        if best_bets:
-            for b in best_bets[:2]:
-                t3 += f" {b['bt']} {b.get('detail','')} (EV{b.get('ev',0):.1f})\n"
-        else:
-            t3 += " 見送り推奨\n"
+
+        # 🎯堅実: 確率が最も高い単一買い目（複勝◎）
+        if honmei:
+            hn = honmei.get('horse_number', 0)
+            hname = honmei.get('horse_name', '?')
+            t3 += f" 🎯堅実: 複勝 {hn}{hname}\n"
+
+        # 💎妙味: ◎○軸の流し（相手はEV上位の馬番）
+        if honmei and taikou:
+            h1n = honmei.get('horse_number', 0)
+            h1name = honmei.get('horse_name', '?')
+            h2n = taikou.get('horse_number', 0)
+            h2name = taikou.get('horse_name', '?')
+
+            # 相手馬を抽出: 買い目に含まれる馬番のうち◎○以外をEV順で
+            axis_nums = {h1n, h2n}
+            partner_horses = {}
+            for b in valid_bets:
+                for hn in b.get('horse_numbers', []):
+                    if hn not in axis_nums and hn not in partner_horses:
+                        partner_horses[hn] = b.get('ev', 0)
+
+            # EV順で上位3頭
+            partners = sorted(partner_horses.items(), key=lambda x: x[1], reverse=True)[:3]
+            if partners:
+                partner_str = ','.join(str(p[0]) for p in partners)
+                t3 += f" 💎妙味: {h1n}{h1name}・{h2n}{h2name}軸\n"
+                t3 += f"  三連複流し→{partner_str}\n"
 
     t3 += "\n的中結果は本日夕方に報告します📊"
 
