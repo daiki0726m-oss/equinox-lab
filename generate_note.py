@@ -65,7 +65,6 @@ def get_race_predictions(date_str, model, strategy):
                 # キャッシュから復元（高速パス）
                 horses = json.loads(cached['predictions_json'])
                 all_bets = json.loads(cached['all_bets_json']) if cached['all_bets_json'] else {}
-                confidence = cached['confidence'] or 'C'
                 should_bet = bool(cached['should_bet'])
                 race_info = dict(race)
 
@@ -85,13 +84,36 @@ def get_race_predictions(date_str, model, strategy):
                             break  # 1頭のみ
                     horses = sorted_h
 
-                # EV計算
+                # EV計算 → 妙味
                 max_ev = 0.0
                 for bt, bt_bets in all_bets.items():
                     for b in bt_bets:
                         ev = b.get("ev", 0)
                         if ev > max_ev:
                             max_ev = ev
+
+                if max_ev >= 5.0:
+                    myomi = "💎★★★"
+                elif max_ev >= 2.5:
+                    myomi = "💎★★"
+                elif max_ev >= 1.5:
+                    myomi = "💎★"
+                else:
+                    myomi = ""
+
+                # 信頼度（◎のpred_winベースで再計算）
+                honmei_h = next((h for h in horses if h.get('mark') == '◎'), None)
+                honmei_win = honmei_h['pred_win'] if honmei_h else 0
+                if honmei_win >= 25:
+                    confidence = "S"
+                elif honmei_win >= 18:
+                    confidence = "A"
+                elif honmei_win >= 12:
+                    confidence = "B"
+                elif honmei_win >= 8:
+                    confidence = "C"
+                else:
+                    confidence = "D"
 
                 # レース傾向
                 sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
@@ -114,6 +136,7 @@ def get_race_predictions(date_str, model, strategy):
                     "horses": horses,
                     "all_bets": all_bets,
                     "max_ev": max_ev,
+                    "myomi": myomi,
                     "confidence": confidence,
                     "tendency": tendency,
                     "should_bet": should_bet,
@@ -302,6 +325,16 @@ def get_race_predictions(date_str, model, strategy):
             else:
                 confidence = "D"
 
+            # 妙味（EVベース）
+            if max_ev >= 5.0:
+                myomi = "💎★★★"
+            elif max_ev >= 2.5:
+                myomi = "💎★★"
+            elif max_ev >= 1.5:
+                myomi = "💎★"
+            else:
+                myomi = ""
+
             # レース傾向
             sorted_probs = sorted([h["pred_win"] for h in horses], reverse=True)
             top_p = sorted_probs[0] if sorted_probs else 0
@@ -323,6 +356,7 @@ def get_race_predictions(date_str, model, strategy):
                 "horses": sorted_horses,
                 "all_bets": all_bets,
                 "max_ev": max_ev,
+                "myomi": myomi,
                 "confidence": confidence,
                 "tendency": tendency,
                 "should_bet": should_bet,
@@ -331,7 +365,7 @@ def get_race_predictions(date_str, model, strategy):
             venue = race_info.get("venue", "")
             rnum = race_info.get("race_number", 0)
             print(f"  ✅ {venue}{rnum}R {race_info.get('race_name', '')} "
-                  f"[{confidence}] EV={max_ev:.1f}")
+                  f"[{confidence}] {myomi} EV={max_ev:.1f}")
 
         except Exception as e:
             print(f"  ⚠️ {race_id}: {e}")
@@ -510,8 +544,8 @@ def generate_article(date_str, featured_races, all_races):
 
     # ━━━ 5. 今日のラインナップ ━━━
     lines.append("## 今日の注目レース\n")
-    lines.append("| レース | コース | 頭数 | AI評価 | レース傾向 |")
-    lines.append("|--------|--------|:----:|:------:|-----------|")
+    lines.append("| レース | コース | 頭数 | AI評価 | 💎妙味 | レース傾向 |")
+    lines.append("|--------|--------|:----:|:------:|:------:|-----------|")
     for r in featured_races:
         info = r["race_info"]
         rname = info.get("race_name", "")
@@ -520,11 +554,12 @@ def generate_article(date_str, featured_races, all_races):
         hcount = info.get("horse_count", 0)
         conf = r["confidence"]
         tend = r["tendency"]
+        myomi = r.get("myomi", "")
         is_main = (info.get("race_number") == 11
                    or info.get("grade", "") in ("G1", "G2", "G3"))
         icon = "🏆" if is_main else "🔥"
         lines.append(f"| {icon} **{rname}** | {surface}{distance}m | "
-                     f"{hcount}頭 | **{conf}** | {tend} |")
+                     f"{hcount}頭 | **{conf}** | {myomi or '-'} | {tend} |")
     lines.append("")
 
     lines.append("\n**AI評価の見方:**")
@@ -535,6 +570,14 @@ def generate_article(date_str, featured_races, all_races):
     lines.append("| **B** | ◎は標準的 — 相手次第 |")
     lines.append("| **C** | ◎の信頼度は低め — 波乱含み |")
     lines.append("| **D** | ◎が弱い — 見送りが無難 |")
+    lines.append("")
+    lines.append("**💎妙味の見方:**")
+    lines.append("| 表示 | 意味 |")
+    lines.append("|:----:|------|")
+    lines.append("| 💎★★★ | 大穴チャンス — オッズ以上の穴馬あり |")
+    lines.append("| 💎★★ | 妙味あり — 穴買い目に期待 |")
+    lines.append("| 💎★ | やや妙味 |")
+    lines.append("| - | 妙味なし — 堅いレース |")
     lines.append("")
     lines.append("---\n")
 
@@ -605,12 +648,14 @@ def generate_article(date_str, featured_races, all_races):
             hcount = info.get("horse_count", 0)
             conf = race["confidence"]
             tend = race["tendency"]
+            myomi = race.get("myomi", "")
             rnum = info.get("race_number", 0)
             is_main = (rnum == 11 or info.get("grade", "") in ("G1", "G2", "G3"))
             icon = "🏆" if is_main else ""
 
+            myomi_str = f" {myomi}" if myomi else ""
             lines.append(f"### {icon}{rnum}R {rname} {surface}{distance}m・"
-                         f"{hcount}頭 [AI評価: {conf}]\n")
+                         f"{hcount}頭 [AI評価: {conf}]{myomi_str}\n")
 
             # 予想印
             lines.append("| 印 | 馬番 | 馬名 | AI勝率 | SI |")

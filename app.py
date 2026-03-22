@@ -751,6 +751,24 @@ def api_predict_date(date_str):
                 else:
                     confidence, conf_reason = "D", f"◎の信頼度が低い ({honmei_win:.1f}%)"
 
+                # ── 妙味（EVベース）──
+                max_ev = 0.0
+                for bt_key, bt_bets in all_bets.items():
+                    for b in bt_bets:
+                        ev = b.get("ev", 0)
+                        if ev > max_ev:
+                            max_ev = ev
+
+                if max_ev >= 5.0:
+                    myomi = "💎★★★"
+                elif max_ev >= 2.5:
+                    myomi = "💎★★"
+                elif max_ev >= 1.5:
+                    myomi = "💎★"
+                else:
+                    myomi = ""
+                conf_reason += f" / 妙味:{myomi or 'なし'}(EV{max_ev:.1f})"
+
                 # ── レース傾向（堅い/混戦/波乱）──
                 sorted_probs = sorted([h["pred_win"] for h in horses], reverse=True)
                 top_prob = sorted_probs[0]
