@@ -47,7 +47,20 @@ def _bg_result_fetcher():
                 for race in all_today:
                     rid = race['race_id']
 
-                    # ── リアルタイムオッズ更新 ──
+                    # ── レース確定済みならスキップ（オッズ更新も不要） ──
+                    with get_db() as conn:
+                        pending_count = conn.execute(
+                            "SELECT COUNT(*) as c FROM results WHERE race_id=? AND finish_position=0", (rid,)
+                        ).fetchone()['c']
+                        total_count = conn.execute(
+                            "SELECT COUNT(*) as c FROM results WHERE race_id=?", (rid,)
+                        ).fetchone()['c']
+
+                    if pending_count == 0 and total_count > 0:
+                        # 全馬の結果が確定済み → このレースはスキップ
+                        continue
+
+                    # ── リアルタイムオッズ更新（未確定レースのみ） ──
                     try:
                         api_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={rid}&type=1&action=update"
                         api_headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://race.netkeiba.com/"}
@@ -79,13 +92,8 @@ def _bg_result_fetcher():
                     except Exception:
                         pass
 
-                    # ── 結果取得（finish_position=0のレースのみ） ──
-                    with get_db() as conn:
-                        has_pending = conn.execute(
-                            "SELECT COUNT(*) as c FROM results WHERE race_id=? AND finish_position=0", (rid,)
-                        ).fetchone()['c']
-
-                    if has_pending > 0:
+                    # ── 結果取得（上のチェックでpending > 0が保証済み） ──
+                    if pending_count > 0:
                         try:
                             data = scraper.scrape_race_result(rid)
                             if data and data.get("results") and len(data["results"]) > 0:
