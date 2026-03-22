@@ -461,6 +461,124 @@ def get_last_week_results():
     return []
 
 
+def get_last_week_review(target_date_str):
+    """先週の全レース予想を分析して振り返りデータを返す"""
+    try:
+        from datetime import timedelta
+        target_dt = datetime.strptime(target_date_str, "%Y%m%d")
+        # 先週の土日を探す
+        with get_db() as conn:
+            recent_dates = conn.execute("""
+                SELECT DISTINCT ra.race_date FROM races ra
+                JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                WHERE ra.race_date < ?
+                ORDER BY ra.race_date DESC
+                LIMIT 10
+            """, (target_dt.strftime("%Y-%m-%d"),)).fetchall()
+
+        if not recent_dates:
+            return None
+
+        # 直近2日分（土日）を取得
+        last_dates = [r['race_date'] for r in recent_dates[:2]]
+
+        with get_db() as conn:
+            total = 0
+            honmei_win = 0
+            honmei_top3 = 0
+            conf_stats = {}
+            notable_hits = []
+            notable_misses = []
+
+            for rd in last_dates:
+                races = conn.execute("""
+                    SELECT ra.race_id, ra.venue, ra.race_number, ra.race_name,
+                           pc.predictions_json, pc.all_bets_json
+                    FROM races ra
+                    JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                    WHERE ra.race_date = ?
+                    ORDER BY ra.venue, ra.race_number
+                """, (rd,)).fetchall()
+
+                for race in races:
+                    preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
+                    if not preds:
+                        continue
+
+                    results = conn.execute("""
+                        SELECT horse_number, finish_position, odds
+                        FROM results WHERE race_id = ? AND finish_position >= 1
+                        ORDER BY finish_position
+                    """, (race['race_id'],)).fetchall()
+                    if not results or results[0]['finish_position'] == 0:
+                        continue
+
+                    total += 1
+                    actual_top3 = [r['horse_number'] for r in results[:3]]
+
+                    honmei = next((p for p in preds if p.get('mark') == '◎'), None)
+                    if not honmei:
+                        continue
+
+                    # ◎ pred_winベースで信頼度を再計算
+                    hw = honmei.get('pred_win', 0)
+                    if hw >= 25: conf = 'S'
+                    elif hw >= 18: conf = 'A'
+                    elif hw >= 12: conf = 'B'
+                    elif hw >= 8: conf = 'C'
+                    else: conf = 'D'
+
+                    if conf not in conf_stats:
+                        conf_stats[conf] = {'total': 0, 'win': 0, 'top3': 0}
+                    conf_stats[conf]['total'] += 1
+
+                    h_num = honmei['horse_number']
+                    h_name = honmei.get('horse_name', '?')
+                    h_fp = None
+                    for r in results:
+                        if r['horse_number'] == h_num:
+                            h_fp = r['finish_position']
+
+                    if h_fp == 1:
+                        honmei_win += 1
+                        conf_stats[conf]['win'] += 1
+                    if h_fp and h_fp <= 3:
+                        honmei_top3 += 1
+                        conf_stats[conf]['top3'] += 1
+
+                    # 注目的中：◎1着
+                    if h_fp == 1:
+                        notable_hits.append({
+                            'venue': race['venue'], 'rnum': race['race_number'],
+                            'race_name': race['race_name'],
+                            'horse': f"{h_num}{h_name}", 'conf': conf,
+                            'odds': results[0]['odds'] if results else 0
+                        })
+                    # 大敗：S/Aで◎5着以下
+                    elif h_fp and h_fp >= 5 and conf in ('S', 'A'):
+                        notable_misses.append({
+                            'venue': race['venue'], 'rnum': race['race_number'],
+                            'race_name': race['race_name'],
+                            'horse': f"{h_num}{h_name}", 'conf': conf,
+                            'fp': h_fp
+                        })
+
+        if total == 0:
+            return None
+
+        return {
+            'dates': last_dates,
+            'total': total,
+            'honmei_win': honmei_win,
+            'honmei_top3': honmei_top3,
+            'conf_stats': conf_stats,
+            'notable_hits': notable_hits[:5],
+            'notable_misses': notable_misses[:3],
+        }
+    except Exception:
+        return None
+
+
 def generate_article(date_str, featured_races, all_races):
     """note記事のMarkdownを生成（v2: 12ゴールデンテンプレート形式）"""
     dt = datetime.strptime(date_str, "%Y%m%d")
@@ -496,7 +614,52 @@ def generate_article(date_str, featured_races, all_races):
 
     lines.append("---\n")
 
-    # ━━━ 2. ターゲット ━━━
+    # ━━━ 1.5 先週の振り返り ━━━
+    review = get_last_week_review(date_str)
+    if review:
+        t = review['total']
+        hw = review['honmei_win']
+        ht3 = review['honmei_top3']
+        lines.append("## 📊 先週の振り返り\n")
+        lines.append(f"先週の全{t}レースのAI予想結果です。"
+                     "的中も外れも隠さず報告します。\n")
+
+        # 全体成績
+        lines.append(f"**◎1着率:** {hw}/{t}（{hw/t*100:.0f}%） | "
+                     f"**◎3着内率:** {ht3}/{t}（{ht3/t*100:.0f}%）\n")
+
+        # AI評価別
+        lines.append("**AI評価別の成績:**\n")
+        lines.append("| AI評価 | レース数 | ◎1着 | ◎3着内 |")
+        lines.append("|:------:|:-------:|:----:|:------:|")
+        for c in ['S', 'A', 'B', 'C', 'D']:
+            if c in review['conf_stats']:
+                s = review['conf_stats'][c]
+                w_pct = f"{s['win']/s['total']*100:.0f}%" if s['total'] else "-"
+                t3_pct = f"{s['top3']/s['total']*100:.0f}%" if s['total'] else "-"
+                lines.append(f"| **{c}** | {s['total']}R | "
+                             f"{s['win']}回({w_pct}) | {s['top3']}回({t3_pct}) |")
+        lines.append("")
+
+        # 的中ハイライト
+        if review['notable_hits']:
+            lines.append("**🎯 的中ハイライト:**\n")
+            for h in review['notable_hits']:
+                odds_str = f"({h['odds']}倍)" if h.get('odds') else ""
+                lines.append(f"- {h['venue']}{h['rnum']}R {h['race_name']} "
+                             f"[{h['conf']}] ◎{h['horse']} → 1着{odds_str}")
+            lines.append("")
+
+        # 反省点
+        if review['notable_misses']:
+            lines.append("**❌ 反省点:**\n")
+            for m in review['notable_misses']:
+                lines.append(f"- {m['venue']}{m['rnum']}R {m['race_name']} "
+                             f"[{m['conf']}] ◎{m['horse']} → {m['fp']}着")
+            lines.append("")
+
+        lines.append("> 結果を透明に公開し、データ分析の改善を続けています。\n")
+        lines.append("---\n")
     lines.append("## この記事を読むべき人\n")
     lines.append("- 「何を買えばいいかわからない」と毎週悩んでいる人")
     lines.append("- データや数字で納得して馬券を買いたい人")
