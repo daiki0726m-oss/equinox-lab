@@ -76,6 +76,13 @@ def get_race_predictions(date_str, model, strategy):
                     mark_list = ["◎", "○", "▲", "△", "×"]
                     for i, h in enumerate(sorted_h):
                         h["mark"] = mark_list[i] if i < 5 else ""
+                    # 注マーク: 6位以下だがSIがトップ3に入る馬
+                    top3_si = sorted([h.get('si_avg', 0) for h in sorted_h], reverse=True)[:3]
+                    si_threshold = top3_si[-1] if len(top3_si) == 3 else 0
+                    for h in sorted_h[5:]:
+                        if h.get('si_avg', 0) >= si_threshold and si_threshold > 0 and h.get('si_avg', 0) > 0:
+                            h['mark'] = '注'
+                            break  # 1頭のみ
                     horses = sorted_h
 
                 # EV計算
@@ -259,6 +266,13 @@ def get_race_predictions(date_str, model, strategy):
             marks = ["◎", "○", "▲", "△", "×"]
             for i, h in enumerate(sorted_horses):
                 h["mark"] = marks[i] if i < 5 else ""
+            # 注マーク: 6位以下だがSIがトップ3に入る馬
+            top3_si = sorted([h.get('si_avg', 0) for h in sorted_horses], reverse=True)[:3]
+            si_threshold = top3_si[-1] if len(top3_si) == 3 else 0
+            for h in sorted_horses[5:]:
+                if h.get('si_avg', 0) >= si_threshold and si_threshold > 0 and h.get('si_avg', 0) > 0:
+                    h['mark'] = '注'
+                    break  # 1頭のみ
 
             # 買い目生成
             should_bet, bet_reason = strategy.should_bet_race(predictions_for_bet)
@@ -599,7 +613,7 @@ def generate_article(date_str, featured_races, all_races):
             # 予想印
             lines.append("| 印 | 馬番 | 馬名 | AI勝率 | SI |")
             lines.append("|:--:|:----:|------|:------:|:---:|")
-            for h in race["horses"][:5]:
+            for h in race["horses"]:
                 if h.get("mark"):
                     lines.append(f"| {h['mark']} | {h['horse_number']} | "
                                  f"{h['horse_name']} | {h['pred_win']}% | "
