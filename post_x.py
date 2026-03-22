@@ -138,7 +138,7 @@ def cmd_predict(args):
     with get_db() as conn:
         cached_races = conn.execute("""
             SELECT ra.race_id, ra.race_name, ra.venue, ra.distance, ra.surface,
-                   ra.track_condition, ra.grade, pc.predictions_json
+                   ra.track_condition, ra.grade, pc.predictions_json, pc.all_bets_json
             FROM races ra
             JOIN predictions_cache pc ON ra.race_id = pc.race_id
             WHERE (ra.race_date = ? OR ra.race_date = ?)
@@ -153,46 +153,83 @@ def cmd_predict(args):
 
     print(f"🏇 {date_label} メインレース {len(cached_races)}件を投稿\n")
 
+    # 各レースの◎○▲をmarkフィールドから取得
+    race_data = []
+    for race in cached_races:
+        preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
+        all_bets = json.loads(race['all_bets_json']) if race['all_bets_json'] else {}
+
+        marks = {'◎': None, '○': None, '▲': None}
+        for p in preds:
+            m = p.get('mark', '')
+            if m in marks and marks[m] is None:
+                marks[m] = p
+
+        # markがなければpred_win順で割り当て
+        if not marks['◎']:
+            sorted_p = sorted(preds, key=lambda x: x.get('pred_win', 0), reverse=True)
+            mark_list = ['◎', '○', '▲']
+            for i, p in enumerate(sorted_p[:3]):
+                if mark_list[i] not in marks or marks[mark_list[i]] is None:
+                    marks[mark_list[i]] = p
+
+        race_data.append({
+            'race': race,
+            'marks': marks,
+            'all_bets': all_bets,
+        })
+
     # ── ツイート1: 概要 ──
-    venues = list(set(r['venue'] for r in cached_races))
+    venues = list(set(r['race']['venue'] for r in race_data))
     t1 = f"🏇 {date_label} AI予想\n"
     t1 += f"開催: {'・'.join(venues)}\n\n"
 
-    for race in cached_races:
-        preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
-        top = preds[0] if preds else None
+    for rd in race_data:
+        race = rd['race']
+        m = rd['marks']
         rname = race['race_name']
         grade = f" [{race['grade']}]" if race['grade'] else ""
         t1 += f"📍{race['venue']} {rname}{grade}\n"
-        if top:
-            t1 += f"  ◎{top.get('horse_name','?')}\n"
+        if m['◎']:
+            t1 += f"  ◎{m['◎'].get('horse_name','?')}\n"
 
     t1 += "\n#競馬予想 #AI予想 🧵↓"
 
     # ── ツイート2: 各レースの詳細 ──
     t2 = ""
-    for race in cached_races:
-        preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
+    for rd in race_data:
+        race = rd['race']
+        m = rd['marks']
         rname = race['race_name']
-
         t2 += f"🏟️{race['venue']} {rname}\n"
 
-        marks = ["◎", "○", "▲"]
-        for i, p in enumerate(preds[:3]):
-            mark = marks[i] if i < 3 else ""
-            hname = p.get('horse_name', '?')
-            hn = p.get('horse_number', 0)
-            t2 += f"{mark}{hn}{hname} "
+        for mark_str in ['◎', '○', '▲']:
+            p = m[mark_str]
+            if p:
+                t2 += f"{mark_str}{p.get('horse_number',0)}{p.get('horse_name','?')} "
         t2 = t2.rstrip() + "\n\n"
 
-    # ── ツイート3: 買い目＋配信案内 ──
-    t3 = "💡 買い目のポイント\n\n"
-    for race in cached_races:
-        preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
-        if len(preds) >= 2:
-            top2 = [str(p.get('horse_number', 0)) for p in preds[:2]]
-            t3 += f"・{race['race_name']}\n"
-            t3 += f" 軸◎{preds[0].get('horse_name','?')}\n"
+    # ── ツイート3: 推奨買い目 ──
+    t3 = "💡 AI推奨買い目\n\n"
+    for rd in race_data:
+        race = rd['race']
+        all_bets = rd['all_bets']
+        rname = race['race_name']
+
+        # 各券種のベスト買い目をピックアップ（EV上位）
+        best_bets = []
+        for bt, bt_bets in all_bets.items():
+            for b in bt_bets:
+                best_bets.append({**b, 'bt': bt})
+
+        best_bets.sort(key=lambda x: x.get('ev', 0), reverse=True)
+
+        t3 += f"・{rname}\n"
+        if best_bets:
+            for b in best_bets[:2]:
+                t3 += f" {b['bt']} {b.get('detail','')} (EV{b.get('ev',0):.1f})\n"
+        else:
+            t3 += " 見送り推奨\n"
 
     t3 += "\n的中結果は本日夕方に報告します📊"
 
