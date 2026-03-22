@@ -27,17 +27,19 @@ from analyzers.speed_index import SpeedIndexCalculator
 def get_race_predictions(date_str, model, strategy):
     """指定日の全レースの予測を取得してEV付きで返す"""
     scraper = NetkeibaScraper()
-    race_ids = scraper.get_race_list_by_date(date_str)
 
-    # スクレイパーで見つからない場合、DBから検索
+    # まずDBからレースID取得（高速）
+    date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT race_id FROM races WHERE race_date = ? OR race_date = ? ORDER BY race_id",
+            (date_str, date_hyphen)
+        ).fetchall()
+        race_ids = [r["race_id"] for r in rows]
+
+    # DBになければスクレイパーで取得
     if not race_ids:
-        date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-        with get_db() as conn:
-            rows = conn.execute(
-                "SELECT race_id FROM races WHERE race_date = ? OR race_date = ? ORDER BY race_id",
-                (date_str, date_hyphen)
-            ).fetchall()
-            race_ids = [r["race_id"] for r in rows]
+        race_ids = scraper.get_race_list_by_date(date_str)
 
     if not race_ids:
         print(f"⚠️ {date_str} のレースが見つかりません")
@@ -45,9 +47,80 @@ def get_race_predictions(date_str, model, strategy):
 
     print(f"📡 {date_str} の {len(race_ids)} レースを分析中...")
 
+    # キャッシュから高速読み込みを試行
     all_races = []
+    cache_hits = 0
     for race_id in race_ids:
         try:
+            with get_db() as conn:
+                cached = conn.execute(
+                    "SELECT predictions_json, all_bets_json, confidence, should_bet FROM predictions_cache WHERE race_id = ?",
+                    (race_id,)
+                ).fetchone()
+                race = conn.execute(
+                    "SELECT * FROM races WHERE race_id = ?", (race_id,)
+                ).fetchone()
+
+            if cached and race and cached['predictions_json']:
+                # キャッシュから復元（高速パス）
+                horses = json.loads(cached['predictions_json'])
+                all_bets = json.loads(cached['all_bets_json']) if cached['all_bets_json'] else {}
+                confidence = cached['confidence'] or 'C'
+                should_bet = bool(cached['should_bet'])
+                race_info = dict(race)
+
+                # 印がなければ割り当て
+                has_marks = any(h.get('mark') for h in horses)
+                if not has_marks:
+                    sorted_h = sorted(horses, key=lambda x: x.get('pred_win', 0), reverse=True)
+                    mark_list = ["◎", "○", "▲", "△", "×"]
+                    for i, h in enumerate(sorted_h):
+                        h["mark"] = mark_list[i] if i < 5 else ""
+                    horses = sorted_h
+
+                # EV計算
+                max_ev = 0.0
+                for bt, bt_bets in all_bets.items():
+                    for b in bt_bets:
+                        ev = b.get("ev", 0)
+                        if ev > max_ev:
+                            max_ev = ev
+
+                # レース傾向
+                sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
+                top_p = sorted_probs[0] if sorted_probs else 0
+                gap = (top_p - sorted_probs[1]) if len(sorted_probs) > 1 else 0
+                if top_p >= 35 and gap >= 12:
+                    tendency = "堅い（本命突出）"
+                elif top_p >= 25 and gap >= 6:
+                    tendency = "やや堅い"
+                elif sum(sorted_probs[:3]) >= 55:
+                    tendency = "上位拮抗"
+                elif top_p <= 12:
+                    tendency = "波乱含み"
+                else:
+                    tendency = "普通"
+
+                all_races.append({
+                    "race_id": race_id,
+                    "race_info": race_info,
+                    "horses": horses,
+                    "all_bets": all_bets,
+                    "max_ev": max_ev,
+                    "confidence": confidence,
+                    "tendency": tendency,
+                    "should_bet": should_bet,
+                })
+
+                venue = race_info.get("venue", "")
+                rnum = race_info.get("race_number", 0)
+                print(f"  ✅ {venue}{rnum}R {race_info.get('race_name', '')} "
+                      f"[{confidence}] EV={max_ev:.1f} (cache)")
+                cache_hits += 1
+                continue
+
+            # キャッシュなし → ML予測（遅いパス）
+            print(f"  ⏳ {race_id}: キャッシュなし、ML予測実行中...")
             # レース情報取得
             with get_db() as conn:
                 race = conn.execute(
