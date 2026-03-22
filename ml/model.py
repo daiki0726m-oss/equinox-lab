@@ -264,6 +264,21 @@ class KeibaModel:
         df["pred_top3"] = preds["prob_top3"]
         df["pred_win"] = preds["prob_win"]
 
+        # 初出走・経験不足の馬に割引を適用
+        # race_experience: 0=初出走, 0.1=1走, 0.2=2走, ... 1.0=10走以上
+        if "race_experience" in df.columns:
+            debut_mask = df["race_experience"] == 0       # 初出走
+            few_exp_mask = df["race_experience"] <= 0.2   # 1-2走
+            # 初出走: rank_scoreを30%減
+            df.loc[debut_mask, "rank_score"] *= 0.7
+            df.loc[debut_mask, "pred_top3"] *= 0.7
+            df.loc[debut_mask, "pred_win"] *= 0.7
+            # 1-2走: rank_scoreを15%減（初出走は除く）
+            few_only = few_exp_mask & ~debut_mask
+            df.loc[few_only, "rank_score"] *= 0.85
+            df.loc[few_only, "pred_top3"] *= 0.85
+            df.loc[few_only, "pred_win"] *= 0.85
+
         # ランキングスコアを正規化 (softmax)
         rank_exp = np.exp(df["rank_score"] - df["rank_score"].max())
         df["pred_win_norm"] = rank_exp / rank_exp.sum()
