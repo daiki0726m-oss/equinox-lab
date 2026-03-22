@@ -422,30 +422,35 @@ def cmd_results(args):
     t1 += f"回収: {int(total_payout):,}円\n"
     t1 += f"収支: {'+' if profit >= 0 else ''}{profit:,}円\n"
     t1 += f"ROI: {roi}%\n\n"
-    if roi >= 100:
+    if total_invested == 0:
+        t1 += "推奨買い目なし（見送り判断）\n\n"
+    elif roi >= 100:
         t1 += "プラス回収！📈🔥\n\n"
+    elif hit_races > 0:
+        t1 += f"{hit_races}レース的中もトータルマイナス 📉\n\n"
     else:
-        t1 += "本日はマイナス。改善します 📉\n\n"
+        t1 += "全不的中。素直に反省 📉\n\n"
     t1 += "#競馬予想 #AI予想 #競馬結果 🧵↓"
 
     # ── ツイート2: 各レース結果 ──
     t2 = f"📋 各レース結果\n\n"
     for r in race_results:
         m = r['marks']
-        mark_str = ""
-        if m['◎']:
-            mark_str += f"◎{m['◎']['horse_number']}{m['◎']['horse_name']}"
-        if m['○']:
-            mark_str += f" ○{m['○']['horse_number']}{m['○']['horse_name']}"
-
         if r['hit_bets']:
             t2 += f"✅ {r['venue']} {r['race_name']}\n"
-            t2 += f" {mark_str}\n"
+            if m['◎']:
+                t2 += f" ◎{m['◎']['horse_number']}{m['◎']['horse_name']}\n"
             for hb in r['hit_bets'][:2]:
                 t2 += f" 💰{hb['type']} {hb['detail']}→{hb['payout']:,}円\n"
+        elif r['invested'] == 0:
+            t2 += f"⏸️ {r['venue']} {r['race_name']}\n"
+            t2 += " AI評価D→見送り推奨（買い目なし）\n"
         else:
             t2 += f"❌ {r['venue']} {r['race_name']}\n"
-            t2 += f" {mark_str}\n"
+            if m['◎']:
+                fp = '?'
+                # ◎の着順を取得
+                t2 += f" ◎{m['◎']['horse_number']}{m['◎']['horse_name']}\n"
             t2 += f" 推奨{r['miss_count']}点 不的中\n"
 
     # ── ツイート3: 総括 ──
@@ -454,9 +459,13 @@ def cmd_results(args):
         t3 += f"ROI {roi}%でプラス回収\n"
         t3 += f"的中レース: {hit_races}/{total_races}\n\n"
     else:
-        t3 += f"ROI {roi}%\n"
         t3 += "外れた原因を分析し精度向上します\n\n"
-    t3 += "明日もメインレースAI予想を配信\n"
+
+    # 次の開催日を判定（土→日→来週土）
+    next_label = "来週も"
+    if dt.weekday() == 5:  # 土曜
+        next_label = "明日も"
+    t3 += f"{next_label}メインレースAI予想を配信\n"
     t3 += "フォロー&通知ONで見逃さない🔔"
 
     tweets = [t1, t2, t3]
