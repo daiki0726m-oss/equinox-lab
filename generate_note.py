@@ -673,12 +673,13 @@ def generate_article(date_str, featured_races, all_races):
     # ━━━ 3. ベネフィット ━━━
     lines.append("## この記事でわかること\n")
     for rname in race_names:
-        lines.append(f"✅ **{rname}** の◎○▲＋推奨買い目")
+        lines.append(f"✅ **{rname}** の◎○▲＋推奨買い目（単勝・三連単）")
     lines.append("✅ 各レースの「堅い」or「荒れる」が一目でわかる **レース傾向分析**")
     lines.append("✅ 人気馬の中から **消すべき危険な人気馬** を特定")
-    lines.append("✅ **期待値(EV)プラス** の買い目だけを厳選（ムダ馬券を排除）\n")
-    lines.append("> 買い目の根拠を「なんとなく」ではなく、"
-                 "**41次元のデータ**で明確にします。\n")
+    lines.append("✅ ROI分析で厳選した **単勝＋三連単** の2券種に集中投資\n")
+    lines.append("> 6券種のROI検証の結果、**単勝120%・三連単149%**の"
+                 "2券種だけがプラス回収。\n"
+                 "> この2つに絞ることで回収率を最大化します。\n")
     lines.append("---\n")
 
     # ━━━ 4. 権威性 ━━━
