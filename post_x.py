@@ -487,14 +487,13 @@ def cmd_weekday(args):
     print(f"📅 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
 
     if dow == 0:
+        # 月曜: 先週末の振り返り
         tweet = generate_weekly_summary()
-    elif dow == 1:
-        tweet = generate_jockey_ranking()
-    elif dow == 2:
-        tweet = generate_analysis_column()
-    elif dow == 3:
-        tweet = generate_pickup_horse()
+    elif dow in (1, 2, 3):
+        # 火〜木: note記事プロモ（記事がなければフォールバック）
+        tweet = generate_note_promo()
     elif dow == 4:
+        # 金曜: 週末プレビュー
         tweet = generate_weekend_preview()
     else:
         tweet = generate_analysis_column()
@@ -1166,6 +1165,416 @@ def generate_weekend_preview():
     return [t1, t2, t3]
 
 
+# ─── 土曜夜: 全レース答え合わせ ───
+def cmd_answer_check(args):
+    """当日の全レースの◎の着順を集計して答え合わせ投稿"""
+    date_str = args.date
+    dt = datetime.strptime(date_str, "%Y%m%d")
+    weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
+    date_label = f"{dt.month}/{dt.day}({weekday})"
+    date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+    with get_db() as conn:
+        # 全レース（11Rだけでなく全R）の◎の着順を取得
+        races = conn.execute("""
+            SELECT ra.race_id, ra.race_name, ra.venue, ra.race_number,
+                   pc.predictions_json
+            FROM races ra
+            JOIN predictions_cache pc ON ra.race_id = pc.race_id
+            WHERE (ra.race_date = ? OR ra.race_date = ?)
+            ORDER BY ra.venue, ra.race_number
+        """, (date_str, date_hyphen)).fetchall()
+
+        if not races:
+            print(f"❌ {date_str} の予測データがありません")
+            return
+
+        total = 0
+        honmei_wins = 0
+        honmei_top3 = 0
+        highlights = []  # 高オッズ的中
+
+        for race in races:
+            preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
+            if not preds:
+                continue
+
+            # ◎を特定
+            honmei = None
+            for p in preds:
+                if p.get('mark') == '◎':
+                    honmei = p
+                    break
+            if not honmei:
+                honmei = preds[0] if preds else None
+            if not honmei:
+                continue
+
+            hn = honmei.get('horse_number', 0)
+            horse_name = honmei.get('horse_name', '?')
+
+            # 着順取得
+            actual = conn.execute("""
+                SELECT finish_position, odds FROM results
+                WHERE race_id = ? AND horse_number = ?
+                AND finish_position > 0
+            """, (race['race_id'], hn)).fetchone()
+
+            if not actual:
+                continue
+
+            total += 1
+            fp = actual['finish_position']
+            odds = actual['odds'] or 0
+
+            if fp == 1:
+                honmei_wins += 1
+                honmei_top3 += 1
+                if odds >= 3.0:  # 3倍以上の的中はハイライト
+                    highlights.append({
+                        'venue': race['venue'],
+                        'race_number': race['race_number'],
+                        'horse_name': horse_name,
+                        'odds': odds,
+                        'position': fp,
+                    })
+            elif fp <= 3:
+                honmei_top3 += 1
+
+    if total == 0:
+        print(f"❌ {date_str} の結果がまだ出ていません")
+        return
+
+    win_rate = round(honmei_wins / total * 100) if total > 0 else 0
+    top3_rate = round(honmei_top3 / total * 100) if total > 0 else 0
+
+    # ── ツイート1: 概要 ──
+    t1 = f"📊 {date_label} AI予想の答え合わせ\n\n"
+    t1 += f"全{total}レースの◎結果:\n"
+    t1 += f"🥇 1着: {honmei_wins}回（{win_rate}%）\n"
+    t1 += f"🏅 3着内: {honmei_top3}回（{top3_rate}%）\n\n"
+
+    if win_rate >= 30:
+        t1 += "好調をキープ📈\n"
+    elif win_rate >= 20:
+        t1 += "安定の成績📊\n"
+    else:
+        t1 += "反省点を次に活かします📝\n"
+
+    t1 += "\n#競馬予想 #AI予想 #競馬結果"
+
+    # ── ツイート2: ハイライト ──
+    t2 = ""
+    if highlights:
+        t2 = "💰 注目の的中\n\n"
+        for h in sorted(highlights, key=lambda x: x['odds'], reverse=True)[:5]:
+            t2 += f"✅ {h['venue']}{h['race_number']}R "
+            t2 += f"◎{h['horse_name']} → {h['position']}着"
+            t2 += f"（{h['odds']:.1f}倍）\n"
+    else:
+        t2 = "📋 1着的中は人気馬中心でした\n\n"
+        t2 += "高配当の的中はなし\n"
+        t2 += "次回は穴馬の精度向上を目指します"
+
+    # ── ツイート3: 次回予告 ──
+    is_saturday = dt.weekday() == 5
+    t3 = ""
+    if is_saturday:
+        t3 = "🔔 明日もAI予想を配信\n\n"
+        t3 += "朝7時に全レース予想を投稿\n"
+        t3 += "フォロー&通知ONで見逃さない👀"
+    else:
+        t3 = "🔔 来週も毎日配信\n\n"
+        t3 += "火〜木: 重賞データ分析（note）\n"
+        t3 += "土日朝: 全レースAI予想\n\n"
+        t3 += "フォローして見逃さないでください🔔"
+
+    tweets = [t1, t2, t3]
+
+    client = None
+    if not args.dry_run:
+        client = load_x_client()
+        if not client:
+            return
+
+    post_thread(client, tweets, dry_run=args.dry_run)
+
+
+# ─── 日曜夜: 週間ROIレビュー ───
+def cmd_weekly_review(args):
+    """今週末（土日）の全レースROIをまとめて報告"""
+    today = now_jst()
+    # 直近の土日を取得
+    if today.weekday() == 6:  # 日曜
+        sun = today
+        sat = today - timedelta(days=1)
+    elif today.weekday() == 5:  # 土曜
+        sat = today
+        sun = today + timedelta(days=1)
+    else:
+        # 平日の場合は先週末
+        days_since_sun = today.weekday() + 1
+        sun = today - timedelta(days=days_since_sun)
+        sat = sun - timedelta(days=1)
+
+    sat_str = sat.strftime("%Y-%m-%d")
+    sun_str = sun.strftime("%Y-%m-%d")
+    dr = f"{sat.month}/{sat.day}-{sun.month}/{sun.day}"
+
+    with get_db() as conn:
+        # 全レースの◎の着順を集計
+        races = conn.execute("""
+            SELECT ra.race_id, ra.race_name, ra.venue,
+                   pc.predictions_json, pc.all_bets_json
+            FROM races ra
+            JOIN predictions_cache pc ON ra.race_id = pc.race_id
+            WHERE ra.race_date IN (?, ?)
+            ORDER BY ra.race_date, ra.venue, ra.race_number
+        """, (sat_str, sun_str)).fetchall()
+
+        if not races:
+            print(f"❌ {dr} の予測データがありません")
+            # フォールバック
+            args_mock = type('Args', (), {'dry_run': getattr(args, 'dry_run', False)})()
+            return cmd_weekday(args_mock)
+
+        total_races = 0
+        honmei_wins = 0
+        honmei_top3 = 0
+        total_invested = 0
+        total_payout = 0
+        bet_type_stats = {}  # 券種別の投資/回収
+
+        for race in races:
+            preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
+            all_bets = json.loads(race['all_bets_json']) if race['all_bets_json'] else {}
+
+            if not preds:
+                continue
+
+            # ◎を特定
+            honmei = None
+            for p in preds:
+                if p.get('mark') == '◎':
+                    honmei = p
+                    break
+            if not honmei and preds:
+                honmei = preds[0]
+
+            if honmei:
+                hn = honmei.get('horse_number', 0)
+                actual = conn.execute("""
+                    SELECT finish_position FROM results
+                    WHERE race_id = ? AND horse_number = ?
+                    AND finish_position > 0
+                """, (race['race_id'], hn)).fetchone()
+
+                if actual:
+                    total_races += 1
+                    if actual['finish_position'] == 1:
+                        honmei_wins += 1
+                        honmei_top3 += 1
+                    elif actual['finish_position'] <= 3:
+                        honmei_top3 += 1
+
+            # 券種別ROI計算
+            payouts = conn.execute("""
+                SELECT bet_type, combination, payout_amount
+                FROM payouts WHERE race_id = ?
+            """, (race['race_id'],)).fetchall()
+            payout_map = {(p['bet_type'], p['combination']): p['payout_amount'] for p in payouts}
+
+            finishes = conn.execute("""
+                SELECT horse_number, finish_position FROM results
+                WHERE race_id = ? AND finish_position > 0
+            """, (race['race_id'],)).fetchall()
+            finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
+
+            for bt, bt_bets in all_bets.items():
+                if bt not in bet_type_stats:
+                    bet_type_stats[bt] = {'invested': 0, 'payout': 0}
+
+                for b in bt_bets:
+                    amount = b.get('amount', 100)
+                    bet_type_stats[bt]['invested'] += amount
+                    total_invested += amount
+
+                    hns = b.get('horse_numbers', [])
+                    is_hit = False
+                    actual_payout = 0
+
+                    if bt == '単勝' and len(hns) >= 1:
+                        if finish_map.get(hns[0]) == 1:
+                            is_hit = True
+                            actual_payout = payout_map.get(('単勝', str(hns[0])), 0)
+                    elif bt == '三連単' and len(hns) >= 3:
+                        ordered = [h for h, f in sorted(finish_map.items(), key=lambda x: x[1]) if f <= 3]
+                        if hns[:3] == ordered[:3]:
+                            is_hit = True
+                            combo = '-'.join(str(h) for h in hns[:3])
+                            actual_payout = payout_map.get(('三連単', combo), 0)
+
+                    if is_hit and actual_payout > 0:
+                        payout_val = int(actual_payout * (amount / 100))
+                        bet_type_stats[bt]['payout'] += payout_val
+                        total_payout += payout_val
+
+    if total_races == 0:
+        print(f"❌ {dr} の結果がまだ出ていません")
+        return
+
+    win_rate = round(honmei_wins / total_races * 100) if total_races > 0 else 0
+    top3_rate = round(honmei_top3 / total_races * 100) if total_races > 0 else 0
+    overall_roi = round(total_payout / total_invested * 100) if total_invested > 0 else 0
+
+    # ── ツイート1: 週間レポート ──
+    t1 = f"📊 今週のAI予想 成績レポート\n"
+    t1 += f"({dr})\n\n"
+    t1 += f"対象: 全{total_races}レース\n"
+    t1 += f"◎1着率: {win_rate}%（{honmei_wins}/{total_races}R）\n"
+    t1 += f"◎複勝率: {top3_rate}%（{honmei_top3}/{total_races}R）\n\n"
+
+    # 券種別ROI
+    for bt in ['単勝', '三連単']:
+        if bt in bet_type_stats and bet_type_stats[bt]['invested'] > 0:
+            roi = round(bet_type_stats[bt]['payout'] / bet_type_stats[bt]['invested'] * 100)
+            emoji = "✅" if roi >= 100 else "📉"
+            t1 += f"{bt}ROI: {roi}%{emoji}\n"
+
+    t1 += "\n#競馬予想 #AI予想 #競馬結果"
+
+    # ── ツイート2: 透明性 ──
+    profit = int(total_payout - total_invested)
+    t2 = "📋 収支の透明レポート\n\n"
+    t2 += f"投資: {int(total_invested):,}円\n"
+    t2 += f"回収: {int(total_payout):,}円\n"
+    t2 += f"収支: {'+' if profit >= 0 else ''}{profit:,}円\n"
+    t2 += f"ROI: {overall_roi}%\n\n"
+
+    if overall_roi >= 100:
+        t2 += "プラス収支で週を終了📈"
+    else:
+        t2 += "マイナスですが長期で見てください📊"
+
+    # ── ツイート3: 来週の予告 ──
+    t3 = "🔔 来週のスケジュール\n\n"
+    t3 += "火〜木 12:00: 重賞データ分析\n"
+    t3 += "土日 7:00: 全レースAI予想\n"
+    t3 += "土日 20:00: 結果報告\n\n"
+    t3 += "フォローして見逃さないでください🔔\n"
+    t3 += "noteで重賞の無料分析も公開中👇"
+
+    tweets = [t1, t2, t3]
+
+    client = None
+    if not args.dry_run:
+        client = load_x_client()
+        if not client:
+            return
+
+    post_thread(client, tweets, dry_run=args.dry_run)
+
+
+# ─── 平日: note記事プロモ ───
+def generate_note_promo():
+    """articlesフォルダの最新記事からプロモツイートを生成。記事がなければフォールバック"""
+    import glob
+
+    articles_dir = os.path.join(os.path.dirname(__file__), "articles")
+
+    # 重賞分析記事を検索（review_やyyyymmdd形式は除外）
+    promo_files = []
+    if os.path.exists(articles_dir):
+        for f in glob.glob(os.path.join(articles_dir, "*.md")):
+            basename = os.path.basename(f)
+            # review_ や日付形式のファイルは除外
+            if basename.startswith("review_") or basename.startswith("2026"):
+                continue
+            promo_files.append(f)
+
+    if not promo_files:
+        # 記事がない場合はフォールバック
+        return generate_analysis_column()
+
+    # 最新の記事を選択（更新日順）
+    promo_files.sort(key=os.path.getmtime, reverse=True)
+
+    # 今日が何曜日かで記事を選ぶ（火=0番目, 水=1番目, 木=2番目）
+    today = now_jst()
+    dow = today.weekday()  # 0=月, 1=火, 2=水, 3=木
+    idx = dow - 1  # 火=0, 水=1, 木=2
+    if idx < 0 or idx >= len(promo_files):
+        idx = 0
+
+    article_path = promo_files[min(idx, len(promo_files) - 1)]
+
+    # 記事の内容を読み取り
+    with open(article_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # タイトルを抽出（最初の # 行）
+    title = ""
+    key_points = []
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("# ") and not title:
+            title = line.replace("# ", "")
+        # ポイントになるデータを抽出（太字の行）
+        if line.startswith("**") and "→" in line and len(key_points) < 3:
+            # **1番人気** → 複勝率90% みたいな行
+            key_points.append(line.replace("**", ""))
+
+    if not title:
+        return generate_analysis_column()
+
+    # レース名をハッシュタグ用に抽出
+    race_hashtags = ""
+    if "日経賞" in title:
+        race_hashtags = "#日経賞"
+    elif "毎日杯" in title:
+        race_hashtags = "#毎日杯"
+    elif "マーチ" in title:
+        race_hashtags = "#マーチステークス"
+    elif "高松宮" in title:
+        race_hashtags = "#高松宮記念"
+
+    # ── ツイート1: フック ──
+    t1 = f"📊 {title}\n\n"
+    t1 += "noteで無料公開中👇\n\n"
+    if key_points:
+        for kp in key_points[:2]:
+            t1 += f"・{kp}\n"
+        t1 += "\n"
+    t1 += f"{race_hashtags} #競馬データ #競馬予想"
+
+    # ── ツイート2: 記事からデータを引用 ──
+    t2 = "📋 記事のポイント\n\n"
+    # AI多次元分析セクションがあれば引用
+    if "AI多次元分析" in content:
+        t2 += "AIの多次元分析で\n"
+        t2 += "従来の一次元分析では見えない\n"
+        t2 += "複合パターンを解説しています\n\n"
+    if key_points:
+        for kp in key_points:
+            t2 += f"📌 {kp}\n"
+    else:
+        t2 += "傾向データ＋注目馬＋危険な人気馬\n"
+        t2 += "をデータで分析しています"
+
+    # ── ツイート3: CTA ──
+    t3 = "🔔 noteで全文を無料公開中\n\n"
+    t3 += "プロフィールのリンクからどうぞ👀\n\n"
+
+    # 高松宮記念の予告（まだ木曜前なら）
+    if "高松宮" not in title:
+        t3 += "📢 高松宮記念（G1）の分析は\n"
+        t3 += "木曜に公開予定🔔\n\n"
+
+    t3 += "フォローして見逃さないでください！"
+
+    return [t1, t2, t3]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="🐦 EQUINOX Lab — X自動投稿"
@@ -1186,6 +1595,15 @@ def main():
     p_week = subparsers.add_parser("weekday", help="平日コンテンツを投稿")
     p_week.add_argument("--dry-run", action="store_true", help="投稿せずプレビュー")
 
+    # answer_check
+    p_ans = subparsers.add_parser("answer_check", help="全レース答え合わせを投稿")
+    p_ans.add_argument("--date", required=True, help="対象日 (YYYYMMDD)")
+    p_ans.add_argument("--dry-run", action="store_true", help="投稿せずプレビュー")
+
+    # weekly_review
+    p_rev = subparsers.add_parser("weekly_review", help="週間ROIレビューを投稿")
+    p_rev.add_argument("--dry-run", action="store_true", help="投稿せずプレビュー")
+
     args = parser.parse_args()
     init_db()
 
@@ -1200,9 +1618,14 @@ def main():
         cmd_results(args)
     elif args.command == "weekday":
         cmd_weekday(args)
+    elif args.command == "answer_check":
+        cmd_answer_check(args)
+    elif args.command == "weekly_review":
+        cmd_weekly_review(args)
     else:
         parser.print_help()
 
 
 if __name__ == "__main__":
     main()
+
