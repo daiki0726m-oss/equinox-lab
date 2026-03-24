@@ -26,6 +26,8 @@ on:
           - weekday
           - predict
           - results
+          - answer_check
+          - weekly_review
           - refresh_odds
 
 jobs:
@@ -65,9 +67,11 @@ jobs:
           UTC_HOUR=$(date -u +%H)
 
           if [ "$UTC_HOUR" -ge 10 ] && [ "$UTC_HOUR" -le 12 ]; then
-            # UTC 10-12 = JST 19-21 → 結果報告（土日のみ）
-            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              echo "type=results" >> $GITHUB_OUTPUT
+            # UTC 10-12 = JST 19-21 → 答え合わせ/週間レビュー
+            if [ "$DOW" -eq 6 ]; then
+              echo "type=answer_check" >> $GITHUB_OUTPUT
+            elif [ "$DOW" -eq 7 ]; then
+              echo "type=weekly_review" >> $GITHUB_OUTPUT
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
@@ -101,7 +105,7 @@ jobs:
 
       # 土日はスクレイプ→予測が必要
       - name: Scrape and predict (weekend only)
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'results'
+        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'results' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'weekly_review'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📥 ${DATE} のデータをスクレイプ..."
@@ -118,7 +122,7 @@ jobs:
           python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ更新完了（一部エラーあり）"
 
       - name: Post to X
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'weekday' || steps.determine.outputs.type == 'results'
+        if: steps.determine.outputs.type != 'skip' && steps.determine.outputs.type != 'refresh_odds'
         env:
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
@@ -136,4 +140,8 @@ jobs:
             python post_x.py predict --date "$DATE"
           elif [ "$TYPE" = "results" ]; then
             python post_x.py results --date "$DATE"
+          elif [ "$TYPE" = "answer_check" ]; then
+            python post_x.py answer_check --date "$DATE"
+          elif [ "$TYPE" = "weekly_review" ]; then
+            python post_x.py weekly_review
           fi
