@@ -2,12 +2,18 @@ name: 🐦 Auto Post to X
 
 on:
   schedule:
-    # 毎日 朝8時(JST) = 前日23:00 UTC → 平日コンテンツ or 週末予想
-    - cron: '0 23 * * *'
+    # 平日 昼12時(JST) = 03:00 UTC → 昼休みに記事を読んでもらう
+    - cron: '0 3 * * 1-5'
+    # 土曜 朝7時(JST) = 前日22:00 UTC → 馬券購入前の最終チェック
+    - cron: '0 22 * * 5'
+    # 日曜 朝7時(JST) = 前日22:00 UTC → 日曜の予想
+    - cron: '0 22 * * 6'
     # 土日 9:55(JST) = 00:55 UTC → オッズ確定
     - cron: '55 0 * * 0,6'
-    # 土日 18時(JST) = 09:00 UTC → 的中報告（確実に全レース終了後）
-    - cron: '0 9 * * 0,6'
+    # 日曜 20時(JST) = 11:00 UTC → 振り返り（帰宅後のリラックスタイム）
+    - cron: '0 11 * * 0'
+    # 土曜 20時(JST) = 11:00 UTC → 当日結果報告
+    - cron: '0 11 * * 6'
   workflow_dispatch:
     inputs:
       mode:
@@ -55,12 +61,11 @@ jobs:
             exit 0
           fi
 
-          # 自動判定 — cron時刻ではなくUTC時刻ベースで判定
-          # (GitHub Actionsのcron遅延による誤判定を防止)
+          # 自動判定 — UTC時刻ベースで判定
           UTC_HOUR=$(date -u +%H)
 
-          if [ "$UTC_HOUR" -ge 7 ] && [ "$UTC_HOUR" -le 12 ]; then
-            # UTC 07-12 = JST 16-21 → 的中報告（土日のみ）
+          if [ "$UTC_HOUR" -ge 10 ] && [ "$UTC_HOUR" -le 12 ]; then
+            # UTC 10-12 = JST 19-21 → 結果報告（土日のみ）
             if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
               echo "type=results" >> $GITHUB_OUTPUT
             else
@@ -73,12 +78,19 @@ jobs:
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
-          elif [ "$UTC_HOUR" -ge 22 ] || [ "$UTC_HOUR" -le 1 ]; then
-            # UTC 22-01 = JST 07-10 → 朝投稿
+          elif [ "$UTC_HOUR" -ge 2 ] && [ "$UTC_HOUR" -le 4 ]; then
+            # UTC 02-04 = JST 11-13 → 平日昼投稿
+            if [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
+              echo "type=weekday" >> $GITHUB_OUTPUT
+            else
+              echo "type=skip" >> $GITHUB_OUTPUT
+            fi
+          elif [ "$UTC_HOUR" -ge 21 ] || [ "$UTC_HOUR" -le 0 ]; then
+            # UTC 21-00 = JST 06-09 → 朝投稿（土日の予想）
             if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
               echo "type=predict" >> $GITHUB_OUTPUT
             else
-              echo "type=weekday" >> $GITHUB_OUTPUT
+              echo "type=skip" >> $GITHUB_OUTPUT
             fi
           else
             echo "type=skip" >> $GITHUB_OUTPUT
