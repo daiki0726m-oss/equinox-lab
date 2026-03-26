@@ -66,8 +66,10 @@ jobs:
           # 自動判定 — UTC時刻ベースで判定
           UTC_HOUR=$(date -u +%H)
 
-          if [ "$UTC_HOUR" -ge 10 ] && [ "$UTC_HOUR" -le 12 ]; then
-            # UTC 10-12 = JST 19-21 → 答え合わせ/週間レビュー
+          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, UTC_HOUR=$UTC_HOUR"
+
+          if [ "$UTC_HOUR" = "11" ]; then
+            # UTC 11 = JST 20 → 答え合わせ/週間レビュー
             if [ "$DOW" -eq 6 ]; then
               echo "type=answer_check" >> $GITHUB_OUTPUT
             elif [ "$DOW" -eq 7 ]; then
@@ -75,23 +77,24 @@ jobs:
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
-          elif [ "$UTC_HOUR" -ge 0 ] && [ "$UTC_HOUR" -le 2 ]; then
-            # UTC 00-02 = JST 09-11 → オッズ確定（土日のみ）
+          elif [ "$UTC_HOUR" = "00" ] || [ "$UTC_HOUR" = "01" ]; then
+            # UTC 00-01 = JST 09-10 → オッズ確定（土日のみ）
             if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
               echo "type=refresh_odds" >> $GITHUB_OUTPUT
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
-          elif [ "$UTC_HOUR" -ge 2 ] && [ "$UTC_HOUR" -le 4 ]; then
-            # UTC 02-04 = JST 11-13 → 平日昼投稿
+          elif [ "$UTC_HOUR" = "03" ]; then
+            # UTC 03 = JST 12 → 平日昼投稿
             if [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
               echo "type=weekday" >> $GITHUB_OUTPUT
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
-          elif [ "$UTC_HOUR" -ge 21 ] || [ "$UTC_HOUR" -le 0 ]; then
-            # UTC 21-00 = JST 06-09 → 朝投稿（土日の予想）
-            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
+          elif [ "$UTC_HOUR" = "22" ]; then
+            # UTC 22 = JST 07 → 朝投稿（土日の予想）
+            if [ "$DOW" -eq 5 ] || [ "$DOW" -eq 6 ]; then
+              # 金曜UTC22=土曜JST07, 土曜UTC22=日曜JST07
               echo "type=predict" >> $GITHUB_OUTPUT
             else
               echo "type=skip" >> $GITHUB_OUTPUT
@@ -99,6 +102,8 @@ jobs:
           else
             echo "type=skip" >> $GITHUB_OUTPUT
           fi
+
+          echo "📬 Determined type: $(grep type $GITHUB_OUTPUT | tail -1)"
 
           echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
           echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
