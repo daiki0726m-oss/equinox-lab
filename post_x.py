@@ -21,6 +21,10 @@ import sys
 import os
 import json
 import random
+import time
+import urllib.request
+import urllib.parse
+import urllib.error
 from datetime import datetime, timedelta, timezone
 
 # JST タイムゾーン
@@ -40,6 +44,109 @@ try:
     HAS_TWEEPY = True
 except ImportError:
     HAS_TWEEPY = False
+
+
+# ─── Threads API ───
+
+def load_threads_client():
+    """Threads APIの認証情報を読み込む"""
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    env_vars = {}
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    env_vars[k.strip()] = v.strip().strip('"').strip("'")
+
+    user_id = env_vars.get("THREADS_USER_ID") or os.environ.get("THREADS_USER_ID")
+    access_token = env_vars.get("THREADS_ACCESS_TOKEN") or os.environ.get("THREADS_ACCESS_TOKEN")
+
+    if not user_id or not access_token:
+        return None  # Threads未設定の場合はスキップ（エラーにしない）
+
+    return {"user_id": user_id, "access_token": access_token}
+
+
+def adapt_text_for_threads(tweets):
+    """X用のスレッド（複数ツイート）をThreads用の1投稿に変換
+    
+    Threadsは500文字なので、X用の複数ツイートを結合できる。
+    ハッシュタグはそのまま使える（Threadsもサポート）。
+    """
+    if isinstance(tweets, str):
+        tweets = [tweets]
+    
+    # 複数ツイートを結合
+    combined = "\n\n".join(tweets)
+    
+    # 500文字に収める（Threadsの制限）
+    if len(combined) > 500:
+        combined = combined[:497] + "..."
+    
+    return combined
+
+
+def post_to_threads(threads_client, text, dry_run=False):
+    """Threads APIで投稿する
+    
+    Threads Publishing APIの2ステップ:
+    1. メディアコンテナを作成（POST /{user_id}/threads）
+    2. 公開する（POST /{user_id}/threads_publish）
+    """
+    if not threads_client:
+        return None
+    
+    user_id = threads_client["user_id"]
+    access_token = threads_client["access_token"]
+    
+    if dry_run:
+        print(f"\n🧵 Threads プレビュー ({len(text)}文字):")
+        print(f"{'─'*40}")
+        print(text)
+        print(f"{'─'*40}")
+        return "threads-dry-run"
+    
+    try:
+        # Step 1: Create media container
+        create_url = f"https://graph.threads.net/v1.0/{user_id}/threads"
+        create_data = urllib.parse.urlencode({
+            "media_type": "TEXT",
+            "text": text,
+            "access_token": access_token,
+        }).encode("utf-8")
+        
+        req = urllib.request.Request(create_url, data=create_data, method="POST")
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            container_id = result["id"]
+        
+        # Step 2: Wait for processing
+        time.sleep(2)
+        
+        # Step 3: Publish
+        publish_url = f"https://graph.threads.net/v1.0/{user_id}/threads_publish"
+        publish_data = urllib.parse.urlencode({
+            "creation_id": container_id,
+            "access_token": access_token,
+        }).encode("utf-8")
+        
+        req = urllib.request.Request(publish_url, data=publish_data, method="POST")
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            post_id = result["id"]
+        
+        print(f"  ✅ Threads投稿完了 (ID: {post_id})")
+        return post_id
+        
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else str(e)
+        print(f"  ⚠️ Threads投稿失敗: {e.code} {error_body}")
+        return None
+    except Exception as e:
+        print(f"  ⚠️ Threads投稿失敗: {e}")
+        return None
 
 
 def load_x_client():
@@ -85,8 +192,8 @@ def x_weighted_len(text):
     return count
 
 
-def post_thread(client, tweets, dry_run=False):
-    """ツイートのリスト（スレッド）を投稿"""
+def post_thread(client, tweets, dry_run=False, threads_client=None):
+    """ツイートのリスト（スレッド）をX + Threadsに投稿"""
     tweet_ids = []
     parent_id = None
 
@@ -110,19 +217,24 @@ def post_thread(client, tweets, dry_run=False):
                 tid = result.data["id"]
                 tweet_ids.append(tid)
                 parent_id = tid
-                print(f"  ✅ 投稿完了 (ID: {tid}, X:{wlen}文字)")
+                print(f"  ✅ X投稿完了 (ID: {tid}, X:{wlen}文字)")
             except Exception as e:
-                print(f"  ❌ 投稿失敗: {e}")
+                print(f"  ❌ X投稿失敗: {e}")
                 break
+
+    # Threads にも同時投稿（複数ツイートを1投稿に結合）
+    if threads_client:
+        threads_text = adapt_text_for_threads(tweets)
+        post_to_threads(threads_client, threads_text, dry_run=dry_run)
 
     return tweet_ids
 
 
-def post_tweet(client, text, reply_to=None, dry_run=False):
-    """単一ツイートまたは自動分割して投稿"""
+def post_tweet(client, text, reply_to=None, dry_run=False, threads_client=None):
+    """単一ツイートまたは自動分割して投稿（X + Threads同時）"""
     if isinstance(text, list):
-        return post_thread(client, text, dry_run=dry_run)
-    return post_thread(client, [text], dry_run=dry_run)
+        return post_thread(client, text, dry_run=dry_run, threads_client=threads_client)
+    return post_thread(client, [text], dry_run=dry_run, threads_client=threads_client)
 
 
 # ─── レース当日: メインレース予想 ───
@@ -269,12 +381,13 @@ def cmd_predict(args):
     tweets = [t1, t2, t3]
 
     client = None
+    threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
         if not client:
             return
 
-    post_thread(client, tweets, dry_run=args.dry_run)
+    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
 
 # ─── レース当日: 的中結果報告 ───
@@ -471,12 +584,13 @@ def cmd_results(args):
     tweets = [t1, t2, t3]
 
     client = None
+    threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
         if not client:
             return
 
-    post_thread(client, tweets, dry_run=args.dry_run)
+    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
 
 # ─── 平日コンテンツ ───
@@ -503,12 +617,13 @@ def cmd_weekday(args):
         return
 
     client = None
+    threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
         if not client:
             return
 
-    post_tweet(client, tweet, dry_run=args.dry_run)
+    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client)
 
 
 def generate_weekly_summary():
@@ -1292,12 +1407,13 @@ def cmd_answer_check(args):
     tweets = [t1, t2, t3]
 
     client = None
+    threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
         if not client:
             return
 
-    post_thread(client, tweets, dry_run=args.dry_run)
+    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
 
 # ─── 日曜夜: 週間ROIレビュー ───
@@ -1467,12 +1583,13 @@ def cmd_weekly_review(args):
     tweets = [t1, t2, t3]
 
     client = None
+    threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
         if not client:
             return
 
-    post_thread(client, tweets, dry_run=args.dry_run)
+    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
 
 # ─── 平日: note記事プロモ ───
