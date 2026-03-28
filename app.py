@@ -513,6 +513,22 @@ def api_predict_date(date_str):
                 elif top3_t >= 55: race_tendency = "上位拮抗（実力伯仲）"
                 elif top_p <= 12: race_tendency = "波乱含み（大混戦）"
                 else: race_tendency = "普通（中穴狙い可）"
+
+                # キャッシュからmyomi再計算
+                max_ev = 0.0
+                for bt_key, bt_bets in all_bets.items():
+                    for b in bt_bets:
+                        ev = b.get("ev", 0)
+                        if ev > max_ev:
+                            max_ev = ev
+                if max_ev >= 5.0:
+                    myomi = "💎★★★"
+                elif max_ev >= 2.5:
+                    myomi = "💎★★"
+                elif max_ev >= 1.5:
+                    myomi = "💎★"
+                else:
+                    myomi = ""
             else:
                 # ── 出馬表確保 ──
                 with get_db() as conn:
@@ -740,13 +756,13 @@ def api_predict_date(date_str):
                 honmei = next((h for h in horses if h.get('mark') == '◎'), None)
                 honmei_win = honmei['pred_win'] if honmei else 0
 
-                if honmei_win >= 25:
+                if honmei_win >= 50:
                     confidence, conf_reason = "S", f"◎の勝率が非常に高い ({honmei_win:.1f}%)"
-                elif honmei_win >= 18:
+                elif honmei_win >= 35:
                     confidence, conf_reason = "A", f"◎の勝率が高い ({honmei_win:.1f}%)"
-                elif honmei_win >= 12:
+                elif honmei_win >= 22:
                     confidence, conf_reason = "B", f"◎の勝率は標準的 ({honmei_win:.1f}%)"
-                elif honmei_win >= 8:
+                elif honmei_win >= 12:
                     confidence, conf_reason = "C", f"◎の信頼度やや低い ({honmei_win:.1f}%)"
                 else:
                     confidence, conf_reason = "D", f"◎の信頼度が低い ({honmei_win:.1f}%)"
@@ -909,6 +925,8 @@ def api_predict_date(date_str):
                 "bet_reason": bet_reason,
                 "confidence": confidence,
                 "conf_reason": conf_reason,
+                "myomi": myomi,
+                "max_ev": round(max_ev, 1),
                 "race_tendency": race_tendency,
                 "has_results": has_results,
                 "payouts": race_payouts if has_results else [],

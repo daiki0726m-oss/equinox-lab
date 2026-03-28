@@ -68,6 +68,13 @@ def get_race_predictions(date_str, model, strategy):
                 should_bet = bool(cached['should_bet'])
                 race_info = dict(race)
 
+                # キー正規化（pred_win_pct→pred_win 等、フォーマット差吸収）
+                for h in horses:
+                    if 'pred_win' not in h and 'pred_win_pct' in h:
+                        h['pred_win'] = h['pred_win_pct']
+                    if 'pred_top3' not in h and 'pred_top3_pct' in h:
+                        h['pred_top3'] = h['pred_top3_pct']
+
                 # 印がなければ割り当て
                 has_marks = any(h.get('mark') for h in horses)
                 if not has_marks:
@@ -104,13 +111,13 @@ def get_race_predictions(date_str, model, strategy):
                 # 信頼度（◎のpred_winベースで再計算）
                 honmei_h = next((h for h in horses if h.get('mark') == '◎'), None)
                 honmei_win = honmei_h['pred_win'] if honmei_h else 0
-                if honmei_win >= 25:
+                if honmei_win >= 50:
                     confidence = "S"
-                elif honmei_win >= 18:
+                elif honmei_win >= 35:
                     confidence = "A"
-                elif honmei_win >= 12:
+                elif honmei_win >= 22:
                     confidence = "B"
-                elif honmei_win >= 8:
+                elif honmei_win >= 12:
                     confidence = "C"
                 else:
                     confidence = "D"
@@ -314,13 +321,13 @@ def get_race_predictions(date_str, model, strategy):
             # 信頼度（◎のpred_winベース）
             honmei_h = next((h for h in sorted_horses if h.get('mark') == '◎'), None)
             honmei_win = honmei_h['pred_win'] if honmei_h else 0
-            if honmei_win >= 25:
+            if honmei_win >= 50:
                 confidence = "S"
-            elif honmei_win >= 18:
+            elif honmei_win >= 35:
                 confidence = "A"
-            elif honmei_win >= 12:
+            elif honmei_win >= 22:
                 confidence = "B"
-            elif honmei_win >= 8:
+            elif honmei_win >= 12:
                 confidence = "C"
             else:
                 confidence = "D"
@@ -844,16 +851,6 @@ def generate_article(date_str, featured_races, all_races):
                     elif b.get('ev', 0) > valid_by_type[bt].get('ev', 0):
                         valid_by_type[bt] = b
 
-            lines.append("**推奨買い目:**")
-            if valid_by_type:
-                for bt in ["複勝", "単勝", "ワイド", "馬連", "三連複"]:
-                    if bt in valid_by_type:
-                        b = valid_by_type[bt]
-                        detail = b.get('detail', '')
-                        name = b.get('horse_name', '')
-                        lines.append(f"- {bt}: {detail} {name}")
-            else:
-                lines.append("- **見送り推奨**")
 
             lines.append("\n---\n")
 
