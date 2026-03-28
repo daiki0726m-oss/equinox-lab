@@ -586,7 +586,7 @@ def get_last_week_review(target_date_str):
         return None
 
 
-def generate_article(date_str, featured_races, all_races):
+def generate_article(date_str, featured_races, all_races, free=False):
     """note記事のMarkdownを生成（v2: 12ゴールデンテンプレート形式）"""
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
@@ -720,16 +720,18 @@ def generate_article(date_str, featured_races, all_races):
     for r in featured_races:
         info = r["race_info"]
         rname = info.get("race_name", "")
+        venue = info.get("venue", "")
+        rnum = info.get("race_number", 0)
         surface = info.get("surface", "")
         distance = info.get("distance", 0)
         hcount = info.get("horse_count", 0)
         conf = r["confidence"]
         tend = r["tendency"]
         myomi = r.get("myomi", "")
-        is_main = (info.get("race_number") == 11
+        is_main = (rnum == 11
                    or info.get("grade", "") in ("G1", "G2", "G3"))
         icon = "🏆" if is_main else "🔥"
-        lines.append(f"| {icon} **{rname}** | {surface}{distance}m | "
+        lines.append(f"| {icon} **{venue}{rnum}R {rname}** | {surface}{distance}m | "
                      f"{hcount}頭 | **{conf}** | {myomi or '-'} | {tend} |")
     lines.append("")
 
@@ -780,24 +782,25 @@ def generate_article(date_str, featured_races, all_races):
 
         lines.append("---\n")
 
-    # ━━━ 7-9. 有料エリアへの誘導 ━━━
+    # ━━━ 7-9. 有料エリアへの誘導（無料記事では非表示） ━━━
     all_venues = sorted(set(r["race_info"].get("venue", "") for r in all_races))
-    lines.append("## 有料エリア: 全レースの買い目＋詳細分析\n")
-    lines.append(f"ここから先は、**全{len(all_races)}レースの◎○▲＋推奨買い目**を公開します。\n")
-    lines.append("### 有料エリアの内容\n")
-    for v in all_venues:
-        v_count = sum(1 for r in all_races if r['race_info'].get('venue') == v)
-        lines.append(f"📋 **{v}** 全{v_count}レースの◎○▲＋推奨買い目")
-    lines.append("📋 各券種（単勝・複勝・ワイド・馬連・三連複）のベスト買い目")
-    lines.append("📋 AI評価D（見送り推奨）レースの明示\n")
+    if not free:
+        lines.append("## 有料エリア: 全レースの買い目＋詳細分析\n")
+        lines.append(f"ここから先は、**全{len(all_races)}レースの◎○▲＋推奨買い目**を公開します。\n")
+        lines.append("### 有料エリアの内容\n")
+        for v in all_venues:
+            v_count = sum(1 for r in all_races if r['race_info'].get('venue') == v)
+            lines.append(f"📋 **{v}** 全{v_count}レースの◎○▲＋推奨買い目")
+        lines.append("📋 各券種（単勝・複勝・ワイド・馬連・三連複）のベスト買い目")
+        lines.append("📋 AI評価D（見送り推奨）レースの明示\n")
 
-    lines.append("> ⚡ **今だけ特別価格: 300円**（10部売れたら500円に値上げします）")
-    lines.append(">")
-    lines.append("> 全レースカバー。お気に入りの1レースが当たれば元が取れます。\n")
-    lines.append("---\n")
+        lines.append("> ⚡ **今だけ特別価格: 300円**（10部売れたら500円に値上げします）")
+        lines.append(">")
+        lines.append("> 全レースカバー。お気に入りの1レースが当たれば元が取れます。\n")
+        lines.append("---\n")
 
-    # ━━━ ペイウォール ━━━
-    lines.append("## ここから有料エリア ↓\n")
+        # ━━━ ペイウォール ━━━
+        lines.append("## ここから有料エリア ↓\n")
 
     # ━━━ 有料コンテンツ: 全レース（会場別） ━━━
     # 会場ごとにグループ化してレース番号順
@@ -824,9 +827,9 @@ def generate_article(date_str, featured_races, all_races):
             is_main = (rnum == 11 or info.get("grade", "") in ("G1", "G2", "G3"))
             icon = "🏆" if is_main else ""
 
-            myomi_str = f" {myomi}" if myomi else ""
+            myomi_str = f" {myomi}" if myomi else " -"
             lines.append(f"### {icon}{rnum}R {rname} {surface}{distance}m・"
-                         f"{hcount}頭 [AI評価: {conf}]{myomi_str}\n")
+                         f"{hcount}頭 [AI評価: {conf}] [妙味:{myomi_str}]\n")
 
             # 予想印
             lines.append("| 印 | 馬番 | 馬名 | AI勝率 | SI |")
@@ -868,11 +871,12 @@ def generate_article(date_str, featured_races, all_races):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="🏇 note記事自動生成 — AI競馬予想を有料記事に"
+        description="🏇 note記事自動生成 — AI競馬予想記事"
     )
     parser.add_argument("--date", required=True, help="対象日 (YYYYMMDD)")
     parser.add_argument("--top", type=int, default=3, help="厳選レース数 (default: 3)")
     parser.add_argument("--copy", action="store_true", help="クリップボードにコピー")
+    parser.add_argument("--free", action="store_true", help="無料記事モード（有料エリア表記を除去）")
     parser.add_argument("--output", help="出力ファイルパス (default: articles/YYYYMMDD.md)")
     args = parser.parse_args()
 
@@ -894,7 +898,7 @@ def main():
     print(f"\n📝 厳選 {len(featured)} レースを記事化...\n")
 
     # 記事生成
-    article = generate_article(args.date, featured, all_races)
+    article = generate_article(args.date, featured, all_races, free=getattr(args, 'free', False))
 
     # 出力
     output_dir = os.path.join(os.path.dirname(__file__), "articles")
@@ -924,8 +928,33 @@ def main():
     print(article)
     print(f"\n{'='*60}")
     print(f"📝 文字数: {len(article)}文字")
-    print(f"💰 note有料価格の目安: ¥300〜500")
+    if not getattr(args, 'free', False):
+        print(f"💰 note有料価格の目安: ¥300〜500")
+    else:
+        print(f"🆓 無料記事モード")
     print(f"{'='*60}")
+
+    # ── 品質チェック ──
+    issues = []
+    if '有料エリア' in article and getattr(args, 'free', False):
+        issues.append('❌ 無料記事に「有料エリア」の文言が残っている')
+    if '特別価格' in article and getattr(args, 'free', False):
+        issues.append('❌ 無料記事に「特別価格」の文言が残っている')
+    if '| - |' not in article and '💎' not in article:
+        issues.append('⚠️ 妙味表示が各レースにない可能性')
+    # 注目レースのテーブル行に会場名があるか
+    import re
+    featured_lines = [l for l in article.split('\n') if l.startswith('|') and ('🏆' in l or '🔥' in l)]
+    for fl in featured_lines:
+        if not re.search(r'(中山|中京|阪神|東京|新潟|札幌|函館|福島|小倉|京都)\d+R', fl):
+            issues.append(f'⚠️ 注目レースに会場+R番号がない: {fl[:40]}')
+            break
+    if issues:
+        print(f"\n🔍 品質チェック結果:")
+        for iss in issues:
+            print(f"  {iss}")
+    else:
+        print(f"\n✅ 品質チェック OK")
 
 
 if __name__ == "__main__":
