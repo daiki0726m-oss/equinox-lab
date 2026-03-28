@@ -51,6 +51,7 @@ def init_db(db_path=None):
                 weather TEXT,                       -- 天候
                 track_condition TEXT,               -- 馬場状態（良/稍重/重/不良）
                 horse_count INTEGER,                -- 出走頭数
+                start_time TEXT,                    -- 発走時刻 (HH:MM)
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 

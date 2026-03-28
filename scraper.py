@@ -135,6 +135,7 @@ class NetkeibaScraper:
             "weather": "",
             "track_condition": "",
             "horse_count": 0,
+            "start_time": "",
         }
 
         # レース名
@@ -183,6 +184,11 @@ class NetkeibaScraper:
                     if cond in text:
                         info["track_condition"] = cond
                         break
+
+            # 発走時刻 (例: "15:40発走" or 時刻パターン "10:05")
+            time_match = re.search(r"(\d{1,2}:\d{2})", text)
+            if time_match:
+                info["start_time"] = time_match.group(1)
 
         # 日付（titleタグから取得）
         title_tag = soup.find("title")
@@ -684,8 +690,8 @@ class NetkeibaScraper:
             conn.execute("""
                 INSERT OR REPLACE INTO races
                 (race_id, race_date, venue, race_number, race_name, grade,
-                 distance, surface, direction, weather, track_condition, horse_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 distance, surface, direction, weather, track_condition, horse_count, start_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 race_data["race_id"], race_data.get("race_date", ""),
                 race_data.get("venue", ""), race_data.get("race_number", 0),
@@ -693,7 +699,8 @@ class NetkeibaScraper:
                 race_data.get("distance", 0), race_data.get("surface", ""),
                 race_data.get("direction", ""), race_data.get("weather", ""),
                 race_data.get("track_condition", ""),
-                len(race_data.get("results", []))
+                len(race_data.get("results", [])),
+                race_data.get("start_time", "")
             ))
 
             # 各馬の結果保存

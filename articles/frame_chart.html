@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1200px; height: 675px;
+    background: linear-gradient(135deg, #0a0f1a 0%, #141e30 50%, #0d1520 100%);
+    font-family: 'Noto Sans JP', sans-serif;
+    color: white;
+    display: flex; flex-direction: column;
+    padding: 36px 48px 24px;
+    position: relative;
+    overflow: hidden;
+  }
+  body::before {
+    content: '';
+    position: absolute; top: -100px; right: -100px;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(245,197,24,0.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .header { text-align: center; margin-bottom: 28px; }
+  .title { font-size: 32px; font-weight: 900; letter-spacing: 2px; }
+  .title span { color: #F5C518; }
+  .subtitle { font-size: 14px; color: #6a7a8a; margin-top: 6px; letter-spacing: 1px; }
+  .chart { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .row {
+    display: flex; align-items: center; gap: 12px; height: 52px;
+  }
+  .frame-label {
+    width: 52px; height: 36px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700; flex-shrink: 0;
+  }
+  .f1 { background: #e8e8e8; color: #333; }
+  .f2 { background: #1a1a1a; color: #fff; border: 1px solid #444; }
+  .f3 { background: #d42a2a; color: #fff; }
+  .f4 { background: #1a5bc4; color: #fff; }
+  .f5 { background: #c9a400; color: #333; }
+  .f6 { background: #1a8a3a; color: #fff; }
+  .f7 { background: #e06020; color: #fff; }
+  .f8 { background: #d44a8a; color: #fff; }
+  .bar-container { flex: 1; position: relative; height: 32px; }
+  .bar-bg { width: 100%; height: 100%; background: rgba(255,255,255,0.04); border-radius: 4px; }
+  .bar {
+    position: absolute; top: 0; left: 0; height: 100%; border-radius: 4px;
+    transition: width 0.5s ease;
+  }
+  .bar-default { background: linear-gradient(90deg, #3a6fa0, #5b9bd5); }
+  .bar-best { background: linear-gradient(90deg, #c9a400, #F5C518); box-shadow: 0 0 20px rgba(245,197,24,0.3); }
+  .bar-worst { background: transparent; border: 2px dashed #e84848; }
+  .bar-gray { background: linear-gradient(90deg, #3a3a3a, #5a5a5a); }
+  .value {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    font-size: 18px; font-weight: 700; white-space: nowrap;
+  }
+  .tag {
+    display: inline-block; padding: 3px 10px; border-radius: 4px;
+    font-size: 12px; font-weight: 700; margin-left: 12px;
+    position: relative; top: -1px;
+  }
+  .tag-danger { background: rgba(232,72,72,0.15); color: #ff5555; border: 1px solid rgba(232,72,72,0.3); }
+  .tag-zero { font-size: 20px; color: #ff5555; font-weight: 900; position: absolute; left: 16px; top: 50%; transform: translateY(-50%); }
+  .footer {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .brand { font-size: 13px; color: #4a5a6a; font-style: italic; }
+  .note { font-size: 11px; color: #3a4a5a; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">高松宮記念 <span>枠順別</span> 複勝率</div>
+    <div class="subtitle">過去10年 ── 中京 芝1200m</div>
+  </div>
+  <div class="chart">
+    <div class="row">
+      <div class="frame-label f1">1枠</div>
+      <div class="bar-container">
+        <div class="bar-bg"></div>
+        <div class="bar bar-default" style="width:50%"></div>
+        <div class="value" style="left:52%; color:#c0c8d0;">25%</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="frame-label f2">2枠</div>
+      <div class="bar-container">
+        <div class="bar-bg"></div>
+        <div class="bar bar-best" style="width:70%"></div>
+        <div class="value" style="left:72%; color:#F5C518;">35%</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="frame-label f3">3枠</div>
+      <div class="bar-container">
+        <div class="bar-bg"></div>
+        <div class="bar bar-default" style="width:60%"></div>
+        <div class="value" style="left:62%; color:#c0c8d0;">30%</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="frame-label f4">4枠</div>
+      <div class="bar-container">
+        <div class="bar-bg"></div>
+        <div class="bar bar-default" style="width:40%"></div>
+        <div class="value" style="left:42%; color:#c0c8d0;">20%</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="frame-label f5">5枠</div>
+      <div class="bar-container">
+        <div class="bar-bg"></div>
+        <div class="bar bar-default" style="width:30%"></div>
+        <div class="value" style="left:32%; color:#c0c8d0;">15%</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="frame-label f6">6枠</div>
+      <div class="bar-container">
+        <div class="bar-bg"></div>
+        <div class="bar bar-worst" style="width:100%"></div>
+        <div class="tag-zero">0 - 0 - 0 - 20</div>
+        <div class="value" style="right:8px; left:auto; color:#ff5555;">
+          <span class="tag tag-danger">10年間 3着以内ゼロ</span>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="frame-label f7">7枠</div>
+      <div class="bar-container">
+        <div class="bar-bg"></div>
+        <div class="bar bar-default" style="width:20%"></div>
+        <div class="value" style="left:22%; color:#c0c8d0;">10%</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="frame-label f8">8枠</div>
+      <div class="bar-container">
+        <div class="bar-bg"></div>
+        <div class="bar bar-gray" style="width:13.4%"></div>
+        <div class="value" style="left:15.4%; color:#888;">6.7%</div>
+      </div>
+    </div>
+  </div>
+  <div class="footer">
+    <div class="note">※ 良馬場開催時。重馬場では傾向が異なります</div>
+    <div class="brand">EQUINOX Lab</div>
+  </div>
+</body>
+</html>
