@@ -304,17 +304,50 @@ def cmd_predict(args):
             conn.execute("""
                 INSERT OR REPLACE INTO predictions_cache
                 (race_id, predictions_json, all_bets_json, confidence, should_bet, created_at)
-                VALUES (?, ?, '{}', 'C', 1, datetime('now'))
+                VALUES (?, ?, '{}', 'C', 0, datetime('now'))
             """, (race_id, cache_json))
-        print(f"  💾 予測キャッシュを保存")
 
         # 馬券推奨
         should_bet, reason = strategy.should_bet_race(predictions)
+        confidence = 'C'
+
+        # 常にgenerate_betsを実行（EV・妙味計算のため）
+        bets_result = strategy.generate_bets(predictions)
+        # 券種別にグループ化して保存（generate_noteが期待する形式）
+        bets_by_type = {}
+        for b in bets_result.get('bets', []):
+            bt = b.get('type', '単勝')
+            if bt not in bets_by_type:
+                bets_by_type[bt] = []
+            bets_by_type[bt].append(b)
+        all_bets_json = json.dumps(bets_by_type, ensure_ascii=False)
+
         if should_bet:
-            bets_result = strategy.generate_bets(predictions)
             print(strategy.format_recommendation(bets_result, race_info))
         else:
             print(f"\n❌ このレースは見送り推奨: {reason}")
+
+        # confidence計算（◎の勝率ベース）
+        top_win = sorted_preds[0]["pred_win"] * 100 if sorted_preds else 0
+        if top_win >= 50:
+            confidence = "S"
+        elif top_win >= 35:
+            confidence = "A"
+        elif top_win >= 22:
+            confidence = "B"
+        elif top_win >= 12:
+            confidence = "C"
+        else:
+            confidence = "D"
+
+        # キャッシュ更新（買い目・confidence・should_bet）
+        with get_db() as conn:
+            conn.execute("""
+                UPDATE predictions_cache
+                SET all_bets_json = ?, confidence = ?, should_bet = ?
+                WHERE race_id = ?
+            """, (all_bets_json, confidence, 1 if should_bet else 0, race_id))
+        print(f"  💾 予測キャッシュを保存")
 
 
 def cmd_backtest(args):
