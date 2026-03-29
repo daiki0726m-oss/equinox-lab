@@ -91,7 +91,7 @@ def get_race_predictions(date_str, model, strategy):
                             break  # 1頭のみ
                     horses = sorted_h
 
-                # EV計算 → 妙味
+                # EV計算 → 妙味（raw値を保存、後で相対判定）
                 max_ev = 0.0
                 for bt, bt_bets in all_bets.items():
                     for b in bt_bets:
@@ -99,14 +99,9 @@ def get_race_predictions(date_str, model, strategy):
                         if ev > max_ev:
                             max_ev = ev
 
-                if max_ev >= 5.0:
-                    myomi = "💎★★★"
-                elif max_ev >= 2.5:
-                    myomi = "💎★★"
-                elif max_ev >= 1.5:
-                    myomi = "💎★"
-                else:
-                    myomi = ""
+                # 妙味はraw EVを保存（後で全レース比較して相対判定）
+                myomi_raw = max_ev
+                myomi = ""  # 後で上書き
 
                 # 信頼度（◎のpred_winベースで再計算）
                 honmei_h = next((h for h in horses if h.get('mark') == '◎'), None)
@@ -892,6 +887,26 @@ def main():
     if not all_races:
         print("❌ 分析可能なレースがありません")
         return
+
+    # 妙味を相対判定（当日レースのEV分布に基づく）
+    evs = sorted([r.get("max_ev", 0) for r in all_races], reverse=True)
+    n = len(evs)
+    if n > 0:
+        # 上位20% = ★★★, 次の30% = ★★, 次の30% = ★, 下位20% = -
+        thresh3 = evs[max(0, int(n * 0.2) - 1)]  # 上位20%ライン
+        thresh2 = evs[max(0, int(n * 0.5) - 1)]  # 上位50%ライン
+        thresh1 = evs[max(0, int(n * 0.8) - 1)]  # 上位80%ライン
+        for r in all_races:
+            ev = r.get("max_ev", 0)
+            if ev >= thresh3 and ev > 0:
+                r["myomi"] = "💎★★★"
+            elif ev >= thresh2 and ev > 0:
+                r["myomi"] = "💎★★"
+            elif ev >= thresh1 and ev > 0:
+                r["myomi"] = "💎★"
+            else:
+                r["myomi"] = ""
+        print(f"  💎 妙味閾値: ★★★≥{thresh3:.2f} ★★≥{thresh2:.2f} ★≥{thresh1:.2f}")
 
     # 厳選レース選定
     featured = select_featured_races(all_races, top_n=args.top)
