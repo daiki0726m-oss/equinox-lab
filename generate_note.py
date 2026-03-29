@@ -481,8 +481,10 @@ def get_last_week_review(target_date_str):
         if not recent_dates:
             return None
 
-        # 直近2日分（土日）を取得
-        last_dates = [r['race_date'] for r in recent_dates[:2]]
+        # 日曜なら昨日(土)の1日分、土曜なら先週の2日分
+        is_sunday = target_dt.weekday() == 6
+        take_days = 1 if is_sunday else 2
+        last_dates = [r['race_date'] for r in recent_dates[:take_days]]
 
         with get_db() as conn:
             total = 0
@@ -616,14 +618,20 @@ def generate_article(date_str, featured_races, all_races, free=False):
 
     lines.append("---\n")
 
-    # ━━━ 1.5 先週の振り返り ━━━
+    # ━━━ 1.5 前回の振り返り ━━━
     review = get_last_week_review(date_str)
     if review:
         t = review['total']
         hw = review['honmei_win']
         ht3 = review['honmei_top3']
-        lines.append("## 📊 先週の振り返り\n")
-        lines.append(f"先週の全{t}レースのAI予想結果です。"
+        # 日曜→「昨日の振り返り」、土曜→「先週の振り返り」
+        dt_target = datetime.strptime(date_str, "%Y%m%d")
+        if dt_target.weekday() == 6:  # 日曜
+            review_label = "昨日"
+        else:
+            review_label = "先週"
+        lines.append(f"## 📊 {review_label}の振り返り\n")
+        lines.append(f"{review_label}の全{t}レースのAI予想結果です。"
                      "的中も外れも隠さず報告します。\n")
 
         # 全体成績
