@@ -279,6 +279,8 @@ def cmd_predict(args):
                 "pred_top3": row["pred_top3_norm"] / 3,
                 "odds_win": odds_win,
                 "odds_place": odds_place,
+                "si_avg": round(row.get("si_avg", 0), 1),
+                "jockey_name": next((r["jockey_name"] for r in results if r["horse_number"] == int(row["horse_number"]) and "jockey_name" in r.keys()), ""),
             })
 
         # predictions_cache に保存（推定オッズ・人気を含む）
@@ -294,6 +296,8 @@ def cmd_predict(args):
             "pred_top3_pct": round(p["pred_top3"] * 100, 1),
             "odds_win": round(p.get("odds_win", 0), 1),
             "popularity": popularity_map.get(p["horse_number"], 0),
+            "si_avg": p.get("si_avg", 0),
+            "jockey_name": p.get("jockey_name", ""),
         } for p in sorted_preds], ensure_ascii=False)
 
         with get_db() as conn:
