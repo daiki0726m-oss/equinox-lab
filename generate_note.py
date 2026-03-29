@@ -598,7 +598,11 @@ def generate_article(date_str, featured_races, all_races, free=False):
                   or r["race_info"].get("grade", "") in ("G1", "G2", "G3")]
     extra_races = [r for r in featured_races if r not in main_races]
 
-    # 先週の結果（フック用）
+    # 前回ラベル（日曜→昨日、土曜→先週）
+    dt_target = datetime.strptime(date_str, "%Y%m%d")
+    review_label = "昨日" if dt_target.weekday() == 6 else "先週"
+
+    # 前回の結果（フック用）
     last_results = get_last_week_results()
 
     lines = []
@@ -613,7 +617,7 @@ def generate_article(date_str, featured_races, all_races, free=False):
         hits = [r for r in last_results if r['hit']]
         if hits:
             h = hits[0]
-            lines.append(f"> 📊 先週のAI予想: **{h['race_name']}** "
+            lines.append(f"> 📊 {review_label}のAI予想: **{h['race_name']}** "
                          f"◎{h['horse_name']} → **{h['finish']}着的中** 🎯\n")
 
     lines.append("---\n")
@@ -624,12 +628,6 @@ def generate_article(date_str, featured_races, all_races, free=False):
         t = review['total']
         hw = review['honmei_win']
         ht3 = review['honmei_top3']
-        # 日曜→「昨日の振り返り」、土曜→「先週の振り返り」
-        dt_target = datetime.strptime(date_str, "%Y%m%d")
-        if dt_target.weekday() == 6:  # 日曜
-            review_label = "昨日"
-        else:
-            review_label = "先週"
         lines.append(f"## 📊 {review_label}の振り返り\n")
         lines.append(f"{review_label}の全{t}レースのAI予想結果です。"
                      "的中も外れも隠さず報告します。\n")
@@ -972,6 +970,12 @@ def main():
         if not re.search(r'(中山|中京|阪神|東京|新潟|札幌|函館|福島|小倉|京都)\d+R', fl):
             issues.append(f'⚠️ 注目レースに会場+R番号がない: {fl[:40]}')
             break
+    # 日曜なのに「先週」、土曜なのに「昨日」が混在していないか
+    dt_check = datetime.strptime(args.date, "%Y%m%d")
+    if dt_check.weekday() == 6 and '先週の' in article:
+        issues.append('❌ 日曜の記事に「先週の」が残っている（「昨日の」が正しい）')
+    if dt_check.weekday() == 5 and '昨日の' in article:
+        issues.append('❌ 土曜の記事に「昨日の」が残っている（「先週の」が正しい）')
     if issues:
         print(f"\n🔍 品質チェック結果:")
         for iss in issues:
