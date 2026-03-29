@@ -251,11 +251,11 @@ class BettingStrategy:
                         prob = h1["pred_win"] * h2["pred_top3"] * h3["pred_top3"] * 0.5
                         prob = min(prob, 0.3)
                         odds = max(
-                            h1.get("odds_win", 3) * h2.get("odds_win", 3) * h3.get("odds_win", 5) * 0.05,
-                            10.0
+                            h1.get("odds_win", 3) * h2.get("odds_win", 3) * h3.get("odds_win", 5) * 0.3,
+                            30.0
                         )
                         ev = prob * odds
-                        if ev >= self.MIN_EV * 2.0:
+                        if ev >= 0.5:
                             sanrentan_bets.append({
                                 "type": "三連単",
                                 "detail": f"{h1['horse_number']}→{h2['horse_number']}→{h3['horse_number']}",
@@ -372,7 +372,7 @@ class BettingStrategy:
             # 三連単フォールバック（1位→2位→3位）
             if "三連単" in enabled and "三連単" not in existing_types and len(sorted_preds) >= 3:
                 stan_prob = top["pred_win"] * top2["pred_top3"] * 3 * top3["pred_top3"] * 3 * 0.3
-                stan_odds = max(top.get("odds_win", 3) * top2.get("odds_win", 3) * top3.get("odds_win", 5) * 0.08, 10.0)
+                stan_odds = max(top.get("odds_win", 3) * top2.get("odds_win", 3) * top3.get("odds_win", 5) * 0.5, 30.0)
                 remaining = budget - total_amount
                 if remaining >= 100:
                     bets.append({
