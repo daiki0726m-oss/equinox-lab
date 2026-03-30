@@ -459,6 +459,28 @@ body {
 .roi-positive { color: var(--green); }
 .roi-negative { color: var(--red); }
 
+/* Myomi Badge */
+.myomi-badge {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 700; white-space: nowrap;
+}
+.myomi-3 { background: linear-gradient(135deg, #f39c12, #e67e22); color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.3); animation: myomi-glow 2s ease-in-out infinite alternate; }
+.myomi-2 { background: linear-gradient(135deg, #3498db, #2980b9); color: #fff; }
+.myomi-1 { background: rgba(255,255,255,0.1); color: var(--text-secondary); border: 1px solid rgba(255,255,255,0.15); }
+@keyframes myomi-glow {
+  from { box-shadow: 0 0 4px rgba(243,156,18,0.3); }
+  to { box-shadow: 0 0 10px rgba(243,156,18,0.6); }
+}
+
+/* Results indicator */
+.result-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  font-weight: 600;
+}
+.result-badge.done { background: var(--green-dim); color: var(--green); }
+.result-badge.pending { background: rgba(255,255,255,0.06); color: var(--text-muted); }
+
 /* ─── Results Tab ─── */
 .results-section { padding: 12px; }
 .podium { margin-bottom: 16px; }
@@ -967,8 +989,9 @@ function createRaceCard(race) {
           </div>
         </div>
         <div class="race-right">
-          ${race.myomi ? `<span style="font-size:0.85em;margin-right:6px">${race.myomi}</span>` : ''}
+          ${race.myomi ? `<span class="myomi-badge ${race.myomi.includes('★★★') ? 'myomi-3' : race.myomi.includes('★★') ? 'myomi-2' : 'myomi-1'}">${race.myomi}</span>` : ''}
           <span class="conf-badge ${confClass}">${confIcon}${confClass}</span>
+          <span class="result-badge ${race.has_results ? 'done' : 'pending'}">${race.has_results ? '確定' : '未確定'}</span>
           <span class="toggle-icon">▼</span>
         </div>
       </div>

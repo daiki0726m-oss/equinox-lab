@@ -939,6 +939,21 @@ def api_predict_date(date_str):
                 "prediction_locked": is_locked and cached is not None,
             })
 
+        # ── 妙味を相対パーセンタイルで再計算 ──
+        if len(all_races) >= 2:
+            ev_values = sorted([r["max_ev"] for r in all_races])
+            for r in all_races:
+                rank = ev_values.index(r["max_ev"])
+                pct = rank / (len(ev_values) - 1) if len(ev_values) > 1 else 0.5
+                if pct >= 0.80:
+                    r["myomi"] = "💎★★★"
+                elif pct >= 0.50:
+                    r["myomi"] = "💎★★"
+                elif pct >= 0.20:
+                    r["myomi"] = "💎★"
+                else:
+                    r["myomi"] = ""
+
         # 会場でグループ化
         venues = {}
         for r in all_races:

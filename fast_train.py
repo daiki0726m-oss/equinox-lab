@@ -27,7 +27,7 @@ def load_all_data():
     with get_db() as conn:
         races_df = pd.read_sql("SELECT * FROM races WHERE race_date IS NOT NULL ORDER BY race_date", conn)
         results_df = pd.read_sql("""
-            SELECT r.*, h.horse_name, h.sire, h.damsire
+            SELECT r.*, h.horse_name, h.sire, h.damsire, h.birth_year
             FROM results r
             LEFT JOIN horses h ON r.horse_id = h.horse_id
             ORDER BY r.race_id, r.horse_number
@@ -359,6 +359,51 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
             f["horse_wet_win_rate"] = 0
             f["horse_wet_top3_rate"] = 0
 
+        # === 年齢系 (2) ===
+        birth_year = r.get("birth_year", 0) or 0
+        if birth_year and race_date:
+            try:
+                race_year = int(race_date[:4])
+                f["horse_age"] = race_year - birth_year
+                f["is_peak_age"] = 1 if 3 <= (race_year - birth_year) <= 5 else 0
+            except (ValueError, TypeError):
+                f["horse_age"] = 0
+                f["is_peak_age"] = 0
+        else:
+            f["horse_age"] = 0
+            f["is_peak_age"] = 0
+
+        # === 枠順コース別成績 (2) ===
+        same_post_past = [pr for pr in past_races
+                          if pr.get("venue") == venue
+                          and pr.get("surface") == surface
+                          and abs((pr.get("horse_number", 0) or 0) - hn) <= 2]
+        if same_post_past:
+            f["post_win_rate_course"] = sum(1 for p in same_post_past if p["finish_position"] == 1) / len(same_post_past)
+            f["post_top3_rate_course"] = sum(1 for p in same_post_past if p["finish_position"] <= 3) / len(same_post_past)
+        else:
+            f["post_win_rate_course"] = 0
+            f["post_top3_rate_course"] = 0
+
+        # === 年齢×クラス (1) ===
+        age = f["horse_age"]
+        age_class_past = [pr for pr in past_races
+                          if abs((pr.get("distance", 0) or 0) - dist) <= 400]
+        if age_class_past and age > 0:
+            f["age_class_top3_rate"] = sum(1 for p in age_class_past if p["finish_position"] <= 3) / len(age_class_past)
+        else:
+            f["age_class_top3_rate"] = 0
+
+        # === 距離別成績 (2) ===
+        dist_past = [pr for pr in past_races
+                     if abs((pr.get("distance", 0) or 0) - dist) <= 200]
+        if dist_past:
+            f["dist_win_rate"] = sum(1 for p in dist_past if p["finish_position"] == 1) / len(dist_past)
+            f["dist_top3_rate"] = sum(1 for p in dist_past if p["finish_position"] <= 3) / len(dist_past)
+        else:
+            f["dist_win_rate"] = 0
+            f["dist_top3_rate"] = 0
+
         # === ターゲット ===
         fp = r.get("finish_position", 0) or 0
         f["target_win"] = 1 if fp == 1 else 0
@@ -376,7 +421,7 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
 
 
 def get_feature_columns():
-    """特徴量カラム一覧"""
+    """特徴量カラム一覧 — ml/features.py と完全一致させること"""
     return [
         "si_avg", "si_max", "si_min", "si_std", "si_latest", "si_count",
         "pedigree_score", "sire_top3_rate", "sire_sample_size",
@@ -392,6 +437,10 @@ def get_feature_columns():
         "last_3f_best", "weight_trend",
         "track_cond_code", "weather_code", "is_heavy_track",
         "horse_wet_win_rate", "horse_wet_top3_rate",
+        "horse_age", "is_peak_age",
+        "post_win_rate_course", "post_top3_rate_course",
+        "age_class_top3_rate",
+        "dist_win_rate", "dist_top3_rate",
     ]
 
 
