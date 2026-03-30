@@ -157,8 +157,8 @@ def cmd_predict(args):
                     conn.execute("""
                         INSERT OR REPLACE INTO races
                         (race_id, race_date, venue, race_number, race_name, grade,
-                         distance, surface, direction, weather, track_condition, horse_count)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         distance, surface, direction, weather, track_condition, horse_count, start_time)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         race_id, shutuba.get("race_date", ""),
                         shutuba.get("venue", ""), shutuba.get("race_number", 0),
@@ -166,7 +166,8 @@ def cmd_predict(args):
                         shutuba.get("distance", 0), shutuba.get("surface", ""),
                         shutuba.get("direction", ""), shutuba.get("weather", ""),
                         shutuba.get("track_condition", ""),
-                        len(shutuba.get("entries", []))
+                        len(shutuba.get("entries", [])),
+                        shutuba.get("start_time", "")
                     ))
 
                     # 各馬のエントリーをresultsテーブルに保存（finish_position=0で未確定）

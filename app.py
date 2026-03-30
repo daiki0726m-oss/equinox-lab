@@ -497,6 +497,11 @@ def api_predict_date(date_str):
                     ).fetchall()
                 odds_map = {r['horse_number']: r for r in db_results}
                 for h in horses:
+                    # キー正規化（pred_win_pct→pred_win等）
+                    if 'pred_win' not in h and 'pred_win_pct' in h:
+                        h['pred_win'] = h['pred_win_pct']
+                    if 'pred_top3' not in h and 'pred_top3_pct' in h:
+                        h['pred_top3'] = h['pred_top3_pct']
                     db_r = odds_map.get(h['horse_number'])
                     if db_r:
                         if db_r['odds'] and db_r['odds'] > 0:
@@ -543,8 +548,8 @@ def api_predict_date(date_str):
                             conn.execute("""
                                 INSERT OR REPLACE INTO races
                                 (race_id, race_date, venue, race_number, race_name, grade,
-                                 distance, surface, direction, weather, track_condition, horse_count)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 distance, surface, direction, weather, track_condition, horse_count, start_time)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """, (
                                 race_id, shutuba.get("race_date", ""),
                                 shutuba.get("venue", ""), shutuba.get("race_number", 0),
@@ -552,7 +557,8 @@ def api_predict_date(date_str):
                                 shutuba.get("distance", 0), shutuba.get("surface", ""),
                                 shutuba.get("direction", ""), shutuba.get("weather", ""),
                                 shutuba.get("track_condition", ""),
-                                len(shutuba.get("entries", []))
+                                len(shutuba.get("entries", [])),
+                                shutuba.get("start_time", "")
                             ))
                             for e in shutuba.get("entries", []):
                                 if e.get("horse_id"):
