@@ -31,26 +31,34 @@ echo ""
 echo "🗑️  予測キャッシュクリア..."
 sqlite3 keiba.db "DELETE FROM predictions_cache WHERE created_at < datetime('now', '-1 day');" 2>/dev/null || true
 
-# 3. モデル状態確認
+# 3. モデル自動再学習（7日以上古い場合）
 echo ""
 echo "🧠 モデル状態確認..."
-python -c "
+NEED_TRAIN=$(python -c "
 import os
+from datetime import datetime
 model_path = os.path.join('models', 'model_rank.pkl')
 if os.path.exists(model_path):
-    import os.path
     mtime = os.path.getmtime(model_path)
-    from datetime import datetime
     dt = datetime.fromtimestamp(mtime)
-    print(f'  モデル最終更新: {dt.strftime(\"%Y-%m-%d %H:%M\")}')
     days = (datetime.now() - dt).days
+    print(f'  モデル最終更新: {dt.strftime(\"%Y-%m-%d %H:%M\")} ({days}日前)')
     if days > 7:
-        print(f'  ⚠️  {days}日前のモデルです。再学習を推奨。')
+        print('  ⚠️  7日超 → 自動再学習を実行します')
+        print('RETRAIN')
     else:
-        print(f'  ✅ {days}日前に更新済み')
+        print(f'  ✅ {days}日前に更新済み → スキップ')
 else:
-    print('  ❌ モデル未学習')
-"
+    print('  ❌ モデル未学習 → 自動学習を実行します')
+    print('RETRAIN')
+")
+
+if echo "$NEED_TRAIN" | grep -q "RETRAIN"; then
+  echo ""
+  echo "🔄 モデル再学習開始..."
+  python predict.py train
+  echo "✅ モデル再学習完了"
+fi
 
 # 4. DB統計
 echo ""
@@ -61,10 +69,11 @@ init_db()
 with get_db() as conn:
     races = conn.execute('SELECT COUNT(*) as c FROM races').fetchone()['c']
     results = conn.execute('SELECT COUNT(*) as c FROM results').fetchone()['c']
-    pedigree = conn.execute('SELECT COUNT(*) as c FROM pedigree').fetchone()['c']
+    sire_count = conn.execute(\"SELECT COUNT(*) as c FROM horses WHERE sire IS NOT NULL AND sire != ''\").fetchone()['c']
+    total_horses = conn.execute('SELECT COUNT(*) as c FROM horses').fetchone()['c']
     print(f'  レース: {races:,}')
     print(f'  出走データ: {results:,}')
-    print(f'  血統データ: {pedigree:,}')
+    print(f'  血統データ: {sire_count:,}/{total_horses:,}馬 ({sire_count/total_horses*100:.0f}%)')
 "
 
 echo ""
