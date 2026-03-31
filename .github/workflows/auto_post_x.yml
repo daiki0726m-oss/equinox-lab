@@ -2,18 +2,27 @@ name: 🐦 Auto Post to X
 
 on:
   schedule:
+    # ─── 平日 ───
+    # 平日 朝7:30(JST) = 22:30 UTC(前日) → データTips朝ツイート
+    - cron: '30 22 * * 0-4'
     # 平日 昼12時(JST) = 03:00 UTC → 昼休みに記事を読んでもらう
     - cron: '0 3 * * 1-5'
-    # 土曜 朝7時(JST) = 前日22:00 UTC → 馬券購入前の最終チェック
+    # 平日 夜20時(JST) = 11:00 UTC → 夜ツイート（週末予告/note宣伝）
+    - cron: '0 11 * * 1-5'
+
+    # ─── 土日（レース日） ───
+    # 土曜 朝7時(JST) = 前日22:00 UTC → 予想投稿
     - cron: '0 22 * * 5'
-    # 日曜 朝7時(JST) = 前日22:00 UTC → 日曜の予想
+    # 日曜 朝7時(JST) = 前日22:00 UTC → 予想投稿
     - cron: '0 22 * * 6'
-    # 土日 9:55(JST) = 00:55 UTC → オッズ確定
+    # 土日 9:55(JST) = 00:55 UTC → オッズ確定＋最終見解
     - cron: '55 0 * * 0,6'
-    # 日曜 20時(JST) = 11:00 UTC → 振り返り（帰宅後のリラックスタイム）
-    - cron: '0 11 * * 0'
-    # 土曜 20時(JST) = 11:00 UTC → 当日結果報告
+    # 土日 15:30(JST) = 06:30 UTC → 的中速報
+    - cron: '30 6 * * 0,6'
+    # 土曜 20時(JST) = 11:00 UTC → 答え合わせ
     - cron: '0 11 * * 6'
+    # 日曜 20時(JST) = 11:00 UTC → 週間レビュー
+    - cron: '0 11 * * 0'
   workflow_dispatch:
     inputs:
       mode:
@@ -29,6 +38,10 @@ on:
           - answer_check
           - weekly_review
           - refresh_odds
+          - hit_flash
+          - odds_flash
+          - morning
+          - evening
 
 jobs:
   post:
@@ -65,22 +78,35 @@ jobs:
 
           # 自動判定 — UTC時刻ベースで判定
           UTC_HOUR=$(date -u +%H)
+          UTC_MIN=$(date -u +%M)
 
-          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, UTC_HOUR=$UTC_HOUR"
+          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, UTC_HOUR=$UTC_HOUR, UTC_MIN=$UTC_MIN"
 
-          if [ "$UTC_HOUR" = "11" ]; then
-            # UTC 11 = JST 20 → 答え合わせ/週間レビュー
-            if [ "$DOW" -eq 6 ]; then
-              echo "type=answer_check" >> $GITHUB_OUTPUT
-            elif [ "$DOW" -eq 7 ]; then
-              echo "type=weekly_review" >> $GITHUB_OUTPUT
+          if [ "$UTC_HOUR" = "22" ] && [ "$UTC_MIN" -ge 25 ] && [ "$UTC_MIN" -le 35 ]; then
+            # UTC 22:30 = JST 07:30 → 平日朝ツイート
+            if [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
+              echo "type=morning" >> $GITHUB_OUTPUT
+            else
+              echo "type=skip" >> $GITHUB_OUTPUT
+            fi
+          elif [ "$UTC_HOUR" = "22" ] && [ "$UTC_MIN" -le 10 ]; then
+            # UTC 22:00 = JST 07:00 → 土日の予想（金曜/土曜のUTC22）
+            if [ "$DOW" -eq 5 ] || [ "$DOW" -eq 6 ]; then
+              echo "type=predict" >> $GITHUB_OUTPUT
+            else
+              echo "type=skip" >> $GITHUB_OUTPUT
+            fi
+          elif [ "$UTC_HOUR" = "06" ]; then
+            # UTC 06:30 = JST 15:30 → 的中速報（土日のみ）
+            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
+              echo "type=hit_flash" >> $GITHUB_OUTPUT
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
           elif [ "$UTC_HOUR" = "00" ] || [ "$UTC_HOUR" = "01" ]; then
-            # UTC 00-01 = JST 09-10 → オッズ確定（土日のみ）
+            # UTC 00-01 = JST 09-10 → オッズ確定＋最終見解（土日のみ）
             if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              echo "type=refresh_odds" >> $GITHUB_OUTPUT
+              echo "type=odds_flash" >> $GITHUB_OUTPUT
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
@@ -91,11 +117,14 @@ jobs:
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
-          elif [ "$UTC_HOUR" = "22" ]; then
-            # UTC 22 = JST 07 → 朝投稿（土日の予想）
-            if [ "$DOW" -eq 5 ] || [ "$DOW" -eq 6 ]; then
-              # 金曜UTC22=土曜JST07, 土曜UTC22=日曜JST07
-              echo "type=predict" >> $GITHUB_OUTPUT
+          elif [ "$UTC_HOUR" = "11" ]; then
+            # UTC 11 = JST 20 → 夜の投稿
+            if [ "$DOW" -eq 6 ]; then
+              echo "type=answer_check" >> $GITHUB_OUTPUT
+            elif [ "$DOW" -eq 7 ]; then
+              echo "type=weekly_review" >> $GITHUB_OUTPUT
+            elif [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
+              echo "type=evening" >> $GITHUB_OUTPUT
             else
               echo "type=skip" >> $GITHUB_OUTPUT
             fi
@@ -110,7 +139,7 @@ jobs:
 
       # 土日はスクレイプ→予測が必要
       - name: Scrape and predict (weekend only)
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'results' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'weekly_review'
+        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'results' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'weekly_review' || steps.determine.outputs.type == 'hit_flash'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📥 ${DATE} のデータをスクレイプ..."
@@ -118,16 +147,27 @@ jobs:
           echo "🧠 予測を実行..."
           python predict.py predict --date "$DATE" || echo "⚠️ 予測完了（一部エラーあり）"
 
-      # ロック前にオッズ確定
+      # オッズ更新
       - name: Refresh odds before lock
-        if: steps.determine.outputs.type == 'refresh_odds' || steps.determine.outputs.type == 'predict'
+        if: steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'predict'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📡 ${DATE} の最新オッズを取得..."
           python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ更新完了（一部エラーあり）"
+          echo "🧠 オッズ反映後に再予測..."
+          python predict.py predict --date "$DATE" || echo "⚠️ 再予測完了（一部エラーあり）"
+
+      # 的中速報用の結果収集
+      - name: Collect results for hit_flash
+        if: steps.determine.outputs.type == 'hit_flash'
+        run: |
+          DATE="${{ steps.determine.outputs.date }}"
+          echo "📥 ${DATE} の結果を収集..."
+          python predict.py collect --date "$DATE" || echo "⚠️ 結果収集完了（一部エラーあり）"
+          python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集完了（一部エラーあり）"
 
       - name: Post to X
-        if: steps.determine.outputs.type != 'skip' && steps.determine.outputs.type != 'refresh_odds'
+        if: steps.determine.outputs.type != 'skip'
         env:
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
@@ -151,4 +191,12 @@ jobs:
             python post_x.py answer_check --date "$DATE"
           elif [ "$TYPE" = "weekly_review" ]; then
             python post_x.py weekly_review
+          elif [ "$TYPE" = "hit_flash" ]; then
+            python post_x.py hit_flash --date "$DATE"
+          elif [ "$TYPE" = "odds_flash" ]; then
+            python post_x.py odds_flash --date "$DATE"
+          elif [ "$TYPE" = "morning" ]; then
+            python post_x.py morning
+          elif [ "$TYPE" = "evening" ]; then
+            python post_x.py evening
           fi
