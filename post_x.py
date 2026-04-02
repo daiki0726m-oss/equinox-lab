@@ -1845,7 +1845,7 @@ def fact_check_tweet(tweet_text):
 
 # ─── 的中速報ポスト ───
 def cmd_hit_flash(args):
-    """レース確定後の的中/不的中速報ツイート"""
+    """的中速報ツイート（全レース対象・インパクト重視）"""
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
@@ -1853,56 +1853,53 @@ def cmd_hit_flash(args):
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
     with get_db() as conn:
+        # 全レース対象（11Rだけでなく）
         races = conn.execute("""
             SELECT ra.race_id, ra.race_name, ra.venue, ra.grade, ra.race_number,
-                   pc.predictions_json, pc.all_bets_json
+                   pc.predictions_json, pc.all_bets_json, pc.confidence
             FROM races ra
             JOIN predictions_cache pc ON ra.race_id = pc.race_id
             WHERE (ra.race_date = ? OR ra.race_date = ?)
-            AND ra.race_number = 11
-            ORDER BY ra.venue
+            ORDER BY ra.venue, ra.race_number
         """, (date_str, date_hyphen)).fetchall()
 
         if not races:
-            print(f"❌ {date_str} の11R予測データがありません")
+            print(f"❌ {date_str} の予測データがありません")
             return
 
         total_invested = 0
         total_payout = 0
-        hit_details = []
-        miss_details = []
+        total_bets = 0
+        total_hits = 0
+        hit_details = []  # 的中レース詳細
+        honmei_total = 0
+        honmei_win = 0
+        honmei_top3 = 0
+        races_analyzed = 0
 
         for race in races:
             preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
             all_bets = json.loads(race['all_bets_json']) if race['all_bets_json'] else {}
 
-            # ◎を特定
-            honmei = None
-            for p in preds:
-                if p.get('mark') == '◎':
-                    honmei = p
-                    break
-            if not honmei and preds:
-                honmei = sorted(preds, key=lambda x: x.get('pred_win_pct', 0), reverse=True)[0]
-
-            if not honmei:
-                continue
-
-            hn = honmei.get('horse_number', 0)
-            horse_name = honmei.get('horse_name', '?')
-
             # 着順取得
-            actual = conn.execute("""
-                SELECT finish_position, odds FROM results
-                WHERE race_id = ? AND horse_number = ?
-                AND finish_position > 0
-            """, (race['race_id'], hn)).fetchone()
+            finishes = conn.execute("""
+                SELECT horse_number, finish_position, odds FROM results
+                WHERE race_id = ? AND finish_position > 0
+            """, (race['race_id'],)).fetchall()
+            finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
 
-            if not actual:
+            if not finish_map:
                 continue
+            races_analyzed += 1
 
-            finish = actual['finish_position']
-            odds = actual['odds'] or 0
+            # ◎成績
+            honmei = next((p for p in preds if p.get('mark') == '◎'), None)
+            if honmei:
+                hn = honmei['horse_number']
+                f = finish_map.get(hn, 99)
+                honmei_total += 1
+                if f == 1: honmei_win += 1
+                if f <= 3: honmei_top3 += 1
 
             # 配当情報取得
             payouts = conn.execute("""
@@ -1911,26 +1908,26 @@ def cmd_hit_flash(args):
             """, (race['race_id'],)).fetchall()
             payout_map = {(p['bet_type'], p['combination']): p['payout_amount'] for p in payouts}
 
-            finishes = conn.execute("""
-                SELECT horse_number, finish_position FROM results
-                WHERE race_id = ? AND finish_position > 0
-            """, (race['race_id'],)).fetchall()
-            finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
-
-            # 的中チェック
-            race_invest = 0
-            race_payout = 0
-            race_hits = []
-
+            # 各券種の的中チェック（三連単はスキップ）
             for bt, bt_bets in all_bets.items():
+                if bt == '三連単':
+                    continue  # 三連単は非公開
+
                 for b in bt_bets:
                     amount = b.get('amount', 100)
-                    race_invest += amount
                     hns = b.get('horse_numbers', [])
+                    detail_str = b.get('detail', b.get('bet_detail', ''))
+                    total_bets += 1
+                    total_invested += amount
+
                     is_hit = False
                     actual_payout = 0
 
-                    if bt == '複勝' and len(hns) >= 1:
+                    if bt == '単勝' and len(hns) >= 1:
+                        if finish_map.get(hns[0], 99) == 1:
+                            is_hit = True
+                            actual_payout = payout_map.get(('単勝', str(hns[0])), 0)
+                    elif bt == '複勝' and len(hns) >= 1:
                         if finish_map.get(hns[0], 99) <= 3:
                             is_hit = True
                             actual_payout = payout_map.get(('複勝', str(hns[0])), 0)
@@ -1954,77 +1951,95 @@ def cmd_hit_flash(args):
 
                     if is_hit and actual_payout > 0:
                         payout_val = int(actual_payout * (amount / 100))
-                        race_payout += payout_val
-                        race_hits.append({'type': bt, 'payout': payout_val})
+                        total_payout += payout_val
+                        total_hits += 1
+                        hit_details.append({
+                            'venue': race['venue'],
+                            'race_number': race['race_number'],
+                            'race_name': race['race_name'],
+                            'grade': race['grade'] or '',
+                            'confidence': race['confidence'],
+                            'type': bt,
+                            'detail': detail_str,
+                            'invested': amount,
+                            'payout': payout_val,
+                            'roi': payout_val / amount * 100,
+                        })
 
-            total_invested += race_invest
-            total_payout += race_payout
+    # ── ツイート生成 ──
+    hit_rate = total_hits / total_bets * 100 if total_bets > 0 else 0
+    roi = total_payout / total_invested * 100 if total_invested > 0 else 0
+    profit = total_payout - total_invested
+    honmei_rate = honmei_top3 / honmei_total * 100 if honmei_total > 0 else 0
 
-            rname = race['race_name']
-            venue = race['venue']
-            grade_str = f" [{race['grade']}]" if race['grade'] else ""
-
-            if finish <= 3 or race_hits:
-                hit_details.append({
-                    'venue': venue, 'rname': rname, 'grade': grade_str,
-                    'horse_name': horse_name, 'finish': finish,
-                    'odds': odds, 'hits': race_hits,
-                    'invested': race_invest, 'payout': race_payout,
-                })
-            else:
-                miss_details.append({
-                    'venue': venue, 'rname': rname, 'grade': grade_str,
-                    'horse_name': horse_name, 'finish': finish,
-                })
-
-    # ツイート生成
     if hit_details:
-        # 的中バージョン
-        best = max(hit_details, key=lambda x: x['payout'])
-        tweet = f"🎯 的中速報！\n\n"
-        tweet += f"{best['venue']}11R {best['rname']}{best['grade']}\n"
-        tweet += f"◎{best['horse_name']} → {best['finish']}着！✅\n\n"
+        # ── 的中あり → インパクト版 ──
+        # ベスト的中をハイライト
+        best = sorted(hit_details, key=lambda x: x['payout'], reverse=True)
 
-        for h in best['hits'][:2]:
-            tweet += f"💰 {h['type']} → {h['payout']:,}円\n"
+        tweet = f"🎯 AI競馬 {date_label} 的中速報\n\n"
 
-        if total_invested > 0:
-            roi = round(total_payout / total_invested * 100)
-            profit = int(total_payout - total_invested)
-            tweet += f"\n本日の収支: {'+' if profit >= 0 else ''}{profit:,}円\n"
-            tweet += f"ROI: {roi}% 📈🔥\n"
+        # ベスト3的中
+        for i, h in enumerate(best[:3]):
+            emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
+            grade_str = f" [{h['grade']}]" if h['grade'] else ""
+            tweet += f"{emoji} {h['venue']}{h['race_number']}R{grade_str}\n"
+            tweet += f"  {h['type']} {h['detail']} → ¥{h['payout']:,}\n"
 
-        tweet += f"\n全買い目はnoteで事前公開済み👇\n"
-        tweet += f"{NOTE_URL}\n"
-        tweet += f"#競馬予想 #AI予想"
+        tweet += f"\n━━ 本日の成績 ━━\n"
+        tweet += f"◎複勝率: {honmei_rate:.0f}% ({honmei_top3}/{honmei_total})\n"
+        tweet += f"的中: {total_hits}/{total_bets}件\n"
 
-        # レース名ハッシュタグ追加
-        for h in hit_details[:1]:
-            tag = h['rname'].replace(' ', '').replace('　', '')
-            tweet += f" #{tag}"
-    else:
-        # 不的中バージョン
-        if miss_details:
-            d = miss_details[0]
-            tweet = f"📊 本日の結果\n\n"
-            tweet += f"{d['venue']}11R {d['rname']}{d['grade']}\n"
-            tweet += f"◎{d['horse_name']} → {d['finish']}着\n\n"
-            tweet += "展開が合わず馬券圏外...\n"
-            tweet += "データを蓄積し精度向上します💪\n\n"
-            tweet += f"次回の予想はnoteで👇\n"
-            tweet += f"{NOTE_URL}\n"
-            tweet += "#競馬予想 #AI予想"
+        # ROIに応じた表現
+        if roi >= 200:
+            tweet += f"💰 回収率: {roi:.0f}% 🔥🔥🔥\n"
+            tweet += f"収支: +{profit:,}円\n"
+        elif roi >= 100:
+            tweet += f"💰 回収率: {roi:.0f}% 📈\n"
+            tweet += f"収支: +{profit:,}円\n"
         else:
-            print("❌ 結果データがありません")
-            return
+            tweet += f"回収率: {roi:.0f}%\n"
+            tweet += f"収支: {profit:,}円\n"
+
+        # CTA
+        tweet += f"\n全予想は👇で事前公開中\n"
+        tweet += f"https://daiki0726m-oss.github.io/equinox-lab/\n"
+
+        # ハッシュタグ（ベストのレース名）
+        tweet += "#AI競馬 #競馬予想"
+        if best[0]['grade']:
+            tag = best[0]['race_name'].replace(' ', '').replace('　', '')
+            tweet += f" #{tag}"
+
+    else:
+        # ── 的中なし ──
+        tweet = f"📊 AI競馬 {date_label} 結果\n\n"
+        tweet += f"◎複勝率: {honmei_rate:.0f}% ({honmei_top3}/{honmei_total})\n"
+        tweet += f"買い目的中: {total_hits}/{total_bets}件\n\n"
+
+        if honmei_rate >= 60:
+            tweet += "◎は安定していたものの買い目が裏目に。\n"
+            tweet += "配当研究を継続します💪\n"
+        else:
+            tweet += "展開が合わず不調の1日。\n"
+            tweet += "データを蓄積して精度向上に努めます💪\n"
+
+        tweet += f"\n次回の予想👇\n"
+        tweet += f"https://daiki0726m-oss.github.io/equinox-lab/\n"
+        tweet += "#AI競馬 #競馬予想"
 
     # ファクトチェック
     fact_check_tweet(tweet)
 
     print(f"\n📊 ファクトチェック詳細:")
-    print(f"  DB検証: 投資{total_invested:,}円 / 回収{total_payout:,}円")
-    if total_invested > 0:
-        print(f"  DB検証: ROI={round(total_payout/total_invested*100)}%")
+    print(f"  対象: {races_analyzed}レース")
+    print(f"  ◎成績: 勝率{honmei_win}/{honmei_total} 複勝率{honmei_top3}/{honmei_total}")
+    print(f"  的中: {total_hits}/{total_bets}")
+    print(f"  投資{total_invested:,}円 / 回収{total_payout:,}円 / ROI={roi:.1f}%")
+    if hit_details:
+        print(f"\n  🎯 ベスト的中:")
+        for h in sorted(hit_details, key=lambda x: x['payout'], reverse=True)[:5]:
+            print(f"    {h['venue']}{h['race_number']}R {h['type']} {h['detail']} → ¥{h['payout']:,} (ROI {h['roi']:.0f}%)")
 
     client = None
     threads_client = load_threads_client()
