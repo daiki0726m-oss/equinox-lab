@@ -50,88 +50,26 @@ def export_predictions(date_str=None):
                 continue
 
             all_races = []
-            skipped_no_cache = 0
             for race in races:
                 race_id = race["race_id"]
                 race_info = dict(race)
 
-                # 予測キャッシュ取得（race_id完全一致 → 会場コード+レース番号+日付でフォールバック）
+                # 予測キャッシュ取得
                 cached = conn.execute(
                     "SELECT * FROM predictions_cache WHERE race_id = ?",
                     (race_id,)
                 ).fetchone()
 
                 if not cached:
-                    # race_idが朝と昼で変わる場合のフォールバック:
-                    # race_id形式: YYYY(4) + venue(2) + kai(2) + day(2) + race(2)
-                    # 日目(day=8-9桁目)が変わるため、会場+開催回+レース番号+作成日で検索
-                    venue_code = race_id[4:6]
-                    kai_code = race_id[6:8]
-                    race_num_str = race_id[10:12]
-                    # created_atの日付がrace_dateと同日のもののみ
-                    cached = conn.execute("""
-                        SELECT * FROM predictions_cache
-                        WHERE substr(race_id,5,2) = ?
-                          AND substr(race_id,7,2) = ?
-                          AND substr(race_id,11,2) = ?
-                          AND date(created_at) = ?
-                        ORDER BY created_at DESC LIMIT 1
-                    """, (venue_code, kai_code, race_num_str, race_date_hyphen)).fetchone()
-                    if cached:
-                        print(f"  🔄 {race_id} → cache {cached['race_id']} (フォールバック一致)")
-
-                if not cached:
-                    # メインレース以外は予測対象外なので静かにスキップし、最後にサマリー出力
-                    skipped_no_cache += 1
+                    print(f"  ⏭️ {race_id}: キャッシュなし")
                     continue
 
-                horses_raw = json.loads(cached["predictions_json"])
-                # 馬番重複・馬番0・馬番19以上・同名馬を除去
-                seen_nums = set()
-                seen_names = set()
-                horses = []
-                for h in horses_raw:
-                    num = h.get('horse_number', 0)
-                    name = h.get('horse_name', '')
-                    if num == 0 or num > 18:
-                        continue
-                    if num in seen_nums:
-                        continue
-                    if name and name in seen_names:
-                        continue
-                    seen_nums.add(num)
-                    if name:
-                        seen_names.add(name)
-                    horses.append(h)
+                horses = json.loads(cached["predictions_json"])
                 all_bets = json.loads(cached["all_bets_json"])
                 confidence = cached["confidence"]
                 conf_reason = cached["conf_reason"] or ""
                 should_bet = bool(cached["should_bet"])
                 bet_reason = cached["bet_reason"] or ""
-
-                # 🆕 #90: 書き出し時に馬名を horses 正本で上書きし文字化けを根絶。
-                #   cache(predictions_json/all_bets_json) には予測時(#85/#90修正前)の化け名
-                #   スナップショットが残りうる (runner が古い cache を再 export する) ため、
-                #   export 側で常に正す = JSON は cache の状態に関わらず常にクリーン。
-                _FFFD = chr(65533)
-                name_by_num = {}
-                for rr in conn.execute(
-                    "SELECT res.horse_number AS n, hh.horse_name AS nm FROM results res "
-                    "JOIN horses hh ON hh.horse_id = res.horse_id WHERE res.race_id = ?",
-                    (race_id,)).fetchall():
-                    if rr['nm'] and _FFFD not in rr['nm']:
-                        name_by_num[rr['n']] = rr['nm']
-                for h in horses:
-                    n = h.get('horse_number')
-                    if n in name_by_num and (_FFFD in str(h.get('horse_name') or '') or not h.get('horse_name')):
-                        h['horse_name'] = name_by_num[n]
-                if isinstance(all_bets, dict):
-                    for _bt, _bets in all_bets.items():
-                        for _b in (_bets or []):
-                            _nums = _b.get('horse_numbers') or []
-                            _nms = [name_by_num.get(x) for x in _nums]
-                            if _nums and all(_nms):
-                                _b['horse_name'] = "-".join(_nms)
 
                 # 結果データ取得
                 res_rows = conn.execute("""
@@ -198,85 +136,37 @@ def export_predictions(date_str=None):
                 } for pr in payout_rows]
 
                 # 妙味計算
-                # 実オッズがあるかチェック（推定オッズかどうか）
-                has_real_odds = any(h.get('popularity', 0) > 0 for h in horses)
-                
-                if has_real_odds:
-                    # 実オッズベース: ベットのEVを使用
-                    max_ev = 0.0
-                    for bt_key, bt_bets in all_bets.items():
-                        for b in bt_bets:
-                            ev = b.get("ev", 0)
-                            if ev > max_ev:
-                                max_ev = ev
+                max_ev = 0.0
+                for bt_key, bt_bets in all_bets.items():
+                    for b in bt_bets:
+                        ev = b.get("ev", 0)
+                        if ev > max_ev:
+                            max_ev = ev
+                if max_ev >= 5.0:
+                    myomi = "💎★★★"
+                elif max_ev >= 2.5:
+                    myomi = "💎★★"
+                elif max_ev >= 1.5:
+                    myomi = "💎★"
                 else:
-                    # 推定オッズのみ: AI確信度ベースで妙味スコアを算出
-                    # ◎の勝率、上位集中度、穴馬の存在で判断
-                    win_pcts = sorted([h.get("pred_win_pct", 0) for h in horses], reverse=True)
-                    top1 = win_pcts[0] if win_pcts else 0
-                    top3_sum = sum(win_pcts[:3])
-                    gap = (win_pcts[0] - win_pcts[1]) if len(win_pcts) >= 2 else 0
-                    # 混戦度 = 上位が拮抗しているほど妙味あり
-                    entropy = -sum(p/100 * __import__('math').log2(max(p/100, 0.001)) for p in win_pcts if p > 0)
-                    # スコア: 確信度高い（本命明確）→低妙味、混戦→高妙味
-                    if top1 >= 25 and gap >= 10:
-                        max_ev = 1.0  # 堅いレース（妙味低い）
-                    elif top3_sum >= 45:
-                        max_ev = 2.0  # やや堅い
-                    elif entropy >= 3.5:
-                        max_ev = 5.0  # 大混戦（高妙味）
-                    elif entropy >= 3.0:
-                        max_ev = 3.5  # 混戦（妙味あり）
-                    else:
-                        max_ev = 2.5  # 普通
+                    myomi = ""
 
-                # 妙味判定 v2 (2026-05-17): 信頼度を考慮
-                # S/A (堅軸推奨) では ★★★ を出さない (堅軸 vs 大穴の矛盾解消)。
-                if confidence in ('S', 'A'):
-                    if max_ev >= 5.0: myomi = "💎★★"
-                    elif max_ev >= 3.0: myomi = "💎★"
-                    else: myomi = ""
-                elif confidence == 'B':
-                    if max_ev >= 5.0: myomi = "💎★★★"
-                    elif max_ev >= 2.5: myomi = "💎★★"
-                    elif max_ev >= 1.5: myomi = "💎★"
-                    else: myomi = ""
-                else:  # C/D
-                    if max_ev >= 4.0: myomi = "💎★★★"
-                    elif max_ev >= 2.0: myomi = "💎★★"
-                    elif max_ev >= 1.2: myomi = "💎★"
-                    else: myomi = ""
-
-                # レース傾向 (pred_win_pct ベース: 0-100 範囲)
-                # 旧版は pred_win (0-1 範囲) を見ていたが、JSON には pred_win_pct のみ存在
-                # → top_prob 常に 0 で全レース「波乱含み」になっていた
-                sorted_probs = sorted([h.get("pred_win_pct", 0) for h in horses], reverse=True)
+                # レース傾向
+                sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
                 top_prob = sorted_probs[0] if sorted_probs else 0
                 second_prob = sorted_probs[1] if len(sorted_probs) > 1 else 0
                 gap = top_prob - second_prob
                 top3_total = sum(sorted_probs[:3])
-                # v3 (2026-05-17): gap 廃止 — ◎の絶対値のみで判定。
-                # 「AI 20% > 18% なのに『やや堅い』になる」直感矛盾を解消。
-                if top_prob >= 18:
+                if top_prob >= 35 and gap >= 12:
                     race_tendency = "堅い（本命突出）"
-                elif top_prob >= 14:
+                elif top_prob >= 25 and gap >= 6:
                     race_tendency = "やや堅い（軸馬明確）"
-                elif top3_total >= 35:
+                elif top3_total >= 55:
                     race_tendency = "上位拮抗（実力伯仲）"
-                elif top_prob <= 8:
+                elif top_prob <= 12:
                     race_tendency = "波乱含み（大混戦）"
                 else:
                     race_tendency = "普通（中穴狙い可）"
-
-                # #96: 同名レースの歴史的荒れ度
-                try:
-                    from volatility import compute_race_upset_history
-                    upset_hist = compute_race_upset_history(
-                        race_info.get("race_name", "") or "",
-                        race_info.get("race_date", "") or race_date_hyphen,
-                    )
-                except Exception:
-                    upset_hist = None
 
                 all_races.append({
                     "race_id": race_id,
@@ -298,37 +188,27 @@ def export_predictions(date_str=None):
                     "myomi": myomi,
                     "max_ev": round(max_ev, 1),
                     "race_tendency": race_tendency,
-                    # #96: 同名レースの歴史的荒れ度 (temporal-safe、out-of-time検証済)
-                    "upset_hist": upset_hist,
                     "has_results": has_results,
                     "payouts": race_payouts if has_results else [],
-                    "prediction_locked": datetime.now(JST).hour >= 10,
+                    "prediction_locked": False,
                 })
-
-            if skipped_no_cache:
-                print(f"  ℹ️ {ds}: メインレース以外 {skipped_no_cache}件はキャッシュなしでスキップ")
 
             if not all_races:
                 print(f"  ⏭️ {ds}: 予測データなし")
                 continue
 
-            # 妙味再計算（相対パーセンタイル、同値グループ均等分配）
-            # v2 (2026-05-17): 信頼度を考慮。S/A (堅軸推奨) は ★★★ を出さない
-            # (「予想固いのに大穴チャンス」と矛盾するため)。
+            # 妙味再計算（相対パーセンタイル）
             if len(all_races) >= 2:
-                # EVでソートし、各レースに順位を付与
-                sorted_races = sorted(all_races, key=lambda r: r["max_ev"])
-                n = len(sorted_races)
-                for i, r in enumerate(sorted_races):
-                    pct = i / (n - 1) if n > 1 else 0.5
-                    conf = r.get('confidence', 'C')
-                    is_kataku = conf in ('S', 'A')  # 堅軸推奨レース
+                ev_values = sorted([r["max_ev"] for r in all_races])
+                for r in all_races:
+                    rank = ev_values.index(r["max_ev"])
+                    pct = rank / (len(ev_values) - 1) if len(ev_values) > 1 else 0.5
                     if pct >= 0.80:
-                        r["myomi"] = "💎★★" if is_kataku else "💎★★★"
+                        r["myomi"] = "💎★★★"
                     elif pct >= 0.50:
-                        r["myomi"] = "💎★" if is_kataku else "💎★★"
+                        r["myomi"] = "💎★★"
                     elif pct >= 0.20:
-                        r["myomi"] = "" if is_kataku else "💎★"
+                        r["myomi"] = "💎★"
                     else:
                         r["myomi"] = ""
 
@@ -344,7 +224,7 @@ def export_predictions(date_str=None):
                 "date": ds,
                 "total_races": len(all_races),
                 "venues": venues,
-                "is_locked": datetime.now(JST).hour >= 10,
+                "is_locked": False,
                 "exported_at": datetime.now(JST).isoformat(),
             }
 
@@ -388,14 +268,8 @@ if __name__ == "__main__":
     from database import init_db
     init_db()
 
-    # positional("20260509") と --date flag の両方を受け付ける(誤呼び出し耐性)
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("date_pos", nargs='?', help="対象日 YYYYMMDD")
-    parser.add_argument("--date", dest="date_flag", help="対象日 YYYYMMDD (--date 形式)")
-    args = parser.parse_args()
-    date_arg = args.date_pos or args.date_flag
-    if date_arg:
+    if len(sys.argv) > 1:
+        date_arg = sys.argv[1]
         export_predictions(date_arg)
     else:
         export_predictions()
