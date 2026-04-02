@@ -196,7 +196,39 @@ def x_weighted_len(text):
 
 
 def post_thread(client, tweets, dry_run=False, threads_client=None):
-    """ツイートのリスト（スレッド）をX + Threadsに投稿"""
+    """ツイートのリスト（スレッド）をX + Threadsに投稿（重複チェック付き）"""
+    import hashlib
+
+    # ─── 重複投稿チェック ───
+    # 1ツイート目のハッシュで直近投稿と照合
+    post_hash = hashlib.md5(tweets[0].encode()).hexdigest()[:12]
+    log_path = os.path.join(os.path.dirname(__file__), ".post_history.json")
+
+    if not dry_run:
+        try:
+            history = {}
+            if os.path.exists(log_path):
+                with open(log_path, 'r') as f:
+                    history = json.load(f)
+
+            # 直近2時間以内に同じハッシュがあればスキップ
+            now_ts = now_jst().timestamp()
+            if post_hash in history:
+                last_ts = history[post_hash]
+                elapsed = now_ts - last_ts
+                if elapsed < 7200:  # 2時間 = 7200秒
+                    elapsed_min = int(elapsed / 60)
+                    print(f"⚠️ 重複検出: 同じ内容が{elapsed_min}分前に投稿済み → スキップ")
+                    return []
+
+            # 投稿履歴を記録（古いエントリは削除）
+            history = {k: v for k, v in history.items() if now_ts - v < 86400}
+            history[post_hash] = now_ts
+            with open(log_path, 'w') as f:
+                json.dump(history, f)
+        except Exception as e:
+            print(f"⚠️ 重複チェックエラー（続行）: {e}")
+
     tweet_ids = []
     parent_id = None
 
@@ -1597,36 +1629,104 @@ def cmd_weekly_review(args):
 
 # ─── 平日: note記事プロモ ───
 def generate_note_promo():
-    """articlesフォルダの最新記事からプロモツイートを生成。記事がなければフォールバック"""
+    """articlesフォルダから「今週末のレース」記事のみ選んでプロモツイートを生成"""
     import glob
+    import re
 
     articles_dir = os.path.join(os.path.dirname(__file__), "articles")
+    today = now_jst()
 
-    # 重賞分析記事を検索（review_やyyyymmdd形式は除外）
+    # 今週末の土日の日付を算出
+    days_until_sat = (5 - today.weekday()) % 7
+    if days_until_sat == 0 and today.weekday() == 5:
+        days_until_sat = 0  # 土曜当日
+    next_sat = today + timedelta(days=days_until_sat)
+    next_sun = next_sat + timedelta(days=1)
+
+    # DBから今週末のレース名を取得（フィルタ用）
+    upcoming_race_names = set()
+    try:
+        with get_db() as conn:
+            sat_str = next_sat.strftime("%Y-%m-%d")
+            sun_str = next_sun.strftime("%Y-%m-%d")
+            races = conn.execute("""
+                SELECT DISTINCT race_name FROM races
+                WHERE race_date IN (?, ?)
+                AND (grade IS NOT NULL AND grade != '')
+            """, (sat_str, sun_str)).fetchall()
+            for r in races:
+                upcoming_race_names.add(r['race_name'])
+            print(f"📅 今週末のレース: {', '.join(upcoming_race_names) if upcoming_race_names else 'なし'}")
+    except Exception as e:
+        print(f"⚠️ DB参照エラー: {e}")
+
+    # 記事を検索（review_やyyyymmdd形式は除外）
     promo_files = []
     if os.path.exists(articles_dir):
         for f in glob.glob(os.path.join(articles_dir, "*.md")):
             basename = os.path.basename(f)
-            # review_ や日付形式のファイルは除外
+            # review_、日付形式、_x.txt、part2（後編は金曜用）を除外
             if basename.startswith("review_") or basename.startswith("2026"):
                 continue
-            promo_files.append(f)
+            if "_x." in basename:
+                continue
+
+            # 記事のタイトルからレース名を抽出してフィルタ
+            try:
+                with open(f, 'r', encoding='utf-8') as fh:
+                    first_lines = fh.read(500)
+
+                # 記事タイトルにDBの今週末レース名が含まれているかチェック
+                is_upcoming = False
+                if upcoming_race_names:
+                    for race_name in upcoming_race_names:
+                        # レース名の部分一致（大阪杯 ↔ osaka_hai など）
+                        race_short = race_name.replace('（', '').replace('）', '')
+                        if race_short in first_lines:
+                            is_upcoming = True
+                            break
+
+                # ファイル名からもチェック（osaka_hai, derby_ct など）
+                race_name_map = {
+                    '大阪杯': ['osaka_hai'],
+                    'ダービー卿': ['derby_ct'],
+                    'チャーチルダウンズ': ['churchill'],
+                    '高松宮': ['takamatsunomiya'],
+                    '毎日杯': ['mainichi_hai'],
+                    '日経賞': ['nikkei_sho'],
+                    'マーチS': ['march_s'],
+                }
+                if not is_upcoming:
+                    for rname, patterns in race_name_map.items():
+                        if any(p in basename for p in patterns):
+                            if rname in str(upcoming_race_names) or any(rname in n for n in upcoming_race_names):
+                                is_upcoming = True
+                                break
+
+                if is_upcoming:
+                    promo_files.append(f)
+                    print(f"  ✅ 今週末対象: {basename}")
+                else:
+                    print(f"  ⏭️ スキップ（過去レース）: {basename}")
+
+            except Exception:
+                continue
 
     if not promo_files:
-        # 記事がない場合はフォールバック
+        print("📝 今週末対象の記事なし → フォールバック")
         return generate_analysis_column()
 
-    # 最新の記事を選択（更新日順）
+    # 更新日順でソート
     promo_files.sort(key=os.path.getmtime, reverse=True)
 
-    # 今日が何曜日かで記事を選ぶ（火=0番目, 水=1番目, 木=2番目）
-    today = now_jst()
-    dow = today.weekday()  # 0=月, 1=火, 2=水, 3=木
+    # 今日の曜日で記事を選ぶ（火=0番目, 水=1番目, 木=2番目）
+    dow = today.weekday()
     idx = dow - 1  # 火=0, 水=1, 木=2
     if idx < 0 or idx >= len(promo_files):
         idx = 0
 
     article_path = promo_files[min(idx, len(promo_files) - 1)]
+    print(f"📰 選択記事: {os.path.basename(article_path)}")
 
     # 記事の内容を読み取り
     with open(article_path, 'r', encoding='utf-8') as f:
@@ -1639,24 +1739,28 @@ def generate_note_promo():
         line = line.strip()
         if line.startswith("# ") and not title:
             title = line.replace("# ", "")
-        # ポイントになるデータを抽出（太字の行）
-        if line.startswith("**") and "→" in line and len(key_points) < 3:
-            # **1番人気** → 複勝率90% みたいな行
+        # ポイントになるデータを抽出（太字や✅の行）
+        if ("**" in line and "→" in line and len(key_points) < 3):
             key_points.append(line.replace("**", ""))
+        elif (line.startswith("✅") or line.startswith("❌")) and len(key_points) < 3:
+            key_points.append(line)
 
     if not title:
         return generate_analysis_column()
 
-    # レース名をハッシュタグ用に抽出
+    # レース名からハッシュタグを動的生成
     race_hashtags = ""
-    if "日経賞" in title:
-        race_hashtags = "#日経賞"
-    elif "毎日杯" in title:
-        race_hashtags = "#毎日杯"
-    elif "マーチ" in title:
-        race_hashtags = "#マーチステークス"
-    elif "高松宮" in title:
-        race_hashtags = "#高松宮記念"
+    hashtag_map = {
+        '大阪杯': '#大阪杯', 'ダービー卿': '#ダービー卿CT',
+        'チャーチルダウンズ': '#チャーチルダウンズC', '高松宮': '#高松宮記念',
+        '毎日杯': '#毎日杯', '日経賞': '#日経賞', 'マーチ': '#マーチS',
+        '桜花賞': '#桜花賞', '皐月賞': '#皐月賞', '天皇賞': '#天皇賞',
+        '宝塚記念': '#宝塚記念', 'NHKマイル': '#NHKマイルC',
+    }
+    for race_key, hashtag in hashtag_map.items():
+        if race_key in title:
+            race_hashtags = hashtag
+            break
 
     # ── ツイート1: フック ──
     t1 = f"📊 {title}\n\n"
@@ -1669,8 +1773,7 @@ def generate_note_promo():
 
     # ── ツイート2: 記事からデータを引用 ──
     t2 = "📋 記事のポイント\n\n"
-    # AI多次元分析セクションがあれば引用
-    if "AI多次元分析" in content:
+    if "多次元分析" in content or "AI" in title:
         t2 += "AIの多次元分析で\n"
         t2 += "従来の一次元分析では見えない\n"
         t2 += "複合パターンを解説しています\n\n"
@@ -1685,10 +1788,12 @@ def generate_note_promo():
     t3 = "🔔 noteで全文を無料公開中\n\n"
     t3 += "プロフィールのリンクからどうぞ👀\n\n"
 
-    # 高松宮記念の予告（まだ木曜前なら）
-    if "高松宮" not in title:
-        t3 += "📢 高松宮記念（G1）の分析は\n"
-        t3 += "木曜に公開予定🔔\n\n"
+    # 今週末のメインレースを予告
+    if upcoming_race_names:
+        main_races = [n for n in upcoming_race_names if any(g in n for g in ['G', '杯', '記念', 'S', 'ステークス'])]
+        if main_races:
+            t3 += f"📢 今週末は {main_races[0]} 🔥\n"
+            t3 += "AI予想は土日朝7時に配信します\n\n"
 
     t3 += "フォローして見逃さないでください！"
 
