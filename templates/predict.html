@@ -592,15 +592,159 @@ body {
 }
 @keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
 
-/* ─── Responsive: Small phone ─── */
+/* ─── Responsive: Mobile (up to 600px) ─── */
+@media (max-width: 600px) {
+  html { font-size: 14px; }
+
+  /* Header: 2段レイアウトに */
+  .header { padding: 10px 12px; }
+  .header-top {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .logo { font-size: 14px; flex-shrink: 0; }
+  .header-controls {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    align-items: center;
+    gap: 6px;
+  }
+  .input-date {
+    grid-column: 1 / -1;
+    width: 100%;
+    font-size: 15px;
+    padding: 10px 10px;
+  }
+  .budget-label { font-size: 12px; }
+  .input-budget {
+    width: 80px;
+    font-size: 15px;
+    padding: 10px 8px;
+  }
+  .budget-unit { font-size: 12px; }
+  .btn-predict {
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  /* Bet selector */
+  .bet-selector {
+    top: 95px;
+    padding: 8px 10px;
+    gap: 6px;
+  }
+  .bet-chip {
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+
+  /* Summary strip */
+  .summary-strip {
+    margin: 8px 10px;
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .summary-item { padding: 10px 4px; }
+  .summary-value { font-size: 16px; }
+  .summary-label { font-size: 9px; }
+
+  /* Venue tabs */
+  .venue-tabs { margin: 0 10px 8px; }
+  .venue-tab { padding: 7px 8px; font-size: 11px; }
+
+  /* Main content area */
+  .main { padding: 0 8px 100px; }
+
+  /* Race card */
+  .race-card { margin-bottom: 8px; }
+  .race-header { padding: 10px 10px; }
+  .race-left { gap: 8px; }
+  .race-num { width: 28px; height: 28px; font-size: 11px; }
+  .race-name-line { font-size: 12px; }
+  .race-meta { font-size: 9px; gap: 5px; }
+  .conf-badge { padding: 2px 8px; font-size: 10px; }
+
+  /* Horse list - tighter grid */
+  .horse-list { padding: 6px 8px; }
+  .horse-row {
+    grid-template-columns: 20px 24px 1fr auto;
+    gap: 6px;
+    padding: 7px 2px;
+  }
+  .horse-mark { font-size: 13px; }
+  .horse-number { width: 24px; height: 24px; font-size: 10px; }
+  .horse-name { font-size: 12px; }
+  .horse-jockey { font-size: 9px; }
+  .horse-stats { gap: 4px; }
+  .stat { font-size: 9px; }
+  .prob-value { font-size: 13px; }
+  .prob-label { font-size: 8px; }
+  .rank-bar { width: 40px; }
+  .horse-reasons { padding: 3px 0 0 50px; }
+  .reason-tag { font-size: 9px; padding: 2px 6px; }
+
+  /* Bets section */
+  .bets-section { padding: 8px; }
+  .bet-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 8px 10px;
+  }
+  .bet-card > div:first-child {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+  }
+  .bet-detail-text { font-size: 12px; margin-left: 6px; }
+  .bet-amount { font-size: 13px; }
+
+  /* Payout table: scrollable */
+  .payout-section { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .payout-table { font-size: 10px; min-width: 300px; }
+  .payout-table td { padding: 4px 6px; }
+
+  /* Results podium */
+  .podium-row {
+    grid-template-columns: 24px 28px 1fr auto auto;
+    gap: 6px;
+    padding: 5px 2px;
+    font-size: 11px;
+  }
+
+  /* Tab bar inside race */
+  .tab-btn { padding: 8px 4px; font-size: 11px; }
+
+  /* Confidence filter */
+  .conf-filter { padding: 4px 10px; gap: 4px; }
+  .conf-filter-btn { padding: 4px 10px; font-size: 10px; }
+
+  /* Myomi badges */
+  .myomi-badge { font-size: 10px; padding: 1px 6px; }
+}
+
+/* ─── Responsive: Small phone (〜380px) ─── */
 @media (max-width: 380px) {
   html { font-size: 13px; }
-  .header-top { flex-wrap: wrap; }
-  .input-date { width: 110px; }
-  .input-budget { width: 70px; }
+  .header-controls { flex-wrap: wrap; }
+  .input-date { width: 100%; }
+  .input-budget { width: 65px; }
+  .btn-predict { width: 100%; margin-top: 4px; }
   .summary-strip { grid-template-columns: repeat(2, 1fr); }
+  .horse-row {
+    grid-template-columns: 18px 22px 1fr auto;
+    gap: 4px;
+  }
+  .horse-name { font-size: 11px; }
+  .prob-value { font-size: 12px; }
+  .rank-bar { width: 32px; }
+  .bet-chip { padding: 6px 10px; font-size: 11px; }
 }
 </style>
+
 </head>
 <body>
 
