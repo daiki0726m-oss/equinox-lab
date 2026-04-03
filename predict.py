@@ -299,9 +299,24 @@ def cmd_predict(args):
         by_odds = sorted(sorted_preds, key=lambda x: x.get("odds_win", 999))
         popularity_map = {p["horse_number"]: i+1 for i, p in enumerate(by_odds)}
 
+        # 印を付与（AI勝率順）
+        mark_labels = ['◎', '○', '▲', '△', '×']
+        for i, p in enumerate(sorted_preds):
+            if i < 5:
+                p["mark"] = mark_labels[i]
+            else:
+                p["mark"] = ""
+        # 6番目以降で妙味のある馬に「注」
+        for p in sorted_preds[5:]:
+            pop = popularity_map.get(p["horse_number"], 99)
+            if pop >= 6 and p["pred_win"] * 100 >= 5.0:
+                p["mark"] = "注"
+                break
+
         cache_json = json.dumps([{
             "horse_number": p["horse_number"],
             "horse_name": p["horse_name"],
+            "mark": p.get("mark", ""),
             "pred_win_pct": round(p["pred_win"] * 100, 1),
             "pred_top3_pct": round(p["pred_top3"] * 100, 1),
             "odds_win": round(p.get("odds_win", 0), 1),
