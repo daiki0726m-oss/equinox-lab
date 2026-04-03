@@ -1,19 +1,8 @@
 name: 🐦 Auto Post to X
 
 on:
-  schedule:
   # ─── スケジュールはGoogle Apps Script経由で workflow_dispatch を使用 ───
   # cron は重複投稿の原因になるため無効化（2026-04-02）
-  # schedule:
-  #   - cron: '30 22 * * 0-4'  # 平日朝7:30 JST
-  #   - cron: '0 3 * * 1-5'    # 平日昼12:00 JST
-  #   - cron: '0 11 * * 1-5'   # 平日夜20:00 JST
-  #   - cron: '0 22 * * 5'     # 土曜朝7:00 JST
-  #   - cron: '0 22 * * 6'     # 日曜朝7:00 JST
-  #   - cron: '55 0 * * 0,6'   # 土日9:55 JST
-  #   - cron: '30 6 * * 0,6'   # 土日15:30 JST
-  #   - cron: '0 11 * * 6'     # 土曜20:00 JST
-  #   - cron: '0 11 * * 0'     # 日曜20:00 JST
   workflow_dispatch:
     inputs:
       mode:
