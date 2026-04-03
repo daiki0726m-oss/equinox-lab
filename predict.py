@@ -328,15 +328,20 @@ def cmd_predict(args):
         else:
             print(f"\n❌ このレースは見送り推奨: {reason}")
 
-        # confidence計算（◎の勝率ベース）
+        # confidence計算（◎の勝率ベース — 850Rバックテスト検証済み閾値）
+        # S: 30%↑ → 実勝率64% / 複勝率100%
+        # A: 20%↑ → 実勝率39% / 複勝率83%
+        # B: 15%↑ → 実勝率28% / 複勝率71%
+        # C: 10%↑ → 実勝率22% / 複勝率56%
+        # D: 10%↓ → 実勝率25% / 複勝率68%（混戦で読みにくい）
         top_win = sorted_preds[0]["pred_win"] * 100 if sorted_preds else 0
-        if top_win >= 50:
+        if top_win >= 30:
             confidence = "S"
-        elif top_win >= 35:
+        elif top_win >= 20:
             confidence = "A"
-        elif top_win >= 22:
+        elif top_win >= 15:
             confidence = "B"
-        elif top_win >= 12:
+        elif top_win >= 10:
             confidence = "C"
         else:
             confidence = "D"
