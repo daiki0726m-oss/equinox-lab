@@ -289,6 +289,8 @@ def cmd_predict(args):
                 "cat_track": round(row.get("bias_score", 0), 2),
                 "cat_record": round(row.get("top3_rate_10r", 0) * 100, 1),
                 "cat_weather": round(row.get("horse_wet_top3_rate", 0) * 100, 1),
+                "win_rate": round(row.get("win_rate_10r", 0) * 100, 1),
+                "top3_rate": round(row.get("top3_rate_10r", 0) * 100, 1),
             })
 
         # predictions_cache に保存（推定オッズ・人気を含む）
@@ -312,6 +314,8 @@ def cmd_predict(args):
             "cat_track": p.get("cat_track", 0),
             "cat_record": p.get("cat_record", 0),
             "cat_weather": p.get("cat_weather", 0),
+            "win_rate": p.get("win_rate", 0),
+            "top3_rate": p.get("top3_rate", 0),
         } for p in sorted_preds], ensure_ascii=False)
 
         with get_db() as conn:
