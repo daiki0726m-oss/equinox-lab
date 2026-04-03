@@ -2008,8 +2008,7 @@ def cmd_hit_flash(args):
             tweet += f"収支: {profit:,}円\n"
 
         # CTA
-        tweet += f"\n全予想は👇で事前公開中\n"
-        tweet += f"https://daiki0726m-oss.github.io/equinox-lab/\n"
+        tweet += f"\n買い目は今朝のツイートで事前公開済み📋\n"
 
         # ハッシュタグ（ベストのレース名）
         tweet += "#AI競馬 #競馬予想"
@@ -2030,8 +2029,7 @@ def cmd_hit_flash(args):
             tweet += "展開が合わず不調の1日。\n"
             tweet += "データを蓄積して精度向上に努めます💪\n"
 
-        tweet += f"\n次回の予想👇\n"
-        tweet += f"https://daiki0726m-oss.github.io/equinox-lab/\n"
+        tweet += f"\n次回も買い目を朝に事前公開します📋\n"
         tweet += "#AI競馬 #競馬予想"
 
     # ファクトチェック
