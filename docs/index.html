@@ -1184,9 +1184,9 @@ function renderPredTab(race) {
   const horses = race.horses || [];
   const sorted = [...horses].sort((a, b) => (b.pred_win_pct || b.pred_win || 0) - (a.pred_win_pct || a.pred_win || 0));
 
-  // Compute rankings based on available data (pred_win_pct, pred_top3_pct, si_avg)
-  const CAT_KEYS = ['pred_win_pct', 'pred_top3_pct', 'si_avg'];
-  const CAT_LABELS = ['勝', '複', 'SI'];
+  // Compute category rankings (S/A/B/C/D) within race
+  const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
+  const CAT_LABELS = ['能','血','騎','場','績','天'];
   CAT_KEYS.forEach((key, idx) => {
     const vals = sorted.map(h => h[key] || 0).sort((a,b) => b - a);
     const n = vals.length;
