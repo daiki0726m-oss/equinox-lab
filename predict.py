@@ -268,6 +268,7 @@ def cmd_predict(args):
                     break
 
             # オッズがない場合（未来レース）→ 予測確率から推定
+            has_real_odds = odds_win > 0
             if odds_win <= 0 and row["pred_win_norm"] > 0:
                 # 推定オッズ = 0.8 / 予測勝率（JRAの控除率20%を考慮）
                 odds_win = max(round(0.8 / row["pred_win_norm"], 1), 1.2)
@@ -280,6 +281,7 @@ def cmd_predict(args):
                 "pred_top3": row["pred_top3_norm"] / 3,
                 "odds_win": odds_win,
                 "odds_place": odds_place,
+                "_has_real_odds": has_real_odds,
                 "si_avg": round(row.get("si_avg", 0), 1),
                 "jockey_name": next((r["jockey_name"] for r in results if r["horse_number"] == int(row["horse_number"]) and "jockey_name" in r.keys()), ""),
                 # カテゴリスコア
@@ -293,11 +295,15 @@ def cmd_predict(args):
                 "top3_rate": round(row.get("top3_rate_10r", 0) * 100, 1),
             })
 
-        # predictions_cache に保存（推定オッズ・人気を含む）
+        # predictions_cache に保存
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
-        # 人気順 = オッズが低い順
-        by_odds = sorted(sorted_preds, key=lambda x: x.get("odds_win", 999))
-        popularity_map = {p["horse_number"]: i+1 for i, p in enumerate(by_odds)}
+        # 人気順: 実オッズがある場合のみ使用（推定オッズは循環参照になるため除外）
+        has_real_odds = any(p.get("_has_real_odds") for p in sorted_preds)
+        if has_real_odds:
+            by_odds = sorted(sorted_preds, key=lambda x: x.get("odds_win", 999))
+            popularity_map = {p["horse_number"]: i+1 for i, p in enumerate(by_odds)}
+        else:
+            popularity_map = {p["horse_number"]: 0 for p in sorted_preds}
 
         # 印を付与（AI勝率順）
         mark_labels = ['◎', '○', '▲', '△', '×']

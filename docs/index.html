@@ -1292,7 +1292,7 @@ function renderHorseRow(h, showReasons) {
         ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
       </div>
       <div class="horse-stats">
-        ${h.odds_win && h.popularity ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span>${h.popularity ? `<span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span>` : ''}</span>` : (h.odds_win ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">推定${h.odds_win}倍</span></span>` : '')}
+        ${h.odds_win && h.popularity ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span><span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span></span>` : ''}
         <span class="stat">SI <span class="stat-val">${h.si_avg || 0}</span></span>
         <span class="stat">AI複勝 <span class="stat-val">${predTop3}%</span></span>
         <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
