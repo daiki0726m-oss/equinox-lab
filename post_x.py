@@ -274,146 +274,151 @@ def post_tweet(client, text, reply_to=None, dry_run=False, threads_client=None):
 
 # ─── レース当日: メインレース予想 ───
 def cmd_predict(args):
-    """メインレース(11R)の予想ツイートを生成・投稿（3段スレッド）"""
+    """レース前の買い目公開ツイート（11R + 信頼度S/A）"""
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-    # predictions_cacheから予測を取得（あれば再計算不要）
     with get_db() as conn:
-        cached_races = conn.execute("""
+        # 全レースの予測データ取得
+        all_races = conn.execute("""
             SELECT ra.race_id, ra.race_name, ra.venue, ra.distance, ra.surface,
-                   ra.track_condition, ra.grade, pc.predictions_json, pc.all_bets_json
+                   ra.track_condition, ra.grade, ra.race_number, ra.start_time,
+                   pc.predictions_json, pc.all_bets_json, pc.confidence
             FROM races ra
             JOIN predictions_cache pc ON ra.race_id = pc.race_id
             WHERE (ra.race_date = ? OR ra.race_date = ?)
-            AND ra.race_number = 11
-            ORDER BY ra.venue
+            ORDER BY ra.venue, ra.race_number
         """, (date_str, date_hyphen)).fetchall()
 
-    if not cached_races:
+    if not all_races:
         print(f"❌ {date_str} の予測データがありません")
-        print("  先にpredict.pyで予測を実行してください")
         return
 
-    print(f"🏇 {date_label} メインレース {len(cached_races)}件を投稿\n")
+    # 投稿対象: 11R（必ず） + 信頼度Sのレース（最大3件）
+    target_races = []
+    target_ids = set()
 
-    # 各レースの◎○▲をmarkフィールドから取得
-    race_data = []
-    for race in cached_races:
+    # まず11Rを追加
+    for race in all_races:
+        if race['race_number'] == 11 and race['race_id'] not in target_ids:
+            target_races.append(race)
+            target_ids.add(race['race_id'])
+
+    # 信頼度Sのレース（11R以外、最大3件）
+    s_count = 0
+    for race in all_races:
+        if race['confidence'] == 'S' and race['race_id'] not in target_ids:
+            target_races.append(race)
+            target_ids.add(race['race_id'])
+            s_count += 1
+            if s_count >= 3:
+                break
+
+    if not target_races:
+        print(f"❌ 投稿対象レースがありません")
+        return
+
+    print(f"🏇 {date_label} 投稿対象: {len(target_races)}レース")
+    print(f"   (11R: {sum(1 for r in target_races if r['race_number']==11)}件 / "
+          f"S: {sum(1 for r in target_races if r['confidence']=='S' and r['race_number']!=11)}件)\n")
+
+    # ── ツイート1: サマリー ──
+    main_races = [r for r in target_races if r['race_number'] == 11]
+    s_races = [r for r in target_races if r['confidence'] == 'S' and r['race_number'] != 11]
+
+    t1 = f"🧠 AI競馬予想 {date_label}\n\n"
+
+    # メインレースの◎
+    for race in main_races:
+        preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
+        honmei = next((p for p in preds if p.get('mark') == '◎'), None)
+        if not honmei and preds:
+            honmei = sorted(preds, key=lambda x: x.get('pred_win_pct', 0), reverse=True)[0]
+        grade = f" [{race['grade']}]" if race['grade'] else ""
+        t1 += f"📍{race['venue']}11R {race['race_name']}{grade}\n"
+        if honmei:
+            t1 += f"  ◎{honmei.get('horse_name','?')}\n"
+
+    if s_races:
+        t1 += f"\n🔥 AI高信頼レース: {len(s_races)}件\n"
+
+    t1 += f"\n買い目は🧵↓で事前公開\n"
+    t1 += "#AI競馬 #競馬予想"
+
+    # ── ツイート2以降: 各レースの買い目 ──
+    bet_tweets = []
+    for race in target_races:
         preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
         all_bets = json.loads(race['all_bets_json']) if race['all_bets_json'] else {}
 
-        marks = {'◎': None, '○': None, '▲': None}
+        # ◎○▲を特定
+        marks = {}
         for p in preds:
             m = p.get('mark', '')
-            if m in marks and marks[m] is None:
+            if m in ('◎', '○', '▲') and m not in marks:
                 marks[m] = p
+        if '◎' not in marks and preds:
+            sorted_p = sorted(preds, key=lambda x: x.get('pred_win_pct', 0), reverse=True)
+            for i, mk in enumerate(['◎', '○', '▲']):
+                if mk not in marks and i < len(sorted_p):
+                    marks[mk] = sorted_p[i]
 
-        # markがなければpred_win順で割り当て
-        if not marks['◎']:
-            sorted_p = sorted(preds, key=lambda x: x.get('pred_win', 0), reverse=True)
-            mark_list = ['◎', '○', '▲']
-            for i, p in enumerate(sorted_p[:3]):
-                if mark_list[i] not in marks or marks[mark_list[i]] is None:
-                    marks[mark_list[i]] = p
-
-        race_data.append({
-            'race': race,
-            'marks': marks,
-            'all_bets': all_bets,
-        })
-
-    # ── ツイート1: 概要 ──
-    venues = list(set(r['race']['venue'] for r in race_data))
-    t1 = f"🏇 {date_label} AI予想\n"
-    t1 += f"開催: {'・'.join(venues)}\n\n"
-
-    for rd in race_data:
-        race = rd['race']
-        m = rd['marks']
-        rname = race['race_name']
         grade = f" [{race['grade']}]" if race['grade'] else ""
-        t1 += f"📍{race['venue']} {rname}{grade}\n"
-        if m['◎']:
-            t1 += f"  ◎{m['◎'].get('horse_name','?')}\n"
+        conf_emoji = "🔥" if race['confidence'] == 'S' else "⭐" if race['confidence'] == 'A' else "📊"
+        is_main = "メイン" if race['race_number'] == 11 else ""
 
-    t1 += "\n#競馬予想 #AI予想 🧵↓"
+        t = f"{conf_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}\n"
+        t += f"信頼度{race['confidence']} {is_main}\n\n"
 
-    # ── ツイート2: 各レースの詳細 ──
-    t2 = ""
-    for rd in race_data:
-        race = rd['race']
-        m = rd['marks']
-        rname = race['race_name']
-        t2 += f"🏟️{race['venue']} {rname}\n"
-
-        for mark_str in ['◎', '○', '▲']:
-            p = m[mark_str]
+        # 印
+        for mk in ['◎', '○', '▲']:
+            p = marks.get(mk)
             if p:
-                t2 += f"{mark_str}{p.get('horse_number',0)}{p.get('horse_name','?')} "
-        t2 = t2.rstrip() + "\n\n"
+                t += f"{mk} {p.get('horse_number',0)}.{p.get('horse_name','?')}\n"
 
-    # ── ツイート3: 推奨買い目（堅実＋妙味） ──
-    t3 = "💡 AI推奨買い目\n\n"
-    for rd in race_data:
-        race = rd['race']
-        all_bets = rd['all_bets']
-        m = rd['marks']
-        rname = race['race_name']
-
-        # ◎○の馬番・馬名取得
-        honmei = m.get('◎')
-        taikou = m.get('○')
-
-        # 有効な買い目のみフィルタ（重複馬番を除外）
-        valid_bets = []
+        # 具体的な買い目（三連単除外）
+        t += f"\n💰 推奨買い目\n"
+        bet_count = 0
+        total_amount = 0
         for bt, bt_bets in all_bets.items():
+            if bt == '三連単':
+                continue
             for b in bt_bets:
                 hns = b.get('horse_numbers', [])
+                amount = b.get('amount', 100)
+                # 重複馬番チェック
                 if len(hns) != len(set(hns)):
                     continue
-                valid_bets.append({**b, 'bt': bt})
+                combo = '-'.join(str(h) for h in hns)
+                t += f"  {bt} {combo} ¥{amount:,}\n"
+                bet_count += 1
+                total_amount += amount
 
-        if not valid_bets:
-            t3 += f"・{rname}\n 見送り推奨\n"
-            continue
+        t += f"  計{bet_count}点 ¥{total_amount:,}\n"
 
-        t3 += f"・{rname}\n"
+        bet_tweets.append(t)
 
-        # 🎯堅実: 確率が最も高い単一買い目（複勝◎）
-        if honmei:
-            hn = honmei.get('horse_number', 0)
-            hname = honmei.get('horse_name', '?')
-            t3 += f" 🎯堅実: 複勝 {hn}{hname}\n"
+    # ── 最終ツイート: CTA ──
+    t_last = f"📊 以上 {date_label} のAI推奨買い目です\n\n"
+    t_last += f"全{len(target_races)}レース・具体的な買い目を\n"
+    t_last += f"レース前に公開しています\n\n"
+    t_last += "的中結果は夕方に速報します🎯\n\n"
+    t_last += "#AI競馬 #競馬予想"
 
-        # 💎妙味: ◎○軸の流し（相手はEV上位の馬番）
-        if honmei and taikou:
-            h1n = honmei.get('horse_number', 0)
-            h1name = honmei.get('horse_name', '?')
-            h2n = taikou.get('horse_number', 0)
-            h2name = taikou.get('horse_name', '?')
+    # レース名ハッシュタグ（メインレース）
+    for race in main_races[:2]:
+        if race['grade']:
+            tag = race['race_name'].replace(' ', '').replace('　', '')
+            t_last += f" #{tag}"
 
-            # 相手馬を抽出: 買い目に含まれる馬番のうち◎○以外をEV順で
-            axis_nums = {h1n, h2n}
-            partner_horses = {}
-            for b in valid_bets:
-                for hn in b.get('horse_numbers', []):
-                    if hn not in axis_nums and hn not in partner_horses:
-                        partner_horses[hn] = b.get('ev', 0)
+    tweets = [t1] + bet_tweets + [t_last]
 
-            # EV順で上位3頭
-            partners = sorted(partner_horses.items(), key=lambda x: x[1], reverse=True)[:3]
-            if partners:
-                partner_str = ','.join(str(p[0]) for p in partners)
-                t3 += f" 💎妙味: {h1n}{h1name}・{h2n}{h2name}軸\n"
-                t3 += f"  三連複流し→{partner_str}\n"
-
-    t3 += "\n的中結果は本日夕方に報告します📊"
-
-    tweets = [t1, t2, t3]
+    # ファクトチェック
+    for tw in tweets:
+        fact_check_tweet(tw)
 
     client = None
     threads_client = load_threads_client()
