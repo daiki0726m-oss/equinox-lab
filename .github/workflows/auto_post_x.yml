@@ -192,26 +192,4 @@ jobs:
             python post_x.py evening
           fi
 
-      # ── 静的予測サイト更新（GitHub Pages） ──
-      - name: Export predictions to static JSON
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'hit_flash' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'results'
-        run: |
-          DATE="${{ steps.determine.outputs.date }}"
-          echo "📊 予測データを静的JSONに書き出し..."
-          python export_predictions.py "$DATE"
-
-      - name: Deploy to GitHub Pages
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'hit_flash' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'results'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/data/
-          # 変更がある場合のみコミット
-          if git diff --staged --quiet; then
-            echo "📭 変更なし - デプロイスキップ"
-          else
-            git commit -m "📊 Update predictions $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-            git push
-            echo "🚀 GitHub Pages に予測データをデプロイ完了"
-          fi
 
