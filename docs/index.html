@@ -1182,11 +1182,11 @@ function switchTab(btn, raceId, tab) {
 // ─── Prediction Tab ───
 function renderPredTab(race) {
   const horses = race.horses || [];
-  const sorted = [...horses].sort((a, b) => b.pred_win - a.pred_win);
+  const sorted = [...horses].sort((a, b) => (b.pred_win_pct || b.pred_win || 0) - (a.pred_win_pct || a.pred_win || 0));
 
-  // Compute category rankings (S/A/B/C/D) within race
-  const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
-  const CAT_LABELS = ['能','血','騎','場','績','天'];
+  // Compute rankings based on available data (pred_win_pct, pred_top3_pct, si_avg)
+  const CAT_KEYS = ['pred_win_pct', 'pred_top3_pct', 'si_avg'];
+  const CAT_LABELS = ['勝', '複', 'SI'];
   CAT_KEYS.forEach((key, idx) => {
     const vals = sorted.map(h => h[key] || 0).sort((a,b) => b - a);
     const n = vals.length;
@@ -1277,6 +1277,8 @@ function renderHorseRow(h, showReasons) {
   // Win rate / Top3 rate color coding
   const wr = h.win_rate || 0;
   const t3r = h.top3_rate || 0;
+  const predWin = h.pred_win_pct || h.pred_win || 0;
+  const predTop3 = h.pred_top3_pct || h.pred_top3 || 0;
   const wrClass = wr >= 20 ? 'hot' : '';
   const t3rClass = t3r >= 40 ? 'hot' : '';
 
@@ -1292,13 +1294,13 @@ function renderHorseRow(h, showReasons) {
       <div class="horse-stats">
         ${h.odds_win && h.popularity ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span>${h.popularity ? `<span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span>` : ''}</span>` : (h.odds_win ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">推定${h.odds_win}倍</span></span>` : '')}
         <span class="stat">SI <span class="stat-val">${h.si_avg || 0}</span></span>
-        <span class="stat">AI複勝 <span class="stat-val">${h.pred_top3 || 0}%</span></span>
+        <span class="stat">AI複勝 <span class="stat-val">${predTop3}%</span></span>
         <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
         <span class="stat">過去連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>
       </div>
     </div>
     <div class="horse-prob">
-      <div class="prob-value">${h.pred_win || 0}%</div>
+      <div class="prob-value">${predWin}%</div>
       <div class="prob-label">勝率予測</div>
       <div class="rank-bar"><div class="rank-bar-fill" style="width:${rankPct}%"></div></div>
     </div>
