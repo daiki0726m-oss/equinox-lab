@@ -282,6 +282,13 @@ def cmd_predict(args):
                 "odds_place": odds_place,
                 "si_avg": round(row.get("si_avg", 0), 1),
                 "jockey_name": next((r["jockey_name"] for r in results if r["horse_number"] == int(row["horse_number"]) and "jockey_name" in r.keys()), ""),
+                # カテゴリスコア
+                "cat_ability": round(row.get("si_avg", 0), 1),
+                "cat_pedigree": round(row.get("pedigree_score", 0), 2),
+                "cat_jockey": round(row.get("jt_score", 0), 2),
+                "cat_track": round(row.get("bias_score", 0), 2),
+                "cat_record": round(row.get("top3_rate_10r", 0) * 100, 1),
+                "cat_weather": round(row.get("horse_wet_top3_rate", 0) * 100, 1),
             })
 
         # predictions_cache に保存（推定オッズ・人気を含む）
@@ -299,6 +306,12 @@ def cmd_predict(args):
             "popularity": popularity_map.get(p["horse_number"], 0),
             "si_avg": p.get("si_avg", 0),
             "jockey_name": p.get("jockey_name", ""),
+            "cat_ability": p.get("cat_ability", 0),
+            "cat_pedigree": p.get("cat_pedigree", 0),
+            "cat_jockey": p.get("cat_jockey", 0),
+            "cat_track": p.get("cat_track", 0),
+            "cat_record": p.get("cat_record", 0),
+            "cat_weather": p.get("cat_weather", 0),
         } for p in sorted_preds], ensure_ascii=False)
 
         with get_db() as conn:
