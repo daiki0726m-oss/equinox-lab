@@ -354,15 +354,16 @@ def cmd_predict(args):
         preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
         all_bets = json.loads(race['all_bets_json']) if race['all_bets_json'] else {}
 
-        # ◎○▲を特定
+        # 印を全て取得（◎○▲△×注）
         marks = {}
         for p in preds:
             m = p.get('mark', '')
-            if m in ('◎', '○', '▲') and m not in marks:
+            if m and m not in marks:
                 marks[m] = p
         if '◎' not in marks and preds:
             sorted_p = sorted(preds, key=lambda x: x.get('pred_win_pct', 0), reverse=True)
-            for i, mk in enumerate(['◎', '○', '▲']):
+            mark_labels = ['◎', '○', '▲', '△', '×', '注']
+            for i, mk in enumerate(mark_labels):
                 if mk not in marks and i < len(sorted_p):
                     marks[mk] = sorted_p[i]
 
@@ -373,8 +374,8 @@ def cmd_predict(args):
         t = f"{conf_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}\n"
         t += f"信頼度{race['confidence']} {is_main}\n\n"
 
-        # 印
-        for mk in ['◎', '○', '▲']:
+        # 印（全て表示）
+        for mk in ['◎', '○', '▲', '△', '×', '注']:
             p = marks.get(mk)
             if p:
                 t += f"{mk} {p.get('horse_number',0)}.{p.get('horse_name','?')}\n"
