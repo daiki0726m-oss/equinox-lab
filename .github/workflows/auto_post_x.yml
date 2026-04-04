@@ -18,6 +18,7 @@ on:
           - answer_check
           - weekly_review
           - refresh_odds
+          - refresh_dashboard
           - hit_flash
           - odds_flash
           - morning
@@ -127,6 +128,20 @@ jobs:
           echo "🧠 予測を実行..."
           python predict.py predict --date "$DATE" || echo "⚠️ 予測完了（一部エラーあり）"
 
+      # ダッシュボード自動更新（結果収集＋オッズ更新＋再エクスポート）
+      - name: Refresh dashboard (results + odds)
+        if: steps.determine.outputs.type == 'refresh_dashboard'
+        run: |
+          DATE="${{ steps.determine.outputs.date }}"
+          echo "📥 ${DATE} の結果を収集..."
+          python predict.py collect --date "$DATE" || echo "⚠️ 結果収集完了（一部エラーあり）"
+          echo "📡 最新オッズを取得..."
+          python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ更新完了（一部エラーあり）"
+          echo "🧠 再予測..."
+          python predict.py predict --date "$DATE" || echo "⚠️ 再予測完了（一部エラーあり）"
+          echo "💰 配当収集..."
+          python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集完了（一部エラーあり）"
+
       # オッズ更新
       - name: Refresh odds before lock
         if: steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'predict'
@@ -183,14 +198,14 @@ jobs:
 
       # ── 静的予測サイト更新（GitHub Pages） ──
       - name: Export predictions to static JSON
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'hit_flash'
+        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'hit_flash' || steps.determine.outputs.type == 'refresh_dashboard'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📊 予測データを静的JSONに書き出し..."
           python export_predictions.py "$DATE"
 
       - name: Deploy to GitHub Pages
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'hit_flash'
+        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'hit_flash' || steps.determine.outputs.type == 'refresh_dashboard'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
