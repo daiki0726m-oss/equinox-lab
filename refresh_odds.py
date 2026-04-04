@@ -1,9 +1,10 @@
 """
-📡 最新オッズ取得 & 予測キャッシュ更新スクリプト
-10時のロック前に最新のリアルオッズを取得して予測に反映する
+📡 最新オッズ取得 & 馬場状態更新 & 予測キャッシュ更新スクリプト
+10時のロック前に最新のリアルオッズ＋馬場状態を取得して予測に反映する
 
 使い方:
   python refresh_odds.py --date 20260321
+  python refresh_odds.py --no-track   (馬場更新をスキップ)
   python refresh_odds.py  (→ 当日分を自動判定)
 """
 
@@ -16,7 +17,9 @@ from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+import re
 import requests
+from bs4 import BeautifulSoup
 from database import init_db, get_db
 
 
@@ -53,7 +56,45 @@ def fetch_odds_from_api(race_id):
     return {}
 
 
-def refresh_odds(date_str):
+def fetch_track_condition(race_id):
+    """netkeibaのレースページから馬場状態・天候を取得"""
+    url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://race.netkeiba.com/"}
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.encoding = "EUC-JP"
+        soup = BeautifulSoup(resp.text, "lxml")
+
+        race_data01 = soup.find("div", class_="RaceData01") or soup.find("dl", class_="RaceData01")
+        if not race_data01:
+            return None
+
+        text = race_data01.get_text()
+        result = {}
+
+        # 天候
+        weather_match = re.search(r"天候:(\S+)", text)
+        if weather_match:
+            result["weather"] = weather_match.group(1)
+
+        # 馬場状態
+        condition_match = re.search(r"馬場:(\S+)", text)
+        if condition_match:
+            result["track_condition"] = condition_match.group(1)
+        else:
+            for cond in ["不良", "稍重", "重", "良"]:
+                if cond in text:
+                    result["track_condition"] = cond
+                    break
+
+        return result if result else None
+    except Exception as e:
+        print(f"  ⚠️ 馬場状態取得エラー: {e}")
+        return None
+
+
+def refresh_odds(date_str, update_track=True):
     """指定日の全レースのオッズを取得してDB/キャッシュを更新"""
     init_db()
 
@@ -73,6 +114,36 @@ def refresh_odds(date_str):
         return False
 
     print(f"📡 {len(races)}レースの最新オッズを取得中...")
+
+    # 馬場状態の更新（開催場ごとに1回だけ取得）
+    if update_track:
+        venues_updated = set()
+        for race in races:
+            venue = race['venue']
+            if venue in venues_updated:
+                continue
+            rid = race['race_id']
+            track_info = fetch_track_condition(rid)
+            if track_info:
+                tc = track_info.get('track_condition', '')
+                wt = track_info.get('weather', '')
+                if tc:
+                    with get_db() as conn:
+                        # 同じ開催場の全レースを更新
+                        conn.execute("""
+                            UPDATE races SET track_condition = ?, weather = ?
+                            WHERE (race_date = ? OR race_date = ?) AND venue = ?
+                        """, (tc, wt, date_str,
+                              f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}",
+                              venue))
+                    print(f"  🏇 {venue}: 馬場={tc} 天候={wt}")
+                    venues_updated.add(venue)
+            time.sleep(0.5)
+        if venues_updated:
+            print(f"  ✅ {len(venues_updated)}場の馬場状態を更新")
+        else:
+            print(f"  ⚠️ 馬場状態はまだ未発表")
+        print()
 
     updated = 0
     for race in races:
@@ -123,8 +194,9 @@ def refresh_odds(date_str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="📡 最新オッズ取得")
+    parser = argparse.ArgumentParser(description="📡 最新オッズ＋馬場状態取得")
     parser.add_argument("--date", help="対象日 (YYYYMMDD, デフォルト=当日)")
+    parser.add_argument("--no-track", action="store_true", help="馬場状態の更新をスキップ")
     args = parser.parse_args()
 
     if args.date:
@@ -132,8 +204,8 @@ def main():
     else:
         date_str = now_jst().strftime("%Y%m%d")
 
-    print(f"🔄 {date_str} のオッズを更新します\n")
-    refresh_odds(date_str)
+    print(f"🔄 {date_str} のオッズ＋馬場状態を更新します\n")
+    refresh_odds(date_str, update_track=not args.no_track)
 
 
 if __name__ == "__main__":
