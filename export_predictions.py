@@ -197,12 +197,17 @@ def export_predictions(date_str=None):
                 print(f"  ⏭️ {ds}: 予測データなし")
                 continue
 
-            # 妙味再計算（相対パーセンタイル）
+            # 妙味再計算（相対パーセンタイル、同値は平均ランク）
             if len(all_races) >= 2:
                 ev_values = sorted([r["max_ev"] for r in all_races])
+                n = len(ev_values)
                 for r in all_races:
-                    rank = ev_values.index(r["max_ev"])
-                    pct = rank / (len(ev_values) - 1) if len(ev_values) > 1 else 0.5
+                    ev = r["max_ev"]
+                    # 同値の場合は平均ランクを使用
+                    first_idx = ev_values.index(ev)
+                    last_idx = n - 1 - ev_values[::-1].index(ev)
+                    avg_rank = (first_idx + last_idx) / 2.0
+                    pct = avg_rank / (n - 1) if n > 1 else 0.5
                     if pct >= 0.80:
                         r["myomi"] = "💎★★★"
                     elif pct >= 0.50:
