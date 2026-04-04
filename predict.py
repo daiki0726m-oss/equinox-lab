@@ -140,9 +140,10 @@ def cmd_predict(args):
                 "SELECT * FROM races WHERE race_id = ?", (race_id,)
             ).fetchone()
             results = conn.execute("""
-                SELECT r.*, h.horse_name
+                SELECT r.*, h.horse_name, j.jockey_name
                 FROM results r
                 LEFT JOIN horses h ON r.horse_id = h.horse_id
+                LEFT JOIN jockeys j ON r.jockey_id = j.jockey_id
                 WHERE r.race_id = ?
                 ORDER BY r.horse_number
             """, (race_id,)).fetchall()
@@ -210,9 +211,10 @@ def cmd_predict(args):
                         "SELECT * FROM races WHERE race_id = ?", (race_id,)
                     ).fetchone()
                     results = conn.execute("""
-                        SELECT r.*, h.horse_name
+                        SELECT r.*, h.horse_name, j.jockey_name
                         FROM results r
                         LEFT JOIN horses h ON r.horse_id = h.horse_id
+                        LEFT JOIN jockeys j ON r.jockey_id = j.jockey_id
                         WHERE r.race_id = ?
                         ORDER BY r.horse_number
                     """, (race_id,)).fetchall()
