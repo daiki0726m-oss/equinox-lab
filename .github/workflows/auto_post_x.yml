@@ -128,17 +128,13 @@ jobs:
           echo "🧠 予測を実行..."
           python predict.py predict --date "$DATE" || echo "⚠️ 予測完了（一部エラーあり）"
 
-      # ダッシュボード自動更新（結果収集＋オッズ更新＋再エクスポート）
-      - name: Refresh dashboard (results + odds)
+      # ダッシュボード自動更新（結果収集＋配当のみ。予測は朝の1回で固定）
+      - name: Refresh dashboard (results only)
         if: steps.determine.outputs.type == 'refresh_dashboard'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📥 ${DATE} の結果を収集..."
           python predict.py collect --date "$DATE" || echo "⚠️ 結果収集完了（一部エラーあり）"
-          echo "📡 最新オッズを取得..."
-          python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ更新完了（一部エラーあり）"
-          echo "🧠 再予測..."
-          python predict.py predict --date "$DATE" || echo "⚠️ 再予測完了（一部エラーあり）"
           echo "💰 配当収集..."
           python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集完了（一部エラーあり）"
 
