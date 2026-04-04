@@ -65,15 +65,23 @@ def export_predictions(date_str=None):
                     continue
 
                 horses_raw = json.loads(cached["predictions_json"])
-                # 馬番重複・馬番0を除去
+                # 馬番重複・馬番0・馬番19以上・同名馬を除去
                 seen_nums = set()
+                seen_names = set()
                 horses = []
                 for h in horses_raw:
-                    if h.get('horse_number', 0) == 0:
+                    num = h.get('horse_number', 0)
+                    name = h.get('horse_name', '')
+                    if num == 0 or num > 18:
                         continue
-                    if h['horse_number'] not in seen_nums:
-                        seen_nums.add(h['horse_number'])
-                        horses.append(h)
+                    if num in seen_nums:
+                        continue
+                    if name and name in seen_names:
+                        continue
+                    seen_nums.add(num)
+                    if name:
+                        seen_names.add(name)
+                    horses.append(h)
                 all_bets = json.loads(cached["all_bets_json"])
                 confidence = cached["confidence"]
                 conf_reason = cached["conf_reason"] or ""
