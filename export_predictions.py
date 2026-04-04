@@ -136,17 +136,43 @@ def export_predictions(date_str=None):
                 } for pr in payout_rows]
 
                 # 妙味計算
-                max_ev = 0.0
-                for bt_key, bt_bets in all_bets.items():
-                    for b in bt_bets:
-                        ev = b.get("ev", 0)
-                        if ev > max_ev:
-                            max_ev = ev
+                # 実オッズがあるかチェック（推定オッズかどうか）
+                has_real_odds = any(h.get('popularity', 0) > 0 for h in horses)
+                
+                if has_real_odds:
+                    # 実オッズベース: ベットのEVを使用
+                    max_ev = 0.0
+                    for bt_key, bt_bets in all_bets.items():
+                        for b in bt_bets:
+                            ev = b.get("ev", 0)
+                            if ev > max_ev:
+                                max_ev = ev
+                else:
+                    # 推定オッズのみ: AI確信度ベースで妙味スコアを算出
+                    # ◎の勝率、上位集中度、穴馬の存在で判断
+                    win_pcts = sorted([h.get("pred_win_pct", 0) for h in horses], reverse=True)
+                    top1 = win_pcts[0] if win_pcts else 0
+                    top3_sum = sum(win_pcts[:3])
+                    gap = (win_pcts[0] - win_pcts[1]) if len(win_pcts) >= 2 else 0
+                    # 混戦度 = 上位が拮抗しているほど妙味あり
+                    entropy = -sum(p/100 * __import__('math').log2(max(p/100, 0.001)) for p in win_pcts if p > 0)
+                    # スコア: 確信度高い（本命明確）→低妙味、混戦→高妙味
+                    if top1 >= 25 and gap >= 10:
+                        max_ev = 1.0  # 堅いレース（妙味低い）
+                    elif top3_sum >= 45:
+                        max_ev = 2.0  # やや堅い
+                    elif entropy >= 3.5:
+                        max_ev = 5.0  # 大混戦（高妙味）
+                    elif entropy >= 3.0:
+                        max_ev = 3.5  # 混戦（妙味あり）
+                    else:
+                        max_ev = 2.5  # 普通
+
                 if max_ev >= 5.0:
                     myomi = "💎★★★"
-                elif max_ev >= 2.5:
+                elif max_ev >= 3.0:
                     myomi = "💎★★"
-                elif max_ev >= 1.5:
+                elif max_ev >= 1.8:
                     myomi = "💎★"
                 else:
                     myomi = ""
