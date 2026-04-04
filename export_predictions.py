@@ -64,7 +64,16 @@ def export_predictions(date_str=None):
                     print(f"  ⏭️ {race_id}: キャッシュなし")
                     continue
 
-                horses = json.loads(cached["predictions_json"])
+                horses_raw = json.loads(cached["predictions_json"])
+                # 馬番重複・馬番0を除去
+                seen_nums = set()
+                horses = []
+                for h in horses_raw:
+                    if h.get('horse_number', 0) == 0:
+                        continue
+                    if h['horse_number'] not in seen_nums:
+                        seen_nums.add(h['horse_number'])
+                        horses.append(h)
                 all_bets = json.loads(cached["all_bets_json"])
                 confidence = cached["confidence"]
                 conf_reason = cached["conf_reason"] or ""
