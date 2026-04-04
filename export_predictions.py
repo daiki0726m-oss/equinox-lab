@@ -197,25 +197,38 @@ def export_predictions(date_str=None):
                 print(f"  ⏭️ {ds}: 予測データなし")
                 continue
 
-            # 妙味再計算（相対パーセンタイル、同値は平均ランク）
+            # 妙味計算（絶対値 + 相対パーセンタイル併用）
             if len(all_races) >= 2:
                 ev_values = sorted([r["max_ev"] for r in all_races])
                 n = len(ev_values)
+                unique_evs = len(set(ev_values))
+                
                 for r in all_races:
                     ev = r["max_ev"]
-                    # 同値の場合は平均ランクを使用
-                    first_idx = ev_values.index(ev)
-                    last_idx = n - 1 - ev_values[::-1].index(ev)
-                    avg_rank = (first_idx + last_idx) / 2.0
-                    pct = avg_rank / (n - 1) if n > 1 else 0.5
-                    if pct >= 0.80:
-                        r["myomi"] = "💎★★★"
-                    elif pct >= 0.50:
-                        r["myomi"] = "💎★★"
-                    elif pct >= 0.20:
-                        r["myomi"] = "💎★"
+                    # ユニーク値が少ない場合は絶対値ベース
+                    if unique_evs <= n * 0.4:
+                        if ev >= 5.0:
+                            r["myomi"] = "💎★★★"
+                        elif ev >= 3.0:
+                            r["myomi"] = "💎★★"
+                        elif ev >= 1.8:
+                            r["myomi"] = "💎★"
+                        else:
+                            r["myomi"] = ""
                     else:
-                        r["myomi"] = ""
+                        # 十分にバラけている場合は相対パーセンタイル
+                        first_idx = ev_values.index(ev)
+                        last_idx = n - 1 - ev_values[::-1].index(ev)
+                        avg_rank = (first_idx + last_idx) / 2.0
+                        pct = avg_rank / (n - 1) if n > 1 else 0.5
+                        if pct >= 0.80:
+                            r["myomi"] = "💎★★★"
+                        elif pct >= 0.50:
+                            r["myomi"] = "💎★★"
+                        elif pct >= 0.20:
+                            r["myomi"] = "💎★"
+                        else:
+                            r["myomi"] = ""
 
             # 会場グループ化
             venues = {}
