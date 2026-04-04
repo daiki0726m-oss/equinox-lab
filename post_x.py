@@ -200,28 +200,47 @@ def post_thread(client, tweets, dry_run=False, threads_client=None):
     import hashlib
 
     # ─── 重複投稿チェック ───
-    # 1ツイート目のハッシュで直近投稿と照合
     post_hash = hashlib.md5(tweets[0].encode()).hexdigest()[:12]
-    log_path = os.path.join(os.path.dirname(__file__), ".post_history.json")
 
     if not dry_run:
         try:
+            # 方法1: X APIで直近ツイートと比較（最も確実）
+            if client and HAS_TWEEPY:
+                try:
+                    me = client.get_me()
+                    if me and me.data:
+                        recent = client.get_users_tweets(
+                            me.data.id, max_results=5,
+                            tweet_fields=["created_at"]
+                        )
+                        if recent and recent.data:
+                            first_line = tweets[0][:50]  # 先頭50文字で比較
+                            for t in recent.data:
+                                if first_line in t.text:
+                                    print(f"⚠️ 重複検出（X API）: 同じ内容が既に投稿済み → スキップ")
+                                    print(f"  既存ツイート: {t.text[:60]}...")
+                                    return []
+                except Exception as api_err:
+                    print(f"  ℹ️ X API重複チェックスキップ: {api_err}")
+
+            # 方法2: ローカルファイル（ローカル実行時）
+            log_path = os.path.join(os.path.dirname(__file__), ".post_history.json")
+            now_ts = now_jst().timestamp()
+
             history = {}
             if os.path.exists(log_path):
                 with open(log_path, 'r') as f:
                     history = json.load(f)
 
-            # 直近2時間以内に同じハッシュがあればスキップ
-            now_ts = now_jst().timestamp()
             if post_hash in history:
                 last_ts = history[post_hash]
                 elapsed = now_ts - last_ts
-                if elapsed < 7200:  # 2時間 = 7200秒
+                if elapsed < 7200:
                     elapsed_min = int(elapsed / 60)
-                    print(f"⚠️ 重複検出: 同じ内容が{elapsed_min}分前に投稿済み → スキップ")
+                    print(f"⚠️ 重複検出（ファイル）: 同じ内容が{elapsed_min}分前に投稿済み → スキップ")
                     return []
 
-            # 投稿履歴を記録（古いエントリは削除）
+            # 投稿履歴を記録
             history = {k: v for k, v in history.items() if now_ts - v < 86400}
             history[post_hash] = now_ts
             with open(log_path, 'w') as f:
