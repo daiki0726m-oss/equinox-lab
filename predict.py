@@ -71,7 +71,7 @@ def cmd_collect(args):
                                     VALUES (?, ?)
                                 """, (e["trainer_id"], e.get("trainer_name", "")))
                             conn.execute("""
-                                INSERT OR REPLACE INTO results
+                                INSERT OR IGNORE INTO results
                                 (race_id, horse_id, jockey_id, trainer_id,
                                  post_position, horse_number, odds, popularity,
                                  finish_position, finish_time, finish_time_seconds,
