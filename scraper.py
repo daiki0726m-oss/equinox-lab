@@ -289,6 +289,8 @@ class NetkeibaScraper:
                 # col[2]: 馬番
                 num_text = cols[2].get_text(strip=True)
                 entry["horse_number"] = int(num_text) if num_text.isdigit() else 0
+                if entry["horse_number"] == 0:
+                    continue  # 馬番0は不正データ
 
                 # col[3]: 馬名 + horse_id
                 horse_tag = cols[3].find("a")
@@ -638,6 +640,8 @@ class NetkeibaScraper:
             try:
                 entry["post_position"] = int(cols[0].get_text(strip=True) or 0)
                 entry["horse_number"] = int(cols[1].get_text(strip=True) or 0)
+                if entry["horse_number"] == 0:
+                    continue  # 馬番0は不正データ
 
                 horse_tag = cols[3].find("a") if len(cols) > 3 else None
                 entry["horse_name"] = cols[3].get_text(strip=True) if len(cols) > 3 else ""
