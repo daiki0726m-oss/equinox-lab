@@ -293,10 +293,25 @@ def cmd_predict(args):
             # 推奨馬券生成用データ
             odds_win = 0
             odds_place = 0
+            n_horses = len(pred_df)
             for r in results:
                 if r["horse_number"] == row["horse_number"]:
                     odds_win = r["odds"] or 0
-                    odds_place = max(odds_win * 0.3, 1.1) if odds_win else 1.5
+                    # C7 fix: 複勝オッズの推定を改善（頭数・人気帯に応じた係数）
+                    if odds_win:
+                        if odds_win <= 3.0:
+                            # 人気馬: 複勝は単勝の25~35%程度
+                            place_ratio = 0.28 + (n_horses - 10) * 0.005
+                        elif odds_win <= 10.0:
+                            # 中穴: 複勝は単勝の30~40%
+                            place_ratio = 0.33 + (n_horses - 10) * 0.005
+                        else:
+                            # 大穴: 複勝は単勝の35~50%
+                            place_ratio = 0.40 + (n_horses - 10) * 0.008
+                        place_ratio = max(0.20, min(0.55, place_ratio))
+                        odds_place = max(round(odds_win * place_ratio, 1), 1.1)
+                    else:
+                        odds_place = 1.5
                     break
 
             # オッズがない場合（未来レース）→ 予測確率から推定

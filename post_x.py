@@ -178,7 +178,10 @@ def load_x_client():
         print("   X_ACCESS_SECRET=xxx")
         return None
 
+    bearer_token = env_vars.get("X_BEARER_TOKEN") or os.environ.get("X_BEARER_TOKEN")
+
     client = tweepy.Client(
+        bearer_token=bearer_token,
         consumer_key=api_key,
         consumer_secret=api_secret,
         access_token=access_token,
@@ -200,51 +203,75 @@ def post_thread(client, tweets, dry_run=False, threads_client=None):
     import hashlib
 
     # ─── 重複投稿チェック ───
-    post_hash = hashlib.md5(tweets[0].encode()).hexdigest()[:12]
+    # 全ツイートの内容をハッシュ化（先頭だけでなく全文）
+    content_key = hashlib.md5("||".join(tweets).encode()).hexdigest()[:16]
+
+    # 投稿履歴ファイル: docs/data/ 配下（git管理 → GitHub Actions でも永続化）
+    repo_root = os.path.dirname(__file__)
+    history_path = os.path.join(repo_root, "docs", "data", ".post_history.json")
+    # ローカル用のフォールバック
+    local_history_path = os.path.join(repo_root, ".post_history.json")
 
     if not dry_run:
         try:
-            # 方法1: X APIで直近ツイートと比較（最も確実）
+            now_ts = now_jst().timestamp()
+            history = {}
+
+            # 永続化ファイルがあれば読み込み（git管理版優先）
+            for hp in [history_path, local_history_path]:
+                if os.path.exists(hp):
+                    try:
+                        with open(hp, 'r') as f:
+                            history = json.load(f)
+                        break
+                    except (json.JSONDecodeError, IOError):
+                        pass
+
+            # 24時間以内に同じハッシュがあればスキップ
+            if content_key in history:
+                last_ts = history[content_key]
+                elapsed = now_ts - last_ts
+                if elapsed < 86400:  # 24時間
+                    elapsed_min = int(elapsed / 60)
+                    hrs = elapsed_min // 60
+                    mins = elapsed_min % 60
+                    print(f"⚠️ 重複検出: 同じ内容が{hrs}時間{mins}分前に投稿済み → スキップ")
+                    print(f"  ハッシュ: {content_key}")
+                    return []
+
+            # X APIでも直近ツイートと比較（二重ガード）
             if client and HAS_TWEEPY:
                 try:
                     me = client.get_me()
                     if me and me.data:
                         recent = client.get_users_tweets(
-                            me.data.id, max_results=5,
+                            me.data.id, max_results=10,
                             tweet_fields=["created_at"]
                         )
                         if recent and recent.data:
-                            first_line = tweets[0][:50]  # 先頭50文字で比較
+                            # 先頭30文字で緩くマッチ（絵文字やスペースの差異を吸収）
+                            first_chunk = tweets[0][:30].strip()
                             for t in recent.data:
-                                if first_line in t.text:
+                                if first_chunk in t.text:
                                     print(f"⚠️ 重複検出（X API）: 同じ内容が既に投稿済み → スキップ")
-                                    print(f"  既存ツイート: {t.text[:60]}...")
+                                    print(f"  既存ツイート: {t.text[:80]}...")
                                     return []
                 except Exception as api_err:
                     print(f"  ℹ️ X API重複チェックスキップ: {api_err}")
 
-            # 方法2: ローカルファイル（ローカル実行時）
-            log_path = os.path.join(os.path.dirname(__file__), ".post_history.json")
-            now_ts = now_jst().timestamp()
+            # 投稿履歴を記録（古いエントリは削除: 7日超）
+            history = {k: v for k, v in history.items() if now_ts - v < 604800}
+            history[content_key] = now_ts
 
-            history = {}
-            if os.path.exists(log_path):
-                with open(log_path, 'r') as f:
-                    history = json.load(f)
+            # docs/data/ 配下に保存（git push で永続化）
+            os.makedirs(os.path.dirname(history_path), exist_ok=True)
+            with open(history_path, 'w') as f:
+                json.dump(history, f, indent=2)
 
-            if post_hash in history:
-                last_ts = history[post_hash]
-                elapsed = now_ts - last_ts
-                if elapsed < 7200:
-                    elapsed_min = int(elapsed / 60)
-                    print(f"⚠️ 重複検出（ファイル）: 同じ内容が{elapsed_min}分前に投稿済み → スキップ")
-                    return []
+            # ローカルにもコピー
+            with open(local_history_path, 'w') as f:
+                json.dump(history, f, indent=2)
 
-            # 投稿履歴を記録
-            history = {k: v for k, v in history.items() if now_ts - v < 86400}
-            history[post_hash] = now_ts
-            with open(log_path, 'w') as f:
-                json.dump(history, f)
         except Exception as e:
             print(f"⚠️ 重複チェックエラー（続行）: {e}")
 
@@ -2168,8 +2195,8 @@ def cmd_odds_flash(args):
 def cmd_morning(args):
     """平日朝のデータTipsツイート（DBの実データを使用）"""
     today = now_jst()
-    # 曜日+週番号でパターンを決定（毎日違うネタ）
-    pattern_idx = (today.weekday() * 7 + today.isocalendar()[1]) % 5
+    # 年通算日数でパターンを決定（毎日確実に違うネタ、10パターンで2週間ローテ）
+    pattern_idx = today.timetuple().tm_yday % 10
 
     tweet = None
 
@@ -2286,6 +2313,123 @@ def cmd_morning(args):
                 tweet += "長期で+にする。これが投資競馬🧠\n\n"
                 tweet += f"{NOTE_URL}\n\n"
                 tweet += "#競馬投資 #回収率"
+
+            elif pattern_idx == 5:
+                # パターン6: 穴馬データ（10番人気以下の激走率）
+                dark = conn.execute("""
+                    SELECT COUNT(*) as total,
+                           SUM(CASE WHEN finish_position <= 3 THEN 1 ELSE 0 END) as top3
+                    FROM results WHERE popularity >= 10 AND finish_position > 0
+                """).fetchone()
+                if dark and dark['total'] > 0:
+                    rate = round(dark['top3'] / dark['total'] * 100, 1)
+                    tweet = f"🔥 大穴の真実\n\n"
+                    tweet += f"10番人気以下の馬が\n"
+                    tweet += f"3着以内に来る確率は…\n\n"
+                    tweet += f"📊 {rate}%（{dark['total']:,}頭中{dark['top3']:,}頭）\n\n"
+                    tweet += f"意外と馬券に絡んでくる。\n"
+                    tweet += f"AIはこの「穴馬パターン」も\n"
+                    tweet += f"48次元の特徴量で検出中🧠\n\n"
+                    tweet += f"{NOTE_URL}\n\n"
+                    tweet += "#競馬データ #穴馬"
+
+            elif pattern_idx == 6:
+                # パターン7: 馬場状態の影響（重馬場の波乱度）
+                good = conn.execute("""
+                    SELECT COUNT(*) as total,
+                           SUM(CASE WHEN popularity <= 3 AND finish_position <= 3 THEN 1 ELSE 0 END) as fav_top3
+                    FROM results r JOIN races ra ON r.race_id = ra.race_id
+                    WHERE ra.track_condition = '良' AND r.finish_position > 0
+                """).fetchone()
+                heavy = conn.execute("""
+                    SELECT COUNT(*) as total,
+                           SUM(CASE WHEN popularity <= 3 AND finish_position <= 3 THEN 1 ELSE 0 END) as fav_top3
+                    FROM results r JOIN races ra ON r.race_id = ra.race_id
+                    WHERE ra.track_condition IN ('重', '不良') AND r.finish_position > 0
+                """).fetchone()
+                if good and heavy and good['total'] > 0 and heavy['total'] > 0:
+                    good_r = round(good['fav_top3'] / good['total'] * 100, 1)
+                    heavy_r = round(heavy['fav_top3'] / heavy['total'] * 100, 1)
+                    tweet = f"🌧️ 馬場状態と波乱の関係\n\n"
+                    tweet += f"上位3人気が3着以内の割合:\n\n"
+                    tweet += f"☀️ 良馬場: {good_r}%\n"
+                    tweet += f"🌧️ 重/不良: {heavy_r}%\n\n"
+                    diff = round(good_r - heavy_r, 1)
+                    if diff > 0:
+                        tweet += f"重馬場だと{diff}%↓ 荒れやすい。\n"
+                    tweet += f"雨の日こそAIの出番🧠\n\n"
+                    tweet += f"{NOTE_URL}\n\n"
+                    tweet += "#競馬データ #馬場状態"
+
+            elif pattern_idx == 7:
+                # パターン8: 調教師勝率ランキング
+                trainers = conn.execute("""
+                    SELECT t.trainer_name,
+                           COUNT(*) as entries,
+                           SUM(CASE WHEN r.finish_position = 1 THEN 1 ELSE 0 END) as wins
+                    FROM results r JOIN trainers t ON r.trainer_id = t.trainer_id
+                    JOIN races ra ON r.race_id = ra.race_id
+                    WHERE ra.race_date >= date('now', '-60 days')
+                    AND r.finish_position > 0
+                    GROUP BY t.trainer_id HAVING entries >= 10
+                    ORDER BY CAST(wins AS FLOAT)/entries DESC LIMIT 3
+                """).fetchall()
+                if trainers and len(trainers) >= 3:
+                    tweet = "🏠 直近60日 調教師勝率TOP3\n\n"
+                    medals = ['🥇', '🥈', '🥉']
+                    for i, t in enumerate(trainers):
+                        wr = round(t['wins'] / t['entries'] * 100, 1)
+                        tweet += f"{medals[i]} {t['trainer_name']} 勝率{wr}% ({t['entries']}頭)\n"
+                    tweet += f"\n騎手だけでなく調教師の\n"
+                    tweet += f"好不調もAIは見ています📊\n\n"
+                    tweet += f"{NOTE_URL}\n\n"
+                    tweet += "#競馬データ #調教師"
+
+            elif pattern_idx == 8:
+                # パターン9: 芝vsダートの傾向
+                turf = conn.execute("""
+                    SELECT COUNT(*) as total,
+                           SUM(CASE WHEN popularity = 1 AND finish_position = 1 THEN 1 ELSE 0 END) as fav_wins
+                    FROM results r JOIN races ra ON r.race_id = ra.race_id
+                    WHERE ra.surface = '芝' AND r.finish_position > 0
+                """).fetchone()
+                dirt = conn.execute("""
+                    SELECT COUNT(*) as total,
+                           SUM(CASE WHEN popularity = 1 AND finish_position = 1 THEN 1 ELSE 0 END) as fav_wins
+                    FROM results r JOIN races ra ON r.race_id = ra.race_id
+                    WHERE ra.surface = 'ダート' AND r.finish_position > 0
+                """).fetchone()
+                if turf and dirt and turf['total'] > 0 and dirt['total'] > 0:
+                    turf_r = round(turf['fav_wins'] / turf['total'] * 100, 1)
+                    dirt_r = round(dirt['fav_wins'] / dirt['total'] * 100, 1)
+                    tweet = f"🏇 芝 vs ダート\n\n"
+                    tweet += f"1番人気の勝率:\n\n"
+                    tweet += f"🌱 芝: {turf_r}%\n"
+                    tweet += f"🟤 ダート: {dirt_r}%\n\n"
+                    if dirt_r > turf_r:
+                        tweet += f"ダートの方が堅い傾向。\n"
+                    else:
+                        tweet += f"芝の方が堅い傾向。\n"
+                    tweet += f"コースごとの特性を\n"
+                    tweet += f"AIは適切に評価します🧠\n\n"
+                    tweet += f"{NOTE_URL}\n\n"
+                    tweet += "#競馬データ #芝ダート"
+
+            elif pattern_idx == 9:
+                # パターン10: DB規模アップデート
+                race_cnt = conn.execute("SELECT COUNT(*) as c FROM races").fetchone()['c']
+                result_cnt = conn.execute("SELECT COUNT(*) as c FROM results WHERE finish_position > 0").fetchone()['c']
+                horse_cnt = conn.execute("SELECT COUNT(*) as c FROM horses").fetchone()['c']
+                latest = conn.execute("SELECT MAX(race_date) as d FROM races").fetchone()['d']
+                tweet = f"📈 EQUINOX Lab DB最新状況\n\n"
+                tweet += f"🏇 レース数: {race_cnt:,}\n"
+                tweet += f"🐴 出走データ: {result_cnt:,}\n"
+                tweet += f"🧬 馬データ: {horse_cnt:,}頭\n"
+                tweet += f"📅 最新: {latest}\n\n"
+                tweet += f"データは毎朝自動更新。\n"
+                tweet += f"週末の予想に活用しています🧠\n\n"
+                tweet += f"{NOTE_URL}\n\n"
+                tweet += "#AI競馬 #ビッグデータ"
 
     except Exception as e:
         print(f"⚠️ DB読み取りエラー: {e}")
