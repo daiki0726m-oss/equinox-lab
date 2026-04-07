@@ -1182,7 +1182,7 @@ function switchTab(btn, raceId, tab) {
 // ─── Prediction Tab ───
 function renderPredTab(race) {
   const horses = race.horses || [];
-  const sorted = [...horses].sort((a, b) => (b.pred_win_pct || b.pred_win || 0) - (a.pred_win_pct || a.pred_win || 0));
+  const sorted = [...horses].sort((a, b) => (b.pred_win_pct || 0) - (a.pred_win_pct || 0));
 
   // Compute category rankings (S/A/B/C/D) within race
   const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
@@ -1277,8 +1277,8 @@ function renderHorseRow(h, showReasons) {
   // Win rate / Top3 rate color coding
   const wr = h.win_rate || 0;
   const t3r = h.top3_rate || 0;
-  const predWin = h.pred_win_pct || h.pred_win || 0;
-  const predTop3 = h.pred_top3_pct || h.pred_top3 || 0;
+  const predWin = h.pred_win_pct || 0;
+  const predTop3 = h.pred_top3_pct || 0;
   const wrClass = wr >= 20 ? 'hot' : '';
   const t3rClass = t3r >= 40 ? 'hot' : '';
 
