@@ -350,44 +350,57 @@ class BettingStrategy:
                     })
                     total_amount += bets[-1]["amount"]
 
-            # 三連複フォールバック（上位3頭）
+            # 三連複フォールバック（上位3頭、馬番重複チェック付き）
             if "三連複" in enabled and "三連複" not in existing_types and len(sorted_preds) >= 3:
-                t3_1 = min(top["pred_top3"] * 3, 0.9)
-                t3_2 = min(top2["pred_top3"] * 3, 0.9)
-                t3_3 = min(top3["pred_top3"] * 3, 0.9)
-                trio_odds = max(top.get("odds_win", 3) * top2.get("odds_win", 3) * top3.get("odds_win", 5) * 0.03, 5.0)
-                trio_prob = t3_1 * t3_2 * t3_3 * 2
-                remaining = budget - total_amount
-                if remaining >= 100:
-                    bets.append({
-                        "type": "三連複",
-                        "detail": f"{top['horse_number']}-{top2['horse_number']}-{top3['horse_number']}",
-                        "horse_numbers": sorted([top["horse_number"], top2["horse_number"], top3["horse_number"]]),
-                        "amount": min(100, remaining),
-                        "odds": round(trio_odds, 1),
-                        "ev": round(trio_prob * trio_odds, 2),
-                        "prob": round(trio_prob, 3),
-                        "horse_name": f"{top.get('horse_name', '')}-{top2.get('horse_name', '')}-{top3.get('horse_name', '')}",
-                    })
-                    total_amount += bets[-1]["amount"]
+                # top3が重複しないように選ぶ
+                trio_cands = [top, top2]
+                for p in sorted_preds[2:]:
+                    if p["horse_number"] not in (top["horse_number"], top2["horse_number"]):
+                        trio_cands.append(p)
+                        break
+                if len(trio_cands) == 3:
+                    t3_1 = min(trio_cands[0]["pred_top3"] * 3, 0.9)
+                    t3_2 = min(trio_cands[1]["pred_top3"] * 3, 0.9)
+                    t3_3 = min(trio_cands[2]["pred_top3"] * 3, 0.9)
+                    trio_odds = max(trio_cands[0].get("odds_win", 3) * trio_cands[1].get("odds_win", 3) * trio_cands[2].get("odds_win", 5) * 0.03, 5.0)
+                    trio_prob = t3_1 * t3_2 * t3_3 * 2
+                    remaining = budget - total_amount
+                    if remaining >= 100:
+                        bets.append({
+                            "type": "三連複",
+                            "detail": f"{trio_cands[0]['horse_number']}-{trio_cands[1]['horse_number']}-{trio_cands[2]['horse_number']}",
+                            "horse_numbers": sorted([trio_cands[0]["horse_number"], trio_cands[1]["horse_number"], trio_cands[2]["horse_number"]]),
+                            "amount": min(100, remaining),
+                            "odds": round(trio_odds, 1),
+                            "ev": round(trio_prob * trio_odds, 2),
+                            "prob": round(trio_prob, 3),
+                            "horse_name": f"{trio_cands[0].get('horse_name', '')}-{trio_cands[1].get('horse_name', '')}-{trio_cands[2].get('horse_name', '')}",
+                        })
+                        total_amount += bets[-1]["amount"]
 
-            # 三連単フォールバック（1位→2位→3位）
+            # 三連単フォールバック（1位→2位→3位、馬番重複チェック付き）
             if "三連単" in enabled and "三連単" not in existing_types and len(sorted_preds) >= 3:
-                stan_prob = top["pred_win"] * top2["pred_top3"] * 3 * top3["pred_top3"] * 3 * 0.3
-                stan_odds = max(top.get("odds_win", 3) * top2.get("odds_win", 3) * top3.get("odds_win", 5) * 0.5, 30.0)
-                remaining = budget - total_amount
-                if remaining >= 100:
-                    bets.append({
-                        "type": "三連単",
-                        "detail": f"{top['horse_number']}→{top2['horse_number']}→{top3['horse_number']}",
-                        "horse_numbers": [top["horse_number"], top2["horse_number"], top3["horse_number"]],
-                        "amount": min(100, remaining),
-                        "odds": round(stan_odds, 1),
-                        "ev": round(stan_prob * stan_odds, 2),
-                        "prob": round(stan_prob, 3),
-                        "horse_name": f"{top.get('horse_name', '')}→{top2.get('horse_name', '')}→{top3.get('horse_name', '')}",
-                    })
-                    total_amount += bets[-1]["amount"]
+                stan_cands = [top, top2]
+                for p in sorted_preds[2:]:
+                    if p["horse_number"] not in (top["horse_number"], top2["horse_number"]):
+                        stan_cands.append(p)
+                        break
+                if len(stan_cands) == 3:
+                    stan_prob = stan_cands[0]["pred_win"] * stan_cands[1]["pred_top3"] * 3 * stan_cands[2]["pred_top3"] * 3 * 0.3
+                    stan_odds = max(stan_cands[0].get("odds_win", 3) * stan_cands[1].get("odds_win", 3) * stan_cands[2].get("odds_win", 5) * 0.5, 30.0)
+                    remaining = budget - total_amount
+                    if remaining >= 100:
+                        bets.append({
+                            "type": "三連単",
+                            "detail": f"{stan_cands[0]['horse_number']}→{stan_cands[1]['horse_number']}→{stan_cands[2]['horse_number']}",
+                            "horse_numbers": [stan_cands[0]["horse_number"], stan_cands[1]["horse_number"], stan_cands[2]["horse_number"]],
+                            "amount": min(100, remaining),
+                            "odds": round(stan_odds, 1),
+                            "ev": round(stan_prob * stan_odds, 2),
+                            "prob": round(stan_prob, 3),
+                            "horse_name": f"{stan_cands[0].get('horse_name', '')}→{stan_cands[1].get('horse_name', '')}→{stan_cands[2].get('horse_name', '')}",
+                        })
+                        total_amount += bets[-1]["amount"]
 
         # EV順にソート
         bets.sort(key=lambda x: x["ev"], reverse=True)

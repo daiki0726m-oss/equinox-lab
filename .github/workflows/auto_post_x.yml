@@ -49,71 +49,65 @@ jobs:
           TODAY_YYYYMMDD=$(TZ=Asia/Tokyo date +%Y%m%d)
           TODAY_HYPHEN=$(TZ=Asia/Tokyo date +%Y-%m-%d)
 
-          # 手動実行の場合
-          if [ "${{ github.event.inputs.mode }}" != "" ] && [ "${{ github.event.inputs.mode }}" != "auto" ]; then
-            echo "type=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          MODE="${{ github.event.inputs.mode }}"
+          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE"
+
+          # GASから直接モード指定がある場合はそのまま使用
+          if [ "$MODE" != "" ] && [ "$MODE" != "auto" ]; then
+            echo "type=$MODE" >> $GITHUB_OUTPUT
             echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
             echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
+            echo "📬 Determined type (direct): $MODE"
             exit 0
           fi
 
-          # 自動判定 — UTC時刻ベースで判定
-          UTC_HOUR=$(date -u +%H)
-          UTC_MIN=$(date -u +%M)
-
-          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, UTC_HOUR=$UTC_HOUR, UTC_MIN=$UTC_MIN"
-
-          if [ "$UTC_HOUR" = "22" ] && [ "$UTC_MIN" -ge 25 ] && [ "$UTC_MIN" -le 35 ]; then
-            # UTC 22:30 = JST 07:30 → 平日朝ツイート
-            if [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
-              echo "type=morning" >> $GITHUB_OUTPUT
-            else
-              echo "type=skip" >> $GITHUB_OUTPUT
-            fi
-          elif [ "$UTC_HOUR" = "22" ] && [ "$UTC_MIN" -le 10 ]; then
-            # UTC 22:00 = JST 07:00 → 土日の予想（金曜/土曜のUTC22）
-            if [ "$DOW" -eq 5 ] || [ "$DOW" -eq 6 ]; then
-              echo "type=predict" >> $GITHUB_OUTPUT
-            else
-              echo "type=skip" >> $GITHUB_OUTPUT
-            fi
-          elif [ "$UTC_HOUR" = "06" ]; then
-            # UTC 06:30 = JST 15:30 → 的中速報（土日のみ）
+          # autoモード: JST時間で柔軟に判定（分単位チェック廃止）
+          if [ "$HOUR" = "07" ] || [ "$HOUR" = "06" ]; then
             if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              echo "type=hit_flash" >> $GITHUB_OUTPUT
+              TYPE="predict"
             else
-              echo "type=skip" >> $GITHUB_OUTPUT
+              TYPE="morning"
             fi
-          elif [ "$UTC_HOUR" = "00" ] || [ "$UTC_HOUR" = "01" ]; then
-            # UTC 00-01 = JST 09-10 → オッズ確定＋最終見解（土日のみ）
+          elif [ "$HOUR" = "09" ] || [ "$HOUR" = "10" ]; then
             if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              echo "type=odds_flash" >> $GITHUB_OUTPUT
+              TYPE="odds_flash"
             else
-              echo "type=skip" >> $GITHUB_OUTPUT
+              TYPE="skip"
             fi
-          elif [ "$UTC_HOUR" = "03" ]; then
-            # UTC 03 = JST 12 → 平日昼投稿
+          elif [ "$HOUR" = "12" ]; then
             if [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
-              echo "type=weekday" >> $GITHUB_OUTPUT
+              TYPE="weekday"
             else
-              echo "type=skip" >> $GITHUB_OUTPUT
+              TYPE="skip"
             fi
-          elif [ "$UTC_HOUR" = "11" ]; then
-            # UTC 11 = JST 20 → 夜の投稿
+          elif [ "$HOUR" = "15" ] || [ "$HOUR" = "16" ]; then
+            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
+              TYPE="hit_flash"
+            else
+              TYPE="skip"
+            fi
+          elif [ "$HOUR" = "17" ]; then
+            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
+              TYPE="results"
+            else
+              TYPE="skip"
+            fi
+          elif [ "$HOUR" = "20" ] || [ "$HOUR" = "21" ]; then
             if [ "$DOW" -eq 6 ]; then
-              echo "type=answer_check" >> $GITHUB_OUTPUT
+              TYPE="answer_check"
             elif [ "$DOW" -eq 7 ]; then
-              echo "type=weekly_review" >> $GITHUB_OUTPUT
+              TYPE="weekly_review"
             elif [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
-              echo "type=evening" >> $GITHUB_OUTPUT
+              TYPE="evening"
             else
-              echo "type=skip" >> $GITHUB_OUTPUT
+              TYPE="skip"
             fi
           else
-            echo "type=skip" >> $GITHUB_OUTPUT
+            TYPE="skip"
           fi
 
-          echo "📬 Determined type: $(grep type $GITHUB_OUTPUT | tail -1)"
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
+          echo "📬 Determined type (auto): $TYPE"
 
           echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
           echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
@@ -166,6 +160,7 @@ jobs:
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
         run: |
@@ -196,14 +191,14 @@ jobs:
 
       # ── 静的予測サイト更新（GitHub Pages） ──
       - name: Export predictions to static JSON
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'hit_flash' || steps.determine.outputs.type == 'refresh_dashboard'
+        if: contains(fromJSON('["predict","odds_flash","hit_flash","refresh_dashboard","results","answer_check"]'), steps.determine.outputs.type)
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📊 予測データを静的JSONに書き出し..."
           python export_predictions.py "$DATE"
 
       - name: Deploy to GitHub Pages
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'hit_flash' || steps.determine.outputs.type == 'refresh_dashboard'
+        if: contains(fromJSON('["predict","odds_flash","hit_flash","refresh_dashboard","results","answer_check"]'), steps.determine.outputs.type)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -214,4 +209,19 @@ jobs:
             git commit -m "📊 Update predictions $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
             git push
             echo "🚀 GitHub Pages に予測データをデプロイ完了"
+          fi
+
+      # ── 投稿履歴を永続化（重複防止用） ──
+      - name: Save post history
+        if: steps.determine.outputs.type != 'skip'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f docs/data/.post_history.json ]; then
+            git add docs/data/.post_history.json
+            if ! git diff --staged --quiet; then
+              git commit -m "📝 Update post history $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+              git push
+              echo "✅ 投稿履歴を保存"
+            fi
           fi
