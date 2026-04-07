@@ -1,0 +1,70 @@
+name: 🧠 Weekly Model Retrain
+
+on:
+  # 毎週月曜 3:00 UTC (= JST 12:00) に自動実行
+  schedule:
+    - cron: '0 3 * * 1'
+  # 手動実行も可能
+  workflow_dispatch:
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
+
+      - name: Check model age
+        id: check
+        run: |
+          AGE=$(python -c "
+          import os
+          from datetime import datetime
+          p = 'models/model_rank.pkl'
+          if os.path.exists(p):
+              days = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(p))).days
+              print(days)
+          else:
+              print(999)
+          ")
+          echo "age=$AGE" >> $GITHUB_OUTPUT
+          echo "📊 モデル経過日数: ${AGE}日"
+
+      - name: Collect recent data
+        if: steps.check.outputs.age >= 7 || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "📥 直近3ヶ月のデータを収集..."
+          python predict.py collect --months 3 || echo "⚠️ 収集完了（一部エラーあり）"
+
+      - name: Retrain model
+        if: steps.check.outputs.age >= 7 || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "🧠 モデル再学習開始..."
+          python predict.py train
+          echo "✅ モデル再学習完了"
+
+      - name: Commit updated model
+        if: steps.check.outputs.age >= 7 || github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add models/ keiba.db
+          if git diff --staged --quiet; then
+            echo "📭 変更なし"
+          else
+            git commit -m "🧠 Weekly model retrain $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+            git push
+            echo "🚀 モデルをデプロイ完了"
+          fi
