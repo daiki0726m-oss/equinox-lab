@@ -758,20 +758,20 @@ def api_predict_date(date_str):
                     for bt in strategy.ALL_BET_TYPES:
                         all_bets[bt] = []
 
-                # ── 信頼度（◎の予測勝率ベース）──
+                # ── 信頼度（◎の予測勝率ベース — predict.pyのバックテスト検証済み閾値に統一）──
                 honmei = next((h for h in horses if h.get('mark') == '◎'), None)
                 honmei_win = honmei['pred_win'] if honmei else 0
 
-                if honmei_win >= 50:
-                    confidence, conf_reason = "S", f"◎の勝率が非常に高い ({honmei_win:.1f}%)"
-                elif honmei_win >= 35:
-                    confidence, conf_reason = "A", f"◎の勝率が高い ({honmei_win:.1f}%)"
-                elif honmei_win >= 22:
-                    confidence, conf_reason = "B", f"◎の勝率は標準的 ({honmei_win:.1f}%)"
-                elif honmei_win >= 12:
-                    confidence, conf_reason = "C", f"◎の信頼度やや低い ({honmei_win:.1f}%)"
+                if honmei_win >= 30:
+                    confidence, conf_reason = "S", f"◎の勝率 {honmei_win:.1f}% → バックテスト実勝率64%/複勝率100%"
+                elif honmei_win >= 20:
+                    confidence, conf_reason = "A", f"◎の勝率 {honmei_win:.1f}% → バックテスト実勝率39%/複勝率83%"
+                elif honmei_win >= 15:
+                    confidence, conf_reason = "B", f"◎の勝率 {honmei_win:.1f}% → バックテスト実勝率28%/複勝率71%"
+                elif honmei_win >= 10:
+                    confidence, conf_reason = "C", f"◎の勝率 {honmei_win:.1f}% → バックテスト実勝率22%/複勝率56%"
                 else:
-                    confidence, conf_reason = "D", f"◎の信頼度が低い ({honmei_win:.1f}%)"
+                    confidence, conf_reason = "D", f"◎の勝率 {honmei_win:.1f}% → 混戦で読みにくいレース"
 
                 # ── 妙味（EVベース）──
                 max_ev = 0.0
