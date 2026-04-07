@@ -690,11 +690,17 @@ def cmd_weekday(args):
     if dow == 0:
         # 月曜: 先週末の振り返り
         tweet = generate_weekly_summary()
-    elif dow in (1, 2, 3):
-        # 火〜木: note記事プロモ（記事がなければフォールバック）
+    elif dow == 1:
+        # 火曜: 今週末のレースデータ分析
+        tweet = generate_race_data_analysis()
+    elif dow == 2:
+        # 水曜: 注目馬スポットライト
+        tweet = generate_horse_spotlight()
+    elif dow == 3:
+        # 木曜: note記事プロモ
         tweet = generate_note_promo()
     elif dow == 4:
-        # 金曜: 週末プレビュー
+        # 金曜: 週末プレビュー+AI注目馬
         tweet = generate_weekend_preview()
     else:
         tweet = generate_analysis_column()
@@ -1280,6 +1286,142 @@ def generate_pickup_horse():
     t3 += "AI予想を配信予定🔔"
 
     return [t1, t2, t3]
+
+
+def generate_race_data_analysis():
+    """火曜: 今週末の開催コース傾向をデータ分析"""
+    today = now_jst()
+
+    try:
+        with get_db() as conn:
+            # 今週末のレースの開催場所を取得
+            venues = conn.execute("""
+                SELECT DISTINCT venue FROM races
+                WHERE race_date > date('now') AND race_date <= date('now', '+7 days')
+                AND venue IS NOT NULL AND venue != ''
+            """).fetchall()
+
+            if not venues:
+                return generate_analysis_column()
+
+            venue_names = [v['venue'] for v in venues]
+            tweets = []
+
+            t1 = f"📊 今週末の開催場データ分析\n\n"
+            t1 += f"🏟️ 開催: {'・'.join(venue_names)}\n\n"
+
+            for vname in venue_names[:2]:  # 最大2場
+                # そのコースの過去データ
+                stats = conn.execute("""
+                    SELECT COUNT(*) as total,
+                           SUM(CASE WHEN r.popularity = 1 AND r.finish_position = 1 THEN 1 ELSE 0 END) as fav_wins,
+                           SUM(CASE WHEN r.popularity >= 6 AND r.finish_position <= 3 THEN 1 ELSE 0 END) as dark_top3
+                    FROM results r JOIN races ra ON r.race_id = ra.race_id
+                    WHERE ra.venue = ? AND r.finish_position > 0
+                """, (vname,)).fetchone()
+
+                if stats and stats['total'] > 0:
+                    fav_r = round(stats['fav_wins'] / stats['total'] * 100, 1)
+                    dark_r = round(stats['dark_top3'] / stats['total'] * 100, 1)
+                    t1 += f"📍 {vname}\n"
+                    t1 += f" 1番人気勝率: {fav_r}%\n"
+                    t1 += f" 6番人気以下の複勝率: {dark_r}%\n"
+                    if fav_r >= 35:
+                        t1 += f" → 堅い傾向。本命から入りたい🔒\n"
+                    elif dark_r >= 20:
+                        t1 += f" → 穴馬が走る。ワイド注目🎯\n"
+                    else:
+                        t1 += f" → 中穴狙いが面白い💡\n"
+                    t1 += "\n"
+
+            t1 += f"週末の予想はこちら👇\n"
+            t1 += f"{NOTE_URL}\n\n"
+            t1 += "#競馬データ #コース傾向"
+
+            # ハッシュタグに場名追加
+            for vname in venue_names[:2]:
+                t1 += f" #{vname}競馬"
+
+            return t1
+
+    except Exception as e:
+        print(f"⚠️ レースデータ分析エラー: {e}")
+        return generate_analysis_column()
+
+
+def generate_horse_spotlight():
+    """水曜: 今週末出走予定の注目馬をスポットライト"""
+    today = now_jst()
+
+    try:
+        with get_db() as conn:
+            # 今週末のメインレース(11R)の予測データから上位馬を取得
+            main_races = conn.execute("""
+                SELECT ra.race_id, ra.race_name, ra.venue, ra.surface,
+                       ra.distance, ra.grade, ra.race_date,
+                       pc.predictions_json
+                FROM races ra
+                JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                WHERE ra.race_date > date('now') AND ra.race_date <= date('now', '+7 days')
+                AND ra.race_number >= 10
+                ORDER BY ra.grade DESC, ra.race_number DESC
+            """).fetchall()
+
+            if not main_races:
+                return generate_analysis_column()
+
+            # 最もグレードの高いレースから注目馬を選出
+            spotlight_race = main_races[0]
+            preds = json.loads(spotlight_race['predictions_json']) if spotlight_race['predictions_json'] else []
+
+            if len(preds) < 2:
+                return generate_analysis_column()
+
+            top = preds[0]
+            rival = preds[1]
+
+            rd = datetime.strptime(spotlight_race['race_date'], '%Y-%m-%d')
+            dow = ['月','火','水','木','金','土','日'][rd.weekday()]
+
+            t = f"🌟 今週の注目馬\n\n"
+            t += f"📍 {spotlight_race['venue']} {spotlight_race['race_name']}\n"
+            if spotlight_race.get('grade'):
+                t += f"🏆 {spotlight_race['grade']} "
+            t += f"{spotlight_race['surface']}{spotlight_race['distance']}m\n"
+            t += f"📅 {rd.month}/{rd.day}({dow})\n\n"
+
+            # ◎の馬の詳細
+            win_pct = top.get('pred_win_pct', top.get('pred_win', 0))
+            t += f"◎ {top.get('horse_name', '?')}\n"
+            t += f" AI勝率: {win_pct:.1f}%\n"
+            if top.get('reasons'):
+                for r in top['reasons'][:2]:
+                    t += f" ✅ {r}\n"
+
+            t += f"\n○ {rival.get('horse_name', '?')}\n"
+            rival_pct = rival.get('pred_win_pct', rival.get('pred_win', 0))
+            t += f" AI勝率: {rival_pct:.1f}%\n\n"
+
+            gap = win_pct - rival_pct
+            if gap >= 10:
+                t += "→ ◎が頭一つ抜けている構図🔥\n"
+            elif gap >= 3:
+                t += "→ 実力拮抗。展開次第で逆転も💥\n"
+            else:
+                t += "→ 大混戦。穴馬の台頭にも注意⚡\n"
+
+            t += f"\n詳細予想は週末朝に配信👇\n"
+            t += f"{NOTE_URL}\n\n"
+
+            # ハッシュタグ
+            race_tag = spotlight_race['race_name'].replace(' ', '').replace('　', '')
+            t += f"#競馬予想 #{race_tag}"
+
+            return t
+
+    except Exception as e:
+        print(f"⚠️ 注目馬スポットライトエラー: {e}")
+        return generate_analysis_column()
 
 
 def generate_weekend_preview():
