@@ -187,9 +187,9 @@ def export_predictions(date_str=None):
 
                 if max_ev >= 5.0:
                     myomi = "💎★★★"
-                elif max_ev >= 3.0:
+                elif max_ev >= 2.5:
                     myomi = "💎★★"
-                elif max_ev >= 1.8:
+                elif max_ev >= 1.5:
                     myomi = "💎★"
                 else:
                     myomi = ""

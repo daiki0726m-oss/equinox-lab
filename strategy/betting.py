@@ -201,9 +201,11 @@ class BettingStrategy:
 
         # ── 5. 三連複 ──
         if "三連複" in enabled and len(sorted_preds) >= 5 and len(top_horses) >= 2:
+            top_horse_nums = {h["horse_number"] for h in top_horses[:2]}
             dark_horses = [p for p in sorted_preds
                           if p["pred_top3"] >= 0.06
-                          and p.get("odds_win", 1) >= 5][:3]
+                          and p.get("odds_win", 1) >= 5
+                          and p["horse_number"] not in top_horse_nums][:3]
             for dh in dark_horses:
                 for h1, h2 in combinations(top_horses[:2], 2):
                     t3_1 = min(h1["pred_top3"] * 3, 0.9)
@@ -255,7 +257,7 @@ class BettingStrategy:
                             30.0
                         )
                         ev = prob * odds
-                        if ev >= 0.5:
+                        if ev >= 0.3:
                             sanrentan_bets.append({
                                 "type": "三連単",
                                 "detail": f"{h1['horse_number']}→{h2['horse_number']}→{h3['horse_number']}",

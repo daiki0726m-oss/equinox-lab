@@ -129,6 +129,35 @@ def cmd_predict(args):
         print("❌ --race-id か --date を指定してください")
         return
 
+    # UI-3 fix: 予測前に馬場状態が空のレースがあれば取得
+    if race_ids:
+        try:
+            from refresh_odds import fetch_track_condition
+            venues_checked = set()
+            with get_db() as conn:
+                for rid in race_ids:
+                    r = conn.execute(
+                        "SELECT venue, track_condition, race_date FROM races WHERE race_id = ?",
+                        (rid,)
+                    ).fetchone()
+                    if r and not r["track_condition"] and r["venue"] not in venues_checked:
+                        venues_checked.add(r["venue"])
+                        track_info = fetch_track_condition(rid)
+                        if track_info and track_info.get("track_condition"):
+                            tc = track_info["track_condition"]
+                            wt = track_info.get("weather", "")
+                            conn.execute("""
+                                UPDATE races SET track_condition = ?, weather = ?
+                                WHERE venue = ? AND (race_date = ? OR race_date = ?)
+                                  AND (track_condition IS NULL OR track_condition = '')
+                            """, (tc, wt, r["venue"], r["race_date"],
+                                  r["race_date"].replace("-", "")))
+                            print(f"  🏇 {r['venue']}: 馬場={tc} 天候={wt}")
+            if venues_checked:
+                import time as _t; _t.sleep(0.5)
+        except Exception as e:
+            print(f"  ⚠️ 馬場状態の取得をスキップ: {e}")
+
     for race_id in race_ids:
         print(f"\n{'='*60}")
         print(f"🏇 レース予測: {race_id}")
@@ -282,6 +311,7 @@ def cmd_predict(args):
                 "horse_name": horse_name,
                 "pred_win": row["pred_win_norm"],
                 "pred_top3": row["pred_top3_norm"] / 3,
+                "rank_score": round(float(row.get("rank_score", 0)), 3),
                 "odds_win": odds_win,
                 "odds_place": odds_place,
                 "_has_real_odds": has_real_odds,
@@ -322,12 +352,38 @@ def cmd_predict(args):
                 p["mark"] = "注"
                 break
 
+        # 推奨理由を生成 (UI-2 fix)
+        for i, p in enumerate(sorted_preds):
+            pw = p["pred_win"] * 100
+            pt = p["pred_top3"] * 100
+            si = p.get("si_avg", 0)
+            wr = p.get("win_rate", 0)
+            tr = p.get("top3_rate", 0)
+            reasons = []
+            if i == 0:
+                if pw >= 40: reasons.append("圧倒的な勝率で本命筆頭")
+                elif pw >= 25: reasons.append("勝率トップで信頼度が高い")
+                else: reasons.append("僅差ながら勝率1位")
+            if wr >= 30: reasons.append(f"直近勝率{wr}%と絶好調")
+            elif wr >= 15: reasons.append(f"直近勝率{wr}%で実績あり")
+            if tr >= 50: reasons.append(f"直近複勝率{tr}%で安定感抜群")
+            elif tr >= 30: reasons.append(f"直近複勝率{tr}%で堅実")
+            if si >= 90: reasons.append(f"SI{si}は出走馬中トップクラス")
+            elif si >= 80: reasons.append(f"SI{si}で能力上位")
+            if pt >= 25: reasons.append("複勝率が非常に高く堅実")
+            if pw >= 20 and si >= 80: reasons.append("勝率とSIの両面で好材料")
+            if not reasons:
+                if pw > 0: reasons.append(f"AI勝率{pw:.1f}%")
+                else: reasons.append("出走歴なし or 特徴量不足")
+            p["reasons"] = reasons[:3]
+
         cache_json = json.dumps([{
             "horse_number": p["horse_number"],
             "horse_name": p["horse_name"],
             "mark": p.get("mark", ""),
             "pred_win_pct": round(p["pred_win"] * 100, 1),
             "pred_top3_pct": round(p["pred_top3"] * 100, 1),
+            "rank_score": p.get("rank_score", 0),
             "odds_win": round(p.get("odds_win", 0), 1),
             "popularity": popularity_map.get(p["horse_number"], 0),
             "si_avg": p.get("si_avg", 0),
@@ -340,6 +396,7 @@ def cmd_predict(args):
             "cat_weather": p.get("cat_weather", 0),
             "win_rate": p.get("win_rate", 0),
             "top3_rate": p.get("top3_rate", 0),
+            "reasons": p.get("reasons", []),
         } for p in sorted_preds], ensure_ascii=False)
 
         with get_db() as conn:
@@ -355,18 +412,20 @@ def cmd_predict(args):
 
         # 常にgenerate_betsを実行（EV・妙味計算のため）
         bets_result = strategy.generate_bets(predictions)
-        # 券種別にグループ化して保存（generate_noteが期待する形式）
+        # 券種別にグループ化
         bets_by_type = {}
         for b in bets_result.get('bets', []):
             bt = b.get('type', '単勝')
             if bt not in bets_by_type:
                 bets_by_type[bt] = []
             bets_by_type[bt].append(b)
-        all_bets_json = json.dumps(bets_by_type, ensure_ascii=False)
 
+        # UI-6 fix: 見送りレースではall_betsを空にしてUIに表示させない
         if should_bet:
+            all_bets_json = json.dumps(bets_by_type, ensure_ascii=False)
             print(strategy.format_recommendation(bets_result, race_info))
         else:
+            all_bets_json = json.dumps({}, ensure_ascii=False)
             print(f"\n❌ このレースは見送り推奨: {reason}")
 
         # confidence計算（◎の勝率ベース — 850Rバックテスト検証済み閾値）
@@ -387,14 +446,25 @@ def cmd_predict(args):
         else:
             confidence = "D"
 
-        # キャッシュ更新（買い目・confidence・should_bet）
+        # conf_reason生成 (UI-4 fix)
+        conf_reason = f"◎の勝率 {top_win:.1f}%"
+        if confidence == "S": conf_reason += " → バックテスト実勝率64%/複勝率100%"
+        elif confidence == "A": conf_reason += " → バックテスト実勝率39%/複勝率83%"
+        elif confidence == "B": conf_reason += " → バックテスト実勝率28%/複勝率71%"
+        elif confidence == "C": conf_reason += " → バックテスト実勝率22%/複勝率56%"
+        else: conf_reason += " → 混戦で読みにくいレース"
+
+        # キャッシュ更新（買い目・confidence・conf_reason・should_bet・bet_reason）
         with get_db() as conn:
             conn.execute("""
                 UPDATE predictions_cache
-                SET all_bets_json = ?, confidence = ?, should_bet = ?
+                SET all_bets_json = ?, confidence = ?, conf_reason = ?,
+                    should_bet = ?, bet_reason = ?
                 WHERE race_id = ?
-            """, (all_bets_json, confidence, 1 if should_bet else 0, race_id))
-        print(f"  💾 予測キャッシュを保存")
+            """, (all_bets_json, confidence, conf_reason,
+                  1 if should_bet else 0, reason if not should_bet else "OK",
+                  race_id))
+        print(f"  💾 予測キャッシュを保存 (信頼度: {confidence}, 理由: {conf_reason})")
 
 
 def cmd_backtest(args):
