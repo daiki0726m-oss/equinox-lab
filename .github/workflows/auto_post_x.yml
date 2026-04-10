@@ -1,8 +1,7 @@
 name: 🐦 Auto Post to X
 
 on:
-  # ─── スケジュールはGoogle Apps Script経由で workflow_dispatch を使用 ───
-  # cron は重複投稿の原因になるため無効化（2026-04-02）
+  # ─── GASからの直接呼び出し（メイン） ───
   workflow_dispatch:
     inputs:
       mode:
@@ -23,9 +22,59 @@ on:
           - odds_flash
           - morning
           - evening
+  # ─── cron フォールバック（GAS不発時のセーフティネット） ───
+  schedule:
+    # 平日朝7:30 JST (UTC 22:30前日)
+    - cron: '30 22 * * 0-4'
+    # 土日朝7:00 JST (UTC 22:00前日) → predict
+    - cron: '0 22 * * 5,6'
+    # 平日昼12:30 JST (UTC 3:30)
+    - cron: '30 3 * * 1-5'
+    # 平日夜20:00 JST (UTC 11:00)
+    - cron: '0 11 * * 1-5'
 
 jobs:
+  # ─── 重複投稿防止: cron実行時、直近90分以内にGAS実行があればスキップ ───
+  dedup:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - id: check
+        run: echo "should_run=true" >> $GITHUB_OUTPUT
+
+  dedup_cron:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔍 cron実行: 重複チェック中..."
+          RECENT=$(gh api repos/${{ github.repository }}/actions/runs?per_page=5 \
+            --jq '[.workflow_runs[] | select(.name == "🐦 Auto Post to X" and .conclusion == "success" and .event == "workflow_dispatch")] | .[0].created_at // empty')
+          
+          if [ -n "$RECENT" ]; then
+            RECENT_TS=$(date -d "$RECENT" +%s 2>/dev/null || echo 0)
+            NOW_TS=$(date +%s)
+            DIFF=$(( NOW_TS - RECENT_TS ))
+            echo "📊 直近GAS実行: $RECENT (${DIFF}秒前)"
+            if [ "$DIFF" -lt 5400 ]; then
+              echo "⏭️ GASが${DIFF}秒前に実行済み → cronスキップ"
+              echo "should_run=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+          echo "✅ GAS未実行 → cronフォールバック実行"
+          echo "should_run=true" >> $GITHUB_OUTPUT
+
   post:
+    needs: [dedup, dedup_cron]
+    if: always() && (needs.dedup.outputs.should_run == 'true' || needs.dedup_cron.outputs.should_run == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
