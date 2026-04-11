@@ -20,6 +20,9 @@ from strategy.betting import BettingStrategy
 from analyzers.speed_index import SpeedIndexCalculator
 from analyzers.odds_value import OddsValueAnalyzer
 
+# APIオッズキャッシュ（レースIDごとに1回だけAPI呼び出しするため）
+_api_odds_cache = {}
+
 
 def cmd_collect(args):
     """データ収集コマンド"""
@@ -297,22 +300,43 @@ def cmd_predict(args):
             for r in results:
                 if r["horse_number"] == row["horse_number"]:
                     odds_win = r["odds"] or 0
-                    # C7 fix: 複勝オッズの推定を改善（頭数・人気帯に応じた係数）
-                    if odds_win:
-                        if odds_win <= 3.0:
-                            # 人気馬: 複勝は単勝の25~35%程度
-                            place_ratio = 0.28 + (n_horses - 10) * 0.005
-                        elif odds_win <= 10.0:
-                            # 中穴: 複勝は単勝の30~40%
-                            place_ratio = 0.33 + (n_horses - 10) * 0.005
-                        else:
-                            # 大穴: 複勝は単勝の35~50%
-                            place_ratio = 0.40 + (n_horses - 10) * 0.008
-                        place_ratio = max(0.20, min(0.55, place_ratio))
-                        odds_place = max(round(odds_win * place_ratio, 1), 1.1)
-                    else:
-                        odds_place = 1.5
                     break
+
+            # FIX: resultsテーブルにオッズがない場合、APIから直接取得
+            if odds_win <= 0 and not _api_odds_cache.get(race_id):
+                try:
+                    from refresh_odds import fetch_odds_from_api
+                    api_odds = fetch_odds_from_api(race_id)
+                    if api_odds:
+                        _api_odds_cache[race_id] = api_odds
+                        # resultsテーブルも更新
+                        with get_db() as conn2:
+                            for hn, od in api_odds.items():
+                                conn2.execute(
+                                    "UPDATE results SET odds = ?, popularity = ? WHERE race_id = ? AND horse_number = ?",
+                                    (od["odds_win"], od["popularity"], race_id, hn))
+                        print(f"  📡 APIからオッズ取得: {len(api_odds)}頭")
+                except Exception as e:
+                    print(f"  ⚠️ APIオッズ取得失敗: {e}")
+
+            # APIキャッシュからオッズを取得
+            if odds_win <= 0 and race_id in _api_odds_cache:
+                api_data = _api_odds_cache[race_id].get(int(row["horse_number"]))
+                if api_data:
+                    odds_win = api_data["odds_win"]
+
+            # C7 fix: 複勝オッズの推定を改善（頭数・人気帯に応じた係数）
+            if odds_win:
+                if odds_win <= 3.0:
+                    place_ratio = 0.28 + (n_horses - 10) * 0.005
+                elif odds_win <= 10.0:
+                    place_ratio = 0.33 + (n_horses - 10) * 0.005
+                else:
+                    place_ratio = 0.40 + (n_horses - 10) * 0.008
+                place_ratio = max(0.20, min(0.55, place_ratio))
+                odds_place = max(round(odds_win * place_ratio, 1), 1.1)
+            else:
+                odds_place = 1.5
 
             # オッズがない場合（未来レース）→ 予測確率から推定
             has_real_odds = odds_win > 0
@@ -347,7 +371,19 @@ def cmd_predict(args):
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
         # 人気順: 実オッズがある場合のみ使用（推定オッズは循環参照になるため除外）
         has_real_odds = any(p.get("_has_real_odds") for p in sorted_preds)
-        if has_real_odds:
+
+        # FIX: APIキャッシュにpopularityがある場合はそれを使用
+        if race_id in _api_odds_cache:
+            api_pop = _api_odds_cache[race_id]
+            popularity_map = {}
+            for p in sorted_preds:
+                hn = p["horse_number"]
+                if hn in api_pop and api_pop[hn].get("popularity", 0) > 0:
+                    popularity_map[hn] = api_pop[hn]["popularity"]
+                else:
+                    popularity_map[hn] = 0
+            has_real_odds = True  # APIデータがある = 実オッズあり
+        elif has_real_odds:
             by_odds = sorted(sorted_preds, key=lambda x: x.get("odds_win", 999))
             popularity_map = {p["horse_number"]: i+1 for i, p in enumerate(by_odds)}
         else:
