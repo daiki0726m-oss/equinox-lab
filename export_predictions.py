@@ -54,11 +54,28 @@ def export_predictions(date_str=None):
                 race_id = race["race_id"]
                 race_info = dict(race)
 
-                # 予測キャッシュ取得
+                # 予測キャッシュ取得（race_id完全一致 → 会場コード+レース番号でフォールバック）
                 cached = conn.execute(
                     "SELECT * FROM predictions_cache WHERE race_id = ?",
                     (race_id,)
                 ).fetchone()
+
+                if not cached:
+                    # race_idが朝と昼で変わる場合のフォールバック:
+                    # race_id形式: YYYY(4) + venue(2) + kai(2) + day(2) + race(2)
+                    # 日目(day=8-9桁目)が変わるため、会場+開催回+レース番号で検索
+                    venue_code = race_id[4:6]
+                    kai_code = race_id[6:8]
+                    race_num_str = race_id[10:12]
+                    cached = conn.execute("""
+                        SELECT * FROM predictions_cache
+                        WHERE substr(race_id,5,2) = ?
+                          AND substr(race_id,7,2) = ?
+                          AND substr(race_id,11,2) = ?
+                        ORDER BY race_id DESC LIMIT 1
+                    """, (venue_code, kai_code, race_num_str)).fetchone()
+                    if cached:
+                        print(f"  🔄 {race_id} → cache {cached['race_id']} (フォールバック一致)")
 
                 if not cached:
                     print(f"  ⏭️ {race_id}: キャッシュなし")
