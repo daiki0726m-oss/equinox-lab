@@ -150,6 +150,12 @@ jobs:
             else
               TYPE="skip"
             fi
+          elif [ "$HOUR" = "18" ] || [ "$HOUR" = "19" ]; then
+            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
+              TYPE="refresh_dashboard"
+            else
+              TYPE="skip"
+            fi
           elif [ "$HOUR" = "20" ] || [ "$HOUR" = "21" ]; then
             if [ "$DOW" -eq 6 ]; then
               TYPE="answer_check"
