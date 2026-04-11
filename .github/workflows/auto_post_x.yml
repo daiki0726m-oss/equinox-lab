@@ -32,6 +32,15 @@ on:
     - cron: '30 3 * * 1-5'
     # 平日夜20:00 JST (UTC 11:00)
     - cron: '0 11 * * 1-5'
+    # ─── 土日の結果系（GAS不発対策） ───
+    # 土日 9:30 JST (UTC 0:30) → odds_flash
+    - cron: '30 0 * * 6,0'
+    # 土日 15:30 JST (UTC 6:30) → hit_flash
+    - cron: '30 6 * * 6,0'
+    # 土日 17:30 JST (UTC 8:30) → results
+    - cron: '30 8 * * 6,0'
+    # 土日 18:30 JST (UTC 9:30) → refresh_dashboard
+    - cron: '30 9 * * 6,0'
 
 jobs:
   # ─── 重複投稿防止: cron実行時、直近90分以内にGAS実行があればスキップ ───
@@ -171,6 +180,14 @@ jobs:
           echo "🧠 予測を実行..."
           python predict.py predict --date "$DATE" || echo "⚠️ 予測完了（一部エラーあり）"
 
+      # results/answer_check時に配当も収集
+      - name: Collect payouts for results
+        if: steps.determine.outputs.type == 'results' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'weekly_review'
+        run: |
+          DATE="${{ steps.determine.outputs.date }}"
+          echo "💰 ${DATE} の配当を収集..."
+          python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集完了（一部エラーあり）"
+
       # ダッシュボード自動更新（結果＋オッズ＋配当。予測は朝の1回で固定）
       - name: Refresh dashboard (results + odds)
         if: steps.determine.outputs.type == 'refresh_dashboard'
@@ -252,6 +269,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/data/
+          # 結果反映モードではkeiba.dbもコミット（結果・配当データの永続化）
+          TYPE="${{ steps.determine.outputs.type }}"
+          if [ "$TYPE" = "results" ] || [ "$TYPE" = "answer_check" ] || [ "$TYPE" = "refresh_dashboard" ] || [ "$TYPE" = "hit_flash" ]; then
+            git add keiba.db || true
+          fi
           if git diff --staged --quiet; then
             echo "📭 変更なし - デプロイスキップ"
           else
