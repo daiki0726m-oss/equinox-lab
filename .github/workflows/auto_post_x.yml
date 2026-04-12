@@ -258,6 +258,8 @@ jobs:
           if [ "$TYPE" = "weekday" ]; then
             python post_x.py weekday
           elif [ "$TYPE" = "predict" ]; then
+            echo "⏳ predictモード: X投稿は10時のodds_flash後に実行します"
+          elif [ "$TYPE" = "odds_flash" ]; then
             python post_x.py predict --date "$DATE"
           elif [ "$TYPE" = "results" ]; then
             python post_x.py results --date "$DATE"
@@ -267,8 +269,6 @@ jobs:
             python post_x.py weekly_review
           elif [ "$TYPE" = "hit_flash" ]; then
             python post_x.py hit_flash --date "$DATE"
-          elif [ "$TYPE" = "odds_flash" ]; then
-            python post_x.py odds_flash --date "$DATE"
           elif [ "$TYPE" = "morning" ]; then
             python post_x.py morning
           elif [ "$TYPE" = "evening" ]; then
