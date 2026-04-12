@@ -463,9 +463,11 @@ def cmd_predict(args):
 
     tweets = [t1] + bet_tweets + [t_last]
 
-    # ファクトチェック
+    # ファクトチェック（致命的な問題があれば投稿中止）
     for tw in tweets:
-        fact_check_tweet(tw)
+        if not fact_check_tweet(tw):
+            print("🚫 ファクトチェック不合格のため投稿を中止します")
+            return
 
     client = None
     threads_client = load_threads_client()
@@ -2369,16 +2371,22 @@ def fact_check_tweet(tweet_text):
     """ツイートの数値データをDBと照合して検証する。
     数値が含まれるツイートの場合、DBからデータを再取得して一致を確認。
     不一致があればWarningを出す。
+
+    Returns:
+        True: チェック通過（投稿OK）
+        False: 致命的な問題あり（投稿ブロック推奨）
     """
     import re
     issues = []
+    critical = False  # 致命的 → 投稿ブロック
 
     # 勝率/複勝率の表記を検証
     pct_matches = re.findall(r'(\d+\.?\d*)%', tweet_text)
     for pct in pct_matches:
         val = float(pct)
         if val > 100:
-            issues.append(f"⚠️ {val}% は100%を超えています")
+            issues.append(f"🚫 {val}% は100%を超えています")
+            critical = True
         if val == 0:
             issues.append(f"⚠️ 0% は不自然な値です")
 
@@ -2387,20 +2395,47 @@ def fact_check_tweet(tweet_text):
     for yen in yen_matches:
         val = int(yen.replace(',', ''))
         if val > 10000000:  # 1000万円超
-            issues.append(f"⚠️ {yen}円 は異常に高額です")
+            issues.append(f"🚫 {yen}円 は異常に高額です")
+            critical = True
 
     # ROIの検証
     roi_matches = re.findall(r'ROI[:\s]*(\d+)%', tweet_text)
     for roi in roi_matches:
         val = int(roi)
         if val > 10000:
-            issues.append(f"⚠️ ROI {val}% は異常値です")
+            issues.append(f"🚫 ROI {val}% は異常値です")
+            critical = True
+
+    # ── 内容整合性チェック ──
+    # 成績レポートで分析数が極端に少ない
+    r_match = re.search(r'(\d+)R分析', tweet_text)
+    if r_match:
+        race_count = int(r_match.group(1))
+        if race_count < 3 and '成績' in tweet_text:
+            issues.append(f"🚫 成績レポートで{race_count}R分析は少なすぎます（通常6R以上）")
+            critical = True
+
+    # 全て0/0の無意味なレポート
+    zero_matches = re.findall(r'0/\d+ \(0%\)', tweet_text)
+    all_stats = re.findall(r'(\d+)/(\d+)', tweet_text)
+    if all_stats and all(n == '0' for n, _ in all_stats):
+        issues.append("🚫 全ての成績が0件 — データが正しく取得されていません")
+        critical = True
+
+    # 的中報告で投資0円
+    if '的中' in tweet_text or '回収' in tweet_text:
+        invest_match = re.search(r'投資[:\s]*([\d,]+)円', tweet_text)
+        if invest_match and int(invest_match.group(1).replace(',', '')) == 0:
+            issues.append("🚫 投資0円の的中報告は不正です")
+            critical = True
 
     if issues:
         print("🔍 ファクトチェック結果:")
         for issue in issues:
             print(f"  {issue}")
-        return False
+        if critical:
+            print("  🚫 致命的な問題があるため投稿をブロックします")
+        return not critical
     else:
         print("✅ ファクトチェック通過")
         return True
@@ -2590,7 +2625,9 @@ def cmd_hit_flash(args):
         tweet += "#AI競馬 #競馬予想"
 
     # ファクトチェック
-    fact_check_tweet(tweet)
+    if not fact_check_tweet(tweet):
+        print("🚫 ファクトチェック不合格のため投稿を中止します")
+        return
 
     print(f"\n📊 ファクトチェック詳細:")
     print(f"  対象: {races_analyzed}レース")
@@ -2682,7 +2719,9 @@ def cmd_odds_flash(args):
                   f"AI勝率{p.get('pred_win_pct',0)}% / "
                   f"オッズ{p.get('odds_win',0)}倍 / "
                   f"{p.get('popularity','?')}人気")
-        fact_check_tweet(tweet)
+        if not fact_check_tweet(tweet):
+            print("🚫 ファクトチェック不合格のため投稿を中止します")
+            return
 
         tweets.append(tweet)
 
@@ -2872,7 +2911,9 @@ def cmd_morning(args):
         tweet += "\u4eca\u9031\u672b\u306e\u30ec\u30fc\u30b9\u30c7\u30fc\u30bf\u3092\u914d\u4fe1\u4e2d\ud83d\udcca\n\n"
         tweet += "#\u7af6\u99ac\u4e88\u60f3 #AI\u4e88\u60f3"
 
-    fact_check_tweet(tweet)
+    if not fact_check_tweet(tweet):
+        print("🚫 ファクトチェック不合格のため投稿を中止します")
+        return
 
     client = None
     threads_client = load_threads_client()
@@ -3036,7 +3077,9 @@ def cmd_evening(args):
         tweet += f"{NOTE_URL}\n\n"
         tweet += "#競馬予想 #AI予想"
 
-    fact_check_tweet(tweet)
+    if not fact_check_tweet(tweet):
+        print("🚫 ファクトチェック不合格のため投稿を中止します")
+        return
 
     client = None
     threads_client = load_threads_client()
