@@ -164,5 +164,63 @@ def init_db(db_path=None):
     print("✅ データベース初期化完了")
 
 
+def sync_cache_race_ids(race_date_str):
+    """predictions_cacheのrace_idをracesテーブルの最新IDに同期する。
+
+    netkeibaのrace_idの日目(day)部分が朝と昼で変わる問題を解決。
+    race_id形式: YYYY(4) + venue(2) + kai(2) + day(2) + race(2)
+
+    例: 朝に 202606030101 で予測保存 → 昼に races が 202606030501 に更新
+        → cache の race_id を 202606030501 にリネーム
+    """
+    # race_dateを YYYY-MM-DD 形式に統一
+    if len(race_date_str) == 8:
+        date_hyphen = f"{race_date_str[:4]}-{race_date_str[4:6]}-{race_date_str[6:8]}"
+    else:
+        date_hyphen = race_date_str
+
+    renamed = 0
+    with get_db() as conn:
+        # 当日のracesを取得
+        races = conn.execute("""
+            SELECT race_id, venue, race_number FROM races
+            WHERE race_date = ? OR race_date = ?
+        """, (race_date_str, date_hyphen)).fetchall()
+
+        for race in races:
+            rid = race['race_id']
+            venue_code = rid[4:6]
+            kai_code = rid[6:8]
+            race_num = rid[10:12]
+
+            # 既にcacheにある → スキップ
+            exists = conn.execute(
+                "SELECT 1 FROM predictions_cache WHERE race_id = ?", (rid,)
+            ).fetchone()
+            if exists:
+                continue
+
+            # 同じ会場+開催回+レース番号で、当日作成されたcacheを検索
+            old = conn.execute("""
+                SELECT race_id FROM predictions_cache
+                WHERE substr(race_id,5,2) = ?
+                  AND substr(race_id,7,2) = ?
+                  AND substr(race_id,11,2) = ?
+                  AND date(created_at) = ?
+                ORDER BY created_at DESC LIMIT 1
+            """, (venue_code, kai_code, race_num, date_hyphen)).fetchone()
+
+            if old and old['race_id'] != rid:
+                old_id = old['race_id']
+                conn.execute(
+                    "UPDATE predictions_cache SET race_id = ? WHERE race_id = ?",
+                    (rid, old_id)
+                )
+                renamed += 1
+
+    if renamed > 0:
+        print(f"🔄 predictions_cache: {renamed}件のrace_idを同期しました")
+
+
 if __name__ == "__main__":
     init_db()
