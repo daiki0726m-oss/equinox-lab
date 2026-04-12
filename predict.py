@@ -132,6 +132,20 @@ def cmd_predict(args):
         print("❌ --race-id か --date を指定してください")
         return
 
+    # ─── 10時ロック: 既存キャッシュがある場合は再予測を禁止 ───
+    now_hour = datetime.now(timezone(timedelta(hours=9))).hour
+    force = getattr(args, 'force', False)
+    if not force and now_hour >= 10 and race_ids:
+        with get_db() as conn:
+            existing = conn.execute(
+                "SELECT COUNT(*) as c FROM predictions_cache WHERE race_id = ?",
+                (race_ids[0],)
+            ).fetchone()
+            if existing and existing['c'] > 0:
+                print("🔒 10時以降のため予測を再実行しません（既存キャッシュを使用）")
+                print("   強制実行する場合: --force オプションを追加")
+                return
+
     # UI-3 fix: 予測前に馬場状態が空のレースがあれば取得
     if race_ids:
         try:
@@ -615,6 +629,7 @@ def main():
     p_predict = subparsers.add_parser("predict", help="レースを予測")
     p_predict.add_argument("--race-id", help="レースID")
     p_predict.add_argument("--date", help="日付 (YYYYMMDD)")
+    p_predict.add_argument("--force", action="store_true", help="10時以降でも強制再予測")
 
     # backtest
     p_backtest = subparsers.add_parser("backtest", help="バックテスト実行")
