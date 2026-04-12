@@ -176,15 +176,23 @@ jobs:
           echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
           echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
 
-      # 土日はスクレイプ→予測が必要
-      - name: Scrape and predict (weekend only)
-        if: steps.determine.outputs.type == 'predict' || steps.determine.outputs.type == 'results' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'weekly_review' || steps.determine.outputs.type == 'hit_flash'
+      # 朝の予測（predict/odds_flash のみ）
+      - name: Scrape and predict (morning only)
+        if: steps.determine.outputs.type == 'predict'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📥 ${DATE} のデータをスクレイプ..."
           python predict.py collect --date "$DATE" || echo "⚠️ スクレイプ完了（一部エラーあり）"
           echo "🧠 予測を実行..."
           python predict.py predict --date "$DATE" || echo "⚠️ 予測完了（一部エラーあり）"
+
+      # 結果収集のみ（10時以降: 予測は再実行しない）
+      - name: Collect results (no re-predict)
+        if: steps.determine.outputs.type == 'results' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'weekly_review' || steps.determine.outputs.type == 'hit_flash'
+        run: |
+          DATE="${{ steps.determine.outputs.date }}"
+          echo "📥 ${DATE} の結果を収集..."
+          python predict.py collect --date "$DATE" || echo "⚠️ 結果収集完了（一部エラーあり）"
 
       # results/answer_check時に配当も収集
       - name: Collect payouts for results
