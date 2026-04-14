@@ -793,7 +793,7 @@ def cmd_weekday(args):
                                 break
 
                     candidates.append({
-                        'name': e['horse_name'], 'popularity': e.get('popularity'),
+                        'name': e['horse_name'], 'popularity': e['popularity'] if e['popularity'] else None,
                         'sire': e['sire'], 'sire_rate': sire_s['rate'],
                         'damsire': e['damsire'], 'damsire_rate': damsire_s['rate'],
                         'post': e['post_position'], 'score': score
@@ -828,7 +828,7 @@ def cmd_weekday(args):
                 jockey_stats = []
                 seen_jockeys = set()
                 for e in entries:
-                    jname = e.get('jockey_name')
+                    jname = e['jockey_name'] if e['jockey_name'] else None
                     if not jname or jname in seen_jockeys:
                         continue
                     seen_jockeys.add(jname)
@@ -1278,7 +1278,7 @@ def _generate_distance_specialty():
 # ─── 共通ヘルパー: 今週末の重賞データ取得 ───────────────────
 
 def get_weekend_graded_races(conn):
-    """今週末の重賞レースを取得"""
+    """今週末の重賞レースを取得（なければ直近週末の11Rを返す）"""
     today = now_jst()
     dow = today.weekday()
     days_until_sat = (5 - dow) % 7
@@ -1291,53 +1291,38 @@ def get_weekend_graded_races(conn):
 
     next_sat = today + timedelta(days=days_until_sat)
     next_sun = next_sat + timedelta(days=1)
+    sat_str = next_sat.strftime('%Y-%m-%d')
+    sun_str = next_sun.strftime('%Y-%m-%d')
 
+    # まず来週末のレースを検索
     result = conn.execute("""
         SELECT race_id, race_name, venue, surface, distance, grade, race_date, race_number
         FROM races
-        WHERE race_date BETWEEN ? AND ?
-        AND (grade IS NOT NULL AND grade != '')
-        ORDER BY
-          CASE WHEN grade LIKE '%G1%' OR grade LIKE '%GI%' THEN 0
-               WHEN grade LIKE '%G2%' OR grade LIKE '%GII%' THEN 1
-               ELSE 2 END,
-          race_date
-    """, (next_sat.strftime('%Y-%m-%d'), next_sun.strftime('%Y-%m-%d'))).fetchall()
+        WHERE race_date BETWEEN ? AND ? AND race_number = 11
+        ORDER BY race_date, venue
+    """, (sat_str, sun_str)).fetchall()
 
-    # gradeが空の場合は11Rのメインレースをフォールバック取得
-    if not result:
-        result = conn.execute("""
-            SELECT race_id, race_name, venue, surface, distance, grade, race_date, race_number
-            FROM races
-            WHERE race_date BETWEEN ? AND ? AND race_number = 11
-            ORDER BY race_date, venue
-        """, (next_sat.strftime('%Y-%m-%d'), next_sun.strftime('%Y-%m-%d'))).fetchall()
+    if result:
+        return result
+
+    # 来週末のレースがなければ、直近の週末11Rを使う（過去データ分析用）
+    result = conn.execute("""
+        SELECT race_id, race_name, venue, surface, distance, grade, race_date, race_number
+        FROM races
+        WHERE race_number = 11 AND race_date <= ?
+        ORDER BY race_date DESC
+        LIMIT 6
+    """, (today.strftime('%Y-%m-%d'),)).fetchall()
 
     return result
 
 
 def get_main_weekend_race(conn):
-    """今週末の最もグレードの高い重賞を1つ返す"""
+    """今週末の最もグレードの高い重賞を1つ返す（なければ直近の11R）"""
     races = get_weekend_graded_races(conn)
     if races:
         return races[0]
-    # 重賞がなければ11Rを取得
-    today = now_jst()
-    dow = today.weekday()
-    days_until_sat = (5 - dow) % 7
-    if days_until_sat == 0 and dow != 5:
-        days_until_sat = 7
-    if dow == 5:
-        days_until_sat = 0
-    elif dow == 6:
-        days_until_sat = 6
-    next_sat = today + timedelta(days=days_until_sat)
-    next_sun = next_sat + timedelta(days=1)
-    return conn.execute("""
-        SELECT race_id, race_name, venue, surface, distance, grade, race_date, race_number
-        FROM races WHERE race_date BETWEEN ? AND ? AND race_number = 11
-        ORDER BY race_date LIMIT 1
-    """, (next_sat.strftime('%Y-%m-%d'), next_sun.strftime('%Y-%m-%d'))).fetchone()
+    return None
 
 
 def get_frame_stats(conn, venue, surface, distance):
@@ -2799,11 +2784,11 @@ def cmd_morning(args):
 
                 if race:
                     v, s, d = race['venue'], race['surface'], race['distance']
-                    tweet += f"\u4eca\u9031\u306f{race['race_name']}\ud83c\udfc7\n"
+                    tweet += f"今週は{race['race_name']}🏇\n"
                     frames = get_frame_stats(conn, v, s, d)
                     best = max(frames, key=lambda x: x['rate'])
-                    tweet += f"{v}{s}{d}m {best['pos']}\u67a0\u304c\u8907\u52dd\u7387{best['rate']}%\u3067\u6700\u9ad8\ud83d\udcca\n\n"
-                tweet += "#AI\u4e88\u60f3 #\u7af6\u99ac\u30c7\u30fc\u30bf"
+                    tweet += f"{v}{s}{d}m {best['pos']}枠が複勝率{best['rate']}%で最高📊\n\n"
+                tweet += "#AI予想 #競馬データ"
 
             elif dow == 1 and race:
                 # 火曜朝: 枠順データ
@@ -2865,14 +2850,14 @@ def cmd_morning(args):
                     else:
                         tweet += "堅い傾向のレース🔒\n"
                 else:
-                    tweet += "\u904e\u53bb\u30c7\u30fc\u30bf\u304cDB\u672a\u767b\u9332\u306e\u305f\u3081\n"
-                    tweet += "\u30b3\u30fc\u30b9\u30c7\u30fc\u30bf\u3067\u4ee3\u66ff\u5206\u6790\u4e2d\ud83d\udcca\n"
-                # \u30b3\u30fc\u30b9\u30c7\u30fc\u30bf\u3082\u8ffd\u52a0
+                    tweet += "過去データがDB未登録のため\n"
+                    tweet += "コースデータで代替分析中📊\n"
+                # コースデータも追加
                 v, s, d = race['venue'], race['surface'], race['distance']
                 last3f = get_last3f_stats(conn, v, s, d)
                 if last3f:
                     tweet += f"\n{v}{s}{d}m:\n"
-                    tweet += f"\u4e0a\u304c\u308a{last3f[0]['label']}=\u52dd\u7387{last3f[0]['win_rate']}%\n"
+                    tweet += f"上がり{last3f[0]['label']}=勝率{last3f[0]['win_rate']}%\n"
                 tweet += "\n" + make_race_hashtags(race)
 
             elif dow == 4 and race:
@@ -2906,10 +2891,10 @@ def cmd_morning(args):
         traceback.print_exc()
 
     if not tweet:
-        tweet = f"\ud83c\udfc7 \u304a\u306f\u3088\u3046\u3054\u3056\u3044\u307e\u3059\uff01\n\n"
-        tweet += "EQUINOX Lab\u3067\u3059\u3002\n"
-        tweet += "\u4eca\u9031\u672b\u306e\u30ec\u30fc\u30b9\u30c7\u30fc\u30bf\u3092\u914d\u4fe1\u4e2d\ud83d\udcca\n\n"
-        tweet += "#\u7af6\u99ac\u4e88\u60f3 #AI\u4e88\u60f3"
+        tweet = "🏇 おはようございます！\n\n"
+        tweet += "EQUINOX Labです。\n"
+        tweet += "今週末のレースデータを配信中📊\n\n"
+        tweet += "#競馬予想 #AI予想"
 
     if not fact_check_tweet(tweet):
         print("🚫 ファクトチェック不合格のため投稿を中止します")
