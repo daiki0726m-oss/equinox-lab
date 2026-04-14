@@ -685,6 +685,7 @@ def cmd_results(args):
 # ─── 平日コンテンツ ───
 def cmd_weekday(args):
     """平日昼: 今週末のメインレースデータ配信"""
+    fetch_weekend_races()  # 来週末レース自動取得
     today = now_jst()
     dow = today.weekday()  # 0=月, 4=金
     print(f"📅 昼投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
@@ -1300,6 +1301,86 @@ def detect_grade(race_name):
             or 'トロフィー' in race_name):
         return 'G3'
     return ''
+
+def fetch_weekend_races():
+    """来週末の11Rをスクレイピングし、DBに登録する"""
+    from scraper import NetkeibaScraper
+    import time as _time
+
+    today = now_jst()
+    dow = today.weekday()
+    days_until_sat = (5 - dow) % 7
+    if days_until_sat == 0 and dow != 5:
+        days_until_sat = 7
+    if dow == 5:
+        days_until_sat = 0
+    elif dow == 6:
+        days_until_sat = 6
+
+    next_sat = today + timedelta(days=days_until_sat)
+    next_sun = next_sat + timedelta(days=1)
+
+    with get_db() as conn:
+        # 既に登録済みか確認
+        existing = conn.execute("""
+            SELECT COUNT(*) as c FROM races
+            WHERE race_date BETWEEN ? AND ? AND race_number = 11
+        """, (next_sat.strftime('%Y-%m-%d'), next_sun.strftime('%Y-%m-%d'))).fetchone()
+
+        if existing['c'] > 0:
+            print(f"✅ {next_sat.strftime('%m/%d')}-{next_sun.strftime('%m/%d')} のレースは登録済み({existing['c']}件)")
+            return
+
+        print(f"📥 {next_sat.strftime('%m/%d')}-{next_sun.strftime('%m/%d')} のレースを取得中...")
+        scraper = NetkeibaScraper()
+        registered = 0
+
+        for target_date in [next_sat, next_sun]:
+            date_str = target_date.strftime('%Y%m%d')
+            try:
+                race_ids = scraper.get_race_list_by_date(date_str)
+                r11_ids = [rid for rid in race_ids if rid.endswith('11')]
+
+                for rid in r11_ids:
+                    data = scraper.scrape_shutuba(rid)
+                    if data:
+                        conn.execute("""
+                            INSERT OR REPLACE INTO races
+                            (race_id, race_name, race_date, venue, race_number,
+                             surface, distance, grade, direction, weather,
+                             track_condition, horse_count, start_time)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """, (data['race_id'], data['race_name'], data['race_date'],
+                              data['venue'], data['race_number'], data['surface'],
+                              data['distance'], data['grade'], data['direction'],
+                              data['weather'], data['track_condition'],
+                              data['horse_count'], data['start_time']))
+
+                        # 出走馬もresultsに仮登録（horse_number, horse_id, odds, popularity等）
+                        for entry in data.get('entries', []):
+                            if entry.get('horse_id'):
+                                conn.execute("""
+                                    INSERT OR IGNORE INTO results
+                                    (race_id, horse_id, horse_number, odds, popularity, post_position,
+                                     finish_position, finish_time, last_3f, passing_order, weight, weight_change)
+                                    VALUES (?,?,?,?,?,?, 0,0,0,0,0,0)
+                                """, (rid, entry['horse_id'], entry.get('horse_number', 0),
+                                      entry.get('odds', 0), entry.get('popularity', 0),
+                                      entry.get('post_position', 0)))
+                                # horsesテーブルにも登録
+                                conn.execute("""
+                                    INSERT OR IGNORE INTO horses (horse_id, horse_name)
+                                    VALUES (?,?)
+                                """, (entry['horse_id'], entry.get('horse_name', '')))
+
+                        registered += 1
+                        print(f"  ✅ {data['race_name']} ({data['venue']}{data['surface']}{data['distance']}m)")
+                    _time.sleep(1)
+            except Exception as e:
+                print(f"  ⚠️ {date_str} スクレイピングエラー: {e}")
+
+        conn.commit()
+        print(f"✅ {registered}レース登録完了")
 
 
 def get_weekend_graded_races(conn):
@@ -2797,6 +2878,7 @@ def cmd_odds_flash(args):
 # ─── 朝ツイート（平日7:30） ───
 def cmd_morning(args):
     """平日朝: メインレース紹介＋穴馬＋血統データ"""
+    fetch_weekend_races()  # 来週末レース自動取得
     today = now_jst()
     dow = today.weekday()  # 0=月, 4=金
     print(f"📅 朝投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
@@ -3004,6 +3086,7 @@ def cmd_morning(args):
 # ─── 夜ツイート（平日20:00） ───
 def cmd_evening(args):
     """平日夜: 穴馬・母父・過去傾向・統合データ・コラム"""
+    fetch_weekend_races()  # 来週末レース自動取得
     today = now_jst()
     dow = today.weekday()  # 0=月, 4=金
     print(f"📅 夜投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
@@ -3277,8 +3360,16 @@ def main():
     p_evening = subparsers.add_parser("evening", help="平日夜のツイート")
     p_evening.add_argument("--dry-run", action="store_true", help="投稿せずプレビュー")
 
+    # fetch_races（来週末レース取得）
+    subparsers.add_parser("fetch_races", help="来週末の11Rをスクレイピングして登録")
+
     args = parser.parse_args()
     init_db()
+
+    # fetch_racesはtweepy不要
+    if args.command == "fetch_races":
+        fetch_weekend_races()
+        return
 
     if not HAS_TWEEPY and not getattr(args, "dry_run", False):
         print("❌ tweepy がインストールされていません")
@@ -3303,6 +3394,8 @@ def main():
         cmd_morning(args)
     elif args.command == "evening":
         cmd_evening(args)
+    elif args.command == "fetch_races":
+        fetch_weekend_races()
     else:
         parser.print_help()
 
