@@ -1289,10 +1289,10 @@ G2_RACES = [
 def detect_grade(race_name):
     """レース名からG1/G2/G3/OPを判定"""
     for name in G1_RACES:
-        if name in race_name:
+        if race_name.startswith(name) or race_name == name:
             return 'G1'
     for name in G2_RACES:
-        if name in race_name:
+        if race_name.startswith(name) or race_name == name:
             return 'G2'
     # G3/OP判定: 末尾がS/T、またはステークス/カップ/トロフィーを含む
     if (race_name.rstrip('０１２３４５６７８９0123456789').endswith(('S', 'T'))
