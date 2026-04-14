@@ -814,63 +814,80 @@ def cmd_weekday(args):
                 entries = get_race_entries(conn, race['race_id'])
                 frames = get_frame_stats(conn, v, s, d)
 
-                candidates = []
-                for e in entries:
-                    if not e['sire']:
-                        continue
-                    score = 0
-                    details = []
-                    sire_s = get_sire_course_stats(conn, e['sire'], v, s, d)
-                    if sire_s['runs'] > 0:
-                        score += sire_s['rate'] * 0.3
-                        details.append(f"父{e['sire']} {sire_s['rate']}%")
-                    if e['damsire']:
-                        ds = get_damsire_course_stats(conn, e['damsire'], v, s, d)
-                        if ds['runs'] > 0:
-                            score += ds['rate'] * 0.2
-                            details.append(f"母父{e['damsire']} {ds['rate']}%")
-                    if e['post_position']:
-                        for f in frames:
-                            if f['pos'] == e['post_position']:
-                                score += f['rate'] * 0.2
-                                details.append(f"{f['pos']}枠 {f['rate']}%")
-                                break
-                    jname = e['jockey_name'] if e['jockey_name'] else None
-                    if jname:
-                        js = conn.execute("""
-                            SELECT COUNT(*) as runs,
-                                   SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END) as t3
-                            FROM results r JOIN races ra ON r.race_id=ra.race_id
-                            JOIN jockeys j ON r.jockey_id=j.jockey_id
-                            WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
-                            AND r.finish_position>0 AND j.jockey_name=?
-                        """, (v, s, d, jname)).fetchone()
-                        if js and js['runs'] and js['runs'] > 3:
-                            j_rate = round(js['t3'] / js['runs'] * 100, 1)
-                            score += j_rate * 0.3
-                            details.append(f"{jname.lstrip('▲△★☆')} {j_rate}%")
-                    candidates.append({
-                        'name': e['horse_name'], 'score': score,
-                        'details': details, 'popularity': e['popularity']
-                    })
+                if not entries_have_sire(entries):
+                    # sireなし→コース全体データまとめ
+                    top_sires = get_course_top_sires(conn, v, s, d, 3)
+                    last3f = get_last3f_stats(conn, v, s, d)
+                    best_frame = max(frames, key=lambda x: x['rate'])
 
-                candidates.sort(key=lambda x: x['score'], reverse=True)
+                    tweet = f"🎯 {race['race_name']} データで見る注目ポイント\n"
+                    tweet += f"({v}{s}{d}m)\n\n"
+                    tweet += f"【枠順】{best_frame['pos']}枠={best_frame['rate']}%⬆️\n"
+                    if last3f:
+                        tweet += f"【上がり】{last3f[0]['label']}=勝率{last3f[0]['win_rate']}%\n"
+                    tweet += "【種牡馬TOP3】\n"
+                    for sr in top_sires:
+                        tweet += f"  {sr['sire']} {sr['rate']}%\n"
+                    tweet += f"\n" + make_race_hashtags(race)
 
-                tweet = f"🎯 {race['race_name']} AI注目馬\n"
-                tweet += f"({v}{s}{d}m データ根拠)\n\n"
-                if candidates:
-                    top = candidates[0]
-                    tweet += f"【軸候補】{top['name']}\n"
-                    for det in top['details'][:3]:
-                        tweet += f"  {det}\n"
-                dark = [c for c in candidates if c['popularity'] and c['popularity'] >= 5]
-                if dark:
-                    dark.sort(key=lambda x: x['score'], reverse=True)
-                    dh = dark[0]
-                    tweet += f"\n【穴候補】{dh['name']}\n"
-                    for det in dh['details'][:3]:
-                        tweet += f"  {det}\n"
-                tweet += f"\n" + make_race_hashtags(race)
+                else:
+                    candidates = []
+                    for e in entries:
+                        if not e['sire']:
+                            continue
+                        score = 0
+                        details = []
+                        sire_s = get_sire_course_stats(conn, e['sire'], v, s, d)
+                        if sire_s['runs'] > 0:
+                            score += sire_s['rate'] * 0.3
+                            details.append(f"父{e['sire']} {sire_s['rate']}%")
+                        if e['damsire']:
+                            ds = get_damsire_course_stats(conn, e['damsire'], v, s, d)
+                            if ds['runs'] > 0:
+                                score += ds['rate'] * 0.2
+                                details.append(f"母父{e['damsire']} {ds['rate']}%")
+                        if e['post_position']:
+                            for f in frames:
+                                if f['pos'] == e['post_position']:
+                                    score += f['rate'] * 0.2
+                                    details.append(f"{f['pos']}枠 {f['rate']}%")
+                                    break
+                        jname = e['jockey_name'] if e['jockey_name'] else None
+                        if jname:
+                            js = conn.execute("""
+                                SELECT COUNT(*) as runs,
+                                       SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END) as t3
+                                FROM results r JOIN races ra ON r.race_id=ra.race_id
+                                JOIN jockeys j ON r.jockey_id=j.jockey_id
+                                WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+                                AND r.finish_position>0 AND j.jockey_name=?
+                            """, (v, s, d, jname)).fetchone()
+                            if js and js['runs'] and js['runs'] > 3:
+                                j_rate = round(js['t3'] / js['runs'] * 100, 1)
+                                score += j_rate * 0.3
+                                details.append(f"{jname.lstrip('▲△★☆')} {j_rate}%")
+                        candidates.append({
+                            'name': e['horse_name'], 'score': score,
+                            'details': details, 'popularity': e['popularity']
+                        })
+
+                    candidates.sort(key=lambda x: x['score'], reverse=True)
+
+                    tweet = f"🎯 {race['race_name']} AI注目馬\n"
+                    tweet += f"({v}{s}{d}m データ根拠)\n\n"
+                    if candidates:
+                        top = candidates[0]
+                        tweet += f"【軸候補】{top['name']}\n"
+                        for det in top['details'][:3]:
+                            tweet += f"  {det}\n"
+                    dark = [c for c in candidates if c['popularity'] and c['popularity'] >= 5]
+                    if dark:
+                        dark.sort(key=lambda x: x['score'], reverse=True)
+                        dh = dark[0]
+                        tweet += f"\n【穴候補】{dh['name']}\n"
+                        for det in dh['details'][:3]:
+                            tweet += f"  {det}\n"
+                    tweet += f"\n" + make_race_hashtags(race)
 
             else:
                 tweet = generate_analysis_column()
@@ -1418,6 +1435,41 @@ def get_popularity_stats(conn, venue, surface, distance):
                           'win_rate': round(r['w'] / r['t'] * 100, 1),
                           'top3_rate': round(r['t3'] / r['t'] * 100, 1)})
     return stats
+
+
+def entries_have_sire(entries):
+    """出走馬リストにsire情報があるか判定"""
+    return any(e['sire'] for e in entries) if entries else False
+
+
+def get_course_top_sires(conn, venue, surface, distance, limit=5):
+    """コース全体の種牡馬複勝率ランキング"""
+    return conn.execute("""
+        SELECT h.sire, COUNT(*) as runs,
+               SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END) as t3,
+               ROUND(SUM(CASE WHEN r.finish_position<=3 THEN 1.0 ELSE 0 END)/COUNT(*)*100, 1) as rate
+        FROM results r JOIN races ra ON r.race_id=ra.race_id
+        JOIN horses h ON r.horse_id=h.horse_id
+        WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+        AND r.finish_position>0 AND h.sire IS NOT NULL AND h.sire != ''
+        GROUP BY h.sire HAVING runs >= 5
+        ORDER BY rate DESC LIMIT ?
+    """, (venue, surface, distance, limit)).fetchall()
+
+
+def get_course_top_damsires(conn, venue, surface, distance, limit=5):
+    """コース全体の母父複勝率ランキング"""
+    return conn.execute("""
+        SELECT h.damsire, COUNT(*) as runs,
+               SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END) as t3,
+               ROUND(SUM(CASE WHEN r.finish_position<=3 THEN 1.0 ELSE 0 END)/COUNT(*)*100, 1) as rate
+        FROM results r JOIN races ra ON r.race_id=ra.race_id
+        JOIN horses h ON r.horse_id=h.horse_id
+        WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+        AND r.finish_position>0 AND h.damsire IS NOT NULL AND h.damsire != ''
+        GROUP BY h.damsire HAVING runs >= 5
+        ORDER BY rate DESC LIMIT ?
+    """, (venue, surface, distance, limit)).fetchall()
 
 
 def get_race_entries(conn, race_id):
@@ -2789,22 +2841,27 @@ def cmd_morning(args):
                 v, s, d = race['venue'], race['surface'], race['distance']
                 entries = get_race_entries(conn, race['race_id'])
 
-                sire_data = {}
-                for e in entries:
-                    if not e['sire'] or e['sire'] in sire_data:
-                        continue
-                    stats = get_sire_course_stats(conn, e['sire'], v, s, d)
-                    horses = [en['horse_name'] for en in entries if en['sire'] == e['sire']]
-                    sire_data[e['sire']] = {**stats, 'horses': horses}
-
-                ranking = sorted(sire_data.items(), key=lambda x: x[1]['rate'], reverse=True)
-
                 tweet = f"📊 {race['race_name']} 種牡馬×{v}{s}{d}m\n\n"
-                for i, (sire, data) in enumerate(ranking[:5]):
-                    if data['runs'] > 0:
+
+                if entries_have_sire(entries):
+                    sire_data = {}
+                    for e in entries:
+                        if not e['sire'] or e['sire'] in sire_data:
+                            continue
+                        stats = get_sire_course_stats(conn, e['sire'], v, s, d)
+                        horses = [en['horse_name'] for en in entries if en['sire'] == e['sire']]
+                        sire_data[e['sire']] = {**stats, 'horses': horses}
+                    ranking = sorted(sire_data.items(), key=lambda x: x[1]['rate'], reverse=True)
+                    for i, (sire, data) in enumerate(ranking[:5]):
+                        if data['runs'] > 0:
+                            arrow = " ⬆️" if i == 0 else ""
+                            tweet += f"{i+1}. {sire} 複勝率{data['rate']}%({data['runs']}頭){arrow}\n"
+                            tweet += f"  →{'/'.join(data['horses'][:2])}\n"
+                else:
+                    top_sires = get_course_top_sires(conn, v, s, d)
+                    for i, sr in enumerate(top_sires[:5]):
                         arrow = " ⬆️" if i == 0 else ""
-                        tweet += f"{i+1}. {sire} 複勝率{data['rate']}%({data['runs']}頭){arrow}\n"
-                        tweet += f"  →{'/'.join(data['horses'][:2])}\n"
+                        tweet += f"{i+1}. {sr['sire']} 複勝率{sr['rate']}%({sr['runs']}頭){arrow}\n"
 
                 tweet += f"\n血統でまず軸を絞る📊\n\n"
                 tweet += make_race_hashtags(race) + " #競馬データ"
@@ -2876,39 +2933,48 @@ def cmd_morning(args):
                 v, s, d = target['venue'], target['surface'], target['distance']
                 entries = get_race_entries(conn, target['race_id'])
 
-                candidates = []
-                for e in entries:
-                    if not e['sire']:
-                        continue
-                    sire_s = get_sire_course_stats(conn, e['sire'], v, s, d)
-                    damsire_s = get_damsire_course_stats(conn, e['damsire'], v, s, d) if e['damsire'] else {'rate': 0}
-                    score = sire_s['rate'] * 0.5 + damsire_s['rate'] * 0.3
-                    candidates.append({
-                        'name': e['horse_name'], 'popularity': e['popularity'],
-                        'sire': e['sire'], 'sire_rate': sire_s['rate'],
-                        'damsire': e['damsire'], 'damsire_rate': damsire_s['rate'],
-                        'score': score
-                    })
-
-                dark_horses = [c for c in candidates if c['popularity'] and c['popularity'] >= 5]
-                dark_horses.sort(key=lambda x: x['score'], reverse=True)
-
                 grade = detect_grade(target['race_name'])
                 grade_label = f"({grade})" if grade else ""
 
-                tweet = f"🐴 {target['race_name']}{grade_label} 穴馬データ\n"
-                tweet += f"({v}{s}{d}m)\n\n"
-                for dh in dark_horses[:2]:
-                    tweet += f"🐴 {dh['name']}\n"
-                    if dh['sire_rate'] > 0:
-                        tweet += f"  父{dh['sire']}×{v}{s}{d}m={dh['sire_rate']}%\n"
-                    if dh['damsire_rate'] > 0:
-                        tweet += f"  母父{dh['damsire']}={dh['damsire_rate']}%\n"
-                    tweet += "\n"
-                if not dark_horses:
-                    tweet += "出走馬データ分析中...\n\n"
-                tweet += f"穴馬はデータで選ぶ📊\n\n"
-                tweet += make_race_hashtags(target) + " #穴馬"
+                if entries_have_sire(entries):
+                    candidates = []
+                    for e in entries:
+                        if not e['sire']:
+                            continue
+                        sire_s = get_sire_course_stats(conn, e['sire'], v, s, d)
+                        damsire_s = get_damsire_course_stats(conn, e['damsire'], v, s, d) if e['damsire'] else {'rate': 0}
+                        score = sire_s['rate'] * 0.5 + damsire_s['rate'] * 0.3
+                        candidates.append({
+                            'name': e['horse_name'], 'popularity': e['popularity'],
+                            'sire': e['sire'], 'sire_rate': sire_s['rate'],
+                            'damsire': e['damsire'], 'damsire_rate': damsire_s['rate'],
+                            'score': score
+                        })
+                    dark_horses = [c for c in candidates if c['popularity'] and c['popularity'] >= 5]
+                    dark_horses.sort(key=lambda x: x['score'], reverse=True)
+
+                    tweet = f"🐴 {target['race_name']}{grade_label} 穴馬データ\n"
+                    tweet += f"({v}{s}{d}m)\n\n"
+                    for dh in dark_horses[:2]:
+                        tweet += f"🐴 {dh['name']}\n"
+                        if dh['sire_rate'] > 0:
+                            tweet += f"  父{dh['sire']}×{v}{s}{d}m={dh['sire_rate']}%\n"
+                        if dh['damsire_rate'] > 0:
+                            tweet += f"  母父{dh['damsire']}={dh['damsire_rate']}%\n"
+                        tweet += "\n"
+                    if not dark_horses:
+                        tweet += "出走馬データ分析中...\n\n"
+                    tweet += f"穴馬はデータで選ぶ📊\n\n"
+                    tweet += make_race_hashtags(target) + " #穴馬"
+                else:
+                    top_sires = get_course_top_sires(conn, v, s, d, 4)
+                    tweet = f"🐴 {target['race_name']}{grade_label} 穴馬のカギ\n"
+                    tweet += f"({v}{s}{d}m)\n\n"
+                    tweet += "このコースで走る種牡馬:\n"
+                    for i, sr in enumerate(top_sires):
+                        tweet += f"{i+1}. {sr['sire']} 複勝率{sr['rate']}%\n"
+                    tweet += f"\nこの血統の人気薄を狙え📊\n\n"
+                    tweet += make_race_hashtags(target) + " #穴馬"
 
     except Exception as e:
         print(f"⚠️ 朝投稿エラー: {e}")
@@ -2954,10 +3020,22 @@ def cmd_evening(args):
                 v, s, d = race['venue'], race['surface'], race['distance']
                 entries = get_race_entries(conn, race['race_id'])
 
-                candidates = []
-                for e in entries:
-                    if not e['sire']:
-                        continue
+                if not entries_have_sire(entries):
+                    # sireデータなし→コース全体の裏データ
+                    top_sires = get_course_top_sires(conn, v, s, d)
+                    tweet = f"🐴 {race['race_name']} 穴馬のカギは血統\n"
+                    tweet += f"({v}{s}{d}m)\n\n"
+                    tweet += "このコースで走る種牡馬:\n"
+                    for i, sr in enumerate(top_sires[:4]):
+                        tweet += f"{i+1}. {sr['sire']} 複勝率{sr['rate']}%\n"
+                    tweet += f"\nこの血統の人気薄を狙え📊\n\n"
+                    tweet += make_race_hashtags(race) + " #穴馬"
+
+                else:
+                    candidates = []
+                    for e in entries:
+                        if not e['sire']:
+                            continue
                     sire_s = get_sire_course_stats(conn, e['sire'], v, s, d)
                     damsire_s = get_damsire_course_stats(conn, e['damsire'], v, s, d) if e['damsire'] else {'rate': 0}
                     frames = get_frame_stats(conn, v, s, d)
@@ -2976,47 +3054,49 @@ def cmd_evening(args):
                         'score': score
                     })
 
-                dark_horses = [c for c in candidates if c['popularity'] and c['popularity'] >= 5]
-                dark_horses.sort(key=lambda x: x['score'], reverse=True)
+                    dark_horses = [c for c in candidates if c['popularity'] and c['popularity'] >= 5]
+                    dark_horses.sort(key=lambda x: x['score'], reverse=True)
 
-                tweet = f"🐴 {race['race_name']} AI穴馬データ\n"
-                tweet += f"({v}{s}{d}m 血統適性)\n\n"
-                for dh in dark_horses[:2]:
-                    tweet += f"🐴 {dh['name']}\n"
-                    if dh['sire_rate'] > 0:
-                        tweet += f"  父{dh['sire']}×{v}{s}{d}m={dh['sire_rate']}%\n"
-                    if dh['damsire_rate'] > 0:
-                        tweet += f"  母父{dh['damsire']}={dh['damsire_rate']}%\n"
-                    if dh['frame']:
-                        tweet += f"  {dh['frame']}枠={dh['frame_rate']}%\n"
-                    tweet += "\n"
-                if not dark_horses:
-                    tweet += "出走馬データ分析中...\n\n"
-                tweet += make_race_hashtags(race) + " #穴馬"
+                    tweet = f"🐴 {race['race_name']} AI穴馬データ\n"
+                    tweet += f"({v}{s}{d}m 血統適性)\n\n"
+                    for dh in dark_horses[:2]:
+                        tweet += f"🐴 {dh['name']}\n"
+                        if dh['sire_rate'] > 0:
+                            tweet += f"  父{dh['sire']}×{v}{s}{d}m={dh['sire_rate']}%\n"
+                        if dh['damsire_rate'] > 0:
+                            tweet += f"  母父{dh['damsire']}={dh['damsire_rate']}%\n"
+                        if dh['frame']:
+                            tweet += f"  {dh['frame']}枠={dh['frame_rate']}%\n"
+                        tweet += "\n"
+                    if not dark_horses:
+                        tweet += "出走馬データ分析中...\n\n"
+                    tweet += make_race_hashtags(race) + " #穴馬"
 
             elif dow == 1 and race:
                 # 火曜夜: 母父×コース＋該当馬名
                 v, s, d = race['venue'], race['surface'], race['distance']
                 entries = get_race_entries(conn, race['race_id'])
 
-                damsire_data = {}
-                for e in entries:
-                    if not e['damsire'] or e['damsire'] in damsire_data:
-                        continue
-                    stats = get_damsire_course_stats(conn, e['damsire'], v, s, d)
-                    if stats['runs'] > 0:
-                        damsire_data[e['damsire']] = {**stats, 'horse': e['horse_name']}
-
-                ranking = sorted(damsire_data.items(), key=lambda x: x[1]['rate'], reverse=True)
-
                 tweet = f"📊 {race['race_name']} 母父×{v}{s}{d}m\n\n"
-                for i, (ds, data) in enumerate(ranking[:5]):
-                    arrow = " ⬆️" if i == 0 else ""
-                    tweet += f"{i+1}. 母父{ds} 複勝率{data['rate']}%({data['runs']}頭){arrow}\n"
-                    tweet += f"  →{data['horse']}\n"
 
-                if not ranking:
-                    tweet += "出走馬の母父データ分析中\n"
+                if entries_have_sire(entries):
+                    damsire_data = {}
+                    for e in entries:
+                        if not e['damsire'] or e['damsire'] in damsire_data:
+                            continue
+                        stats = get_damsire_course_stats(conn, e['damsire'], v, s, d)
+                        if stats['runs'] > 0:
+                            damsire_data[e['damsire']] = {**stats, 'horse': e['horse_name']}
+                    ranking = sorted(damsire_data.items(), key=lambda x: x[1]['rate'], reverse=True)
+                    for i, (ds, data) in enumerate(ranking[:5]):
+                        arrow = " ⬆️" if i == 0 else ""
+                        tweet += f"{i+1}. 母父{ds} 複勝率{data['rate']}%({data['runs']}頭){arrow}\n"
+                        tweet += f"  →{data['horse']}\n"
+                else:
+                    top_ds = get_course_top_damsires(conn, v, s, d)
+                    for i, ds in enumerate(top_ds[:5]):
+                        arrow = " ⬆️" if i == 0 else ""
+                        tweet += f"{i+1}. 母父{ds['damsire']} 複勝率{ds['rate']}%({ds['runs']}頭){arrow}\n"
 
                 tweet += f"\n母父の隠れた適性にも注目📊\n\n"
                 tweet += make_race_hashtags(race)
@@ -3066,24 +3146,32 @@ def cmd_evening(args):
                 v, s, d = race['venue'], race['surface'], race['distance']
                 entries = get_race_entries(conn, race['race_id'])
 
-                # 種牡馬TOP
-                sire_data = {}
-                for e in entries:
-                    if not e['sire'] or e['sire'] in sire_data:
-                        continue
-                    stats = get_sire_course_stats(conn, e['sire'], v, s, d)
-                    sire_data[e['sire']] = {**stats, 'horse': e['horse_name']}
-                top_sire = max(sire_data.items(), key=lambda x: x[1]['rate']) if sire_data else None
-
-                # 母父TOP
-                damsire_data = {}
-                for e in entries:
-                    if not e['damsire'] or e['damsire'] in damsire_data:
-                        continue
-                    stats = get_damsire_course_stats(conn, e['damsire'], v, s, d)
-                    if stats['runs'] > 0:
-                        damsire_data[e['damsire']] = {**stats, 'horse': e['horse_name']}
-                top_damsire = max(damsire_data.items(), key=lambda x: x[1]['rate']) if damsire_data else None
+                # 種牡馬TOP(出走馬or コース全体)
+                top_sire = None
+                top_damsire = None
+                if entries_have_sire(entries):
+                    sire_data = {}
+                    for e in entries:
+                        if not e['sire'] or e['sire'] in sire_data:
+                            continue
+                        stats = get_sire_course_stats(conn, e['sire'], v, s, d)
+                        sire_data[e['sire']] = {**stats, 'horse': e['horse_name']}
+                    top_sire = max(sire_data.items(), key=lambda x: x[1]['rate']) if sire_data else None
+                    damsire_data = {}
+                    for e in entries:
+                        if not e['damsire'] or e['damsire'] in damsire_data:
+                            continue
+                        stats = get_damsire_course_stats(conn, e['damsire'], v, s, d)
+                        if stats['runs'] > 0:
+                            damsire_data[e['damsire']] = {**stats, 'horse': e['horse_name']}
+                    top_damsire = max(damsire_data.items(), key=lambda x: x[1]['rate']) if damsire_data else None
+                else:
+                    cs = get_course_top_sires(conn, v, s, d, 1)
+                    if cs:
+                        top_sire = (cs[0]['sire'], {'rate': cs[0]['rate']})
+                    cd = get_course_top_damsires(conn, v, s, d, 1)
+                    if cd:
+                        top_damsire = (cd[0]['damsire'], {'rate': cd[0]['rate']})
 
                 frames = get_frame_stats(conn, v, s, d)
                 best_frame = max(frames, key=lambda x: x['rate'])
