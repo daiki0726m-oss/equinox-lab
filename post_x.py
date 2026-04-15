@@ -392,6 +392,7 @@ def cmd_predict(args):
         t1 += f"\n🔥 AI高信頼レース: {len(s_races)}件\n"
 
     t1 += f"\n買い目は🧵↓で事前公開\n"
+    t1 += f"{data_credit(short=True)}\n"
     t1 += "#AI競馬 #競馬予想"
 
     # ── ツイート2以降: 各レースの買い目 ──
@@ -453,6 +454,7 @@ def cmd_predict(args):
     t_last += f"全{len(target_races)}レース・具体的な買い目を\n"
     t_last += f"レース前に公開しています\n\n"
     t_last += "的中結果は夕方に速報します🎯\n\n"
+    t_last += f"{data_credit()}\n"
     t_last += "#AI競馬 #競馬予想"
 
     # レース名ハッシュタグ（メインレース）
@@ -632,6 +634,7 @@ def cmd_results(args):
         t1 += f"{hit_races}レース的中もトータルマイナス 📉\n\n"
     else:
         t1 += "全不的中。素直に反省 📉\n\n"
+    t1 += f"{data_credit(short=True)}\n"
     t1 += "#競馬予想 #AI予想 #競馬結果 🧵↓"
 
     # ── ツイート2: 各レース結果 ──
@@ -972,6 +975,7 @@ def generate_weekly_summary():
     t1 = f"📊 先週末({dr}) AI予測の結果\n"
     t1 += f"対象: メインレース(11R) {total}レース\n\n"
     t1 += f"AI本命(◎)の複勝的中率: {hits}/{total} ({hit_rate}%)\n\n"
+    t1 += f"{data_credit(short=True)}\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     t2 = "📋 各レース結果\n\n"
@@ -1051,6 +1055,7 @@ def _generate_trainer_ranking():
     t1 += f"集計期間: {period}\n\n"
     t1 += "勝率が高い=仕上げ力がある厩舎\n"
     t1 += "10頭以上出走の調教師を集計\n\n"
+    t1 += f"{data_credit(short=True)}\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     medals = ["🥇", "🥈", "🥉", " 4.", " 5."]
@@ -1110,6 +1115,7 @@ def _generate_jt_combo():
     t1 += f"集計期間: {period}\n\n"
     t1 += "同じ騎手でも調教師との相性で\n"
     t1 += "成績が大きく変わる\n\n"
+    t1 += f"{data_credit(short=True)}\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     t2 = f"📊 複勝率が高いコンビ\n\n"
@@ -1183,6 +1189,7 @@ def _generate_course_analysis():
     t1 += f"直近90日のデータから\n\n"
     t1 += f"今週末の{venue_name}開催に向けて\n"
     t1 += "コースバイアスをチェック\n\n"
+    t1 += f"{data_credit(short=True)}\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     t2 = f"📊 {venue_name}の傾向\n\n"
@@ -1240,6 +1247,7 @@ def _generate_distance_specialty():
     t1 += "距離を延長/短縮した馬は\n"
     t1 += "成績にどう影響する？\n"
     t1 += "半年分のデータで検証\n\n"
+    t1 += f"{data_credit(short=True)}\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     t2 = "📊 距離変更別の複勝率\n\n"
@@ -1567,7 +1575,68 @@ def get_race_entries(conn, race_id):
 def make_race_hashtags(race):
     """レースからハッシュタグを生成"""
     tag = race['race_name'].replace(' ', '').replace('　', '')
-    return f"#{tag} #競馬予想 #AI予想"
+    return f"#{tag} #競馬予想 #AI予想\n{data_credit(short=True)}"
+
+
+# ─── DB統計情報（投稿に期間情報を自動挿入） ───
+
+_db_stats_cache = None
+
+def get_db_stats(conn=None):
+    """DB全体の統計情報を取得（キャッシュ付き）"""
+    global _db_stats_cache
+    if _db_stats_cache:
+        return _db_stats_cache
+
+    def _query(c):
+        row = c.execute("""
+            SELECT MIN(race_date) as start_date, MAX(race_date) as end_date,
+                   COUNT(DISTINCT race_id) as race_count
+            FROM races WHERE race_date < date('now', '+1 day')
+        """).fetchone()
+        total = c.execute("""
+            SELECT COUNT(*) as c FROM results WHERE finish_position > 0
+        """).fetchone()
+        return {
+            'start_date': row['start_date'],
+            'end_date': row['end_date'],
+            'race_count': row['race_count'],
+            'horse_count': total['c'],
+        }
+
+    if conn:
+        _db_stats_cache = _query(conn)
+    else:
+        with get_db() as c:
+            _db_stats_cache = _query(c)
+    return _db_stats_cache
+
+
+def data_credit(conn=None, short=False):
+    """投稿末尾に付けるデータ期間クレジット
+    short=True: '📊過去2年10万頭のDB分析'
+    short=False: '📊2024-2026年 約7,800R/10万頭のDB分析に基づく'
+    """
+    stats = get_db_stats(conn)
+    if not stats or not stats['start_date']:
+        return '📊 DB分析に基づく'
+
+    start_y = int(stats['start_date'][:4])
+    end_y = int(stats['end_date'][:4])
+    years = end_y - start_y + 1
+    races = stats['race_count']
+    horses = stats['horse_count']
+
+    # 万単位に丸める
+    if horses >= 10000:
+        h_str = f"約{horses // 10000}万頭"
+    else:
+        h_str = f"約{horses:,}頭"
+
+    if short:
+        return f"📊過去{years}年{h_str}のDB分析"
+    else:
+        return f"📊{start_y}-{end_y}年 約{races:,}R/{h_str}のDB分析に基づく"
 
 
 def generate_analysis_column():
@@ -1603,7 +1672,7 @@ def generate_analysis_column():
 
     t1 = f"🧠 {col['title']}\n\n"
     t1 += col["t1_body"]
-    t1 += "\n\n#競馬予想 #AI予想 🧵↓"
+    t1 += f"\n\n{data_credit(short=True)}\n#競馬予想 #AI予想 🧵↓"
 
     t2 = col["t2_body"]
 
@@ -1749,6 +1818,7 @@ def generate_pickup_horse():
     t1 = f"🔍 今週末({weekend_str})の注目馬\n\n"
     t1 += "前走凡走でも今回条件が変わる馬を\n"
     t1 += "3つの切り口でAIがピックアップ\n\n"
+    t1 += f"{data_credit(short=True)}\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     # ── ツイート2: データ ──
@@ -1986,6 +2056,7 @@ def generate_weekend_preview():
     t1 += f"開催: {'・'.join(venues)}\n\n"
     t1 += "メインレースのAI注目馬を\n"
     t1 += "一足先にチラ見せ\n\n"
+    t1 += f"{data_credit(short=True)}\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     # ツイート2: 日付別にグループ化
@@ -2110,7 +2181,7 @@ def cmd_answer_check(args):
     else:
         t1 += "反省点を次に活かします📝\n"
 
-    t1 += "\n#競馬予想 #AI予想 #競馬結果"
+    t1 += f"\n{data_credit(short=True)}\n#競馬予想 #AI予想 #競馬結果"
 
     # ── ツイート2: ハイライト ──
     t2 = ""
@@ -2291,7 +2362,7 @@ def cmd_weekly_review(args):
             emoji = "✅" if roi >= 100 else "📉"
             t1 += f"{bt}ROI: {roi}%{emoji}\n"
 
-    t1 += "\n#競馬予想 #AI予想 #競馬結果"
+    t1 += f"\n{data_credit(short=True)}\n#競馬予想 #AI予想 #競馬結果"
 
     # ── ツイート2: 透明性 ──
     profit = int(total_payout - total_invested)
@@ -2737,6 +2808,7 @@ def cmd_hit_flash(args):
         tweet += f"\n買い目は今朝のツイートで事前公開済み📋\n"
 
         # ハッシュタグ（ベストのレース名）
+        tweet += f"\n{data_credit(short=True)}\n"
         tweet += "#AI競馬 #競馬予想"
         if best[0]['grade']:
             tag = best[0]['race_name'].replace(' ', '').replace('　', '')
@@ -2756,6 +2828,7 @@ def cmd_hit_flash(args):
             tweet += "データを蓄積して精度向上に努めます💪\n"
 
         tweet += f"\n次回も買い目を朝に事前公開します📋\n"
+        tweet += f"\n{data_credit(short=True)}\n"
         tweet += "#AI競馬 #競馬予想"
 
     # ファクトチェック
