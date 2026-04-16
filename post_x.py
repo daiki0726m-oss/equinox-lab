@@ -1055,7 +1055,7 @@ def _generate_trainer_ranking():
     t1 += f"集計期間: {period}\n\n"
     t1 += "勝率が高い=仕上げ力がある厩舎\n"
     t1 += "10頭以上出走の調教師を集計\n\n"
-    t1 += f"{data_credit(short=True)}\n"
+    t1 += "📊直近30日のトレンド分析\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     medals = ["🥇", "🥈", "🥉", " 4.", " 5."]
@@ -1115,7 +1115,7 @@ def _generate_jt_combo():
     t1 += f"集計期間: {period}\n\n"
     t1 += "同じ騎手でも調教師との相性で\n"
     t1 += "成績が大きく変わる\n\n"
-    t1 += f"{data_credit(short=True)}\n"
+    t1 += "📊直近90日のトレンド分析\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     t2 = f"📊 複勝率が高いコンビ\n\n"
@@ -1189,7 +1189,7 @@ def _generate_course_analysis():
     t1 += f"直近90日のデータから\n\n"
     t1 += f"今週末の{venue_name}開催に向けて\n"
     t1 += "コースバイアスをチェック\n\n"
-    t1 += f"{data_credit(short=True)}\n"
+    t1 += "📊直近90日のトレンド分析\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     t2 = f"📊 {venue_name}の傾向\n\n"
@@ -1247,7 +1247,7 @@ def _generate_distance_specialty():
     t1 += "距離を延長/短縮した馬は\n"
     t1 += "成績にどう影響する？\n"
     t1 += "半年分のデータで検証\n\n"
-    t1 += f"{data_credit(short=True)}\n"
+    t1 += "📊直近180日のトレンド分析\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
 
     t2 = "📊 距離変更別の複勝率\n\n"
