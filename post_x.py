@@ -391,15 +391,14 @@ def cmd_predict(args):
     if s_races:
         t1 += f"\n🔥 AI高信頼レース: {len(s_races)}件\n"
 
-    t1 += f"\n買い目は🧵↓で事前公開\n"
+    t1 += f"\nAI印は🧵↓で事前公開\n"
     t1 += f"{data_credit(short=True)}\n"
     t1 += "#AI競馬 #競馬予想"
 
-    # ── ツイート2以降: 各レースの買い目 ──
+    # ── ツイート2以降: 各レースの印 ──
     bet_tweets = []
     for race in target_races:
         preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
-        all_bets = json.loads(race['all_bets_json']) if race['all_bets_json'] else {}
 
         # 印を全て取得（◎○▲△×注）
         marks = {}
@@ -427,33 +426,13 @@ def cmd_predict(args):
             if p:
                 t += f"{mk} {p.get('horse_number',0)}.{p.get('horse_name','?')}\n"
 
-        # 具体的な買い目（三連単除外）
-        t += f"\n💰 推奨買い目\n"
-        bet_count = 0
-        total_amount = 0
-        for bt, bt_bets in all_bets.items():
-            if bt == '三連単':
-                continue
-            for b in bt_bets:
-                hns = b.get('horse_numbers', [])
-                amount = b.get('amount', 100)
-                # 重複馬番チェック
-                if len(hns) != len(set(hns)):
-                    continue
-                combo = '-'.join(str(h) for h in hns)
-                t += f"  {bt} {combo} ¥{amount:,}\n"
-                bet_count += 1
-                total_amount += amount
-
-        t += f"  計{bet_count}点 ¥{total_amount:,}\n"
-
         bet_tweets.append(t)
 
     # ── 最終ツイート: CTA ──
-    t_last = f"📊 以上 {date_label} のAI推奨買い目です\n\n"
-    t_last += f"全{len(target_races)}レース・具体的な買い目を\n"
-    t_last += f"レース前に公開しています\n\n"
-    t_last += "的中結果は夕方に速報します🎯\n\n"
+    t_last = f"📊 以上 {date_label} のAI予想印です\n\n"
+    t_last += f"全{len(target_races)}レースの印を\n"
+    t_last += f"レース前に事前公開しています\n\n"
+    t_last += "結果は夕方に速報します🎯\n\n"
     t_last += f"{data_credit()}\n"
     t_last += "#AI競馬 #競馬予想"
 
