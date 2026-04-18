@@ -106,10 +106,13 @@ body {
 .btn-predict:active { transform: translateY(0); }
 .btn-predict:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
 
-/* ─── Bet Type Selector (header 内に配置されているので header と一緒に sticky 化) ─── */
+/* ─── Bet Type Selector ─── */
 .bet-selector {
-  margin-top: 4px;
-  padding: 8px 0 0;
+  position: sticky; top: 56px; z-index: 90;
+  background: rgba(11,20,38,0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
   display: flex; gap: 6px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -627,9 +630,10 @@ body {
     flex-shrink: 0;
   }
 
-  /* Bet selector (header 内に配置なので top 指定不要) */
+  /* Bet selector */
   .bet-selector {
-    padding: 6px 0 0;
+    top: 95px;
+    padding: 8px 10px;
     gap: 6px;
   }
   .bet-chip {
@@ -749,25 +753,24 @@ body {
   <div class="header-top">
     <div class="logo">🏇 AI KEIBA</div>
     <div class="header-controls">
-      <input type="date" id="dateInput" class="input-date" value="">
+      <input type="date" id="dateInput" class="input-date" value="{{ target_date[:4] }}-{{ target_date[4:6] }}-{{ target_date[6:8] }}">
       <span class="budget-label">予算</span>
       <input type="number" id="budgetInput" class="input-budget" value="1000" min="100" max="100000" step="100">
       <span class="budget-unit">円</span>
-      <button id="predictBtn" class="btn-predict" onclick="loadPredictions()">予想実行</button>
+      <button id="predictBtn" class="btn-predict" onclick="loadPredictions()">予測実行</button>
     </div>
   </div>
-  <!-- Venue Tabs (header 内で sticky 固定) -->
-  <div class="venue-tabs" id="venueTabs" style="display:none;"></div>
-  <!-- Bet Type Selector (header 内で sticky 固定、スマホでもズレない) -->
-  <div class="bet-selector" id="betSelector">
-    <div class="bet-chip active" data-type="単勝" onclick="selectBetType(this)">単勝</div>
-    <div class="bet-chip" data-type="複勝" onclick="selectBetType(this)">複勝</div>
-    <div class="bet-chip" data-type="ワイド" onclick="selectBetType(this)">ワイド</div>
-    <div class="bet-chip" data-type="馬連" onclick="selectBetType(this)">馬連</div>
-    <div class="bet-chip" data-type="三連複" onclick="selectBetType(this)">三連複</div>
-    <div class="bet-chip" data-type="三連単" onclick="selectBetType(this)">三連単</div>
-  </div>
 </header>
+
+<!-- Bet Type Selector -->
+<div class="bet-selector" id="betSelector">
+  <div class="bet-chip active" data-type="単勝" onclick="selectBetType(this)">単勝</div>
+  <div class="bet-chip" data-type="複勝" onclick="selectBetType(this)">複勝</div>
+  <div class="bet-chip" data-type="ワイド" onclick="selectBetType(this)">ワイド</div>
+  <div class="bet-chip" data-type="馬連" onclick="selectBetType(this)">馬連</div>
+  <div class="bet-chip" data-type="三連複" onclick="selectBetType(this)">三連複</div>
+  <div class="bet-chip" data-type="三連単" onclick="selectBetType(this)">三連単</div>
+</div>
 
 <!-- Lock Banner -->
 <div class="lock-banner" id="lockBanner">🔒 10:00に予想確定済み</div>
@@ -789,19 +792,22 @@ body {
   <button class="conf-filter-btn" onclick="setConfFilter('C')">C以上</button>
 </div>
 
+<!-- Venue Tabs -->
+<div class="venue-tabs" id="venueTabs" style="display:none;"></div>
+
 <!-- Main -->
 <div class="main" id="mainContent">
   <div class="empty-state">
     <div class="empty-icon">🏇</div>
-    <div class="empty-title">AI競馬予想</div>
-    <div class="empty-desc">日付を選択して「予想実行」をタップ</div>
+    <div class="empty-title">AI競馬予測</div>
+    <div class="empty-desc">日付を選択して「予測実行」をタップ</div>
   </div>
 </div>
 
 <!-- Loading -->
 <div class="loading-overlay" id="loading">
   <div class="spinner"></div>
-  <div class="loading-text">AI予想を実行中...</div>
+  <div class="loading-text">AI予測を実行中...</div>
   <div class="loading-progress" id="loadingProgress"></div>
 </div>
 
@@ -820,7 +826,7 @@ const state = {
 function toggleBetsFilter() {
   state.filterBetsOnly = !state.filterBetsOnly;
   document.getElementById('sumBetsItem').classList.toggle('active', state.filterBetsOnly);
-  if (state.allData) renderAllPreservingOpenState();
+  if (state.allData) renderAll();
 }
 
 function setConfFilter(level) {
@@ -828,16 +834,7 @@ function setConfFilter(level) {
   document.querySelectorAll('.conf-filter-btn').forEach(btn => {
     btn.classList.toggle('active', btn.textContent.startsWith(level === 'ALL' ? '全て' : level));
   });
-  if (state.allData) {
-    // 開閉状態を記憶→再描画→復元
-    const openIds = Array.from(document.querySelectorAll('.race-card.open'))
-      .map(c => c.id.replace('race-', ''));
-    renderRaceCards();
-    openIds.forEach(id => {
-      const card = document.getElementById('race-' + id);
-      if (card) card.classList.add('open');
-    });
-  }
+  if (state.allData) renderRaceCards();
 }
 
 const BET_COLORS = {
@@ -847,51 +844,18 @@ const BET_COLORS = {
 };
 const CONF_ICONS = { S: '🔥', A: '★', B: '📊', C: '△', D: '—' };
 
-// ─── 開いているレースカードを記憶→再描画→復元 ───
-// 券種/予算変更で renderAll() が走ると DOM が作り直されて .open クラスが消える。
-// ユーザー指摘「買い目を変更すると開いてた予想欄が閉じる」への対応。
-function renderAllPreservingOpenState() {
-  const openIds = Array.from(document.querySelectorAll('.race-card.open'))
-    .map(c => c.id.replace('race-', ''));
-  // 選択中タブも記憶 (pred/result)
-  const activeTabs = {};
-  document.querySelectorAll('.race-card').forEach(card => {
-    const raceId = card.id.replace('race-', '');
-    const activeBtn = card.querySelector('.tab-btn.active');
-    if (activeBtn) {
-      const m = (activeBtn.getAttribute('onclick') || '').match(/'(pred|result)'/);
-      if (m) activeTabs[raceId] = m[1];
-    }
-  });
-
-  renderAll();
-
-  // 復元: 開閉状態
-  openIds.forEach(id => {
-    const card = document.getElementById('race-' + id);
-    if (card) card.classList.add('open');
-  });
-  // 復元: タブ選択
-  Object.entries(activeTabs).forEach(([raceId, tab]) => {
-    const card = document.getElementById('race-' + raceId);
-    if (!card) return;
-    const btn = card.querySelector(`.tab-btn[onclick*="'${tab}'"]`);
-    if (btn && !btn.classList.contains('active')) btn.click();
-  });
-}
-
 // ─── Bet Type Selector (Instant, no API call) ───
 function selectBetType(chip) {
   document.querySelectorAll('.bet-chip').forEach(c => c.classList.remove('active'));
   chip.classList.add('active');
   state.activeBetType = chip.dataset.type;
-  if (state.allData) renderAllPreservingOpenState();
+  if (state.allData) renderAll();
 }
 
 // ─── Budget Change (Instant recalc) ───
 document.getElementById('budgetInput').addEventListener('input', function() {
   state.budget = Math.max(100, Math.min(parseInt(this.value) || 1000, 100000));
-  if (state.allData) renderAllPreservingOpenState();
+  if (state.allData) renderAll();
 });
 
 
@@ -926,10 +890,10 @@ async function loadPredictions() {
 
     renderAll();
   } catch (e) {
-    alert('予想の取得に失敗しました: ' + e.message);
+    alert('予測の取得に失敗しました: ' + e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = '予想実行';
+    btn.textContent = '予測実行';
     document.getElementById('loading').classList.remove('visible');
   }
 }
@@ -1177,7 +1141,7 @@ function createRaceCard(race) {
       </div>
       <div class="race-body">
         <div class="tab-bar">
-          <button class="tab-btn active" onclick="switchTab(this,'${race.race_id}','pred')">📊 予想</button>
+          <button class="tab-btn active" onclick="switchTab(this,'${race.race_id}','pred')">📊 予測</button>
           ${hasResults ? `<button class="tab-btn" onclick="switchTab(this,'${race.race_id}','result')">✅ 結果</button>` : ''}
         </div>
         <div class="tab-content" id="tab-pred-${race.race_id}">${renderPredTab(race)}</div>
@@ -1201,14 +1165,7 @@ function switchTab(btn, raceId, tab) {
 // ─── Prediction Tab ───
 function renderPredTab(race) {
   const horses = race.horses || [];
-  // Sort by mark order: ◎→○→▲→△→×→注→(no mark by pred_win)
-  const MARK_ORDER = {'◎': 0, '○': 1, '▲': 2, '△': 3, '×': 4, '注': 5};
-  const sorted = [...horses].sort((a, b) => {
-    const ma = a.mark in MARK_ORDER ? MARK_ORDER[a.mark] : 100;
-    const mb = b.mark in MARK_ORDER ? MARK_ORDER[b.mark] : 100;
-    if (ma !== mb) return ma - mb;
-    return b.pred_win - a.pred_win;  // 同ランクならpred_win順
-  });
+  const sorted = [...horses].sort((a, b) => b.pred_win - a.pred_win);
 
   // Compute category rankings (S/A/B/C/D) within race
   const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
@@ -1324,8 +1281,8 @@ function renderHorseRow(h, showReasons) {
       </div>
     </div>
     <div class="horse-prob">
-      <div class="prob-value">${h.pred_win_display_pct || h.pred_win_display || h.pred_win || 0}%</div>
-      <div class="prob-label">勝率予想</div>
+      <div class="prob-value">${h.pred_win || 0}%</div>
+      <div class="prob-label">勝率予測</div>
       <div class="rank-bar"><div class="rank-bar-fill" style="width:${rankPct}%"></div></div>
     </div>
   </div>`;
@@ -1427,13 +1384,10 @@ function renderResultTab(race) {
 
 // ─── Init ───
 document.addEventListener('DOMContentLoaded', () => {
+  // Auto-load if we have a date
   const dateInput = document.getElementById('dateInput');
-  if (!dateInput.value) {
-    const now = new Date();
-    const yyyy = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate()).padStart(2, '0');
-    dateInput.value = `${yyyy}-${mm}-${dd}`;
+  if (dateInput.value) {
+    // Ready state - user clicks predict
   }
 });
 </script>
