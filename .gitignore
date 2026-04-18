@@ -24,3 +24,13 @@ Thumbs.db
 
 # Gemini
 .gemini/
+
+# Database (GitHub Actions cacheで管理)
+keiba.db
+keiba.db-shm
+keiba.db-wal
+
+# Temp files
+.post_history.json
+scrape_log.txt
+train_log.txt
