@@ -532,6 +532,7 @@ body {
 .cat-badge.rank-b { background: rgba(59,130,246,0.2); color: #60A5FA; }
 .cat-badge.rank-c { background: rgba(100,116,139,0.2); color: #94A3B8; }
 .cat-badge.rank-d { background: rgba(239,68,68,0.15); color: #F87171; }
+.cat-badge.rank-unknown { background: rgba(100,116,139,0.1); color: #64748B; font-size: 0.6rem; }
 @media (max-width: 480px) {
   .cat-badges { margin-left: 0; margin-top: 3px; display: flex; }
 }
@@ -1212,14 +1213,29 @@ function renderPredTab(race) {
   const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
   const CAT_LABELS = ['能','血','騎','場','績','天'];
   CAT_KEYS.forEach((key, idx) => {
-    const vals = sorted.map(h => h[key] || 0).sort((a,b) => b - a);
+    const rawVals = sorted.map(h => h[key] || 0);
+    const uniqueVals = [...new Set(rawVals)];
+    const hasVariance = uniqueVals.length > 1 && !(uniqueVals.length === 1 && uniqueVals[0] === 0);
+    // 全馬同値 or 全馬0 → データ不足 → 「-」表示
+    if (!hasVariance) {
+      sorted.forEach(h => {
+        if (!h._catGrades) h._catGrades = [];
+        h._catGrades[idx] = { label: CAT_LABELS[idx], grade: '-' };
+      });
+      return;
+    }
+    const vals = [...rawVals].sort((a,b) => b - a);
     const n = vals.length;
     sorted.forEach(h => {
       const v = h[key] || 0;
-      const rank = vals.indexOf(v);
+      // 同値の場合は中間順位を採用（タイ処理）
+      const firstIdx = vals.indexOf(v);
+      const lastIdx = vals.lastIndexOf(v);
+      const rank = (firstIdx + lastIdx) / 2;
       const pct = n > 1 ? rank / (n - 1) : 0.5;
       let grade;
-      if (pct <= 0.1) grade = 'S';
+      if (v === 0) grade = '-';  // スコア0はデータなし
+      else if (pct <= 0.1) grade = 'S';
       else if (pct <= 0.25) grade = 'A';
       else if (pct <= 0.5) grade = 'B';
       else if (pct <= 0.75) grade = 'C';
@@ -1313,7 +1329,7 @@ function renderHorseRow(h, showReasons) {
       <div class="horse-name-row">
         <span class="horse-name">${h.horse_name || '不明'}</span>
         <span class="horse-jockey">${h.jockey_name || ''}</span>
-        ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
+        ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade === '-' ? 'unknown' : g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
       </div>
       <div class="horse-stats">
         ${h.odds_win && h.popularity ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span><span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span></span>` : ''}

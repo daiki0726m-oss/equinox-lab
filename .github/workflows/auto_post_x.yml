@@ -111,10 +111,20 @@ jobs:
         run: |
           if [ -f keiba.db ]; then
             SIZE=$(du -h keiba.db | cut -f1)
-            echo "✅ keiba.db restored from cache ($SIZE)"
+            RACES=$(python -c "from database import init_db, get_db; init_db(); c=get_db().__enter__(); print(c.execute('SELECT COUNT(*) FROM races').fetchone()[0])" 2>/dev/null || echo "?")
+            echo "✅ keiba.db restored from cache ($SIZE, ${RACES}レース)"
           else
-            echo "⚠️ keiba.db not found in cache - 初期化します"
+            echo "⚠️ keiba.db not found in cache - 初期化+過去データ収集"
             python -c "from database import init_db; init_db()"
+            echo "📥 過去60日分のデータを収集中..."
+            for i in $(seq 1 60); do
+              DATE=$(date -d "-${i} days" +%Y%m%d 2>/dev/null || date -v-${i}d +%Y%m%d 2>/dev/null)
+              if [ -n "$DATE" ]; then
+                python predict.py collect --date "$DATE" 2>/dev/null || true
+              fi
+            done
+            RACES=$(python -c "from database import get_db; c=get_db().__enter__(); print(c.execute('SELECT COUNT(*) FROM races').fetchone()[0])" 2>/dev/null || echo "0")
+            echo "✅ 過去データ収集完了: ${RACES}レース"
           fi
 
       - name: Determine post type
