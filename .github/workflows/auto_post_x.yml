@@ -107,24 +107,42 @@ jobs:
         run: |
           pip install tweepy lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
 
-      - name: Check DB status
+      - name: Check DB status and seed historical data
         run: |
+          python -c "from database import init_db; init_db()"
+          
           if [ -f keiba.db ]; then
             SIZE=$(du -h keiba.db | cut -f1)
-            RACES=$(python -c "from database import init_db, get_db; init_db(); c=get_db().__enter__(); print(c.execute('SELECT COUNT(*) FROM races').fetchone()[0])" 2>/dev/null || echo "?")
-            echo "✅ keiba.db restored from cache ($SIZE, ${RACES}レース)"
-          else
-            echo "⚠️ keiba.db not found in cache - 初期化+過去データ収集"
-            python -c "from database import init_db; init_db()"
-            echo "📥 過去60日分のデータを収集中..."
+            echo "📂 keiba.db: $SIZE"
+          fi
+          
+          # resultsテーブルのレコード数で過去データの充足度を判定
+          RESULT_COUNT=$(python -c "
+          from database import get_db
+          with get_db() as conn:
+              c = conn.execute('SELECT COUNT(*) FROM results WHERE finish_position > 0').fetchone()[0]
+              print(c)
+          " 2>/dev/null || echo "0")
+          
+          echo "📊 確定結果レコード: ${RESULT_COUNT}件"
+          
+          # 500件未満 = 過去データ不足 → 収集実行
+          if [ "$RESULT_COUNT" -lt 500 ]; then
+            echo "⚠️ 過去データ不足（${RESULT_COUNT}件 < 500件）→ 過去60日分を収集"
             for i in $(seq 1 60); do
               DATE=$(date -d "-${i} days" +%Y%m%d 2>/dev/null || date -v-${i}d +%Y%m%d 2>/dev/null)
               if [ -n "$DATE" ]; then
                 python predict.py collect --date "$DATE" 2>/dev/null || true
               fi
             done
-            RACES=$(python -c "from database import get_db; c=get_db().__enter__(); print(c.execute('SELECT COUNT(*) FROM races').fetchone()[0])" 2>/dev/null || echo "0")
-            echo "✅ 過去データ収集完了: ${RACES}レース"
+            NEW_COUNT=$(python -c "
+            from database import get_db
+            with get_db() as conn:
+                print(conn.execute('SELECT COUNT(*) FROM results WHERE finish_position > 0').fetchone()[0])
+            " 2>/dev/null || echo "0")
+            echo "✅ 過去データ収集完了: ${NEW_COUNT}件"
+          else
+            echo "✅ 過去データ充足: ${RESULT_COUNT}件"
           fi
 
       - name: Determine post type
