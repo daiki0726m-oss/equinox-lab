@@ -87,8 +87,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # ── keiba.db をキャッシュから復元 ──
+      - name: Restore keiba.db from cache
+        uses: actions/cache@v4
+        id: db-cache
         with:
-          lfs: true
+          path: keiba.db
+          key: keiba-db-${{ github.run_number }}
+          restore-keys: |
+            keiba-db-
+
+      - name: Check DB status
+        run: |
+          if [ -f keiba.db ]; then
+            SIZE=$(du -h keiba.db | cut -f1)
+            echo "✅ keiba.db restored from cache ($SIZE)"
+          else
+            echo "⚠️ keiba.db not found in cache"
+            echo "📥 初期化中... collectで構築します"
+            python -c "from database import init_db; init_db()" 2>/dev/null || true
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -291,11 +310,7 @@ jobs:
           # predict.htmlをdocsに同期（GitHub Pages用）
           cp -f templates/predict.html docs/predict.html 2>/dev/null || true
           git add docs/data/ docs/predict.html
-          # 結果反映モードではkeiba.dbもコミット（結果・配当データの永続化）
-          TYPE="${{ steps.determine.outputs.type }}"
-          if [ "$TYPE" = "results" ] || [ "$TYPE" = "answer_check" ] || [ "$TYPE" = "refresh_dashboard" ] || [ "$TYPE" = "hit_flash" ]; then
-            git add keiba.db || true
-          fi
+          # keiba.dbはcacheで管理するためgitには含めない
           if git diff --staged --quiet; then
             echo "📭 変更なし - デプロイスキップ"
           else

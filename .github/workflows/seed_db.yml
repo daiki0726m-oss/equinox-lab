@@ -1,0 +1,51 @@
+name: 🗄️ Seed keiba.db cache
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "seed" to confirm DB upload'
+        required: true
+
+jobs:
+  seed:
+    if: github.event.inputs.confirm == 'seed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml
+
+      - name: Build fresh keiba.db
+        run: |
+          echo "📥 過去データをスクレイプ中..."
+          python -c "from database import init_db; init_db()"
+          
+          # 直近30日分のデータを収集
+          for i in $(seq 0 30); do
+            DATE=$(date -d "-${i} days" +%Y%m%d 2>/dev/null || date -v-${i}d +%Y%m%d)
+            echo "📥 $DATE..."
+            python predict.py collect --date "$DATE" 2>/dev/null || true
+          done
+          
+          echo "📊 DB状況:"
+          python -c "
+          from database import init_db, get_db
+          init_db()
+          with get_db() as conn:
+            races = conn.execute('SELECT COUNT(*) FROM races').fetchone()[0]
+            results = conn.execute('SELECT COUNT(*) FROM results').fetchone()[0]
+            print(f'  レース: {races}件 / 出走データ: {results}件')
+          "
+
+      - name: Save to cache
+        uses: actions/cache/save@v4
+        with:
+          path: keiba.db
+          key: keiba-db-seed-${{ github.run_number }}
