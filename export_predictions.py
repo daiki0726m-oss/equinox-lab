@@ -252,7 +252,7 @@ def export_predictions(date_str=None):
                     "race_tendency": race_tendency,
                     "has_results": has_results,
                     "payouts": race_payouts if has_results else [],
-                    "prediction_locked": False,
+                    "prediction_locked": datetime.now(JST).hour >= 10,
                 })
 
             if not all_races:
@@ -287,7 +287,7 @@ def export_predictions(date_str=None):
                 "date": ds,
                 "total_races": len(all_races),
                 "venues": venues,
-                "is_locked": False,
+                "is_locked": datetime.now(JST).hour >= 10,
                 "exported_at": datetime.now(JST).isoformat(),
             }
 
