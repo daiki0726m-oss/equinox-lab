@@ -288,7 +288,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/data/
+          # predict.htmlをdocsに同期（GitHub Pages用）
+          cp -f templates/predict.html docs/predict.html 2>/dev/null || true
+          git add docs/data/ docs/predict.html
           # 結果反映モードではkeiba.dbもコミット（結果・配当データの永続化）
           TYPE="${{ steps.determine.outputs.type }}"
           if [ "$TYPE" = "results" ] || [ "$TYPE" = "answer_check" ] || [ "$TYPE" = "refresh_dashboard" ] || [ "$TYPE" = "hit_flash" ]; then
