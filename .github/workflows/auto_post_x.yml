@@ -98,17 +98,6 @@ jobs:
           restore-keys: |
             keiba-db-
 
-      - name: Check DB status
-        run: |
-          if [ -f keiba.db ]; then
-            SIZE=$(du -h keiba.db | cut -f1)
-            echo "✅ keiba.db restored from cache ($SIZE)"
-          else
-            echo "⚠️ keiba.db not found in cache"
-            echo "📥 初期化中... collectで構築します"
-            python -c "from database import init_db; init_db()" 2>/dev/null || true
-          fi
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -117,6 +106,16 @@ jobs:
       - name: Install dependencies
         run: |
           pip install tweepy lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
+
+      - name: Check DB status
+        run: |
+          if [ -f keiba.db ]; then
+            SIZE=$(du -h keiba.db | cut -f1)
+            echo "✅ keiba.db restored from cache ($SIZE)"
+          else
+            echo "⚠️ keiba.db not found in cache - 初期化します"
+            python -c "from database import init_db; init_db()"
+          fi
 
       - name: Determine post type
         id: determine
@@ -216,7 +215,7 @@ jobs:
 
       # 結果収集のみ（10時以降: 予測は再実行しない）
       - name: Collect results (no re-predict)
-        if: steps.determine.outputs.type == 'results' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'weekly_review' || steps.determine.outputs.type == 'hit_flash'
+        if: steps.determine.outputs.type == 'results' || steps.determine.outputs.type == 'answer_check' || steps.determine.outputs.type == 'weekly_review'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📥 ${DATE} の結果を収集..."
@@ -321,9 +320,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # predict.htmlをdocsに同期（GitHub Pages用）
-          cp -f templates/predict.html docs/predict.html 2>/dev/null || true
-          git add docs/data/ docs/predict.html
+          # docs/data/のJSONのみをデプロイ（predict.htmlはindex.htmlが本体）
+          git add docs/data/
           # keiba.dbはcacheで管理するためgitには含めない
           if git diff --staged --quiet; then
             echo "📭 変更なし - デプロイスキップ"
