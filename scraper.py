@@ -611,6 +611,59 @@ class NetkeibaScraper:
         return odds_data
 
     # =========================================================
+    # 馬のキャリア成績取得
+    # =========================================================
+    def scrape_horse_career(self, horse_id):
+        """馬ページから通算成績を取得
+
+        Returns:
+            dict: {
+                'total_races': int,
+                'wins': int,
+                'seconds': int,
+                'thirds': int,
+                'others': int,
+                'win_rate': float,    # 0.0-1.0
+                'top3_rate': float,   # 0.0-1.0
+            }
+            取得失敗時はNone
+        """
+        url = f"{self.DB_URL}/horse/{horse_id}/"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return None
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        prof = soup.find("table", class_="db_prof_table")
+        if not prof:
+            return None
+
+        for tr in prof.find_all("tr"):
+            th = tr.find("th")
+            td = tr.find("td")
+            if th and td and "通算成績" in th.text:
+                text = td.text.strip()
+                # フォーマット: "6戦0勝 [0-1-0-5]"
+                m = re.search(r'(\d+)戦(\d+)勝.*\[(\d+)-(\d+)-(\d+)-(\d+)\]', text)
+                if m:
+                    total = int(m.group(1))
+                    wins = int(m.group(3))
+                    seconds = int(m.group(4))
+                    thirds = int(m.group(5))
+                    others = int(m.group(6))
+                    if total > 0:
+                        return {
+                            'total_races': total,
+                            'wins': wins,
+                            'seconds': seconds,
+                            'thirds': thirds,
+                            'others': others,
+                            'win_rate': wins / total,
+                            'top3_rate': (wins + seconds + thirds) / total,
+                        }
+        return None
+
+    # =========================================================
     # 出馬表（未来レース）の取得
     # =========================================================
     def scrape_shutuba(self, race_id):
