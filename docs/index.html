@@ -1209,39 +1209,79 @@ function renderPredTab(race) {
   const horses = race.horses || [];
   const sorted = [...horses].sort((a, b) => (b.pred_win_pct || 0) - (a.pred_win_pct || 0));
 
-  // Compute category rankings (S/A/B/C/D) within race
-  const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
-  const CAT_LABELS = ['能','血','騎','場','績','天'];
-  CAT_KEYS.forEach((key, idx) => {
-    const rawVals = sorted.map(h => h[key] || 0);
+  // Compute category grades within race
+  // 相対評価カテゴリ（レース内順位で評価）
+  const RELATIVE_CATS = [
+    { key: 'cat_ability', label: '能' },
+    { key: 'cat_jockey', label: '騎' },
+    { key: 'cat_track', label: '場' },
+  ];
+  // 絶対評価カテゴリ（値そのもので段階評価）
+  const ABSOLUTE_CATS = [
+    { key: 'cat_pedigree', label: '血', base: 50 },  // 50がデフォルト
+    { key: 'cat_record', label: '績', base: 0 },     // top3_rate*100 (0-100)
+    { key: 'cat_weather', label: '天', base: 0 },    // wet_top3_rate*100 (0-100)
+  ];
+  const ALL_CATS = [...RELATIVE_CATS, ...ABSOLUTE_CATS];
+  const CAT_LABELS_ALL = ALL_CATS.map(c => c.label);
+
+  // ── 相対評価 ──
+  RELATIVE_CATS.forEach((cat, idx) => {
+    const rawVals = sorted.map(h => h[cat.key] || 0);
     const uniqueVals = [...new Set(rawVals)];
-    const hasVariance = uniqueVals.length > 1 && !(uniqueVals.length === 1 && uniqueVals[0] === 0);
-    // 全馬同値 or 全馬0 → データ不足 → 「-」表示
-    if (!hasVariance) {
+    const allSame = uniqueVals.length <= 1;
+    const allZero = uniqueVals.length === 1 && uniqueVals[0] === 0;
+    if (allSame || allZero) {
       sorted.forEach(h => {
         if (!h._catGrades) h._catGrades = [];
-        h._catGrades[idx] = { label: CAT_LABELS[idx], grade: '-' };
+        h._catGrades[idx] = { label: cat.label, grade: '-' };
       });
       return;
     }
     const vals = [...rawVals].sort((a,b) => b - a);
     const n = vals.length;
     sorted.forEach(h => {
-      const v = h[key] || 0;
-      // 同値の場合は中間順位を採用（タイ処理）
+      const v = h[cat.key] || 0;
       const firstIdx = vals.indexOf(v);
       const lastIdx = vals.lastIndexOf(v);
       const rank = (firstIdx + lastIdx) / 2;
       const pct = n > 1 ? rank / (n - 1) : 0.5;
       let grade;
-      if (v === 0) grade = '-';  // スコア0はデータなし
-      else if (pct <= 0.1) grade = 'S';
-      else if (pct <= 0.25) grade = 'A';
-      else if (pct <= 0.5) grade = 'B';
-      else if (pct <= 0.75) grade = 'C';
+      if (v === 0) grade = '-';
+      else if (pct <= 0.15) grade = 'S';
+      else if (pct <= 0.35) grade = 'A';
+      else if (pct <= 0.60) grade = 'B';
+      else if (pct <= 0.80) grade = 'C';
       else grade = 'D';
       if (!h._catGrades) h._catGrades = [];
-      h._catGrades[idx] = { label: CAT_LABELS[idx], grade };
+      h._catGrades[idx] = { label: cat.label, grade };
+    });
+  });
+
+  // ── 絶対評価 ──
+  ABSOLUTE_CATS.forEach((cat, i) => {
+    const idx = RELATIVE_CATS.length + i;
+    sorted.forEach(h => {
+      const v = h[cat.key] || 0;
+      let grade;
+      if (v === 0 || v === cat.base) {
+        grade = '-';  // データなしorデフォルト値
+      } else if (cat.key === 'cat_pedigree') {
+        // 血統: 50がデフォルト、55以上がプラス評価
+        if (v >= 65) grade = 'S';
+        else if (v >= 58) grade = 'A';
+        else if (v >= 52) grade = 'B';
+        else if (v >= 45) grade = 'C';
+        else grade = 'D';
+      } else {
+        // 績/天: top3_rate*100 → 0-100%のpercent
+        if (v >= 50) grade = 'A';
+        else if (v >= 30) grade = 'B';
+        else if (v >= 15) grade = 'C';
+        else grade = 'D';
+      }
+      if (!h._catGrades) h._catGrades = [];
+      h._catGrades[idx] = { label: cat.label, grade };
     });
   });
 
