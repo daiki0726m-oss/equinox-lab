@@ -289,24 +289,39 @@ class FeatureBuilder:
                     LIMIT 10
                 """, (horse_id,)).fetchall()
 
-        if not rows:
-            # DB に過去走がない → 馬ページからキャリア成績を取得
+        # DB過去走が少ない場合は馬ページからキャリア成績で補完
+        db_total = len(rows) if rows else 0
+        if db_total < 3:
             try:
                 from scraper import NetkeibaScraper
                 if not hasattr(self, '_scraper'):
                     self._scraper = NetkeibaScraper()
                 career = self._scraper.scrape_horse_career(horse_id)
-                if career and career['total_races'] > 0:
+                if career and career['total_races'] > db_total:
+                    # 馬ページの通算成績を使用（より完全なデータ）
+                    if db_total > 0:
+                        # DB着順データがある場合はトレンド計算に使う
+                        positions = [r["finish_position"] for r in rows]
+                        last5 = positions[:5]
+                        trend = 0
+                        if len(last5) >= 3:
+                            recent3 = last5[:3]
+                            trend = (recent3[0] - recent3[2]) / 2
+                        avg_finish = sum(last5) / len(last5) / 18
+                    else:
+                        trend = 0
+                        avg_finish = 0
                     return {
-                        "avg_finish_5r": 0,  # 個別着順は取れないため0
+                        "avg_finish_5r": avg_finish,
                         "win_rate_10r": career['win_rate'],
                         "top3_rate_10r": career['top3_rate'],
-                        "finish_trend": 0,
+                        "finish_trend": np.clip(trend / 10, -1, 1),
                         "race_experience": min(career['total_races'], 10) / 10,
                     }
-            except Exception as e:
-                pass  # フォールバック失敗時はデフォルト値にする
+            except Exception:
+                pass
 
+        if not rows:
             return {
                 "avg_finish_5r": 0,
                 "win_rate_10r": 0,
