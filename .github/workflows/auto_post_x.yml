@@ -317,7 +317,9 @@ jobs:
 
           if [ "$TYPE" = "weekday" ]; then
             python post_x.py weekday
-          elif [ "$TYPE" = "predict" ] || [ "$TYPE" = "odds_flash" ]; then
+          elif [ "$TYPE" = "predict" ]; then
+            echo "⏳ 7:00予測完了。X投稿は9:30のodds_flash後に実行します"
+          elif [ "$TYPE" = "odds_flash" ]; then
             python post_x.py predict --date "$DATE"
           elif [ "$TYPE" = "results" ]; then
             python post_x.py results --date "$DATE"
