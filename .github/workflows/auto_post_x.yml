@@ -259,7 +259,7 @@ jobs:
           echo "💰 ${DATE} の配当を収集..."
           python collect_payouts.py --date "$DATE"
 
-      # ダッシュボード自動更新（結果＋オッズ＋配当＋再予測）
+      # ダッシュボード自動更新（結果＋オッズ＋配当のみ。予測は変更しない）
       - name: Refresh dashboard (results + odds)
         if: steps.determine.outputs.type == 'refresh_dashboard'
         run: |
@@ -272,8 +272,6 @@ jobs:
           python refresh_odds.py --date "$DATE"
           echo "💰 配当収集..."
           python collect_payouts.py --date "$DATE"
-          echo "🧠 最新データで再予測..."
-          python predict.py predict --date "$DATE" --force
 
       # オッズ更新
       - name: Refresh odds before lock
