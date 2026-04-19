@@ -265,7 +265,7 @@ class FeatureBuilder:
     # ── 新しいヘルパーメソッド ──
 
     def _get_past_performance(self, horse_id, race_date=None):
-        """馬の過去成績を集計"""
+        """馬の過去成績を集計（DB→馬ページ フォールバック付き）"""
         with get_db() as conn:
             if race_date:
                 rows = conn.execute("""
@@ -290,6 +290,23 @@ class FeatureBuilder:
                 """, (horse_id,)).fetchall()
 
         if not rows:
+            # DB に過去走がない → 馬ページからキャリア成績を取得
+            try:
+                from scraper import NetkeibaScraper
+                if not hasattr(self, '_scraper'):
+                    self._scraper = NetkeibaScraper()
+                career = self._scraper.scrape_horse_career(horse_id)
+                if career and career['total_races'] > 0:
+                    return {
+                        "avg_finish_5r": 0,  # 個別着順は取れないため0
+                        "win_rate_10r": career['win_rate'],
+                        "top3_rate_10r": career['top3_rate'],
+                        "finish_trend": 0,
+                        "race_experience": min(career['total_races'], 10) / 10,
+                    }
+            except Exception as e:
+                pass  # フォールバック失敗時はデフォルト値にする
+
             return {
                 "avg_finish_5r": 0,
                 "win_rate_10r": 0,
