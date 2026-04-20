@@ -193,6 +193,11 @@ body {
   border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border);
+  position: sticky;
+  top: 50px; /* header height */
+  z-index: 90;
+  background: var(--bg-primary);
+  padding-top: 4px;
 }
 .venue-tab {
   flex: 1;
@@ -675,7 +680,12 @@ body {
   .summary-label { font-size: 9px; }
 
   /* Venue tabs */
-  .venue-tabs { margin: 0 10px 8px; }
+  .venue-tabs {
+    margin: 0 10px 8px;
+    top: 42px; /* smaller header on mobile */
+    padding-top: 6px;
+    padding-bottom: 2px;
+  }
   .venue-tab { padding: 7px 8px; font-size: 11px; }
 
   /* Main content area */
