@@ -402,93 +402,12 @@ def calc_last3f_stats(results):
 
 
 # ═══════════════════════════════════════════
-# DBから直接集計（クラウドIPブロック回避用）
-# ═══════════════════════════════════════════
-
-def get_results_from_db(venue, surface, distance, start_year, end_year):
-    """ローカルDBの過去走を統計フォーマットに変換して返す
-
-    netkeibaがGitHub Actions IPをブロックしているため、
-    DBに過去6年データが揃っていればこちらを優先利用する。
-
-    Returns:
-        list[dict]: scrape_race_results と同じ shape。
-        DBに該当データが少ない場合は空リスト。
-    """
-    try:
-        from database import get_db
-    except ImportError:
-        return []
-
-    sql = """
-        SELECT
-            r.race_id,
-            r.finish_position AS finish,
-            r.post_position AS frame,
-            r.horse_number AS number,
-            COALESCE(j.jockey_name, '') AS jockey,
-            COALESCE(r.passing_order, '') AS passing,
-            COALESCE(r.last_3f, 0) AS last_3f,
-            COALESCE(r.odds, 0) AS odds,
-            COALESCE(r.popularity, 0) AS popularity,
-            COALESCE(h.sire, '') AS sire
-        FROM results r
-        JOIN races ra ON r.race_id = ra.race_id
-        LEFT JOIN jockeys j ON r.jockey_id = j.jockey_id
-        LEFT JOIN horses h ON r.horse_id = h.horse_id
-        WHERE ra.venue = ?
-          AND ra.surface = ?
-          AND ra.distance = ?
-          AND ra.race_date >= ?
-          AND ra.race_date <= ?
-          AND r.finish_position > 0
-    """
-    start_date = f"{start_year}-01-01"
-    end_date = f"{end_year}-12-31"
-
-    with get_db() as conn:
-        rows = conn.execute(sql, (venue, surface, distance, start_date, end_date)).fetchall()
-
-    results = []
-    for row in rows:
-        results.append({
-            'race_id': row['race_id'],
-            'finish': row['finish'],
-            'frame': row['frame'],
-            'number': row['number'],
-            'jockey': row['jockey'],
-            'passing': row['passing'],
-            'last_3f': row['last_3f'],
-            'odds': row['odds'],
-            'popularity': row['popularity'],
-            'sire': row['sire'],
-            'running_style': _judge_running_style(row['passing']),
-        })
-    return results
-
-
-# DBから採用する最低レース数（これ未満なら netkeiba にフォールバック）
-DB_MIN_RACES = 20
-
-
-# ═══════════════════════════════════════════
 # キャッシュ管理
 # ═══════════════════════════════════════════
 
 def _cache_key(venue, surface, distance):
     """キャッシュファイルのキー"""
     return f"course_stats_{venue}_{surface}_{distance}.json"
-
-
-def _load_cache(cache_file):
-    """キャッシュファイルを読み込む（存在しなければNone）"""
-    if not os.path.exists(cache_file):
-        return None
-    try:
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, ValueError):
-        return None
 
 
 def get_course_stats(venue, surface, distance, force_refresh=False):
@@ -504,44 +423,32 @@ def get_course_stats(venue, surface, distance, force_refresh=False):
         }
     """
     cache_file = os.path.join(CACHE_DIR, _cache_key(venue, surface, distance))
-    cached = _load_cache(cache_file)
 
-    # キャッシュ確認（30日以内なら再利用 — 過去6年の統計は頻繁に変わらない）
-    if not force_refresh and cached:
+    # キャッシュ確認（7日以内なら再利用）
+    if not force_refresh and os.path.exists(cache_file):
         try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
             cached_at = datetime.fromisoformat(cached.get('cached_at', '2000-01-01'))
-            if (datetime.now() - cached_at).days < 30:
+            if (datetime.now() - cached_at).days < 7:
                 print(f"📦 キャッシュ利用: {venue}{surface}{distance}m")
                 return cached
-        except (ValueError, TypeError):
+        except (json.JSONDecodeError, ValueError):
             pass
 
+    # 新規取得
+    print(f"🔍 {venue}{surface}{distance}m 過去6年データ取得開始...")
     now = datetime.now()
     start_year = now.year - 6
     end_year = now.year - 1
 
-    # ① まずローカルDBから集計を試みる（クラウドIPブロックを受けないため最優先）
-    db_results = get_results_from_db(venue, surface, distance, start_year, end_year)
-    if len(db_results) >= DB_MIN_RACES:
-        unique_races = len(set(r['race_id'] for r in db_results))
-        print(f"📊 DB集計: {venue}{surface}{distance}m {unique_races}レース / {len(db_results)}頭")
-        results = db_results
-    else:
-        # ② DBに不足 → netkeibaから取得
-        print(f"🔍 {venue}{surface}{distance}m 過去6年データ取得開始...(DB={len(db_results)}件、しきい値{DB_MIN_RACES}未満)")
-        race_ids = get_race_ids(venue, surface, distance, start_year, end_year)
-        if not race_ids:
-            if cached:
-                print(f"⚠️ スクレイピング失敗。古いキャッシュを利用: {venue}{surface}{distance}m")
-                return cached
-            return None
+    race_ids = get_race_ids(venue, surface, distance, start_year, end_year)
+    if not race_ids:
+        return None
 
-        results = scrape_race_results(race_ids)
-        if not results:
-            if cached:
-                print(f"⚠️ レース結果取得失敗。古いキャッシュを利用: {venue}{surface}{distance}m")
-                return cached
-            return None
+    results = scrape_race_results(race_ids)
+    if not results:
+        return None
 
     # 統計算出
     total_races = len(set(r['race_id'] for r in results))
