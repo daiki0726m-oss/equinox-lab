@@ -9,14 +9,15 @@
 // 6. 「トリガー」（時計アイコン）→「トリガーを追加」で以下を設定
 //
 // ═══════════════════════════════════════════════
-// ★ 必要なトリガー一覧（全9個）
+// ★ 必要なトリガー一覧（全10個）
 // ═══════════════════════════════════════════════
 //
 // ① triggerMorning         → 毎日 7:00〜8:00   (月〜金: おはようツイート)
-// ② triggerPredict         → 毎日 7:00〜8:00   (土日: AI予測)
-// ③ triggerOddsFlash       → 毎日 9:00〜10:00  (土日: オッズ確定後の最終見解)
+// ② triggerPredict         → 毎日 7:00〜8:00   (土日: AI予測・内部のみ)
+// ③ triggerOddsFlash       → 毎日 9:00〜10:00  (土日: オッズ更新・内部のみ)
+// ③b triggerPostPredict    → 毎日 10:00〜11:00 (土日: 確定予想をX投稿)
 // ④ triggerRefreshDashboard→ 毎日 11:00〜12:00 (土日: ダッシュボード更新)
-// ⑤ triggerWeekday         → 毎日 12:00〜13:00 (月〜金: 豆知識ツイート)
+// ⑤ triggerWeekday         → 毎日 12:00〜13:00 (月〜金: コース分析ツイート)
 // ⑥ triggerHitFlash        → 毎日 15:00〜16:00 (土日: 的中速報)
 // ⑦ triggerResults         → 毎日 17:00〜18:00 (土日: 結果報告)
 // ⑧ triggerEvening         → 毎日 20:00〜21:00 (月〜金: 夜ツイート / 土: 答え合わせ / 日: 週間レビュー)
@@ -107,13 +108,23 @@ function triggerPredict() {
   }
 }
 
-// ③ 毎日 9:00〜10:00（土日のみ: オッズ確定後の最終見解）
+// ③ 毎日 9:00〜10:00（土日のみ: オッズ更新・内部処理のみ）
 function triggerOddsFlash() {
   var dow = new Date().getDay();
   if (dow === 0 || dow === 6) {
     dispatchWorkflow("odds_flash");
   } else {
     Logger.log("⏭️ 平日はスキップ (odds_flash)");
+  }
+}
+
+// ③b 毎日 10:00〜11:00（土日のみ: 確定予想をX投稿）
+function triggerPostPredict() {
+  var dow = new Date().getDay();
+  if (dow === 0 || dow === 6) {
+    dispatchWorkflow("post_predict");
+  } else {
+    Logger.log("⏭️ 平日はスキップ (post_predict)");
   }
 }
 
@@ -178,6 +189,10 @@ function setupAllTriggers() {
   ScriptApp.newTrigger("triggerOddsFlash")
     .timeBased().everyDays(1).atHour(9).create();
 
+  // ③b triggerPostPredict: 毎日 10:00〜11:00（確定予想投稿）
+  ScriptApp.newTrigger("triggerPostPredict")
+    .timeBased().everyDays(1).atHour(10).create();
+
   // ④ triggerRefreshDashboard: 毎日 11:00〜12:00
   ScriptApp.newTrigger("triggerRefreshDashboard")
     .timeBased().everyDays(1).atHour(11).create();
@@ -202,5 +217,5 @@ function setupAllTriggers() {
   ScriptApp.newTrigger("triggerRefreshDashboard2")
     .timeBased().everyDays(1).atHour(18).create();
 
-  Logger.log("✅ 全9トリガーを登録完了");
+  Logger.log("✅ 全10トリガーを登録完了");
 }

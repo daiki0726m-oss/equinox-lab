@@ -20,6 +20,7 @@ on:
           - refresh_dashboard
           - hit_flash
           - odds_flash
+          - post_predict
           - morning
           - evening
   # ─── cron フォールバック（GAS不発時のセーフティネット） ───
@@ -33,8 +34,10 @@ on:
     # 平日夜20:00 JST (UTC 11:00)
     - cron: '0 11 * * 1-5'
     # ─── 土日の結果系（GAS不発対策） ───
-    # 土日 9:30 JST (UTC 0:30) → odds_flash
+    # 土日 9:30 JST (UTC 0:30) → odds_flash（内部処理のみ）
     - cron: '30 0 * * 6,0'
+    # 土日 10:15 JST (UTC 1:15) → post_predict（確定予想投稿）
+    - cron: '15 1 * * 6,0'
     # 土日 15:30 JST (UTC 6:30) → hit_flash
     - cron: '30 6 * * 6,0'
     # 土日 17:30 JST (UTC 8:30) → results
@@ -172,9 +175,15 @@ jobs:
             else
               TYPE="morning"
             fi
-          elif [ "$HOUR" = "09" ] || [ "$HOUR" = "10" ]; then
+          elif [ "$HOUR" = "09" ]; then
             if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
               TYPE="odds_flash"
+            else
+              TYPE="skip"
+            fi
+          elif [ "$HOUR" = "10" ]; then
+            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
+              TYPE="post_predict"
             else
               TYPE="skip"
             fi
@@ -318,8 +327,10 @@ jobs:
           if [ "$TYPE" = "weekday" ]; then
             python post_x.py weekday
           elif [ "$TYPE" = "predict" ]; then
-            echo "⏳ 7:00予測完了。X投稿は9:30のodds_flash後に実行します"
+            echo "⏳ 7:00予測完了。X投稿は10:15のpost_predict後に実行します"
           elif [ "$TYPE" = "odds_flash" ]; then
+            echo "📡 オッズ更新完了。X投稿は10:15のpost_predictで実行します"
+          elif [ "$TYPE" = "post_predict" ]; then
             python post_x.py predict --date "$DATE"
           elif [ "$TYPE" = "results" ]; then
             python post_x.py results --date "$DATE"
@@ -337,14 +348,14 @@ jobs:
 
       # ── 静的予測サイト更新（GitHub Pages） ──
       - name: Export predictions to static JSON
-        if: contains(fromJSON('["predict","odds_flash","hit_flash","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
+        if: contains(fromJSON('["predict","odds_flash","post_predict","hit_flash","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📊 予測データを静的JSONに書き出し..."
           python export_predictions.py "$DATE"
 
       - name: Deploy to GitHub Pages
-        if: contains(fromJSON('["predict","odds_flash","hit_flash","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
+        if: contains(fromJSON('["predict","odds_flash","post_predict","hit_flash","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
