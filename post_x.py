@@ -682,7 +682,7 @@ def cmd_weekday(args):
             from course_stats import get_course_stats
             v, s, d = race['venue'], race['surface'], race['distance']
             stats = get_course_stats(v, s, d)
-            grade = detect_grade(race['race_name'])
+            grade = detect_grade(race['race_name'], race.get('grade'))
             grade_label = f"({grade})" if grade else ""
 
             if stats:
@@ -1193,19 +1193,31 @@ G2_RACES = [
 ]
 
 
-def detect_grade(race_name):
-    """レース名からG1/G2/G3/OPを判定"""
+def detect_grade(race_name, db_grade=None):
+    """レース名またはDB格からG1/G2/G3/L/OPを判定
+
+    Args:
+        race_name: レース名
+        db_grade: DBのgradeカラム値（G1/G2/G3/L/OP等）。あれば最優先。
+    """
+    # DB格が設定されていれば最優先
+    if db_grade:
+        # 正規化
+        grade_map = {'GI': 'G1', 'GII': 'G2', 'GIII': 'G3'}
+        normalized = grade_map.get(db_grade, db_grade)
+        if normalized in ('G1', 'G2', 'G3', 'L', 'OP'):
+            return normalized
+        # 条件クラス（3勝クラス等）は空を返す
+        return ''
+
+    # フォールバック: レース名からの判定（G1/G2のみ確実に判定可能）
     for name in G1_RACES:
         if race_name.startswith(name) or race_name == name:
             return 'G1'
     for name in G2_RACES:
         if race_name.startswith(name) or race_name == name:
             return 'G2'
-    # G3/OP判定: 末尾がS/T、またはステークス/カップ/トロフィーを含む
-    if (race_name.rstrip('０１２３４５６７８９0123456789').endswith(('S', 'T'))
-            or 'ステークス' in race_name or 'カップ' in race_name
-            or 'トロフィー' in race_name):
-        return 'G3'
+    # G3以下はレース名だけでは正確に判定不可のため空を返す
     return ''
 
 def fetch_weekend_races():
@@ -1324,9 +1336,12 @@ def get_weekend_graded_races(conn):
             LIMIT 6
         """, (today.strftime('%Y-%m-%d'),)).fetchall()
 
-    # G1 > G2 > G3 > OPでソート
-    grade_order = {'G1': 0, 'G2': 1, 'G3': 2, '': 3}
-    result = sorted(result, key=lambda r: grade_order.get(detect_grade(r['race_name']), 3))
+    # sqlite3.Rowをdictに変換（.get()が使えるように）
+    result = [dict(r) for r in result]
+
+    # G1 > G2 > G3 > L > OP でソート
+    grade_order = {'G1': 0, 'G2': 1, 'G3': 2, 'L': 3, 'OP': 4, '': 5}
+    result = sorted(result, key=lambda r: grade_order.get(detect_grade(r['race_name'], r.get('grade')), 5))
 
     return result
 
@@ -2846,7 +2861,7 @@ def cmd_morning(args):
             from course_stats import get_course_stats
             v, s, d = race['venue'], race['surface'], race['distance']
             stats = get_course_stats(v, s, d)
-            grade = detect_grade(race['race_name'])
+            grade = detect_grade(race['race_name'], race.get('grade'))
             grade_label = f"({grade})" if grade else ""
 
             if stats:
@@ -2874,7 +2889,7 @@ def cmd_morning(args):
                     if len(top_races) > 1:
                         tweet += f"\nその他の注目レース:\n"
                         for r2 in top_races[1:3]:
-                            g2 = detect_grade(r2['race_name'])
+                            g2 = detect_grade(r2['race_name'], r2.get('grade'))
                             g2l = f"({g2})" if g2 else ""
                             tweet += f"🏇 {r2['race_name']}{g2l} {r2['venue']}{r2['surface']}{r2['distance']}m\n"
 
@@ -2991,7 +3006,7 @@ def cmd_evening(args):
             from course_stats import get_course_stats
             v, s, d = race['venue'], race['surface'], race['distance']
             stats = get_course_stats(v, s, d)
-            grade = detect_grade(race['race_name'])
+            grade = detect_grade(race['race_name'], race.get('grade'))
             grade_label = f"({grade})" if grade else ""
 
             if stats:

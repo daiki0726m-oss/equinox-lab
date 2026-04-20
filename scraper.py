@@ -145,6 +145,20 @@ class NetkeibaScraper:
         if race_name_tag:
             info["race_name"] = race_name_tag.get_text(strip=True)
 
+            # グレード判定: Icon_GradeType CSSクラスから (G1=Type1, G2=Type2, G3=Type3)
+            icon_grade_map = {
+                'Icon_GradeType1': 'G1',
+                'Icon_GradeType2': 'G2',
+                'Icon_GradeType3': 'G3',
+            }
+            for span in race_name_tag.find_all("span", class_=True):
+                for cls in span.get("class", []):
+                    if cls in icon_grade_map:
+                        info["grade"] = icon_grade_map[cls]
+                        break
+                if info["grade"]:
+                    break
+
         # レース詳細 (距離・馬場・天候等)
         # RaceData01 は <div>, <dl>, <span> など様々な形式がありえる
         race_data01 = soup.find("div", class_="RaceData01") or soup.find("dl", class_="RaceData01")
@@ -207,6 +221,23 @@ class NetkeibaScraper:
                 if v in text:
                     info["venue"] = v
                     break
+
+            # グレード・クラス情報（RaceData02のspanから取得）
+            # ※ Icon_GradeTypeで既にG1/G2/G3が判定済みなら上書きしない
+            if not info["grade"]:
+                grade_keywords = {
+                    'リステッド': 'L', 'L': 'L',
+                    'オープン': 'OP', 'OP': 'OP',
+                }
+                for span in race_data02.find_all("span"):
+                    span_text = span.get_text(strip=True)
+                    if span_text in grade_keywords:
+                        info["grade"] = grade_keywords[span_text]
+                        break
+                    # "3勝クラス", "2勝クラス", "1勝クラス" 等
+                    if '勝クラス' in span_text or span_text in ('新馬', '未勝利'):
+                        info["grade"] = span_text
+                        break
 
         # race_idからの情報補完
         if len(race_id) == 12:
