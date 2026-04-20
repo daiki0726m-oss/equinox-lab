@@ -189,15 +189,10 @@ body {
 
 /* ─── Venue Tabs ─── */
 .venue-tabs {
-  display: flex; gap: 0; margin: 0 16px 12px;
+  display: flex; gap: 0; margin: 4px 0 0;
   border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border);
-  position: sticky;
-  top: 50px; /* header height */
-  z-index: 90;
-  background: var(--bg-primary);
-  padding-top: 4px;
 }
 .venue-tab {
   flex: 1;
@@ -681,10 +676,7 @@ body {
 
   /* Venue tabs */
   .venue-tabs {
-    margin: 0 10px 8px;
-    top: 42px; /* smaller header on mobile */
-    padding-top: 6px;
-    padding-bottom: 2px;
+    margin: 4px 0 0;
   }
   .venue-tab { padding: 7px 8px; font-size: 11px; }
 
@@ -795,6 +787,8 @@ body {
       <button id="refreshBtn" class="btn-refresh" onclick="triggerResultsRefresh()" title="最新の結果・配当を取得">🔄</button>
     </div>
   </div>
+  <!-- Venue Tabs (header内でsticky固定) -->
+  <div class="venue-tabs" id="venueTabs" style="display:none;"></div>
 </header>
 
 <!-- Bet Type Selector -->
@@ -827,8 +821,6 @@ body {
   <button class="conf-filter-btn" onclick="setConfFilter('C')">C以上</button>
 </div>
 
-<!-- Venue Tabs -->
-<div class="venue-tabs" id="venueTabs" style="display:none;"></div>
 
 <!-- Main -->
 <div class="main" id="mainContent">
