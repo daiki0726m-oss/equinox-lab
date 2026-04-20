@@ -709,7 +709,6 @@ def cmd_weekday(args):
                             arrow = " ⬆️" if st == best_style else ""
                             tweet += f"{st['style']}: 勝率{st['win_rate']}% 複勝{st['top3_rate']}%{arrow}\n"
 
-                    tweet += f"\n🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 1:
@@ -723,7 +722,6 @@ def cmd_weekday(args):
                         tweet += f"{i+1}. {j['jockey']} 複勝率{j['top3_rate']}%({j['runs']}騎乗){arrow}\n"
 
                     tweet += f"\nコース巧者の騎手にも注目🏇\n\n"
-                    tweet += f"🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 2:
@@ -740,7 +738,6 @@ def cmd_weekday(args):
                     best_rec = max(ps, key=lambda x: x['recovery']) if ps else None
                     if best_rec and best_rec['recovery'] >= 100:
                         tweet += f"\n{best_rec['label']}が回収率{best_rec['recovery']}%🔥\n"
-                    tweet += f"\n🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 3:
@@ -763,7 +760,6 @@ def cmd_weekday(args):
                         else:
                             tweet += "→ 後方から差す展開が多い\n"
 
-                    tweet += f"\n🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 4:
@@ -792,7 +788,6 @@ def cmd_weekday(args):
                             tweet += f"✅ {best_p['label']}が回収率{best_p['recovery']}%\n"
 
                     tweet += f"\n明日のAI予想をお楽しみに🧠\n\n"
-                    tweet += f"🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
     except Exception as e:
@@ -2893,7 +2888,6 @@ def cmd_morning(args):
                             g2l = f"({g2})" if g2 else ""
                             tweet += f"🏇 {r2['race_name']}{g2l} {r2['venue']}{r2['surface']}{r2['distance']}m\n"
 
-                    tweet += f"\n🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 1:
@@ -2907,9 +2901,8 @@ def cmd_morning(args):
                         worst = min(fs, key=lambda x: x['top3_rate'])
                         for f in fs:
                             arrow = " ⬆️" if f == best else (" ⬇️" if f == worst else "")
-                            tweet += f"{f['frame']}枠: {f['top3_rate']}%{arrow}\n"
+                            tweet += f"{f['frame']}枠: 複勝率{f['top3_rate']}%{arrow}\n"
 
-                    tweet += f"\n🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 2:
@@ -2929,7 +2922,6 @@ def cmd_morning(args):
                         else:
                             tweet += "\n→ 差し・追込が決まるコース🏇\n"
 
-                    tweet += f"\n🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 3:
@@ -2944,7 +2936,6 @@ def cmd_morning(args):
                             tweet += f"{emoji} {p['label']}: 勝率{p['win_rate']}%\n"
                             tweet += f"  複勝{p['top3_rate']}% 回収率{p['recovery']}%\n"
 
-                    tweet += f"\n🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 4:
@@ -2959,7 +2950,6 @@ def cmd_morning(args):
                             tweet += f"{i+1}. {j['jockey']} 複勝率{j['top3_rate']}%({j['runs']}騎乗){arrow}\n"
 
                     tweet += f"\n明日のAI予想に向けて注目🏇\n\n"
-                    tweet += f"🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
     except Exception as e:
@@ -3019,8 +3009,8 @@ def cmd_evening(args):
                     if fs:
                         best = max(fs, key=lambda x: x['top3_rate'])
                         worst = min(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"✅ {best['frame']}枠が有利({best['top3_rate']}%)\n"
-                        tweet += f"⚠️ {worst['frame']}枠は不利({worst['top3_rate']}%)\n"
+                        tweet += f"✅ {best['frame']}枠が有利(複勝率{best['top3_rate']}%)\n"
+                        tweet += f"⚠️ {worst['frame']}枠は不利(複勝率{worst['top3_rate']}%)\n"
 
                     rs = stats['running_style_stats']
                     if rs:
@@ -3028,7 +3018,6 @@ def cmd_evening(args):
                         tweet += f"✅ {best_s['style']}優勢(勝率{best_s['win_rate']}%)\n"
 
                     tweet += f"\n今週のデータ分析は毎日配信📊\n\n"
-                    tweet += f"🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 1:
@@ -3047,7 +3036,6 @@ def cmd_evening(args):
                         best_s = max(rs, key=lambda x: x['win_rate'])
                         tweet += f"\n→ {best_s['style']}タイプの馬が優勢\n"
 
-                    tweet += f"\n🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 2:
@@ -3066,9 +3054,8 @@ def cmd_evening(args):
                     fs = stats['frame_stats']
                     if fs:
                         best = max(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"\n穴馬候補は{best['frame']}枠に注目📊\n"
+                        tweet += f"\n穴馬候補は{best['frame']}枠(複勝率{best['top3_rate']}%)に注目📊\n"
 
-                    tweet += f"\n🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race) + " #穴馬"
 
                 elif dow == 3:
@@ -3079,7 +3066,7 @@ def cmd_evening(args):
                     fs = stats['frame_stats']
                     if fs:
                         best_f = max(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"枠順: {best_f['frame']}枠={best_f['top3_rate']}%⬆️\n"
+                        tweet += f"枠順: {best_f['frame']}枠=複勝率{best_f['top3_rate']}%⬆️\n"
 
                     rs = stats['running_style_stats']
                     if rs:
@@ -3088,14 +3075,13 @@ def cmd_evening(args):
 
                     js = stats['jockey_stats']
                     if js:
-                        tweet += f"騎手: {js[0]['jockey']}={js[0]['top3_rate']}%\n"
+                        tweet += f"騎手: {js[0]['jockey']}=複勝率{js[0]['top3_rate']}%\n"
 
                     l3f = stats['last3f_stats']
                     if l3f:
                         tweet += f"上がり: {l3f[0]['label']}=勝率{l3f[0]['win_rate']}%\n"
 
                     tweet += f"\n明日のAI予想をお楽しみに🧠\n\n"
-                    tweet += f"🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 4:
@@ -3119,7 +3105,6 @@ def cmd_evening(args):
                         tweet += f"✅ {js[0]['jockey']}が複勝率{js[0]['top3_rate']}%\n"
 
                     tweet += f"\n明朝AI予想を投稿します🔔\n\n"
-                    tweet += f"🧠 AI KEIBA PREDICTOR\n"
                     tweet += make_race_hashtags(race)
 
     except Exception as e:
