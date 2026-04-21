@@ -676,7 +676,7 @@ def cmd_weekday(args):
 
     try:
         with get_db() as conn:
-            race = get_main_weekend_race(conn)
+            race = get_todays_race(conn)
 
         if race:
             from course_stats import get_course_stats
@@ -1351,6 +1351,36 @@ def get_main_weekend_race(conn):
     if races:
         return races[0]
     return None
+
+
+def get_todays_race(conn):
+    """今日の曜日に応じて週末レースをローテーションで返す
+
+    重賞3つ → 月=Race1, 火=Race2, 水=Race3, 木=Race1, 金=Race1(まとめ)
+    重賞2つ → 月=Race1, 火=Race2, 水=Race1, 木=Race2, 金=Race1(まとめ)
+    重賞1つ → 月〜金=Race1
+    """
+    all_races = get_weekend_graded_races(conn)
+    if not all_races:
+        return None
+
+    # G1/G2/G3のみをローテーション対象にする
+    graded = [r for r in all_races
+              if detect_grade(r['race_name'], r.get('grade')) in ('G1', 'G2', 'G3')]
+    if not graded:
+        graded = all_races[:1]  # 重賞がなければ最上位1つ
+
+    dow = now_jst().weekday()  # 0=月 ... 4=金
+
+    if len(graded) == 1:
+        return graded[0]
+
+    # 金曜 → メインレース（まとめ）
+    if dow == 4:
+        return graded[0]
+
+    idx = dow % len(graded)
+    return graded[idx]
 
 
 def get_top_races(conn, n=3):
@@ -2853,7 +2883,7 @@ def cmd_morning(args):
 
     try:
         with get_db() as conn:
-            race = get_main_weekend_race(conn)
+            race = get_todays_race(conn)
             top_races = get_top_races(conn, 3)
 
         if race:
@@ -2994,7 +3024,7 @@ def cmd_evening(args):
 
     try:
         with get_db() as conn:
-            race = get_main_weekend_race(conn)
+            race = get_todays_race(conn)
 
         if race:
             from course_stats import get_course_stats
