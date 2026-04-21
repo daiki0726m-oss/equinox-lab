@@ -552,28 +552,6 @@ body {
 .conf-filter-btn.active { background: var(--gold); color: #000; border-color: var(--gold); }
 .conf-filter-btn .filter-count { font-weight: 400; opacity: 0.7; margin-left: 3px; }
 
-/* ─── Refresh Button ─── */
-.btn-refresh {
-  padding: 8px 12px; border-radius: var(--radius-md); font-size: 16px;
-  cursor: pointer; border: 1px solid var(--border); background: var(--bg-card);
-  color: var(--text-secondary); transition: all 0.3s;
-}
-.btn-refresh:hover { border-color: var(--green); color: var(--green); }
-.btn-refresh.refreshing {
-  animation: spin 1s linear infinite;
-  color: var(--gold); border-color: var(--gold);
-  pointer-events: none;
-}
-.refresh-status {
-  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-  background: rgba(11,20,38,0.95); border: 1px solid var(--gold);
-  padding: 12px 24px; border-radius: var(--radius-md);
-  font-size: 13px; color: var(--gold); z-index: 999;
-  display: none; backdrop-filter: blur(8px);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-}
-.refresh-status.visible { display: block; }
-.refresh-status .countdown { font-weight: 700; }
 
 /* ─── Loading ─── */
 .loading-overlay {
@@ -784,7 +762,6 @@ body {
       <input type="number" id="budgetInput" class="input-budget" value="1000" min="100" max="100000" step="100">
       <span class="budget-unit">円</span>
       <button id="predictBtn" class="btn-predict" onclick="loadPredictions()">予測実行</button>
-      <button id="refreshBtn" class="btn-refresh" onclick="triggerResultsRefresh()" title="最新の結果・配当を取得">🔄</button>
     </div>
   </div>
   <!-- Venue Tabs (header内でsticky固定) -->
@@ -1523,89 +1500,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ─── Results Refresh via GAS ───
 const GAS_REFRESH_URL = 'https://script.google.com/macros/s/AKfycbzopAyqW69wkt_44q-wbqrODsqDKUw9lHxTWyEgaUYsU7voYoQ6pDkDvHRmi0V0Y7u6pg/exec';
 
-async function triggerResultsRefresh() {
-  const btn = document.getElementById('refreshBtn');
-  const statusEl = document.getElementById('refreshStatus');
 
-  // まずJSONの再取得を試みる（既にActionsで更新されている可能性）
-  btn.classList.add('refreshing');
-  statusEl.innerHTML = '📡 最新データを確認中...';
-  statusEl.classList.add('visible');
-
-  try {
-    const dateStr = document.getElementById('dateInput').value.replace(/[-\/]/g, '');
-    const url = `${DATA_BASE}/predictions_${dateStr}.json?t=${Date.now()}`;
-    const res = await fetch(url);
-    if (res.ok) {
-      const data = await res.json();
-      const allRaces = [];
-      Object.values(data.venues || {}).forEach(vr => allRaces.push(...vr));
-      const resultsCount = allRaces.filter(r => r.has_results).length;
-      const totalRaces = allRaces.length;
-
-      // 現在表示中のデータと比較
-      let currentResults = 0;
-      if (state.allData) {
-        Object.values(state.allData.venues || {}).forEach(vr => {
-          vr.forEach(r => { if (r.has_results) currentResults++; });
-        });
-      }
-
-      if (resultsCount > currentResults) {
-        // 新しい結果がある → 即座に反映
-        state.allData = data;
-        state.isLocked = data.is_locked || false;
-        const venueNames = Object.keys(data.venues || {});
-        if (!state.activeVenue || !venueNames.includes(state.activeVenue)) {
-          state.activeVenue = venueNames[0] || null;
-        }
-        renderAll();
-        statusEl.innerHTML = `✅ ${resultsCount}/${totalRaces}R の結果を反映しました`;
-        setTimeout(() => statusEl.classList.remove('visible'), 3000);
-        btn.classList.remove('refreshing');
-        return;
-      }
-
-      // 新しい結果がない → GASでActionsを起動
-      statusEl.innerHTML = `📡 サーバーに結果更新をリクエスト中... (現在 ${resultsCount}/${totalRaces}R 確定)`;
-    }
-  } catch(e) {
-    // JSON取得失敗 → GASトリガーへ
-  }
-
-  // GAS経由でGitHub Actionsをトリガー
-  try {
-    await fetch(GAS_REFRESH_URL + '?mode=refresh_dashboard', { mode: 'no-cors' });
-    // GAS→Actions→export→deploy は約3〜4分
-    let remaining = 180;
-    statusEl.innerHTML = `🔄 結果を更新中... あと <span class="countdown">${remaining}</span>秒`;
-
-    const timer = setInterval(() => {
-      remaining--;
-      const countdownEl = statusEl.querySelector('.countdown');
-      if (countdownEl) countdownEl.textContent = remaining;
-
-      if (remaining <= 0) {
-        clearInterval(timer);
-        // 自動リロード
-        statusEl.innerHTML = '📡 最新データを読み込み中...';
-        loadPredictions().then(() => {
-          statusEl.innerHTML = '✅ 更新完了';
-          setTimeout(() => statusEl.classList.remove('visible'), 3000);
-          btn.classList.remove('refreshing');
-        });
-      }
-    }, 1000);
-  } catch(e) {
-    statusEl.innerHTML = '❌ 更新リクエストに失敗しました';
-    setTimeout(() => statusEl.classList.remove('visible'), 5000);
-    btn.classList.remove('refreshing');
-  }
-}
 </script>
 
 <!-- Refresh Status Toast -->
-<div class="refresh-status" id="refreshStatus"></div>
+
 
 </body>
 </html>
