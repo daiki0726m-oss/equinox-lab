@@ -741,24 +741,28 @@ def cmd_weekday(args):
                     tweet += make_race_hashtags(race)
 
                 elif dow == 3:
-                    # 木曜昼: 上がり3F＋展開予想
-                    tweet = f"🏇 {race['race_name']}{grade_label} 展開予想\n"
+                    # 木曜昼: 上がり3F分析
+                    tweet = f"📊 {race['race_name']}{grade_label} 上がり3Fデータ\n"
                     tweet += f"{v}{s}{d}m 過去6年\n\n"
 
                     l3f = stats['last3f_stats']
                     if l3f:
                         for lf in l3f:
-                            tweet += f"✅ {lf['label']}: 勝率{lf['win_rate']}% 複勝{lf['top3_rate']}%\n"
+                            tweet += f"✅ {lf['label']}\n"
+                            tweet += f"  勝率{lf['win_rate']}% 複勝{lf['top3_rate']}%\n"
                         tweet += "\n"
 
-                    rs = stats['running_style_stats']
-                    if rs:
-                        best_style = max(rs, key=lambda x: x['win_rate'])
-                        tweet += f"→ {best_style['style']}優勢(勝率{best_style['win_rate']}%)\n"
-                        if best_style['style'] in ('逃げ', '先行'):
-                            tweet += "→ 前有利のコース\n"
+                        # 上がり最速の複勝率が80%以上なら強調
+                        fastest = l3f[0] if l3f else None
+                        if fastest and fastest['top3_rate'] >= 80:
+                            tweet += f"→ 上がり最速馬の複勝率{fastest['top3_rate']}%は驚異的\n"
+                            tweet += "→ 末脚の切れが勝敗を分けるコース⚡\n"
+                        elif fastest and fastest['top3_rate'] >= 60:
+                            tweet += f"→ 上がり最速馬が複勝率{fastest['top3_rate']}%\n"
+                            tweet += "→ 速い上がりを使える馬に注目\n"
                         else:
-                            tweet += "→ 後方から差す展開が多い\n"
+                            tweet += "→ 上がりだけでは決まらないコース\n"
+                            tweet += "→ 位置取りと総合力がカギ\n"
 
                     tweet += make_race_hashtags(race)
 
