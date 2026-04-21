@@ -410,6 +410,17 @@ def _cache_key(venue, surface, distance):
     return f"course_stats_{venue}_{surface}_{distance}.json"
 
 
+def _load_cache(cache_file):
+    """キャッシュファイルを読み込む（存在しなければNone）"""
+    if not os.path.exists(cache_file):
+        return None
+    try:
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
 def get_course_stats(venue, surface, distance, force_refresh=False):
     """コース別統計を取得（キャッシュ付き）
 
@@ -423,20 +434,19 @@ def get_course_stats(venue, surface, distance, force_refresh=False):
         }
     """
     cache_file = os.path.join(CACHE_DIR, _cache_key(venue, surface, distance))
+    cached = _load_cache(cache_file)
 
-    # キャッシュ確認（7日以内なら再利用）
-    if not force_refresh and os.path.exists(cache_file):
+    # キャッシュ確認（30日以内なら再利用 — 過去6年の統計は頻繁に変わらない）
+    if not force_refresh and cached:
         try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                cached = json.load(f)
             cached_at = datetime.fromisoformat(cached.get('cached_at', '2000-01-01'))
-            if (datetime.now() - cached_at).days < 7:
+            if (datetime.now() - cached_at).days < 30:
                 print(f"📦 キャッシュ利用: {venue}{surface}{distance}m")
                 return cached
-        except (json.JSONDecodeError, ValueError):
+        except (ValueError, TypeError):
             pass
 
-    # 新規取得
+    # 新規取得を試みる
     print(f"🔍 {venue}{surface}{distance}m 過去6年データ取得開始...")
     now = datetime.now()
     start_year = now.year - 6
@@ -444,10 +454,18 @@ def get_course_stats(venue, surface, distance, force_refresh=False):
 
     race_ids = get_race_ids(venue, surface, distance, start_year, end_year)
     if not race_ids:
+        # スクレイピング失敗 → 古いキャッシュがあればそれを返す
+        if cached:
+            print(f"⚠️ スクレイピング失敗。古いキャッシュを利用: {venue}{surface}{distance}m")
+            return cached
         return None
 
     results = scrape_race_results(race_ids)
     if not results:
+        # スクレイピング失敗 → 古いキャッシュがあればそれを返す
+        if cached:
+            print(f"⚠️ レース結果取得失敗。古いキャッシュを利用: {venue}{surface}{distance}m")
+            return cached
         return None
 
     # 統計算出
