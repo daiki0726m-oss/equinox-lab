@@ -3065,10 +3065,16 @@ def cmd_evening(args):
                             tweet += f"✅ {lf['label']}\n"
                             tweet += f"  勝率{lf['win_rate']}% 複勝{lf['top3_rate']}%\n"
 
-                    rs = stats['running_style_stats']
-                    if rs:
-                        best_s = max(rs, key=lambda x: x['win_rate'])
-                        tweet += f"\n→ {best_s['style']}タイプの馬が優勢\n"
+                        fastest = l3f[0]
+                        if fastest['top3_rate'] >= 80:
+                            tweet += f"\n→ 上がり最速馬の複勝率{fastest['top3_rate']}%は驚異的\n"
+                            tweet += "→ 末脚の切れが勝敗を分けるコース⚡\n"
+                        elif fastest['top3_rate'] >= 60:
+                            tweet += f"\n→ 上がり最速馬が複勝率{fastest['top3_rate']}%\n"
+                            tweet += "→ 速い上がりを使える馬に注目\n"
+                        else:
+                            tweet += "\n→ 上がりだけでは決まらないコース\n"
+                            tweet += "→ 位置取りと総合力がカギ\n"
 
                     tweet += make_race_hashtags(race)
 
@@ -3078,17 +3084,23 @@ def cmd_evening(args):
                     tweet += f"{v}{s}{d}m 過去6年\n\n"
 
                     ps = stats['popularity_stats']
+                    has_ana = False
                     if ps:
                         for p in ps:
                             if p['label'] in ('7-9人気', '10人気以下') and p['top3_rate'] > 0:
                                 tweet += f"🔥 {p['label']}: 複勝率{p['top3_rate']}%\n"
                                 if p['recovery'] >= 80:
                                     tweet += f"  回収率{p['recovery']}%の妙味あり\n"
+                                    has_ana = True
 
-                    fs = stats['frame_stats']
-                    if fs:
-                        best = max(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"\n穴馬候補は{best['frame']}枠(複勝率{best['top3_rate']}%)に注目📊\n"
+                        # 人気データに基づく結論
+                        best_rec = max(ps, key=lambda x: x['recovery'])
+                        if has_ana and best_rec['recovery'] >= 80:
+                            tweet += f"\n→ {best_rec['label']}の回収率{best_rec['recovery']}%\n"
+                            tweet += "→ 人気薄でも好走できる条件があるコース\n"
+                        else:
+                            tweet += "\n→ 堅く収まりやすいコース\n"
+                            tweet += "→ 上位人気の信頼度が高い\n"
 
                     tweet += make_race_hashtags(race) + " #穴馬"
 
