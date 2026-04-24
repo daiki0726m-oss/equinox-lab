@@ -676,7 +676,7 @@ def cmd_weekday(args):
 
     try:
         with get_db() as conn:
-            race = get_todays_race(conn)
+            race = get_todays_race(conn, slot=1)  # 昼
 
         entry_jockeys = get_entry_jockeys(race) if race else []
 
@@ -1422,12 +1422,22 @@ def get_main_weekend_race(conn):
     return None
 
 
-def get_todays_race(conn):
-    """今日の曜日に応じて週末レースをローテーションで返す
+def get_todays_race(conn, slot=0):
+    """今日の曜日＋時間帯に応じて週末レースをローテーションで返す
 
-    重賞3つ → 月=Race1, 火=Race2, 水=Race3, 木=Race1, 金=Race1(まとめ)
-    重賞2つ → 月=Race1, 火=Race2, 水=Race1, 木=Race2, 金=Race1(まとめ)
-    重賞1つ → 月〜金=Race1
+    slot: 0=朝, 1=昼, 2=夜
+
+    重賞3つの場合:
+      月: 朝=Race1, 昼=Race2, 夜=Race3
+      火: 朝=Race2, 昼=Race3, 夜=Race1
+      水: 朝=Race3, 昼=Race1, 夜=Race2
+      木: 朝=Race1, 昼=Race2, 夜=Race3
+      金: 朝=Race1(まとめ), 昼=Race1, 夜=Race1
+
+    重賞2つの場合:
+      朝と昼で別レース、夜はメイン
+
+    重賞1つの場合: 全て同じレース
     """
     all_races = get_weekend_graded_races(conn)
     if not all_races:
@@ -1437,18 +1447,19 @@ def get_todays_race(conn):
     graded = [r for r in all_races
               if detect_grade(r['race_name'], r.get('grade')) in ('G1', 'G2', 'G3')]
     if not graded:
-        graded = all_races[:1]  # 重賞がなければ最上位1つ
+        graded = all_races[:1]
 
     dow = now_jst().weekday()  # 0=月 ... 4=金
 
     if len(graded) == 1:
         return graded[0]
 
-    # 金曜 → メインレース（まとめ）
+    # 金曜はメインレース固定（まとめ）
     if dow == 4:
         return graded[0]
 
-    idx = dow % len(graded)
+    # 曜日 + 時間帯でローテーション
+    idx = (dow + slot) % len(graded)
     return graded[idx]
 
 
@@ -2952,7 +2963,7 @@ def cmd_morning(args):
 
     try:
         with get_db() as conn:
-            race = get_todays_race(conn)
+            race = get_todays_race(conn, slot=0)  # 朝
             top_races = get_top_races(conn, 3)
 
         entry_jockeys = get_entry_jockeys(race) if race else []
@@ -3102,7 +3113,7 @@ def cmd_evening(args):
 
     try:
         with get_db() as conn:
-            race = get_todays_race(conn)
+            race = get_todays_race(conn, slot=2)  # 夜
 
         entry_jockeys = get_entry_jockeys(race) if race else []
 
