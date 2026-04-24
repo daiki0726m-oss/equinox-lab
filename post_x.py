@@ -678,6 +678,8 @@ def cmd_weekday(args):
         with get_db() as conn:
             race = get_todays_race(conn)
 
+        entry_jockeys = get_entry_jockeys(race) if race else []
+
         if race:
             from course_stats import get_course_stats
             v, s, d = race['venue'], race['surface'], race['distance']
@@ -716,12 +718,12 @@ def cmd_weekday(args):
                     tweet = f"📊 {race['race_name']}{grade_label}\n"
                     tweet += f"騎手×{v}{s}{d}m 過去6年\n\n"
 
-                    js = stats['jockey_stats']
+                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
                     for i, j in enumerate(js[:5]):
                         arrow = " ⬆️" if i == 0 else ""
                         tweet += f"{i+1}. {j['jockey']} 複勝率{j['top3_rate']}%({j['runs']}騎乗){arrow}\n"
 
-                    tweet += f"\nコース巧者の騎手にも注目🏇\n\n"
+                    tweet += f"\n今回騎乗予定の騎手×コース成績🏇\n\n"
                     tweet += make_race_hashtags(race)
 
                 elif dow == 2:
@@ -781,7 +783,7 @@ def cmd_weekday(args):
                         best_s = max(rs, key=lambda x: x['win_rate'])
                         tweet += f"✅ {best_s['style']}が勝率{best_s['win_rate']}%\n"
 
-                    js = stats['jockey_stats']
+                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
                     if js:
                         tweet += f"✅ 騎手は{js[0]['jockey']}が複勝率{js[0]['top3_rate']}%\n"
 
@@ -1343,6 +1345,73 @@ def get_weekend_graded_races(conn):
     result = sorted(result, key=lambda r: grade_order.get(detect_grade(r['race_name'], r.get('grade')), 5))
 
     return result
+
+
+def get_race_jockeys(conn, race_id):
+    """レースの出走馬の騎手名リストを取得"""
+    rows = conn.execute("""
+        SELECT DISTINCT r.jockey FROM results r
+        WHERE r.race_id = ?
+    """, (race_id,)).fetchall()
+    if rows:
+        return [r['jockey'] for r in rows if r['jockey']]
+
+    # resultsにまだデータがない場合（レース前）、scrapedデータから取得を試みる
+    # race_idから出馬表の騎手を取得
+    return []
+
+
+def get_entry_jockeys(race):
+    """出馬表ページから今回の出走馬の騎手名リストを取得"""
+    try:
+        import re
+        import requests
+        from bs4 import BeautifulSoup
+        url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race['race_id']}"
+        resp = requests.get(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/120.0.0.0 Safari/537.36'
+        }, timeout=15)
+        resp.encoding = 'euc-jp'
+        soup = BeautifulSoup(resp.text, 'lxml')
+        table = soup.find('table', class_='Shutuba_Table')
+        if not table:
+            return []
+
+        jockeys = []
+        for tr in table.find_all('tr', class_='HorseList'):
+            tds = tr.find_all('td')
+            if len(tds) >= 7:
+                jockey_td = tds[6]
+                jockey_link = jockey_td.find('a')
+                name = jockey_link.text.strip() if jockey_link else jockey_td.text.strip()
+                if name and name != '○○':
+                    jockeys.append(name)
+        return jockeys
+    except Exception as e:
+        print(f"⚠️ 騎手取得エラー: {e}")
+        return []
+
+
+def filter_jockey_stats(jockey_stats, entry_jockeys):
+    """コース騎手成績を出走馬の騎手でフィルタリング
+
+    entry_jockeysが空の場合はそのまま返す（フォールバック）。
+    騎手名は部分一致で照合（例: 'ルメール' と 'Ｃ．ルメール'）。
+    """
+    if not entry_jockeys:
+        return jockey_stats
+
+    filtered = []
+    for j in jockey_stats:
+        stat_name = j['jockey']
+        for entry_name in entry_jockeys:
+            # 部分一致（姓だけの場合に対応）
+            if entry_name in stat_name or stat_name in entry_name:
+                filtered.append(j)
+                break
+    return filtered if filtered else jockey_stats[:3]  # フィルタ結果が空なら上位3人
 
 
 def get_main_weekend_race(conn):
@@ -2886,6 +2955,8 @@ def cmd_morning(args):
             race = get_todays_race(conn)
             top_races = get_top_races(conn, 3)
 
+        entry_jockeys = get_entry_jockeys(race) if race else []
+
         if race:
             from course_stats import get_course_stats
             v, s, d = race['venue'], race['surface'], race['distance']
@@ -2940,7 +3011,28 @@ def cmd_morning(args):
                     tweet += make_race_hashtags(race)
 
                 elif dow == 2:
-                    # 水曜朝: 脚質分析
+                    # 水曜朝: 上がり3F
+                    tweet = f"📊 {race['race_name']}{grade_label}\n"
+                    tweet += f"{v}{s}{d}m 上がり3F(過去6年)\n\n"
+
+                    l3f = stats['last3f_stats']
+                    if l3f:
+                        for lf in l3f:
+                            tweet += f"✅ {lf['label']}\n"
+                            tweet += f"  勝率{lf['win_rate']}% 複勝{lf['top3_rate']}%\n"
+
+                        fastest = l3f[0]
+                        if fastest['top3_rate'] >= 80:
+                            tweet += f"\n→ 末脚の切れが勝敗を分けるコース⚡\n"
+                        elif fastest['top3_rate'] >= 60:
+                            tweet += f"\n→ 速い上がりを使える馬に注目\n"
+                        else:
+                            tweet += f"\n→ 上がりだけでは決まらないコース\n"
+
+                    tweet += make_race_hashtags(race)
+
+                elif dow == 3:
+                    # 木曜朝: 脚質分析
                     tweet = f"📊 {race['race_name']}{grade_label}\n"
                     tweet += f"{v}{s}{d}m 脚質別成績(過去6年)\n\n"
 
@@ -2958,26 +3050,12 @@ def cmd_morning(args):
 
                     tweet += make_race_hashtags(race)
 
-                elif dow == 3:
-                    # 木曜朝: 人気別回収率
-                    tweet = f"📊 {race['race_name']}{grade_label}\n"
-                    tweet += f"{v}{s}{d}m 人気別データ(過去6年)\n\n"
-
-                    ps = stats['popularity_stats']
-                    if ps:
-                        for p in ps:
-                            emoji = "🔥" if p['recovery'] >= 100 else "📊"
-                            tweet += f"{emoji} {p['label']}: 勝率{p['win_rate']}%\n"
-                            tweet += f"  複勝{p['top3_rate']}% 回収率{p['recovery']}%\n"
-
-                    tweet += make_race_hashtags(race)
-
                 elif dow == 4:
                     # 金曜朝: 騎手データ
                     tweet = f"📊 {race['race_name']}{grade_label}\n"
                     tweet += f"騎手×{v}{s}{d}m(過去6年)\n\n"
 
-                    js = stats['jockey_stats']
+                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
                     if js:
                         for i, j in enumerate(js[:6]):
                             arrow = " ⬆️" if i == 0 else ""
@@ -3025,6 +3103,8 @@ def cmd_evening(args):
     try:
         with get_db() as conn:
             race = get_todays_race(conn)
+
+        entry_jockeys = get_entry_jockeys(race) if race else []
 
         if race:
             from course_stats import get_course_stats
@@ -3119,7 +3199,7 @@ def cmd_evening(args):
                         best_s = max(rs, key=lambda x: x['win_rate'])
                         tweet += f"脚質: {best_s['style']}=勝率{best_s['win_rate']}%\n"
 
-                    js = stats['jockey_stats']
+                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
                     if js:
                         tweet += f"騎手: {js[0]['jockey']}=複勝率{js[0]['top3_rate']}%\n"
 
@@ -3146,7 +3226,7 @@ def cmd_evening(args):
                         best_s = max(rs, key=lambda x: x['win_rate'])
                         tweet += f"✅ {best_s['style']}が勝率{best_s['win_rate']}%\n"
 
-                    js = stats['jockey_stats']
+                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
                     if js:
                         tweet += f"✅ {js[0]['jockey']}が複勝率{js[0]['top3_rate']}%\n"
 
