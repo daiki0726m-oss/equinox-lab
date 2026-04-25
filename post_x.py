@@ -318,6 +318,66 @@ def post_tweet(client, text, reply_to=None, dry_run=False, threads_client=None):
     return post_thread(client, [text], dry_run=dry_run, threads_client=threads_client)
 
 
+def _fetch_predictions_from_pages(date_str):
+    """GitHub PagesのJSONから予測データを取得（ローカルDBフォールバック用）
+
+    Actions側のDBで生成された予測をそのまま使うことで、
+    ダッシュボードとX投稿の印が一致するようにする。
+    """
+    import requests as req
+    url = f"https://raw.githubusercontent.com/daiki0726m-oss/equinox-lab/main/docs/data/predictions_{date_str}.json"
+    try:
+        resp = req.get(url, timeout=15)
+        if resp.status_code != 200:
+            print(f"  ❌ GitHub Pages JSON取得失敗: {resp.status_code}")
+            return []
+
+        data = resp.json()
+        venues = data.get('venues', {})
+        result = []
+
+        for venue_name, races in venues.items():
+            for race in races:
+                horses = race.get('horses', [])
+                # predictions_jsonの形式に変換
+                preds_list = []
+                for h in horses:
+                    preds_list.append({
+                        'horse_number': h.get('horse_number', 0),
+                        'horse_name': h.get('horse_name', ''),
+                        'mark': h.get('mark', ''),
+                        'pred_win_pct': h.get('pred_win_pct', 0),
+                        'pred_top3_pct': h.get('pred_top3_pct', 0),
+                        'odds_win': h.get('odds_win', 0),
+                        'popularity': h.get('popularity', 0),
+                        'si_avg': h.get('si_avg', 0),
+                        'jockey_name': h.get('jockey_name', ''),
+                    })
+
+                # DB行と同じキー名のdictを作成
+                race_dict = {
+                    'race_id': race.get('race_id', ''),
+                    'race_name': race.get('race_name', ''),
+                    'venue': race.get('venue', venue_name),
+                    'distance': race.get('distance', 0),
+                    'surface': race.get('surface', ''),
+                    'track_condition': race.get('track_condition', ''),
+                    'grade': race.get('grade', ''),
+                    'race_number': race.get('race_number', 0),
+                    'start_time': race.get('start_time', ''),
+                    'predictions_json': json.dumps(preds_list, ensure_ascii=False),
+                    'all_bets_json': '{}',
+                    'confidence': race.get('confidence', 'C'),
+                }
+                result.append(race_dict)
+
+        print(f"  ✅ GitHub Pagesから{len(result)}レースの予測を取得")
+        return result
+    except Exception as e:
+        print(f"  ❌ GitHub Pages JSON取得エラー: {e}")
+        return []
+
+
 # ─── レース当日: メインレース予想 ───
 def cmd_predict(args):
     """レース前の買い目公開ツイート（11R + 信頼度S/A）"""
@@ -327,8 +387,10 @@ def cmd_predict(args):
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
+    all_races = []
+
+    # まずローカルDBから取得
     with get_db() as conn:
-        # 全レースの予測データ取得
         all_races = conn.execute("""
             SELECT ra.race_id, ra.race_name, ra.venue, ra.distance, ra.surface,
                    ra.track_condition, ra.grade, ra.race_number, ra.start_time,
@@ -338,6 +400,11 @@ def cmd_predict(args):
             WHERE (ra.race_date = ? OR ra.race_date = ?)
             ORDER BY ra.venue, ra.race_number
         """, (date_str, date_hyphen)).fetchall()
+
+    # ローカルDBにない場合 → GitHub PagesのJSONからフォールバック取得
+    if not all_races:
+        print(f"📡 ローカルDBに予測なし → GitHub Pages JSONから取得...")
+        all_races = _fetch_predictions_from_pages(date_str)
 
     if not all_races:
         print(f"❌ {date_str} の予測データがありません")
