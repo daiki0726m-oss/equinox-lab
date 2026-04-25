@@ -162,6 +162,48 @@ function triggerResults() {
   }
 }
 
+// ─── 土日リアルタイム更新（15分おき） ───
+
+// Live Dashboard Refresh: 土日10:00-17:00に15分おきにダッシュボードを更新
+function triggerLiveRefresh() {
+  var dow = new Date().getDay(); // 0=日, 6=土
+  var hour = new Date().getHours();
+  
+  if ((dow === 0 || dow === 6) && hour >= 10 && hour <= 17) {
+    dispatchLiveRefresh();
+  } else {
+    Logger.log("⏭️ レース時間外またはは平日のためスキップ (live_refresh)");
+  }
+}
+
+function dispatchLiveRefresh() {
+  var url = "https://api.github.com/repos/" + REPO + "/actions/workflows/refresh_live.yml/dispatches";
+  
+  var options = {
+    "method": "post",
+    "headers": {
+      "Authorization": "Bearer " + GITHUB_TOKEN,
+      "Accept": "application/vnd.github.v3+json",
+      "Content-Type": "application/json"
+    },
+    "payload": JSON.stringify({
+      "ref": "main",
+      "inputs": {"force_predict": "false"}
+    }),
+    "muteHttpExceptions": true
+  };
+  
+  var response = UrlFetchApp.fetch(url, options);
+  var code = response.getResponseCode();
+  
+  Logger.log("Live Refresh: HTTP " + code);
+  if (code === 204) {
+    Logger.log("✅ Live Refresh トリガー成功");
+  } else {
+    Logger.log("❌ エラー: " + response.getContentText());
+  }
+}
+
 // ─── テスト用 ───
 function testTrigger() {
   var code = dispatchWorkflow("morning");
@@ -217,5 +259,9 @@ function setupAllTriggers() {
   ScriptApp.newTrigger("triggerRefreshDashboard2")
     .timeBased().everyDays(1).atHour(18).create();
 
-  Logger.log("✅ 全10トリガーを登録完了");
+  // ⑩ triggerLiveRefresh: 15分おき（土日レース時間帯のみ実行）
+  ScriptApp.newTrigger("triggerLiveRefresh")
+    .timeBased().everyMinutes(15).create();
+
+  Logger.log("✅ 全11トリガーを登録完了");
 }
