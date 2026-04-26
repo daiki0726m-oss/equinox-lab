@@ -382,7 +382,15 @@ def cmd_predict(args):
             })
 
         # predictions_cache に保存
-        sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
+        # ソート: 勝率だけだと同率で内枠順になるため、
+        # rank_score(モデルの順位スコア)とSI指数を加味した複合スコアで順位付け
+        def _sort_key(p):
+            win = p["pred_win"]  # 0-1
+            rank = p.get("rank_score", 0)  # モデルの順位スコア
+            si = max(p.get("si_avg", 0), 0) / 100  # 0-1に正規化 (SI80→0.8)
+            # 複合スコア: 勝率50% + rank_score25% + SI25%
+            return win * 0.50 + rank * 0.25 + si * 0.25
+        sorted_preds = sorted(predictions, key=_sort_key, reverse=True)
         # 人気順: 実オッズがある場合のみ使用（推定オッズは循環参照になるため除外）
         has_real_odds = any(p.get("_has_real_odds") for p in sorted_preds)
 
@@ -493,31 +501,37 @@ def cmd_predict(args):
             all_bets_json = json.dumps({}, ensure_ascii=False)
             print(f"\n❌ このレースは見送り推奨: {reason}")
 
-        # confidence計算（◎の勝率ベース — 850Rバックテスト検証済み閾値）
-        # S: 30%↑ → 実勝率64% / 複勝率100%
-        # A: 20%↑ → 実勝率39% / 複勝率83%
-        # B: 15%↑ → 実勝率28% / 複勝率71%
-        # C: 10%↑ → 実勝率22% / 複勝率56%
-        # D: 10%↓ → 実勝率25% / 複勝率68%（混戦で読みにくい）
+        # confidence計算（頭数相対勝率ベース）
+        # 多頭数レースでは◎の勝率が絶対値で低くなるため、
+        # 均等勝率(1/頭数)に対する倍率で判定する
+        # S: 3.0倍↑ (8頭:37.5%, 16頭:18.8%)
+        # A: 2.2倍↑ (8頭:27.5%, 16頭:13.8%)
+        # B: 1.6倍↑ (8頭:20.0%, 16頭:10.0%)
+        # C: 1.2倍↑ (8頭:15.0%, 16頭:7.5%)
+        # D: 1.2倍↓ (混戦で読みにくい)
+        n_horses = len(sorted_preds) if sorted_preds else 1
         top_win = sorted_preds[0]["pred_win"] * 100 if sorted_preds else 0
-        if top_win >= 30:
+        even_pct = 100 / max(n_horses, 1)
+        relative = top_win / even_pct if even_pct > 0 else 0
+
+        if relative >= 3.0:
             confidence = "S"
-        elif top_win >= 20:
+        elif relative >= 2.2:
             confidence = "A"
-        elif top_win >= 15:
+        elif relative >= 1.6:
             confidence = "B"
-        elif top_win >= 10:
+        elif relative >= 1.2:
             confidence = "C"
         else:
             confidence = "D"
 
-        # conf_reason生成 (UI-4 fix)
-        conf_reason = f"◎の勝率 {top_win:.1f}%"
-        if confidence == "S": conf_reason += " → バックテスト実勝率64%/複勝率100%"
-        elif confidence == "A": conf_reason += " → バックテスト実勝率39%/複勝率83%"
-        elif confidence == "B": conf_reason += " → バックテスト実勝率28%/複勝率71%"
-        elif confidence == "C": conf_reason += " → バックテスト実勝率22%/複勝率56%"
-        else: conf_reason += " → 混戦で読みにくいレース"
+        # conf_reason生成
+        conf_reason = f"◎の勝率 {top_win:.1f}% ({n_horses}頭立て, 均等比{relative:.1f}倍)"
+        if confidence == "S": conf_reason += " → 本命突出"
+        elif confidence == "A": conf_reason += " → 軸馬明確"
+        elif confidence == "B": conf_reason += " → やや有力"
+        elif confidence == "C": conf_reason += " → 標準"
+        else: conf_reason += " → 混戦で読みにくい"
 
         # キャッシュ更新（買い目・confidence・conf_reason・should_bet・bet_reason）
         with get_db() as conn:
