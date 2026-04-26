@@ -502,25 +502,24 @@ def cmd_predict(args):
             print(f"\n❌ このレースは見送り推奨: {reason}")
 
         # confidence計算（頭数相対勝率ベース）
-        # 多頭数レースでは◎の勝率が絶対値で低くなるため、
-        # 均等勝率(1/頭数)に対する倍率で判定する
-        # S: 3.0倍↑ (8頭:37.5%, 16頭:18.8%)
-        # A: 2.2倍↑ (8頭:27.5%, 16頭:13.8%)
-        # B: 1.6倍↑ (8頭:20.0%, 16頭:10.0%)
-        # C: 1.2倍↑ (8頭:15.0%, 16頭:7.5%)
-        # D: 1.2倍↓ (混戦で読みにくい)
+        # 均等勝率(1/頭数)に対する倍率で判定
+        # S: 1.90倍↑ (8頭:23.8%, 16頭:11.9%) 本命突出
+        # A: 1.75倍↑ (8頭:21.9%, 16頭:10.9%) 軸馬明確
+        # B: 1.55倍↑ (8頭:19.4%, 16頭:9.7%)  やや有力
+        # C: 1.35倍↑ (8頭:16.9%, 16頭:8.4%)  標準
+        # D: 1.35倍↓  混戦
         n_horses = len(sorted_preds) if sorted_preds else 1
         top_win = sorted_preds[0]["pred_win"] * 100 if sorted_preds else 0
         even_pct = 100 / max(n_horses, 1)
         relative = top_win / even_pct if even_pct > 0 else 0
 
-        if relative >= 3.0:
+        if relative >= 1.90:
             confidence = "S"
-        elif relative >= 2.2:
+        elif relative >= 1.75:
             confidence = "A"
-        elif relative >= 1.6:
+        elif relative >= 1.55:
             confidence = "B"
-        elif relative >= 1.2:
+        elif relative >= 1.35:
             confidence = "C"
         else:
             confidence = "D"
