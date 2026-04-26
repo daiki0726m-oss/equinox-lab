@@ -2,19 +2,13 @@ name: 📊 Collect Race Results
 
 on:
   schedule:
-    # #59 (2026-06-10): 日中の毎時 cron (10:00-17:00, 19:00) を削除。
-    # 日中の結果収集は race_day_runner (8:30-19:00 の10分間隔 loop) に一本化した。
-    # 本 workflow は runner 終了後の「夜間最終スイープ」のみを担う
-    # (取りこぼし結果 + 遅出し配当の回収)。
-    # 土日 20:00 JST (UTC 11:00) - runner 終了後の最終回収
-    - cron: '0 11 * * 6,0'
+    # 土日 17:00 JST (UTC 8:00) - レース終了直後
+    - cron: '0 8 * * 6,0'
+    # 土日 19:00 JST (UTC 10:00) - 確実な結果反映
+    - cron: '0 10 * * 6,0'
     # 土日 22:00 JST (UTC 13:00) - 最終確認
     - cron: '0 13 * * 6,0'
   workflow_dispatch:
-
-concurrency:
-  group: keiba-db-accum          # #70 part1: 蓄積系writerを直列化しgz clobberを防ぐ
-  cancel-in-progress: false
 
 jobs:
   collect:
@@ -30,18 +24,6 @@ jobs:
           key: keiba-db-${{ github.run_number }}
           restore-keys: |
             keiba-db-
-
-      # 🛡 git を source of truth に強制 (cache 古さの事故防止 - 2026-05-24)
-      - name: Force git DB (override stale cache)
-        run: |
-          # 🆕 #61: checkout SHA は run 作成時点で固定されるため、ほぼ同時 dispatch の
-          # 先行 run が push した posted_slots lock が見えない (stale checkout)。
-          # fetch + reset で「真の origin/main 最新」に進めてから DB を採用する。
-          git fetch origin "${GITHUB_REF_NAME:-main}" --depth 1
-          git reset --hard "origin/${GITHUB_REF_NAME:-main}"
-          git checkout HEAD -- keiba.db.gz
-          bash scripts/db_unpack.sh
-          echo "✅ keiba.db を git HEAD に復元"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -84,21 +66,6 @@ jobs:
           echo "💰 ${DATE} の配当を収集..."
           python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集スキップ"
 
-      # 🛡 Pre-flight: races/出走馬/予測キャッシュ完整性チェック + auto-fix
-      # 5/23 事故 (export_predictions が「予測データなし」で空 JSON 出力) の再発防止
-      - name: Pre-flight check (data integrity)
-        run: |
-          DATE="${{ steps.date.outputs.date }}"
-          echo "🛡 Pre-flight check: $DATE"
-          python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || {
-            EXIT_CODE=$?
-            if [ $EXIT_CODE -eq 2 ]; then
-              echo "❌ Pre-flight 致命的問題が残っている (auto-fix失敗)"
-              # この workflow は collect なので、致命的でも JSON 更新は試みる
-              # (export 側で「予測なしならスキップ」される設計を維持)
-            fi
-          }
-
       - name: Export predictions JSON
         run: |
           DATE="${{ steps.date.outputs.date }}"
@@ -114,16 +81,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # docs/data/ + keiba.db を一緒にcommit (永続データ蓄積)
-          bash scripts/db_pack.sh || true
-          git add docs/data/ keiba.db.gz 2>/dev/null || true
+          git add docs/data/
           if git diff --staged --quiet; then
             echo "📋 変更なし"
           else
-            git commit -m "📊 Auto collect results + DB $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-            for i in 1 2 3; do
-              git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" || true
-              if git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then echo "✅ pushed (試行$i)"; break; fi
-              echo "⚠️ push失敗→リトライ($i)"; sleep 5
-            done
+            git commit -m "📊 Auto collect results $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+            git push
           fi
