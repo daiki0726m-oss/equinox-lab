@@ -25,7 +25,7 @@
 //
 // ═══════════════════════════════════════════════
 
-var GITHUB_TOKEN = "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";
+var GITHUB_TOKEN = "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";
 var REPO = "daiki0726m-oss/equinox-lab";
 var WORKFLOW = "auto_post_x.yml";
 
