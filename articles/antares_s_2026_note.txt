@@ -124,6 +124,5 @@
 ━━━━━━━━━━━━━━━━━━━
 
 📊 全データはEQUINOX Lab AIモデルのDB実測値（2,566頭）に基づきます
-🔗 ダッシュボード: https://daiki0726m-oss.github.io/equinox-lab/
 
 #アンタレスS #競馬予想 #AI予想 #阪神ダート1800m #血統分析
