@@ -1,0 +1,124 @@
+name: 📦 Seed Historical Data
+
+on:
+  # 毎週月曜 JST 03:00 (UTC 18:00 日曜) に実行 → 先週末の結果を蓄積
+  schedule:
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+    inputs:
+      months:
+        description: '収集する月(カンマ区切り、例: 1,2,3,4)'
+        required: false
+        default: ''
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore keiba.db from cache
+        uses: actions/cache@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_id }}
+          restore-keys: |
+            keiba-db-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Initialize DB
+        run: python -c "from database import init_db; init_db()"
+
+      - name: Collect 2026 historical data
+        run: |
+          python3 << 'PYEOF'
+          from scraper import NetkeibaScraper
+          from database import get_db
+          import time, os, sys
+
+          s = NetkeibaScraper()
+
+          # 収集対象月を決定
+          input_months = os.environ.get("INPUT_MONTHS", "").strip()
+          if input_months:
+              months = [int(m.strip()) for m in input_months.split(",") if m.strip()]
+          else:
+              # デフォルト: 2026年の1月〜現在月
+              from datetime import datetime
+              current_month = datetime.now().month
+              months = list(range(1, current_month + 1))
+
+          print(f"📅 収集対象: 2026年 {months} 月")
+
+          for month in months:
+              print(f"\n{'='*50}")
+              print(f"🏇 2026年{month}月 収集開始")
+              print(f"{'='*50}")
+
+              race_ids = s.get_race_list(2026, month)
+              collected = 0
+              skipped = 0
+
+              for i, race_id in enumerate(race_ids):
+                  # 既にDB にタイムあり結果があればスキップ
+                  with get_db() as conn:
+                      existing = conn.execute(
+                          "SELECT COUNT(*) as c FROM results WHERE race_id = ? AND finish_time_seconds > 0",
+                          (race_id,)
+                      ).fetchone()
+                      if existing and existing['c'] > 0:
+                          skipped += 1
+                          continue
+
+                  try:
+                      race_data = s.scrape_race_result(race_id)
+                      if race_data:
+                          s.save_race_to_db(race_data)
+                          collected += 1
+                  except Exception as e:
+                      print(f"  ⚠️ {race_id}: {e}")
+
+                  time.sleep(1)  # レート制限
+
+              print(f"📊 {month}月: 新規{collected}件 / スキップ{skipped}件")
+
+          # 最終集計
+          with get_db() as conn:
+              total_races = conn.execute("SELECT COUNT(*) as c FROM races").fetchone()['c']
+              total_results = conn.execute("SELECT COUNT(*) as c FROM results").fetchone()['c']
+              with_time = conn.execute("SELECT COUNT(*) as c FROM results WHERE finish_time_seconds > 0").fetchone()['c']
+              print(f"\n✅ 収集完了!")
+              print(f"  全レース: {total_races}件")
+              print(f"  全結果: {total_results}件")
+              print(f"  タイムあり: {with_time}件 ({with_time/total_results*100:.0f}%)")
+          PYEOF
+        env:
+          INPUT_MONTHS: ${{ github.event.inputs.months }}
+
+      - name: Save DB cache
+        uses: actions/cache/save@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_id }}
+
+      - name: Export updated predictions
+        run: |
+          DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
+          python export_predictions.py "$DATE" 2>/dev/null || true
+
+      - name: Deploy to GitHub Pages
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/ keiba.db 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "📦 Seed historical data $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+          git push || true

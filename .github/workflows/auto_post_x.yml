@@ -127,25 +127,45 @@ jobs:
               print(c)
           " 2>/dev/null || echo "0")
           
-          echo "📊 確定結果レコード: ${RESULT_COUNT}件"
+          # タイムあり結果の件数も確認
+          TIME_COUNT=$(python -c "
+          from database import get_db
+          with get_db() as conn:
+              print(conn.execute('SELECT COUNT(*) FROM results WHERE finish_time_seconds > 0').fetchone()[0])
+          " 2>/dev/null || echo "0")
           
-          # 500件未満 = 過去データ不足 → 収集実行
-          if [ "$RESULT_COUNT" -lt 500 ]; then
-            echo "⚠️ 過去データ不足（${RESULT_COUNT}件 < 500件）→ 過去60日分を収集"
-            for i in $(seq 1 60); do
-              DATE=$(date -d "-${i} days" +%Y%m%d 2>/dev/null || date -v-${i}d +%Y%m%d 2>/dev/null)
-              if [ -n "$DATE" ]; then
-                python predict.py collect --date "$DATE" 2>/dev/null || true
-              fi
-            done
+          echo "📊 確定結果レコード: ${RESULT_COUNT}件 / タイムあり: ${TIME_COUNT}件"
+          
+          # 5000件未満 = 過去データ不足 → 2026年全データ収集
+          if [ "$TIME_COUNT" -lt 5000 ]; then
+            echo "⚠️ 過去データ不足（タイムあり${TIME_COUNT}件 < 5000件）→ 2026年全月を収集"
+            python3 -c "
+          from scraper import NetkeibaScraper
+          from database import get_db
+          import time
+          from datetime import datetime
+          s = NetkeibaScraper()
+          current_month = int('$(TZ=Asia/Tokyo date +%m)')
+          for month in range(1, current_month + 1):
+              race_ids = s.get_race_list(2026, month)
+              for rid in race_ids:
+                  with get_db() as conn:
+                      ex = conn.execute('SELECT COUNT(*) as c FROM results WHERE race_id=? AND finish_time_seconds>0', (rid,)).fetchone()
+                      if ex and ex['c'] > 0: continue
+                  try:
+                      data = s.scrape_race_result(rid)
+                      if data: s.save_race_to_db(data)
+                  except: pass
+                  time.sleep(1)
+          " 2>/dev/null || true
             NEW_COUNT=$(python -c "
             from database import get_db
             with get_db() as conn:
-                print(conn.execute('SELECT COUNT(*) FROM results WHERE finish_position > 0').fetchone()[0])
+                print(conn.execute('SELECT COUNT(*) FROM results WHERE finish_time_seconds > 0').fetchone()[0])
             " 2>/dev/null || echo "0")
-            echo "✅ 過去データ収集完了: ${NEW_COUNT}件"
+            echo "✅ 過去データ収集完了: タイムあり${NEW_COUNT}件"
           else
-            echo "✅ 過去データ充足: ${RESULT_COUNT}件"
+            echo "✅ 過去データ充足: タイムあり${TIME_COUNT}件"
           fi
 
       - name: Determine post type
