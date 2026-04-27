@@ -171,15 +171,16 @@ jobs:
       - name: Determine post type
         id: determine
         run: |
-          DOW=$(TZ=Asia/Tokyo date +%u)  # 1=Mon ... 7=Sun
-          HOUR=$(TZ=Asia/Tokyo date +%H)
           TODAY_YYYYMMDD=$(TZ=Asia/Tokyo date +%Y%m%d)
           TODAY_HYPHEN=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+          DOW=$(TZ=Asia/Tokyo date +%u)  # 1=Mon ... 7=Sun
+          HOUR=$(TZ=Asia/Tokyo date +%H)
 
           MODE="${{ github.event.inputs.mode }}"
-          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE"
+          SCHEDULE="${{ github.event.schedule }}"
+          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE, SCHEDULE=$SCHEDULE"
 
-          # GASから直接モード指定がある場合はそのまま使用
+          # ── GASからの直接モード指定 ──
           if [ "$MODE" != "" ] && [ "$MODE" != "auto" ]; then
             echo "type=$MODE" >> $GITHUB_OUTPUT
             echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
@@ -188,65 +189,48 @@ jobs:
             exit 0
           fi
 
-          # autoモード: JST時間で柔軟に判定（分単位チェック廃止）
-          if [ "$HOUR" = "07" ] || [ "$HOUR" = "06" ]; then
-            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              TYPE="predict"
-            else
-              TYPE="morning"
-            fi
-          elif [ "$HOUR" = "09" ]; then
-            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              TYPE="odds_flash"
-            else
-              TYPE="skip"
-            fi
-          elif [ "$HOUR" = "10" ]; then
-            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              TYPE="post_predict"
-            else
-              TYPE="skip"
-            fi
-          elif [ "$HOUR" = "12" ]; then
-            if [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
-              TYPE="weekday"
-            else
-              TYPE="skip"
-            fi
-          elif [ "$HOUR" = "15" ] || [ "$HOUR" = "16" ]; then
-            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              TYPE="hit_flash"
-            else
-              TYPE="skip"
-            fi
-          elif [ "$HOUR" = "17" ]; then
-            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              TYPE="results"
-            else
-              TYPE="skip"
-            fi
-          elif [ "$HOUR" = "18" ] || [ "$HOUR" = "19" ]; then
-            if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-              TYPE="refresh_dashboard"
-            else
-              TYPE="skip"
-            fi
-          elif [ "$HOUR" = "20" ] || [ "$HOUR" = "21" ]; then
-            if [ "$DOW" -eq 6 ]; then
-              TYPE="answer_check"
-            elif [ "$DOW" -eq 7 ]; then
-              TYPE="weekly_review"
-            elif [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
-              TYPE="evening"
-            else
-              TYPE="skip"
-            fi
-          else
-            TYPE="skip"
-          fi
+          # ── schedule cron → type マッピング（遅延に影響されない） ──
+          # 各cronエントリに対して固定のtypeを返す
+          case "$SCHEDULE" in
+            "30 22 * * 0-4")  TYPE="morning" ;;         # 平日朝7:30 JST
+            "0 22 * * 5,6")   TYPE="predict" ;;         # 土日朝7:00 JST
+            "30 3 * * 1-5")   TYPE="weekday" ;;         # 平日昼12:30 JST
+            "0 11 * * 1-5")   TYPE="evening" ;;         # 平日夜20:00 JST
+            "30 0 * * 6,0")   TYPE="odds_flash" ;;      # 土日 9:30 JST
+            "15 1 * * 6,0")   TYPE="post_predict" ;;    # 土日10:15 JST
+            "30 6 * * 6,0")   TYPE="hit_flash" ;;       # 土日15:30 JST
+            "30 8 * * 6,0")   TYPE="results" ;;         # 土日17:30 JST
+            "30 9 * * 6,0")   TYPE="refresh_dashboard" ;; # 土日18:30 JST
+            *)
+              # schedule値が取れない場合のフォールバック（JST時刻で判定）
+              echo "⚠️ Unknown schedule: '$SCHEDULE' → JST時刻フォールバック"
+              if [ "$DOW" -ge 1 ] && [ "$DOW" -le 5 ]; then
+                # 平日
+                case "$HOUR" in
+                  06|07|08) TYPE="morning" ;;
+                  11|12|13) TYPE="weekday" ;;
+                  19|20|21) TYPE="evening" ;;
+                  *) TYPE="skip" ;;
+                esac
+              else
+                # 土日
+                case "$HOUR" in
+                  06|07|08) TYPE="predict" ;;
+                  09)       TYPE="odds_flash" ;;
+                  10)       TYPE="post_predict" ;;
+                  14|15|16) TYPE="hit_flash" ;;
+                  17)       TYPE="results" ;;
+                  18|19)    TYPE="refresh_dashboard" ;;
+                  20)       TYPE="answer_check" ;;
+                  21)       TYPE="weekly_review" ;;
+                  *) TYPE="skip" ;;
+                esac
+              fi
+              ;;
+          esac
 
           echo "type=$TYPE" >> $GITHUB_OUTPUT
-          echo "📬 Determined type (auto): $TYPE"
+          echo "📬 Determined type (schedule-mapped): $TYPE"
 
           echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
           echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
