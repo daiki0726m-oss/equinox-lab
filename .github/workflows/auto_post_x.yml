@@ -312,6 +312,46 @@ jobs:
           python predict.py collect --date "$DATE"
           python collect_payouts.py --date "$DATE"
 
+      # 平日投稿の前に来週末のレースを事前登録
+      - name: Fetch weekend races for weekday posts
+        if: contains(fromJSON('["morning","evening","weekday"]'), steps.determine.outputs.type)
+        run: |
+          echo "📥 来週末のレースを事前登録..."
+          python -c "
+          from database import init_db; init_db()
+          from scraper import NetkeibaScraper
+          from datetime import datetime, timedelta, timezone
+          import time
+
+          jst = timezone(timedelta(hours=9))
+          today = datetime.now(jst)
+          dow = today.weekday()
+          days_until_sat = (5 - dow) % 7
+          if days_until_sat == 0 and dow != 5:
+              days_until_sat = 7
+          if dow == 5: days_until_sat = 0
+          elif dow == 6: days_until_sat = 6
+
+          next_sat = today + timedelta(days=days_until_sat)
+          next_sun = next_sat + timedelta(days=1)
+
+          scraper = NetkeibaScraper()
+          for d in [next_sat, next_sun]:
+              ds = d.strftime('%Y%m%d')
+              try:
+                  ids = scraper.get_race_list_by_date(ds)
+                  r11 = [r for r in ids if r.endswith('11')]
+                  print(f'  {ds}: {len(r11)}件の11R')
+                  for rid in r11:
+                      data = scraper.scrape_shutuba(rid)
+                      if data:
+                          scraper.save_race_to_db(data)
+                          print(f'    ✅ {data[\"race_name\"]}')
+                      time.sleep(1)
+              except Exception as e:
+                  print(f'  ⚠️ {ds}: {e}')
+          "
+
       - name: Post to X
         if: steps.determine.outputs.type != 'skip'
         env:
