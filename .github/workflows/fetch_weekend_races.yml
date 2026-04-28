@@ -1,0 +1,86 @@
+name: 📅 Fetch Weekend Races
+
+on:
+  schedule:
+    # 月曜 6:00 JST (UTC 日曜 21:00) — 週初めに来週末のレースを登録
+    - cron: '0 21 * * 0'
+    # 水曜 6:00 JST (UTC 火曜 21:00) — 出馬表更新（木曜に出走表確定するため予備）
+    - cron: '0 21 * * 2'
+    # 金曜 6:00 JST (UTC 木曜 21:00) — 最終確認（出走取消等の反映）
+    - cron: '0 21 * * 4'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore keiba.db from cache
+        uses: actions/cache@v4
+        id: db-cache
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_number }}
+          restore-keys: |
+            keiba-db-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Init DB
+        run: python -c "from database import init_db; init_db()"
+
+      - name: Fetch upcoming weekend races
+        run: |
+          python -c "
+          from database import init_db, get_db
+          from scraper import NetkeibaScraper
+          from datetime import datetime, timedelta, timezone
+          import time
+
+          init_db()
+          jst = timezone(timedelta(hours=9))
+          today = datetime.now(jst)
+          dow = today.weekday()
+
+          # 次の土曜日を計算
+          days_until_sat = (5 - dow) % 7
+          if days_until_sat == 0 and dow != 5:
+              days_until_sat = 7
+          if dow == 5: days_until_sat = 0
+          elif dow == 6: days_until_sat = 6
+
+          next_sat = today + timedelta(days=days_until_sat)
+          next_sun = next_sat + timedelta(days=1)
+
+          scraper = NetkeibaScraper()
+          total = 0
+
+          for d in [next_sat, next_sun]:
+              ds = d.strftime('%Y%m%d')
+              try:
+                  ids = scraper.get_race_list_by_date(ds)
+                  print(f'{ds}: {len(ids)}レース検出')
+                  for rid in ids:
+                      data = scraper.scrape_shutuba(rid)
+                      if data:
+                          scraper.save_race_to_db(data)
+                          total += 1
+                      time.sleep(1)
+              except Exception as e:
+                  print(f'⚠️ {ds}: {e}')
+
+          print(f'✅ 合計 {total} レース登録完了')
+          "
+
+      - name: Save keiba.db to cache
+        uses: actions/cache/save@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_number }}
