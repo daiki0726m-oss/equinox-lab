@@ -3148,10 +3148,8 @@ def cmd_morning(args):
         traceback.print_exc()
 
     if not tweet:
-        tweet = "🏇 おはようございます！\n\n"
-        tweet += "EQUINOX Labです。\n"
-        tweet += "今週末のレースデータを配信中📊\n\n"
-        tweet += "#競馬予想 #AI予想"
+        print("⚠️ 投稿コンテンツを生成できませんでした（レース未登録 or データ不足）→ 投稿スキップ")
+        return
 
     if not fact_check_tweet(tweet):
         print("🚫 ファクトチェック不合格のため投稿を中止します")
