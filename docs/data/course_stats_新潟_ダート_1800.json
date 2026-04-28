@@ -1,0 +1,582 @@
+{
+  "venue": "新潟",
+  "surface": "ダート",
+  "distance": 1800,
+  "start_year": 2020,
+  "end_year": 2025,
+  "total_races": 80,
+  "total_horses": 1049,
+  "frame_stats": [
+    {
+      "frame": 1,
+      "runs": 80,
+      "win_rate": 8.8,
+      "top3_rate": 20.0
+    },
+    {
+      "frame": 2,
+      "runs": 113,
+      "win_rate": 6.2,
+      "top3_rate": 18.6
+    },
+    {
+      "frame": 3,
+      "runs": 127,
+      "win_rate": 5.5,
+      "top3_rate": 17.3
+    },
+    {
+      "frame": 4,
+      "runs": 134,
+      "win_rate": 6.0,
+      "top3_rate": 25.4
+    },
+    {
+      "frame": 5,
+      "runs": 138,
+      "win_rate": 8.0,
+      "top3_rate": 27.5
+    },
+    {
+      "frame": 6,
+      "runs": 144,
+      "win_rate": 11.8,
+      "top3_rate": 27.1
+    },
+    {
+      "frame": 7,
+      "runs": 156,
+      "win_rate": 5.1,
+      "top3_rate": 18.6
+    },
+    {
+      "frame": 8,
+      "runs": 157,
+      "win_rate": 9.6,
+      "top3_rate": 26.1
+    }
+  ],
+  "jockey_stats": [
+    {
+      "jockey": "松山弘平",
+      "runs": 4,
+      "win_rate": 75.0,
+      "top3_rate": 100.0
+    },
+    {
+      "jockey": "ルメール",
+      "runs": 9,
+      "win_rate": 22.2,
+      "top3_rate": 77.8
+    },
+    {
+      "jockey": "太宰啓介",
+      "runs": 4,
+      "win_rate": 0.0,
+      "top3_rate": 75.0
+    },
+    {
+      "jockey": "北村友一",
+      "runs": 4,
+      "win_rate": 50.0,
+      "top3_rate": 75.0
+    },
+    {
+      "jockey": "川田将雅",
+      "runs": 3,
+      "win_rate": 33.3,
+      "top3_rate": 66.7
+    },
+    {
+      "jockey": "団野大成",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 66.7
+    },
+    {
+      "jockey": "津村明秀",
+      "runs": 12,
+      "win_rate": 25.0,
+      "top3_rate": 50.0
+    },
+    {
+      "jockey": "岩田康誠",
+      "runs": 4,
+      "win_rate": 0.0,
+      "top3_rate": 50.0
+    },
+    {
+      "jockey": "丹内祐次",
+      "runs": 30,
+      "win_rate": 10.0,
+      "top3_rate": 46.7
+    },
+    {
+      "jockey": "戸崎圭太",
+      "runs": 15,
+      "win_rate": 26.7,
+      "top3_rate": 46.7
+    },
+    {
+      "jockey": "国分恭介",
+      "runs": 10,
+      "win_rate": 20.0,
+      "top3_rate": 40.0
+    },
+    {
+      "jockey": "丸山元気",
+      "runs": 31,
+      "win_rate": 9.7,
+      "top3_rate": 38.7
+    },
+    {
+      "jockey": "荻野極",
+      "runs": 27,
+      "win_rate": 11.1,
+      "top3_rate": 37.0
+    },
+    {
+      "jockey": "吉田隼人",
+      "runs": 11,
+      "win_rate": 9.1,
+      "top3_rate": 36.4
+    },
+    {
+      "jockey": "小林美駒",
+      "runs": 14,
+      "win_rate": 7.1,
+      "top3_rate": 35.7
+    },
+    {
+      "jockey": "菅原明良",
+      "runs": 21,
+      "win_rate": 9.5,
+      "top3_rate": 33.3
+    },
+    {
+      "jockey": "角田大和",
+      "runs": 9,
+      "win_rate": 0.0,
+      "top3_rate": 33.3
+    },
+    {
+      "jockey": "小崎綾也",
+      "runs": 6,
+      "win_rate": 0.0,
+      "top3_rate": 33.3
+    },
+    {
+      "jockey": "菱田裕二",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 33.3
+    },
+    {
+      "jockey": "佐々木大",
+      "runs": 22,
+      "win_rate": 13.6,
+      "top3_rate": 31.8
+    },
+    {
+      "jockey": "西塚洸二",
+      "runs": 16,
+      "win_rate": 18.8,
+      "top3_rate": 31.2
+    },
+    {
+      "jockey": "小林凌大",
+      "runs": 7,
+      "win_rate": 14.3,
+      "top3_rate": 28.6
+    },
+    {
+      "jockey": "柴田裕一",
+      "runs": 18,
+      "win_rate": 11.1,
+      "top3_rate": 27.8
+    },
+    {
+      "jockey": "上里直汰",
+      "runs": 15,
+      "win_rate": 6.7,
+      "top3_rate": 26.7
+    },
+    {
+      "jockey": "木幡巧也",
+      "runs": 19,
+      "win_rate": 10.5,
+      "top3_rate": 26.3
+    },
+    {
+      "jockey": "和田陽希",
+      "runs": 8,
+      "win_rate": 0.0,
+      "top3_rate": 25.0
+    },
+    {
+      "jockey": "永島まな",
+      "runs": 12,
+      "win_rate": 8.3,
+      "top3_rate": 25.0
+    },
+    {
+      "jockey": "伊藤工真",
+      "runs": 4,
+      "win_rate": 0.0,
+      "top3_rate": 25.0
+    },
+    {
+      "jockey": "丸田恭介",
+      "runs": 8,
+      "win_rate": 12.5,
+      "top3_rate": 25.0
+    },
+    {
+      "jockey": "キング",
+      "runs": 4,
+      "win_rate": 0.0,
+      "top3_rate": 25.0
+    },
+    {
+      "jockey": "斎藤新",
+      "runs": 29,
+      "win_rate": 6.9,
+      "top3_rate": 24.1
+    },
+    {
+      "jockey": "武藤雅",
+      "runs": 21,
+      "win_rate": 9.5,
+      "top3_rate": 23.8
+    },
+    {
+      "jockey": "亀田温心",
+      "runs": 13,
+      "win_rate": 15.4,
+      "top3_rate": 23.1
+    },
+    {
+      "jockey": "横山琉人",
+      "runs": 31,
+      "win_rate": 16.1,
+      "top3_rate": 22.6
+    },
+    {
+      "jockey": "藤懸貴志",
+      "runs": 9,
+      "win_rate": 11.1,
+      "top3_rate": 22.2
+    },
+    {
+      "jockey": "石橋脩",
+      "runs": 9,
+      "win_rate": 11.1,
+      "top3_rate": 22.2
+    },
+    {
+      "jockey": "水沼元輝",
+      "runs": 14,
+      "win_rate": 0.0,
+      "top3_rate": 21.4
+    },
+    {
+      "jockey": "古川吉洋",
+      "runs": 5,
+      "win_rate": 20.0,
+      "top3_rate": 20.0
+    },
+    {
+      "jockey": "川端海翼",
+      "runs": 15,
+      "win_rate": 0.0,
+      "top3_rate": 20.0
+    },
+    {
+      "jockey": "河原田菜",
+      "runs": 10,
+      "win_rate": 0.0,
+      "top3_rate": 20.0
+    },
+    {
+      "jockey": "大野拓弥",
+      "runs": 30,
+      "win_rate": 10.0,
+      "top3_rate": 20.0
+    },
+    {
+      "jockey": "三浦皇成",
+      "runs": 10,
+      "win_rate": 20.0,
+      "top3_rate": 20.0
+    },
+    {
+      "jockey": "酒井学",
+      "runs": 5,
+      "win_rate": 0.0,
+      "top3_rate": 20.0
+    },
+    {
+      "jockey": "小沢大仁",
+      "runs": 36,
+      "win_rate": 11.1,
+      "top3_rate": 19.4
+    },
+    {
+      "jockey": "野中悠太",
+      "runs": 16,
+      "win_rate": 6.2,
+      "top3_rate": 18.8
+    },
+    {
+      "jockey": "杉原誠人",
+      "runs": 17,
+      "win_rate": 0.0,
+      "top3_rate": 17.6
+    },
+    {
+      "jockey": "鮫島克駿",
+      "runs": 6,
+      "win_rate": 0.0,
+      "top3_rate": 16.7
+    },
+    {
+      "jockey": "内田博幸",
+      "runs": 18,
+      "win_rate": 0.0,
+      "top3_rate": 16.7
+    },
+    {
+      "jockey": "吉田豊",
+      "runs": 12,
+      "win_rate": 0.0,
+      "top3_rate": 16.7
+    },
+    {
+      "jockey": "岩田望来",
+      "runs": 6,
+      "win_rate": 0.0,
+      "top3_rate": 16.7
+    },
+    {
+      "jockey": "田口貫太",
+      "runs": 6,
+      "win_rate": 0.0,
+      "top3_rate": 16.7
+    },
+    {
+      "jockey": "菊沢一樹",
+      "runs": 53,
+      "win_rate": 3.8,
+      "top3_rate": 15.1
+    },
+    {
+      "jockey": "今村聖奈",
+      "runs": 21,
+      "win_rate": 9.5,
+      "top3_rate": 14.3
+    },
+    {
+      "jockey": "松本大輝",
+      "runs": 14,
+      "win_rate": 14.3,
+      "top3_rate": 14.3
+    },
+    {
+      "jockey": "中井裕二",
+      "runs": 7,
+      "win_rate": 0.0,
+      "top3_rate": 14.3
+    },
+    {
+      "jockey": "柴田大知",
+      "runs": 7,
+      "win_rate": 14.3,
+      "top3_rate": 14.3
+    },
+    {
+      "jockey": "高杉吏麒",
+      "runs": 7,
+      "win_rate": 0.0,
+      "top3_rate": 14.3
+    },
+    {
+      "jockey": "舟山瑠泉",
+      "runs": 16,
+      "win_rate": 0.0,
+      "top3_rate": 12.5
+    },
+    {
+      "jockey": "石田拓郎",
+      "runs": 25,
+      "win_rate": 0.0,
+      "top3_rate": 12.0
+    },
+    {
+      "jockey": "古川奈穂",
+      "runs": 9,
+      "win_rate": 0.0,
+      "top3_rate": 11.1
+    },
+    {
+      "jockey": "石神深道",
+      "runs": 29,
+      "win_rate": 0.0,
+      "top3_rate": 10.3
+    },
+    {
+      "jockey": "長浜鴻緒",
+      "runs": 23,
+      "win_rate": 4.3,
+      "top3_rate": 8.7
+    },
+    {
+      "jockey": "小林脩斗",
+      "runs": 12,
+      "win_rate": 0.0,
+      "top3_rate": 8.3
+    },
+    {
+      "jockey": "木幡初也",
+      "runs": 12,
+      "win_rate": 0.0,
+      "top3_rate": 8.3
+    },
+    {
+      "jockey": "遠藤汰月",
+      "runs": 12,
+      "win_rate": 0.0,
+      "top3_rate": 8.3
+    },
+    {
+      "jockey": "秋山稔樹",
+      "runs": 13,
+      "win_rate": 0.0,
+      "top3_rate": 7.7
+    },
+    {
+      "jockey": "江田照男",
+      "runs": 17,
+      "win_rate": 0.0,
+      "top3_rate": 5.9
+    },
+    {
+      "jockey": "木幡育也",
+      "runs": 5,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "jockey": "鷲頭虎太",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "jockey": "石川裕紀",
+      "runs": 11,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "jockey": "原優介",
+      "runs": 19,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "jockey": "佐藤翔馬",
+      "runs": 10,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "jockey": "土田真翔",
+      "runs": 5,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "jockey": "嶋田純次",
+      "runs": 4,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "jockey": "黛弘人",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    }
+  ],
+  "running_style_stats": [
+    {
+      "style": "逃げ",
+      "runs": 80,
+      "win_rate": 18.8,
+      "top3_rate": 38.8
+    },
+    {
+      "style": "先行",
+      "runs": 366,
+      "win_rate": 12.8,
+      "top3_rate": 35.0
+    },
+    {
+      "style": "差し",
+      "runs": 362,
+      "win_rate": 4.4,
+      "top3_rate": 15.5
+    },
+    {
+      "style": "追込",
+      "runs": 241,
+      "win_rate": 0.8,
+      "top3_rate": 10.4
+    }
+  ],
+  "popularity_stats": [
+    {
+      "label": "1-3人気",
+      "runs": 239,
+      "win_rate": 24.7,
+      "top3_rate": 54.0,
+      "recovery": 94
+    },
+    {
+      "label": "4-6人気",
+      "runs": 240,
+      "win_rate": 4.6,
+      "top3_rate": 26.7,
+      "recovery": 46
+    },
+    {
+      "label": "7-9人気",
+      "runs": 237,
+      "win_rate": 2.5,
+      "top3_rate": 10.5,
+      "recovery": 139
+    },
+    {
+      "label": "10人気以下",
+      "runs": 333,
+      "win_rate": 1.2,
+      "top3_rate": 6.6,
+      "recovery": 34
+    }
+  ],
+  "last3f_stats": [
+    {
+      "label": "上がり最速",
+      "runs": 80,
+      "win_rate": 46.2,
+      "top3_rate": 80.0
+    },
+    {
+      "label": "上がり3位以内",
+      "runs": 240,
+      "win_rate": 29.2,
+      "top3_rate": 70.0
+    }
+  ],
+  "cached_at": "2026-04-28T15:32:30.928937"
+}
