@@ -869,7 +869,8 @@ def cmd_weekday(args):
         traceback.print_exc()
 
     if not tweet:
-        tweet = generate_analysis_column()
+        print("⚠️ 投稿コンテンツを生成できませんでした → 投稿スキップ")
+        return
 
     client = None
     threads_client = load_threads_client()
@@ -931,7 +932,7 @@ def generate_weekly_summary():
 
     if not results_list:
         # データがない場合はコラムに切替
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
     # 的中数計算（3着以内を的中とする）
     hits = sum(1 for r in results_list if isinstance(r['finish'], int) and r['finish'] <= 3)
@@ -1013,7 +1014,7 @@ def _generate_trainer_ranking():
         """).fetchall()
 
     if not trainers:
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
     period = f"{start_date.year}/{start_date.month}/{start_date.day}〜{end_dt.year}/{end_dt.month}/{end_dt.day}"
 
@@ -1073,7 +1074,7 @@ def _generate_jt_combo():
         """).fetchall()
 
     if not combos:
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
     period = f"{start_date.year}/{start_date.month}/{start_date.day}〜{end_dt.year}/{end_dt.month}/{end_dt.day}"
 
@@ -1112,7 +1113,7 @@ def _generate_course_analysis():
         """).fetchall()
 
         if not venues:
-            return generate_analysis_column()
+            return None  # データ不足時はスキップ
 
         venue_name = venues[0]['venue']
 
@@ -1207,7 +1208,7 @@ def _generate_distance_specialty():
         """).fetchall()
 
     if not dist_data:
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
     t1 = "📏 距離変更と成績の関係\n\n"
     t1 += "距離を延長/短縮した馬は\n"
@@ -1764,7 +1765,7 @@ def generate_pickup_horse():
         """).fetchall()
 
     if not weekend:
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
     weekend_dates = [w['race_date'] for w in weekend]
     weekend_str = "・".join([f"{datetime.strptime(d,'%Y-%m-%d').month}/{datetime.strptime(d,'%Y-%m-%d').day}" for d in weekend_dates])
@@ -1882,7 +1883,7 @@ def generate_pickup_horse():
 
     # データがなければコラムに切替
     if not dist_change and not si_adv and not venue_change:
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
     # ── ツイート1: フック ──
     t1 = f"🔍 今週末({weekend_str})の注目馬\n\n"
@@ -1947,7 +1948,7 @@ def generate_race_data_analysis():
             """).fetchall()
 
             if not venues:
-                return generate_analysis_column()
+                return None  # データ不足時はスキップ
 
             venue_names = [v['venue'] for v in venues]
             tweets = []
@@ -1991,7 +1992,7 @@ def generate_race_data_analysis():
 
     except Exception as e:
         print(f"⚠️ レースデータ分析エラー: {e}")
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
 
 def generate_horse_spotlight():
@@ -2013,14 +2014,14 @@ def generate_horse_spotlight():
             """).fetchall()
 
             if not main_races:
-                return generate_analysis_column()
+                return None  # データ不足時はスキップ
 
             # 最もグレードの高いレースから注目馬を選出
             spotlight_race = main_races[0]
             preds = json.loads(spotlight_race['predictions_json']) if spotlight_race['predictions_json'] else []
 
             if len(preds) < 2:
-                return generate_analysis_column()
+                return None  # データ不足時はスキップ
 
             top = preds[0]
             rival = preds[1]
@@ -2066,7 +2067,7 @@ def generate_horse_spotlight():
 
     except Exception as e:
         print(f"⚠️ 注目馬スポットライトエラー: {e}")
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
 
 def generate_weekend_preview():
@@ -2085,7 +2086,7 @@ def generate_weekend_preview():
         """).fetchall()
 
         if not races_11r:
-            return generate_analysis_column()
+            return None  # データ不足時はスキップ
 
         # 各レースのAI予測上位を取得
         race_picks = []
@@ -2554,7 +2555,7 @@ def generate_note_promo():
 
     if not promo_files:
         print("📝 今週末対象の記事なし → フォールバック")
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
     # 更新日順でソート
     promo_files.sort(key=os.path.getmtime, reverse=True)
@@ -2586,7 +2587,7 @@ def generate_note_promo():
             key_points.append(line)
 
     if not title:
-        return generate_analysis_column()
+        return None  # データ不足時はスキップ
 
     # レース名からハッシュタグを動的生成
     race_hashtags = ""
@@ -3315,7 +3316,8 @@ def cmd_evening(args):
         traceback.print_exc()
 
     if not tweet:
-        tweet = generate_analysis_column()
+        print("⚠️ 投稿コンテンツを生成できませんでした → 投稿スキップ")
+        return
 
     # generate_analysis_columnはリスト(3ツイートスレッド)を返す場合がある
     if isinstance(tweet, list):
