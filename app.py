@@ -119,6 +119,18 @@ def _bg_result_fetcher():
                                                 rid, r.get("horse_number", 0)
                                             ))
                                     print(f"  🏁 結果取得: {race['venue']}R{race['race_number']} {race['race_name']}")
+                                    # 払戻金も保存
+                                    if data.get("payouts"):
+                                        with get_db() as conn:
+                                            for p in data["payouts"]:
+                                                conn.execute("""
+                                                    INSERT OR REPLACE INTO payouts
+                                                    (race_id, bet_type, combination, payout_amount, popularity)
+                                                    VALUES (?, ?, ?, ?, ?)
+                                                """, (
+                                                    rid, p["bet_type"], p["combination"],
+                                                    p["payout_amount"], p.get("popularity", 0)
+                                                ))
                         except Exception as e:
                             print(f"  ⚠️ 結果取得エラー {rid}: {e}")
 
