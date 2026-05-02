@@ -126,6 +126,31 @@ def _bg_result_fetcher():
 
                 print(f"  🔄 {now.strftime('%H:%M')} オッズ・結果更新完了 ({len(all_today)}レース)")
 
+                # ── GitHub Pages用JSONを再エクスポート＆push ──
+                try:
+                    from export_predictions import export_predictions
+                    today_str = now.strftime("%Y%m%d")
+                    exported = export_predictions(today_str)
+                    if exported:
+                        import subprocess
+                        repo_dir = os.path.dirname(__file__)
+                        subprocess.run(
+                            ["git", "add", "docs/data/"],
+                            cwd=repo_dir, capture_output=True, timeout=10
+                        )
+                        result = subprocess.run(
+                            ["git", "commit", "-m", f"auto: update results {now.strftime('%H:%M')}"],
+                            cwd=repo_dir, capture_output=True, timeout=10
+                        )
+                        if result.returncode == 0:
+                            subprocess.run(
+                                ["git", "push", "origin", "main"],
+                                cwd=repo_dir, capture_output=True, timeout=30
+                            )
+                            print(f"  📤 GitHub Pages更新完了 ({today_str})")
+                except Exception as e:
+                    print(f"  ⚠️ GitHub Pages更新エラー: {e}")
+
             # 5分待機
             time_mod.sleep(300)
 
@@ -417,7 +442,11 @@ def api_performance():
 def predict_page():
     """予測ダッシュボード"""
     target_date = request.args.get("date", datetime.now().strftime("%Y%m%d"))
-    return render_template("predict.html", target_date=target_date)
+    response = app.make_response(render_template("predict.html", target_date=target_date))
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 
 @app.route("/api/predict-date/<date_str>")
@@ -608,6 +637,28 @@ def api_predict_date(date_str):
 
                 if not race:
                     continue
+
+                # ── 過去走データ自動補完（SI=0対策）──
+                try:
+                    with get_db() as conn:
+                        no_history = conn.execute("""
+                            SELECT DISTINCT r.horse_id FROM results r
+                            WHERE r.race_id = ?
+                            AND r.horse_id NOT IN (
+                                SELECT DISTINCT r2.horse_id FROM results r2
+                                JOIN races ra2 ON r2.race_id = ra2.race_id
+                                WHERE r2.finish_time_seconds > 0
+                                AND ra2.race_id != ?
+                            )
+                        """, (race_id, race_id)).fetchall()
+                    if no_history:
+                        for nh in no_history:
+                            try:
+                                scraper.collect_horse_history(nh['horse_id'], limit=5)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
                 # ── ML予測 ──
                 try:
