@@ -1186,7 +1186,14 @@ function switchTab(btn, raceId, tab) {
 // ─── Prediction Tab ───
 function renderPredTab(race) {
   const horses = race.horses || [];
-  const sorted = [...horses].sort((a, b) => (b.pred_win_pct || 0) - (a.pred_win_pct || 0));
+  // Sort by mark order: ◎→○→▲→△→×→注→(no mark by pred_win_pct)
+  const MARK_ORDER = {'◎': 0, '○': 1, '▲': 2, '△': 3, '×': 4, '注': 5};
+  const sorted = [...horses].sort((a, b) => {
+    const ma = a.mark in MARK_ORDER ? MARK_ORDER[a.mark] : 100;
+    const mb = b.mark in MARK_ORDER ? MARK_ORDER[b.mark] : 100;
+    if (ma !== mb) return ma - mb;
+    return (b.pred_win_pct || 0) - (a.pred_win_pct || 0);
+  });
 
   // Compute category grades within race
   // 相対評価カテゴリ（レース内順位で評価）
