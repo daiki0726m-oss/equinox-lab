@@ -126,28 +126,59 @@ def _bg_result_fetcher():
 
                 print(f"  🔄 {now.strftime('%H:%M')} オッズ・結果更新完了 ({len(all_today)}レース)")
 
-                # ── GitHub Pages用JSONを再エクスポート＆push ──
+                # ── GitHub Pages用JSONを結果＆オッズで更新＆push ──
                 try:
-                    from export_predictions import export_predictions
+                    import subprocess
                     today_str = now.strftime("%Y%m%d")
-                    exported = export_predictions(today_str)
-                    if exported:
-                        import subprocess
+                    json_path = os.path.join(os.path.dirname(__file__), "docs", "data", f"predictions_{today_str}.json")
+                    if os.path.exists(json_path):
+                        with open(json_path, "r", encoding="utf-8") as f:
+                            gh_data = json.load(f)
+                        
+                        patched = 0
+                        with get_db() as conn:
+                            for venue_name, races in gh_data.get("venues", {}).items():
+                                for race in races:
+                                    rid = race.get("race_id", "")
+                                    # オッズ更新
+                                    odds_rows = conn.execute("SELECT horse_number, odds, popularity FROM results WHERE race_id=?", (rid,)).fetchall()
+                                    odds_map = {r["horse_number"]: r for r in odds_rows}
+                                    for h in race.get("horses", []):
+                                        db_r = odds_map.get(h["horse_number"])
+                                        if db_r:
+                                            if db_r["odds"] and db_r["odds"] > 0: h["odds_win"] = db_r["odds"]
+                                            if db_r["popularity"] and db_r["popularity"] > 0: h["popularity"] = db_r["popularity"]
+                                    # 結果反映
+                                    res_rows = conn.execute("SELECT horse_number, finish_position, finish_time, odds, popularity, last_3f, margin FROM results WHERE race_id=? AND finish_position>0", (rid,)).fetchall()
+                                    if res_rows:
+                                        res_map = {r["horse_number"]: r for r in res_rows}
+                                        for h in race.get("horses", []):
+                                            res = res_map.get(h["horse_number"])
+                                            if res:
+                                                h["finish"] = res["finish_position"]
+                                                h["time"] = res["finish_time"] or ""
+                                                h["actual_odds"] = res["odds"] or 0
+                                                if res["popularity"] and res["popularity"] > 0: h["popularity"] = res["popularity"]
+                                                h["last_3f"] = res["last_3f"] or 0
+                                                h["margin"] = res["margin"] or ""
+                                        if not race.get("has_results"):
+                                            race["has_results"] = True
+                                            patched += 1
+                                        # 配当
+                                        payouts = conn.execute("SELECT bet_type, combination, payout_amount, popularity FROM payouts WHERE race_id=? ORDER BY bet_type, popularity", (rid,)).fetchall()
+                                        if payouts:
+                                            race["payouts"] = [{"bet_type": p["bet_type"], "combination": p["combination"], "payout": p["payout_amount"], "popularity": p["popularity"]} for p in payouts]
+                        
+                        gh_data["exported_at"] = now.isoformat()
+                        with open(json_path, "w", encoding="utf-8") as f:
+                            json.dump(gh_data, f, ensure_ascii=False, separators=(",", ":"))
+                        
                         repo_dir = os.path.dirname(__file__)
-                        subprocess.run(
-                            ["git", "add", "docs/data/"],
-                            cwd=repo_dir, capture_output=True, timeout=10
-                        )
-                        result = subprocess.run(
-                            ["git", "commit", "-m", f"auto: update results {now.strftime('%H:%M')}"],
-                            cwd=repo_dir, capture_output=True, timeout=10
-                        )
+                        subprocess.run(["git", "add", "docs/data/"], cwd=repo_dir, capture_output=True, timeout=10)
+                        result = subprocess.run(["git", "commit", "-m", f"auto: update results {now.strftime('%H:%M')}"], cwd=repo_dir, capture_output=True, timeout=10)
                         if result.returncode == 0:
-                            subprocess.run(
-                                ["git", "push", "origin", "main"],
-                                cwd=repo_dir, capture_output=True, timeout=30
-                            )
-                            print(f"  📤 GitHub Pages更新完了 ({today_str})")
+                            subprocess.run(["git", "push", "origin", "main"], cwd=repo_dir, capture_output=True, timeout=30)
+                            print(f"  📤 GitHub Pages更新: +{patched}R確定")
                 except Exception as e:
                     print(f"  ⚠️ GitHub Pages更新エラー: {e}")
 
