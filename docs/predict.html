@@ -753,7 +753,7 @@ body {
   <div class="header-top">
     <div class="logo">🏇 AI KEIBA</div>
     <div class="header-controls">
-      <input type="date" id="dateInput" class="input-date" value="{{ target_date[:4] }}-{{ target_date[4:6] }}-{{ target_date[6:8] }}">
+      <input type="date" id="dateInput" class="input-date" value="">
       <span class="budget-label">予算</span>
       <input type="number" id="budgetInput" class="input-budget" value="1000" min="100" max="100000" step="100">
       <span class="budget-unit">円</span>
@@ -1165,7 +1165,14 @@ function switchTab(btn, raceId, tab) {
 // ─── Prediction Tab ───
 function renderPredTab(race) {
   const horses = race.horses || [];
-  const sorted = [...horses].sort((a, b) => b.pred_win - a.pred_win);
+  // Sort by mark order: ◎→○→▲→△→×→注→(no mark by pred_win)
+  const MARK_ORDER = {'◎': 0, '○': 1, '▲': 2, '△': 3, '×': 4, '注': 5};
+  const sorted = [...horses].sort((a, b) => {
+    const ma = a.mark in MARK_ORDER ? MARK_ORDER[a.mark] : 100;
+    const mb = b.mark in MARK_ORDER ? MARK_ORDER[b.mark] : 100;
+    if (ma !== mb) return ma - mb;
+    return b.pred_win - a.pred_win;  // 同ランクならpred_win順
+  });
 
   // Compute category rankings (S/A/B/C/D) within race
   const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
@@ -1384,10 +1391,13 @@ function renderResultTab(race) {
 
 // ─── Init ───
 document.addEventListener('DOMContentLoaded', () => {
-  // Auto-load if we have a date
   const dateInput = document.getElementById('dateInput');
-  if (dateInput.value) {
-    // Ready state - user clicks predict
+  if (!dateInput.value) {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    dateInput.value = `${yyyy}-${mm}-${dd}`;
   }
 });
 </script>
