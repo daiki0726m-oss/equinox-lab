@@ -50,6 +50,7 @@ def export_predictions(date_str=None):
                 continue
 
             all_races = []
+            skipped_no_cache = 0
             for race in races:
                 race_id = race["race_id"]
                 race_info = dict(race)
@@ -80,7 +81,8 @@ def export_predictions(date_str=None):
                         print(f"  🔄 {race_id} → cache {cached['race_id']} (フォールバック一致)")
 
                 if not cached:
-                    print(f"  ⏭️ {race_id}: キャッシュなし")
+                    # メインレース以外は予測対象外なので静かにスキップし、最後にサマリー出力
+                    skipped_no_cache += 1
                     continue
 
                 horses_raw = json.loads(cached["predictions_json"])
@@ -254,6 +256,9 @@ def export_predictions(date_str=None):
                     "payouts": race_payouts if has_results else [],
                     "prediction_locked": datetime.now(JST).hour >= 10,
                 })
+
+            if skipped_no_cache:
+                print(f"  ℹ️ {ds}: メインレース以外 {skipped_no_cache}件はキャッシュなしでスキップ")
 
             if not all_races:
                 print(f"  ⏭️ {ds}: 予測データなし")
