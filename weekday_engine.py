@@ -532,6 +532,10 @@ def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stat
                         get_entry_jockeys_fn, hashtags_fn, jockey_filter_fn):
     """slot='morning'|'weekday'|'evening' のツイートを生成"""
     dow = today_d.weekday()
+    # 平日のみ稼働(土日は別の予測/結果系cmdが受け持つ)
+    if dow >= 5:
+        print(f"⚠️ {slot}: 土日({['月','火','水','木','金','土','日'][dow]}曜)は平日テンプレ対象外 → スキップ")
+        return None
     slot_idx = {'morning': 0, 'weekday': 1, 'evening': 2}[slot]
 
     # 金曜は土曜重賞(昼) / 日曜G1(夜) で分岐
