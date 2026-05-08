@@ -1,0 +1,95 @@
+name: 📝 Manual Note Article (test/debug)
+
+# 任意日付の note 記事を手動生成して artifact 化する。
+# 事前に該当日付の predictions_cache が必要(manual_predict 等で生成済み)。
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 (YYYYMMDD)'
+        required: true
+        type: string
+      top:
+        description: '厳選レース数'
+        required: false
+        type: string
+        default: '3'
+      free:
+        description: '無料記事モード'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  note:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore keiba.db from cache
+        uses: actions/cache@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_id }}
+          restore-keys: |
+            keiba-db-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Init DB + show cache status
+        run: |
+          python -c "from database import init_db; init_db()"
+          DATE="${{ inputs.date }}"
+          DATE_HYPHEN="${DATE:0:4}-${DATE:4:2}-${DATE:6:2}"
+          python3 - <<PYEOF
+          from database import get_db
+          with get_db() as conn:
+              races_today = conn.execute("SELECT COUNT(*) FROM races WHERE race_date IN (?, ?)", ("${DATE}", "${DATE_HYPHEN}")).fetchone()[0]
+              cache_today = conn.execute("""
+                  SELECT COUNT(*) FROM predictions_cache pc
+                  JOIN races r ON pc.race_id = r.race_id
+                  WHERE r.race_date IN (?, ?)
+              """, ("${DATE}", "${DATE_HYPHEN}")).fetchone()[0]
+              print(f"📊 races for ${DATE}: {races_today}")
+              print(f"📊 predictions_cache for ${DATE}: {cache_today}")
+          PYEOF
+
+      - name: Generate note article
+        run: |
+          DATE="${{ inputs.date }}"
+          TOP="${{ inputs.top }}"
+          FREE_FLAG=""
+          if [ "${{ inputs.free }}" = "true" ]; then
+            FREE_FLAG="--free"
+          fi
+          python generate_note.py --date "$DATE" --top "$TOP" $FREE_FLAG --output "/tmp/note_${DATE}.md" || true
+
+      - name: Display article preview (first 80 lines)
+        run: |
+          DATE="${{ inputs.date }}"
+          if [ -f "/tmp/note_${DATE}.md" ]; then
+            echo "===== ARTICLE START ====="
+            head -80 "/tmp/note_${DATE}.md"
+            echo ""
+            echo "===== ARTICLE END (preview, first 80 lines) ====="
+            wc -l "/tmp/note_${DATE}.md"
+            wc -c "/tmp/note_${DATE}.md"
+          else
+            echo "❌ 記事ファイルが見つかりません"
+            exit 1
+          fi
+
+      - name: Upload article as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: note_${{ inputs.date }}
+          path: /tmp/note_${{ inputs.date }}.md
+          retention-days: 30
