@@ -125,10 +125,11 @@ def race_header_line(race, day_phrase=None, today_d=None):
 
 
 # ───────────────────────────────────────────
-# DB直接集計: 種牡馬/母父
+# DB直接集計: 種牡馬/母父 (コース過去6年)
 # ───────────────────────────────────────────
 
-def get_sire_top(conn, venue, surface, distance, min_runs=5, top=3, year_min=2020):
+def get_sire_top(conn, venue, surface, distance, min_runs=5, top=10, year_min=2020):
+    """コース全体の sire 複勝率TOP (top多めに取り、後で出走馬とクロス)"""
     rows = conn.execute("""
         SELECT h.sire AS name, COUNT(*) AS runs,
                ROUND(100.0*SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*),1) AS top3,
@@ -144,7 +145,7 @@ def get_sire_top(conn, venue, surface, distance, min_runs=5, top=3, year_min=202
     return [dict(r) for r in rows]
 
 
-def get_damsire_top(conn, venue, surface, distance, min_runs=5, top=3, year_min=2020):
+def get_damsire_top(conn, venue, surface, distance, min_runs=5, top=10, year_min=2020):
     rows = conn.execute("""
         SELECT h.damsire AS name, COUNT(*) AS runs,
                ROUND(100.0*SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*),1) AS top3
@@ -157,6 +158,37 @@ def get_damsire_top(conn, venue, surface, distance, min_runs=5, top=3, year_min=
         ORDER BY top3 DESC, runs DESC LIMIT ?
     """, (venue, surface, distance, f"{year_min}-01-01", min_runs, top)).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_entry_pedigree(conn, race_id):
+    """そのレースの出走馬の (horse_name, sire, damsire) 一覧。
+    血統未取得の馬はスキップ。
+    """
+    rows = conn.execute("""
+        SELECT h.horse_name AS name, h.sire AS sire, h.damsire AS damsire,
+               r.horse_number AS num, r.popularity AS pop
+        FROM results r LEFT JOIN horses h ON r.horse_id = h.horse_id
+        WHERE r.race_id = ? AND h.sire IS NOT NULL AND h.sire != ''
+        ORDER BY r.horse_number
+    """, (race_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cross_reference_sires(top_list, entries, key='sire', limit=3):
+    """top_list (course top sires) を entries の sire/damsire と突き合わせ、
+    出走馬がいる項目のみ抽出。各項目に出走馬の馬名リストを付与。
+    """
+    if not entries or not top_list:
+        return []
+    matched = []
+    for item in top_list:
+        name = item['name']
+        horses = [e['name'] for e in entries if e.get(key) == name]
+        if horses:
+            matched.append({**item, 'entries': horses})
+        if len(matched) >= limit:
+            break
+    return matched
 
 
 # ───────────────────────────────────────────
@@ -238,14 +270,20 @@ def sec_sire_lines(sires, label_prefix=''):
 # テンプレート: 月-金 × 朝/昼/夜
 # ───────────────────────────────────────────
 
-def build_morning_tweet(race, stats, sires, damsires, today_d, hashtags_fn):
-    """共通の朝テンプレ: コース概要をコンパクトに(280字以内)"""
+def _course_scope_label(race, stats):
+    """データ範囲を明示するラベル(誤解防止)"""
+    n = stats.get('total_races') or '?'
+    return f"{race['venue']}{race['surface']}{race['distance']}m / 全レース過去6年({n}R)"
+
+
+def build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn):
+    """朝テンプレ: コース概要をコンパクトに(280字以内、データ範囲明示)"""
     if not race or not stats:
         return None
     day_phrase = race_day_phrase(race, today_d, with_paren=True)
     parts = [
         f"📊 {day_phrase}の{race.get('race_name','')}{('('+race['grade']+')') if race.get('grade') else ''}",
-        f"{race['venue']}{race['surface']}{race['distance']}m | 過去{stats.get('total_races','?')}R 分析",
+        _course_scope_label(race, stats),
         "",
     ]
     f = sec_frame(stats, depth='brief')
@@ -257,81 +295,92 @@ def build_morning_tweet(race, stats, sires, damsires, today_d, hashtags_fn):
     l3 = sec_last3f(stats, depth='brief')
     if l3:
         parts.append(l3)
+    # 出走馬血統が揃っている場合は1行だけクロス参照を入れる
+    if entries:
+        cs = cross_reference_sires(sires or [], entries, key='sire', limit=1)
+        if cs:
+            s = cs[0]
+            names = '・'.join(s['entries'][:2])
+            parts.append(f"🧬 {s['name']}産駒({names})は当コース複勝{s['top3']}%")
     parts.append("")
-    parts.append(predict_announce_phrase(race, today_d))
+    pa = predict_announce_phrase(race, today_d)
+    if pa:
+        parts.append(pa)
     parts.append("")
     parts.append(hashtags_fn(race))
     return "\n".join(parts)
 
 
-def build_weekday_tweet(race, stats, sires, damsires, today_d, hashtags_fn, dow):
-    """昼テンプレ: 曜日別に深掘りテーマを変える"""
+def build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow):
+    """昼テンプレ: 曜日別深掘りテーマ + 出走馬とのクロス参照"""
     if not race or not stats:
         return None
     day_phrase = race_day_phrase(race, today_d, with_paren=True)
     grade_label = f"({race['grade']})" if race.get('grade') else ""
-    head = f"🔍 {day_phrase}の{race.get('race_name','')}{grade_label}\n{race['venue']}{race['surface']}{race['distance']}m"
+    head = f"🔍 {day_phrase}の{race.get('race_name','')}{grade_label}\n{_course_scope_label(race, stats)}"
 
     if dow == 0:  # 月曜昼: 枠順詳細
         body = ["", "【枠順別 複勝率】"]
         fs = stats.get('frame_stats') or []
-        for f in fs:
-            mark = ''
-            if fs:
-                best = max(fs, key=lambda x: x.get('top3_rate', 0))
-                worst = min(fs, key=lambda x: x.get('top3_rate', 0))
-                if f == best:
-                    mark = ' ⬆️'
-                elif f == worst:
-                    mark = ' ⬇️'
-            body.append(f"  {f['frame']}枠: {f['top3_rate']}%{mark}")
+        if fs:
+            best = max(fs, key=lambda x: x.get('top3_rate', 0))
+            worst = min(fs, key=lambda x: x.get('top3_rate', 0))
+            for f in fs:
+                mark = ' ⬆️' if f == best else (' ⬇️' if f == worst else '')
+                body.append(f"  {f['frame']}枠: {f['top3_rate']}%({f['runs']}走){mark}")
         body.append("")
-        body.append("→ コース別の枠データを毎週分析📊")
+        body.append("→ 来週のレースに向けたコース傾向")
 
-    elif dow == 1:  # 火曜昼: 母父TOP3
-        body = ["", "【母父 複勝率TOP3 (5頭以上)】"]
-        if damsires:
-            for ds in damsires:
-                body.append(f"  {ds['name']}: {ds['top3']}%({ds['runs']}頭)")
+    elif dow == 1:  # 火曜昼: 出走馬とマッチする母父TOP3
+        body = ["", "【出走馬の母父×コース実績】"]
+        cd = cross_reference_sires(damsires or [], entries or [], key='damsire', limit=3)
+        if cd:
+            for d in cd:
+                names = '・'.join(d['entries'][:2])
+                body.append(f"  {d['name']}({names}): {d['top3']}% / {d['runs']}走中{int(d['runs']*d['top3']/100)}回複勝")
         else:
-            body.append("  (データ不足)")
+            body.append("  該当する母父データなし")
+            body.append("  (出走馬の血統データ未収集 or 該当統計不足)")
         body.append("")
-        body.append("→ 母父は予想の盲点。チェック必須")
+        body.append("→ 母父は予想の盲点")
 
-    elif dow == 2:  # 水曜昼: 過去5年勝者の人気分布
+    elif dow == 2:  # 水曜昼: 人気別成績
         ps = stats.get('popularity_stats') or []
-        body = ["", "【人気別 成績(複勝率/回収率)】"]
+        body = ["", "【人気別 成績】(コース全レース)"]
         for p in ps:
-            body.append(f"  {p['label']}: {p['top3_rate']}% / 回収{p.get('recovery', 0)}%")
+            body.append(f"  {p['label']}: 複勝{p['top3_rate']}% / 回収{p.get('recovery', 0)}%")
         body.append("")
         if any(p.get('recovery', 0) >= 80 for p in ps):
-            body.append("→ 妙味のある人気帯あり")
+            body.append("→ 妙味のある人気帯あり🔥")
         else:
-            body.append("→ 上位人気が中心の堅いコース")
+            body.append("→ 上位人気中心の堅いコース")
 
-    elif dow == 3:  # 木曜昼: 末脚使えた馬特集 (上がり3F詳細)
-        body = ["", "【上がり3F バケット別】"]
+    elif dow == 3:  # 木曜昼: 末脚詳細
+        body = ["", "【上がり3F バケット別】(コース全レース)"]
         l3 = sec_last3f(stats, depth='full')
         if l3:
             body.append(l3)
         body.append("")
         body.append("→ 末脚の切れ味が勝敗を分ける")
 
-    elif dow == 4:  # 金曜昼: 土曜重賞詳細
-        body = ["", f"【土曜のメイン: {race.get('race_name','')}】"]
-        body.append("過去6年の傾向:")
+    elif dow == 4:  # 金曜昼: 土曜重賞詳細(出走馬血統クロス)
+        body = ["", f"【{day_phrase}のメイン: {race.get('race_name','')}】"]
         f = sec_frame(stats, depth='brief')
         if f:
             body.append(f)
         l3 = sec_last3f(stats, depth='brief')
         if l3:
             body.append(l3)
-        if sires:
-            body.append("注目種牡馬:")
-            for s in sires[:2]:
-                body.append(f"  {s['name']}: {s['top3']}%({s['runs']}頭)")
+        cs = cross_reference_sires(sires or [], entries or [], key='sire', limit=2)
+        if cs:
+            body.append("出走馬の注目種牡馬:")
+            for s in cs:
+                names = '・'.join(s['entries'][:2])
+                body.append(f"  {s['name']}({names}): 複勝{s['top3']}% ({s['runs']}走中)")
         body.append("")
-        body.append(predict_announce_phrase(race, today_d))
+        pa = predict_announce_phrase(race, today_d)
+        if pa:
+            body.append(pa)
 
     else:
         body = []
@@ -340,40 +389,41 @@ def build_weekday_tweet(race, stats, sires, damsires, today_d, hashtags_fn, dow)
     return "\n".join(parts)
 
 
-def build_evening_tweet(race, stats, sires, damsires, today_d, hashtags_fn, dow):
-    """夜テンプレ: 月-木は曜日別、金は日曜G1詳細"""
+def build_evening_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow):
+    """夜テンプレ: 出走馬とのクロス参照を含む"""
     if not race or not stats:
         return None
     day_phrase = race_day_phrase(race, today_d, with_paren=True)
     grade_label = f"({race['grade']})" if race.get('grade') else ""
-    head = f"🌙 {day_phrase}の{race.get('race_name','')}{grade_label}\n{race['venue']}{race['surface']}{race['distance']}m"
+    head = f"🌙 {day_phrase}の{race.get('race_name','')}{grade_label}\n{_course_scope_label(race, stats)}"
 
     if dow == 0:  # 月曜夜: コース全体の傾向
-        body = ["", "【コース傾向(過去6年)】"]
+        body = ["", "【コース傾向】"]
         ff = sec_frame(stats, depth='full')
         if ff:
             body.append(ff)
         p = sec_pace(stats)
         if p:
             body.append(p)
-        body.append("")
-        body.append("→ このコースは"+ ("先行馬有利" if p and ('逃げ' in p or '先行' in p) else "差し馬の出番") if p else "")
 
-    elif dow == 1:  # 火曜夜: 種牡馬深掘り
-        body = ["", "【種牡馬TOP3(複勝率)】"]
-        if sires:
-            for s in sires:
-                body.append(f"  {s['name']}: {s['top3']}%({s['runs']}頭)")
+    elif dow == 1:  # 火曜夜: 出走馬の種牡馬実績
+        body = ["", "【出走馬の父×コース実績】"]
+        cs = cross_reference_sires(sires or [], entries or [], key='sire', limit=3)
+        if cs:
+            for s in cs:
+                names = '・'.join(s['entries'][:3])
+                body.append(f"  {s['name']}({names})")
+                body.append(f"   → {s['runs']}走中複勝{s['top3']}%")
         else:
-            body.append("  (DB不足、後日更新)")
-        if damsires:
-            body.append("")
-            body.append("【母父TOP1】")
-            ds = damsires[0]
-            body.append(f"  {ds['name']}: {ds['top3']}%({ds['runs']}頭)")
+            body.append("  該当する種牡馬データなし")
+        cd = cross_reference_sires(damsires or [], entries or [], key='damsire', limit=1)
+        if cd:
+            d = cd[0]
+            names = '・'.join(d['entries'][:2])
+            body.append(f"母父注目: {d['name']}({names}) 複勝{d['top3']}%")
 
-    elif dow == 2:  # 水曜夜: 穴馬条件(人気別+回収率)
-        body = ["", "【穴馬の条件(人気×回収率)】"]
+    elif dow == 2:  # 水曜夜: 穴馬条件
+        body = ["", "【穴馬の条件】(コース全レース)"]
         ps = stats.get('popularity_stats') or []
         anaba = [p for p in ps if p['label'] in ('7-9人気', '10人気以下')]
         for p in anaba:
@@ -395,28 +445,40 @@ def build_evening_tweet(race, stats, sires, damsires, today_d, hashtags_fn, dow)
         l3 = sec_last3f(stats, depth='brief')
         if l3:
             body.append(l3)
-        if sires:
-            body.append(f"種牡馬No.1: {sires[0]['name']} {sires[0]['top3']}%")
+        cs = cross_reference_sires(sires or [], entries or [], key='sire', limit=1)
+        if cs:
+            s = cs[0]
+            names = '・'.join(s['entries'][:2])
+            body.append(f"出走馬の父注目: {s['name']}({names}) 複勝{s['top3']}%")
         body.append("")
-        body.append(predict_announce_phrase(race, today_d))
+        pa = predict_announce_phrase(race, today_d)
+        if pa:
+            body.append(pa)
 
-    elif dow == 4:  # 金曜夜: 日曜G1詳細
-        body = ["", f"【日曜の最重要レース】"]
-        body.append("過去6年の勝ちパターン:")
+    elif dow == 4:  # 金曜夜: 日曜G1詳細(出走馬クロス)
+        body = ["", "【勝ちパターン】"]
         f = sec_frame(stats, depth='brief')
         if f:
             body.append(f)
         l3 = sec_last3f(stats, depth='brief')
         if l3:
             body.append(l3)
-        if sires:
-            body.append("注目種牡馬:")
-            for s in sires[:2]:
-                body.append(f"  {s['name']} {s['top3']}%({s['runs']}頭)")
-        if damsires:
-            body.append(f"母父1位: {damsires[0]['name']} {damsires[0]['top3']}%")
+        cs = cross_reference_sires(sires or [], entries or [], key='sire', limit=2)
+        if cs:
+            body.append("")
+            body.append("【出走馬の父×コース実績】")
+            for s in cs:
+                names = '・'.join(s['entries'][:2])
+                body.append(f"  {s['name']}({names}): 複勝{s['top3']}% ({s['runs']}走)")
+        cd = cross_reference_sires(damsires or [], entries or [], key='damsire', limit=1)
+        if cd:
+            d = cd[0]
+            names = '・'.join(d['entries'][:2])
+            body.append(f"母父注目: {d['name']}({names}) 複勝{d['top3']}%")
         body.append("")
-        body.append(predict_announce_phrase(race, today_d))
+        pa = predict_announce_phrase(race, today_d)
+        if pa:
+            body.append(pa)
 
     else:
         body = []
@@ -465,18 +527,25 @@ def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stat
     if not stats:
         return None
 
-    # 種牡馬・母父
+    # 種牡馬・母父(top=10にしてからクロス参照)
     sires = []
     damsires = []
     try:
-        sires = get_sire_top(conn, venue, surface, distance, min_runs=5, top=3)
-        damsires = get_damsire_top(conn, venue, surface, distance, min_runs=5, top=3)
+        sires = get_sire_top(conn, venue, surface, distance, min_runs=5, top=15)
+        damsires = get_damsire_top(conn, venue, surface, distance, min_runs=5, top=15)
+    except Exception:
+        pass
+
+    # 出走馬の血統(クロス参照用)
+    entries = []
+    try:
+        entries = get_entry_pedigree(conn, race['race_id'])
     except Exception:
         pass
 
     if slot == 'morning':
-        return build_morning_tweet(race, stats, sires, damsires, today_d, hashtags_fn)
+        return build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn)
     elif slot == 'weekday':
-        return build_weekday_tweet(race, stats, sires, damsires, today_d, hashtags_fn, dow)
+        return build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
     else:
-        return build_evening_tweet(race, stats, sires, damsires, today_d, hashtags_fn, dow)
+        return build_evening_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
