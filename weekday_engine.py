@@ -160,6 +160,42 @@ def get_damsire_top(conn, venue, surface, distance, min_runs=5, top=10, year_min
     return [dict(r) for r in rows]
 
 
+def get_workouts_for_race(conn, race_id):
+    """対象レースの追い切り評価一覧 (馬番順)"""
+    rows = conn.execute("""
+        SELECT w.horse_number AS num, h.horse_name AS name,
+               w.evaluation_grade AS grade, w.evaluation_text AS text
+        FROM workouts w
+        LEFT JOIN horses h ON w.horse_id = h.horse_id
+        WHERE w.race_id = ?
+        ORDER BY w.horse_number
+    """, (race_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def workout_section(workouts, max_show=4):
+    """調教評価セクション(A評価馬を中心に表示)"""
+    if not workouts:
+        return None
+    a_grade = [w for w in workouts if w.get('grade') == 'A']
+    b_grade = [w for w in workouts if w.get('grade') == 'B']
+    if not a_grade and not b_grade:
+        return None
+    lines = ["【追い切り評価(netkeiba)】"]
+    if a_grade:
+        for w in a_grade[:max_show]:
+            lines.append(f"  🏅A {w['num']}番 {w['name']} ({w['text']})")
+    elif b_grade:
+        # Aがいない場合は上位B評価の中から目立つコメントを抜粋
+        prio_b = [w for w in b_grade if w.get('text') and any(
+            kw in w['text'] for kw in ('絶好','気力','上積','好気配','益々','気配上'))]
+        for w in prio_b[:max_show]:
+            lines.append(f"  ◯B {w['num']}番 {w['name']} ({w['text']})")
+        if not prio_b:
+            return None
+    return "\n".join(lines)
+
+
 def get_entry_pedigree(conn, race_id):
     """そのレースの出走馬の (horse_name, sire, damsire) 一覧。
     血統未取得の馬はスキップ。
@@ -389,7 +425,7 @@ def build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags
     return "\n".join(parts)
 
 
-def build_evening_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow):
+def build_evening_tweet(race, stats, sires, damsires, entries, workouts, today_d, hashtags_fn, dow):
     """夜テンプレ: 出走馬とのクロス参照を含む"""
     if not race or not stats:
         return None
@@ -434,14 +470,11 @@ def build_evening_tweet(race, stats, sires, damsires, entries, today_d, hashtags
         else:
             body.append("→ 堅実派向きのコース")
 
-    elif dow == 3:  # 木曜夜: 全データまとめ
+    elif dow == 3:  # 木曜夜: 全データまとめ + 追い切り
         body = ["", f"【{race.get('race_name','')} 総合傾向】"]
         f = sec_frame(stats, depth='brief')
         if f:
             body.append(f)
-        p = sec_pace(stats)
-        if p:
-            body.append(p)
         l3 = sec_last3f(stats, depth='brief')
         if l3:
             body.append(l3)
@@ -450,12 +483,16 @@ def build_evening_tweet(race, stats, sires, damsires, entries, today_d, hashtags
             s = cs[0]
             names = '・'.join(s['entries'][:2])
             body.append(f"出走馬の父注目: {s['name']}({names}) 複勝{s['top3']}%")
+        ws = workout_section(workouts, max_show=2)
+        if ws:
+            body.append("")
+            body.append(ws)
         body.append("")
         pa = predict_announce_phrase(race, today_d)
         if pa:
             body.append(pa)
 
-    elif dow == 4:  # 金曜夜: 日曜G1詳細(出走馬クロス)
+    elif dow == 4:  # 金曜夜: 日曜G1詳細(出走馬クロス + 追い切り)
         body = ["", "【勝ちパターン】"]
         f = sec_frame(stats, depth='brief')
         if f:
@@ -470,11 +507,11 @@ def build_evening_tweet(race, stats, sires, damsires, entries, today_d, hashtags
             for s in cs:
                 names = '・'.join(s['entries'][:2])
                 body.append(f"  {s['name']}({names}): 複勝{s['top3']}% ({s['runs']}走)")
-        cd = cross_reference_sires(damsires or [], entries or [], key='damsire', limit=1)
-        if cd:
-            d = cd[0]
-            names = '・'.join(d['entries'][:2])
-            body.append(f"母父注目: {d['name']}({names}) 複勝{d['top3']}%")
+        # 追い切り評価
+        ws = workout_section(workouts, max_show=3)
+        if ws:
+            body.append("")
+            body.append(ws)
         body.append("")
         pa = predict_announce_phrase(race, today_d)
         if pa:
@@ -543,9 +580,16 @@ def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stat
     except Exception:
         pass
 
+    # 追い切り評価
+    workouts = []
+    try:
+        workouts = get_workouts_for_race(conn, race['race_id'])
+    except Exception:
+        pass
+
     if slot == 'morning':
         return build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn)
     elif slot == 'weekday':
         return build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
     else:
-        return build_evening_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
+        return build_evening_tweet(race, stats, sires, damsires, entries, workouts, today_d, hashtags_fn, dow)

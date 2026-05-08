@@ -122,6 +122,35 @@ jobs:
               print('  → 全頭取得済み')
           "
 
+      - name: Fetch workouts (追い切り評価) for upcoming races
+        run: |
+          python -c "
+          from database import init_db, get_db
+          from scraper import NetkeibaScraper
+          import time
+          init_db()
+          s = NetkeibaScraper()
+
+          with get_db() as conn:
+              rows = conn.execute('''
+                  SELECT race_id FROM races
+                  WHERE race_date >= date('now')
+                    AND race_date <= date('now', '+10 days')
+                  ORDER BY race_id
+              ''').fetchall()
+              rids = [r['race_id'] for r in rows]
+
+          print(f'🏃 追い切り取得: {len(rids)}レース')
+          total = 0
+          for i, rid in enumerate(rids):
+              ws = s.scrape_workouts(rid)
+              n = s.save_workouts_to_db(ws)
+              total += n
+              if (i+1) % 10 == 0:
+                  print(f'  [{i+1}/{len(rids)}] 累計{total}件')
+          print(f'  ✅ 完了: {total}件保存')
+          "
+
       - name: Commit DB to repo (so future Actions inherit pedigree)
         run: |
           git config user.name "github-actions[bot]"
