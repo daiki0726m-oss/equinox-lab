@@ -25,8 +25,8 @@ Thumbs.db
 # Gemini
 .gemini/
 
-# Database (GitHub Actions cacheで管理)
-keiba.db
+# Database — keiba.db はリポジトリに含める(初回シード+月次更新)
+# WAL/SHM のみ無視
 keiba.db-shm
 keiba.db-wal
 
