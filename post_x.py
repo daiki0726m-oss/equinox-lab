@@ -732,141 +732,54 @@ def cmd_results(args):
 
 
 # ─── 平日コンテンツ ───
-def cmd_weekday(args):
-    """平日昼: 今週末メインレースのコース分析（過去6年データ）"""
-    fetch_weekend_races()
-    today = now_jst()
-    dow = today.weekday()  # 0=月, 4=金
-    print(f"📅 昼投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
 
-    tweet = None
+def _build_weekday_post(slot, today):
+    """slot='morning'|'weekday'|'evening' のツイートを生成。
+
+    weekday_engine.py に委譲し、course_stats / 騎手フィルタなど post_x の
+    既存ヘルパーを差し込む。
+    """
+    try:
+        from weekday_engine import build_post_for_slot
+    except Exception as e:
+        print(f"⚠️ weekday_engine インポート失敗: {e}")
+        return None
+
+    today_d = today.date() if hasattr(today, 'date') else today
+
+    try:
+        from course_stats import get_course_stats
+    except Exception:
+        get_course_stats = lambda v, s, d: None  # noqa: E731
 
     try:
         with get_db() as conn:
-            race = get_todays_race(conn, slot=1)  # 昼
-
-        entry_jockeys = get_entry_jockeys(race) if race else []
-
-        if race:
-            from course_stats import get_course_stats
-            v, s, d = race['venue'], race['surface'], race['distance']
-            stats = get_course_stats(v, s, d)
-            grade = detect_grade(race['race_name'], race.get('grade'))
-            grade_label = f"({grade})" if grade else ""
-
-            if stats:
-                if dow == 0:
-                    # 月曜昼: コース枠順＋脚質データ
-                    tweet = f"📊 {race['race_name']}{grade_label} コースデータ\n"
-                    tweet += f"{v}{s}{d}m 過去6年({stats['start_year']}-{stats['end_year']})\n\n"
-
-                    # 枠順
-                    fs = stats['frame_stats']
-                    if fs:
-                        best = max(fs, key=lambda x: x['top3_rate'])
-                        worst = min(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"【枠順】\n"
-                        tweet += f"✅ {best['frame']}枠 複勝率{best['top3_rate']}% ⬆️\n"
-                        tweet += f"⚠️ {worst['frame']}枠 複勝率{worst['top3_rate']}% ⬇️\n\n"
-
-                    # 脚質
-                    rs = stats['running_style_stats']
-                    if rs:
-                        best_style = max(rs, key=lambda x: x['win_rate'])
-                        tweet += f"【脚質】\n"
-                        for st in rs:
-                            arrow = " ⬆️" if st == best_style else ""
-                            tweet += f"{st['style']}: 勝率{st['win_rate']}% 複勝{st['top3_rate']}%{arrow}\n"
-
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 1:
-                    # 火曜昼: 騎手×コース
-                    tweet = f"📊 {race['race_name']}{grade_label}\n"
-                    tweet += f"騎手×{v}{s}{d}m 過去6年\n\n"
-
-                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
-                    for i, j in enumerate(js[:5]):
-                        arrow = " ⬆️" if i == 0 else ""
-                        tweet += f"{i+1}. {j['jockey']} 複勝率{j['top3_rate']}%({j['runs']}騎乗){arrow}\n"
-
-                    tweet += f"\n今回騎乗予定の騎手×コース成績🏇\n\n"
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 2:
-                    # 水曜昼: 人気別成績
-                    tweet = f"📊 {race['race_name']}{grade_label}\n"
-                    tweet += f"{v}{s}{d}m 人気別成績(過去6年)\n\n"
-
-                    ps = stats['popularity_stats']
-                    for p in ps:
-                        emoji = "🔥" if p['recovery'] >= 100 else "📊"
-                        tweet += f"{emoji} {p['label']}\n"
-                        tweet += f"  勝率{p['win_rate']}% 複勝{p['top3_rate']}% 回収率{p['recovery']}%\n"
-
-                    best_rec = max(ps, key=lambda x: x['recovery']) if ps else None
-                    if best_rec and best_rec['recovery'] >= 100:
-                        tweet += f"\n{best_rec['label']}が回収率{best_rec['recovery']}%🔥\n"
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 3:
-                    # 木曜昼: 上がり3F分析
-                    tweet = f"📊 {race['race_name']}{grade_label} 上がり3Fデータ\n"
-                    tweet += f"{v}{s}{d}m 過去6年\n\n"
-
-                    l3f = stats['last3f_stats']
-                    if l3f:
-                        for lf in l3f:
-                            tweet += f"✅ {lf['label']}\n"
-                            tweet += f"  勝率{lf['win_rate']}% 複勝{lf['top3_rate']}%\n"
-                        tweet += "\n"
-
-                        # 上がり最速の複勝率が80%以上なら強調
-                        fastest = l3f[0] if l3f else None
-                        if fastest and fastest['top3_rate'] >= 80:
-                            tweet += f"→ 上がり最速馬の複勝率{fastest['top3_rate']}%は驚異的\n"
-                            tweet += "→ 末脚の切れが勝敗を分けるコース⚡\n"
-                        elif fastest and fastest['top3_rate'] >= 60:
-                            tweet += f"→ 上がり最速馬が複勝率{fastest['top3_rate']}%\n"
-                            tweet += "→ 速い上がりを使える馬に注目\n"
-                        else:
-                            tweet += "→ 上がりだけでは決まらないコース\n"
-                            tweet += "→ 位置取りと総合力がカギ\n"
-
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 4:
-                    # 金曜昼: 総合まとめ
-                    tweet = f"🎯 {race['race_name']}{grade_label} データまとめ\n"
-                    tweet += f"{v}{s}{d}m 過去6年({stats['total_races']}R分析)\n\n"
-
-                    fs = stats['frame_stats']
-                    if fs:
-                        best_f = max(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"✅ {best_f['frame']}枠が複勝率{best_f['top3_rate']}%で最高\n"
-
-                    rs = stats['running_style_stats']
-                    if rs:
-                        best_s = max(rs, key=lambda x: x['win_rate'])
-                        tweet += f"✅ {best_s['style']}が勝率{best_s['win_rate']}%\n"
-
-                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
-                    if js:
-                        tweet += f"✅ 騎手は{js[0]['jockey']}が複勝率{js[0]['top3_rate']}%\n"
-
-                    ps = stats['popularity_stats']
-                    if ps:
-                        best_p = max(ps, key=lambda x: x['recovery'])
-                        if best_p['recovery'] >= 80:
-                            tweet += f"✅ {best_p['label']}が回収率{best_p['recovery']}%\n"
-
-                    tweet += f"\n明日のAI予想をお楽しみに🧠\n\n"
-                    tweet += make_race_hashtags(race)
-
+            tweet = build_post_for_slot(
+                slot=slot,
+                today_d=today_d,
+                conn=conn,
+                get_todays_race_fn=get_todays_race,
+                get_course_stats_fn=get_course_stats,
+                get_entry_jockeys_fn=get_entry_jockeys,
+                hashtags_fn=make_race_hashtags,
+                jockey_filter_fn=filter_jockey_stats,
+            )
+        return tweet
     except Exception as e:
-        print(f"⚠️ 昼投稿エラー: {e}")
+        print(f"⚠️ {slot} 投稿エラー: {e}")
         import traceback
         traceback.print_exc()
+        return None
+
+
+def cmd_weekday(args):
+    """平日昼: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）"""
+    fetch_weekend_races()
+    today = now_jst()
+    dow = today.weekday()
+    print(f"📅 昼投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
+
+    tweet = _build_weekday_post('weekday', today)
 
     if not tweet:
         print("⚠️ 投稿コンテンツを生成できませんでした → 投稿スキップ")
@@ -3021,132 +2934,13 @@ def cmd_odds_flash(args):
 
 # ─── 朝ツイート（平日7:30） ───
 def cmd_morning(args):
-    """平日朝: 今週末メインレースのコース分析（過去6年データ）"""
+    """平日朝: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）"""
     fetch_weekend_races()
     today = now_jst()
-    dow = today.weekday()  # 0=月, 4=金
+    dow = today.weekday()
     print(f"📅 朝投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
 
-    tweet = None
-
-    try:
-        with get_db() as conn:
-            race = get_todays_race(conn, slot=0)  # 朝
-            top_races = get_top_races(conn, 3)
-
-        entry_jockeys = get_entry_jockeys(race) if race else []
-
-        if race:
-            from course_stats import get_course_stats
-            v, s, d = race['venue'], race['surface'], race['distance']
-            stats = get_course_stats(v, s, d)
-            grade = detect_grade(race['race_name'], race.get('grade'))
-            grade_label = f"({grade})" if grade else ""
-
-            if stats:
-                if dow == 0:
-                    # 月曜朝: レース紹介＋コース概要
-                    tweet = f"🏆 {race['race_name']}{grade_label}\n"
-                    tweet += f"{v}{s}{d}m\n\n"
-                    tweet += f"過去6年({stats['start_year']}-{stats['end_year']})のコースデータ:\n"
-
-                    fs = stats['frame_stats']
-                    if fs:
-                        best = max(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"✅ {best['frame']}枠 複勝率{best['top3_rate']}%で最高\n"
-
-                    rs = stats['running_style_stats']
-                    if rs:
-                        best_s = max(rs, key=lambda x: x['win_rate'])
-                        tweet += f"✅ {best_s['style']}が勝率{best_s['win_rate']}%\n"
-
-                    l3f = stats['last3f_stats']
-                    if l3f:
-                        tweet += f"✅ {l3f[0]['label']}は勝率{l3f[0]['win_rate']}%\n"
-
-                    # 他のレースも紹介
-                    if len(top_races) > 1:
-                        tweet += f"\nその他の注目レース:\n"
-                        for r2 in top_races[1:3]:
-                            g2 = detect_grade(r2['race_name'], r2.get('grade'))
-                            g2l = f"({g2})" if g2 else ""
-                            tweet += f"🏇 {r2['race_name']}{g2l} {r2['venue']}{r2['surface']}{r2['distance']}m\n"
-
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 1:
-                    # 火曜朝: 枠順詳細
-                    tweet = f"📊 {race['race_name']}{grade_label}\n"
-                    tweet += f"{v}{s}{d}m 枠順別複勝率(過去6年)\n\n"
-
-                    fs = stats['frame_stats']
-                    if fs:
-                        best = max(fs, key=lambda x: x['top3_rate'])
-                        worst = min(fs, key=lambda x: x['top3_rate'])
-                        for f in fs:
-                            arrow = " ⬆️" if f == best else (" ⬇️" if f == worst else "")
-                            tweet += f"{f['frame']}枠: 複勝率{f['top3_rate']}%{arrow}\n"
-
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 2:
-                    # 水曜朝: 上がり3F
-                    tweet = f"📊 {race['race_name']}{grade_label}\n"
-                    tweet += f"{v}{s}{d}m 上がり3F(過去6年)\n\n"
-
-                    l3f = stats['last3f_stats']
-                    if l3f:
-                        for lf in l3f:
-                            tweet += f"✅ {lf['label']}\n"
-                            tweet += f"  勝率{lf['win_rate']}% 複勝{lf['top3_rate']}%\n"
-
-                        fastest = l3f[0]
-                        if fastest['top3_rate'] >= 80:
-                            tweet += f"\n→ 末脚の切れが勝敗を分けるコース⚡\n"
-                        elif fastest['top3_rate'] >= 60:
-                            tweet += f"\n→ 速い上がりを使える馬に注目\n"
-                        else:
-                            tweet += f"\n→ 上がりだけでは決まらないコース\n"
-
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 3:
-                    # 木曜朝: 脚質分析
-                    tweet = f"📊 {race['race_name']}{grade_label}\n"
-                    tweet += f"{v}{s}{d}m 脚質別成績(過去6年)\n\n"
-
-                    rs = stats['running_style_stats']
-                    if rs:
-                        best_s = max(rs, key=lambda x: x['win_rate'])
-                        for st in rs:
-                            arrow = " ⬆️" if st == best_s else ""
-                            tweet += f"{st['style']}: 勝率{st['win_rate']}% 複勝{st['top3_rate']}% ({st['runs']}頭){arrow}\n"
-
-                        if best_s['style'] in ('逃げ', '先行'):
-                            tweet += "\n→ 前有利のコース🏇\n"
-                        else:
-                            tweet += "\n→ 差し・追込が決まるコース🏇\n"
-
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 4:
-                    # 金曜朝: 騎手データ
-                    tweet = f"📊 {race['race_name']}{grade_label}\n"
-                    tweet += f"騎手×{v}{s}{d}m(過去6年)\n\n"
-
-                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
-                    if js:
-                        for i, j in enumerate(js[:6]):
-                            arrow = " ⬆️" if i == 0 else ""
-                            tweet += f"{i+1}. {j['jockey']} 複勝率{j['top3_rate']}%({j['runs']}騎乗){arrow}\n"
-
-                    tweet += f"\n明日のAI予想に向けて注目🏇\n\n"
-                    tweet += make_race_hashtags(race)
-
-    except Exception as e:
-        print(f"⚠️ 朝投稿エラー: {e}")
-        import traceback
-        traceback.print_exc()
+    tweet = _build_weekday_post('morning', today)
 
     if not tweet:
         print("⚠️ 投稿コンテンツを生成できませんでした（レース未登録 or データ不足）→ 投稿スキップ")
@@ -3169,178 +2963,30 @@ def cmd_morning(args):
 
 # ─── 夜ツイート（平日20:00） ───
 def cmd_evening(args):
-    """平日夜: 今週末メインレースの総合プレビュー（過去6年データ）"""
+    """平日夜: 今週末メインレースの総合プレビュー（曜日別テーマ・日付動的表現）"""
     fetch_weekend_races()
     today = now_jst()
-    dow = today.weekday()  # 0=月, 4=金
+    dow = today.weekday()
     print(f"📅 夜投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
 
-    tweet = None
-
-    try:
-        with get_db() as conn:
-            race = get_todays_race(conn, slot=2)  # 夜
-
-        entry_jockeys = get_entry_jockeys(race) if race else []
-
-        if race:
-            from course_stats import get_course_stats
-            v, s, d = race['venue'], race['surface'], race['distance']
-            stats = get_course_stats(v, s, d)
-            grade = detect_grade(race['race_name'], race.get('grade'))
-            grade_label = f"({grade})" if grade else ""
-
-            if stats:
-                if dow == 0:
-                    # 月曜夜: 注目ポイントまとめ
-                    tweet = f"🏇 {race['race_name']}{grade_label} 注目ポイント\n"
-                    tweet += f"{v}{s}{d}m 過去6年分析\n\n"
-
-                    fs = stats['frame_stats']
-                    if fs:
-                        best = max(fs, key=lambda x: x['top3_rate'])
-                        worst = min(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"✅ {best['frame']}枠が有利(複勝率{best['top3_rate']}%)\n"
-                        tweet += f"⚠️ {worst['frame']}枠は不利(複勝率{worst['top3_rate']}%)\n"
-
-                    rs = stats['running_style_stats']
-                    if rs:
-                        best_s = max(rs, key=lambda x: x['win_rate'])
-                        tweet += f"✅ {best_s['style']}優勢(勝率{best_s['win_rate']}%)\n"
-
-                    tweet += f"\n今週のデータ分析は毎日配信📊\n\n"
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 1:
-                    # 火曜夜: 上がり3F分析
-                    tweet = f"📊 {race['race_name']}{grade_label}\n"
-                    tweet += f"{v}{s}{d}m 上がり3Fデータ(過去6年)\n\n"
-
-                    l3f = stats['last3f_stats']
-                    if l3f:
-                        for lf in l3f:
-                            tweet += f"✅ {lf['label']}\n"
-                            tweet += f"  勝率{lf['win_rate']}% 複勝{lf['top3_rate']}%\n"
-
-                        fastest = l3f[0]
-                        if fastest['top3_rate'] >= 80:
-                            tweet += f"\n→ 上がり最速馬の複勝率{fastest['top3_rate']}%は驚異的\n"
-                            tweet += "→ 末脚の切れが勝敗を分けるコース⚡\n"
-                        elif fastest['top3_rate'] >= 60:
-                            tweet += f"\n→ 上がり最速馬が複勝率{fastest['top3_rate']}%\n"
-                            tweet += "→ 速い上がりを使える馬に注目\n"
-                        else:
-                            tweet += "\n→ 上がりだけでは決まらないコース\n"
-                            tweet += "→ 位置取りと総合力がカギ\n"
-
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 2:
-                    # 水曜夜: 穴馬のカギ（人気薄の好走パターン）
-                    tweet = f"🐴 {race['race_name']}{grade_label} 穴馬のカギ\n"
-                    tweet += f"{v}{s}{d}m 過去6年\n\n"
-
-                    ps = stats['popularity_stats']
-                    has_ana = False
-                    if ps:
-                        for p in ps:
-                            if p['label'] in ('7-9人気', '10人気以下') and p['top3_rate'] > 0:
-                                tweet += f"🔥 {p['label']}: 複勝率{p['top3_rate']}%\n"
-                                if p['recovery'] >= 80:
-                                    tweet += f"  回収率{p['recovery']}%の妙味あり\n"
-                                    has_ana = True
-
-                        # 人気データに基づく結論
-                        best_rec = max(ps, key=lambda x: x['recovery'])
-                        if has_ana and best_rec['recovery'] >= 80:
-                            tweet += f"\n→ {best_rec['label']}の回収率{best_rec['recovery']}%\n"
-                            tweet += "→ 人気薄でも好走できる条件があるコース\n"
-                        else:
-                            tweet += "\n→ 堅く収まりやすいコース\n"
-                            tweet += "→ 上位人気の信頼度が高い\n"
-
-                    tweet += make_race_hashtags(race) + " #穴馬"
-
-                elif dow == 3:
-                    # 木曜夜: 全データ統合まとめ
-                    tweet = f"📊 {race['race_name']}{grade_label} データまとめ\n"
-                    tweet += f"{v}{s}{d}m 過去6年({stats['total_races']}R)\n\n"
-
-                    fs = stats['frame_stats']
-                    if fs:
-                        best_f = max(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"枠順: {best_f['frame']}枠=複勝率{best_f['top3_rate']}%⬆️\n"
-
-                    rs = stats['running_style_stats']
-                    if rs:
-                        best_s = max(rs, key=lambda x: x['win_rate'])
-                        tweet += f"脚質: {best_s['style']}=勝率{best_s['win_rate']}%\n"
-
-                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
-                    if js:
-                        tweet += f"騎手: {js[0]['jockey']}=複勝率{js[0]['top3_rate']}%\n"
-
-                    l3f = stats['last3f_stats']
-                    if l3f:
-                        tweet += f"上がり: {l3f[0]['label']}=勝率{l3f[0]['win_rate']}%\n"
-
-                    tweet += f"\n明日のAI予想をお楽しみに🧠\n\n"
-                    tweet += make_race_hashtags(race)
-
-                elif dow == 4:
-                    # 金曜夜: 最終プレビュー
-                    tweet = f"🎯 明日は{race['race_name']}{grade_label}！\n"
-                    tweet += f"{v}{s}{d}m\n\n"
-                    tweet += f"過去6年のデータ分析から:\n"
-
-                    fs = stats['frame_stats']
-                    if fs:
-                        best_f = max(fs, key=lambda x: x['top3_rate'])
-                        tweet += f"✅ {best_f['frame']}枠が複勝率{best_f['top3_rate']}%\n"
-
-                    rs = stats['running_style_stats']
-                    if rs:
-                        best_s = max(rs, key=lambda x: x['win_rate'])
-                        tweet += f"✅ {best_s['style']}が勝率{best_s['win_rate']}%\n"
-
-                    js = filter_jockey_stats(stats['jockey_stats'], entry_jockeys)
-                    if js:
-                        tweet += f"✅ {js[0]['jockey']}が複勝率{js[0]['top3_rate']}%\n"
-
-                    tweet += f"\n明朝AI予想を投稿します🔔\n\n"
-                    tweet += make_race_hashtags(race)
-
-    except Exception as e:
-        print(f"⚠️ 夜投稿エラー: {e}")
-        import traceback
-        traceback.print_exc()
+    tweet = _build_weekday_post('evening', today)
 
     if not tweet:
         print("⚠️ 投稿コンテンツを生成できませんでした → 投稿スキップ")
         return
 
-    # generate_analysis_columnはリスト(3ツイートスレッド)を返す場合がある
-    if isinstance(tweet, list):
-        client = None
-        threads_client = load_threads_client()
-        if not args.dry_run:
-            client = load_x_client()
-            if not client:
-                return
-        post_thread(client, tweet, dry_run=args.dry_run, threads_client=threads_client)
-    else:
-        if not fact_check_tweet(tweet):
-            print("🚫 ファクトチェック不合格のため投稿を中止します")
+    if not fact_check_tweet(tweet):
+        print("🚫 ファクトチェック不合格のため投稿を中止します")
+        return
+
+    client = None
+    threads_client = load_threads_client()
+    if not args.dry_run:
+        client = load_x_client()
+        if not client:
             return
 
-        client = None
-        threads_client = load_threads_client()
-        if not args.dry_run:
-            client = load_x_client()
-            if not client:
-                return
-
-        post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client)
+    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client)
 
 
 
@@ -3394,6 +3040,10 @@ def main():
     # fetch_races（来週末レース取得）
     subparsers.add_parser("fetch_races", help="来週末の11Rをスクレイピングして登録")
 
+    # preview（平日15テンプレを実投稿せずに表示）
+    p_prev = subparsers.add_parser("preview", help="月-金 × 朝/昼/夜 = 15テンプレを表示")
+    p_prev.add_argument("--monday", help="基準月曜の日付 (YYYYMMDD)、省略時は今週の月曜")
+
     args = parser.parse_args()
     init_db()
 
@@ -3427,8 +3077,43 @@ def main():
         cmd_evening(args)
     elif args.command == "fetch_races":
         fetch_weekend_races()
+    elif args.command == "preview":
+        cmd_preview(args)
     else:
         parser.print_help()
+
+
+def cmd_preview(args):
+    """月-金 × 朝/昼/夜 の15テンプレートを実投稿せずに表示する。"""
+    from datetime import date as _date, timedelta as _td
+    if getattr(args, 'monday', None):
+        s = args.monday
+        base = _date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+        # 月曜以外を渡された場合は最寄り月曜に補正
+        if base.weekday() != 0:
+            base = base - _td(days=base.weekday())
+    else:
+        today = now_jst().date()
+        base = today - _td(days=today.weekday())  # 今週の月曜
+    print(f"\n📋 平日15テンプレートのプレビュー (月曜基準: {base})\n")
+
+    days = '月火水木金'
+    slots = [('morning', '7:30'), ('weekday', '12:30'), ('evening', '20:00')]
+
+    fetch_weekend_races()  # DB に来週末データを補充
+    for i in range(5):
+        d = base + _td(days=i)
+        for slot, hhmm in slots:
+            class _A:
+                pass
+            today_dt = datetime(d.year, d.month, d.day, int(hhmm.split(':')[0]),
+                                tzinfo=timezone(timedelta(hours=9)))
+            tweet = _build_weekday_post(slot, today_dt)
+            print('=' * 64)
+            print(f"  {d} ({days[i]}) {hhmm} [{slot}]")
+            print('-' * 64)
+            print(tweet or '<生成不可>')
+            print()
 
 
 if __name__ == "__main__":
