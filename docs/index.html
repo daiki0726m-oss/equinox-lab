@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>AI KEIBA PREDICTOR | EQUINOX Lab</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -883,8 +886,8 @@ async function loadPredictions() {
   document.getElementById('loading').classList.add('visible');
 
   try {
-    const url = `${DATA_BASE}/predictions_${dateStr}.json`;
-    const res = await fetch(url);
+    const url = `${DATA_BASE}/predictions_${dateStr}.json?t=${Date.now()}`;
+    const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) {
       throw new Error(`${dateStr}のデータがありません（${res.status}）`);
     }
@@ -1473,7 +1476,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   try {
     // インデックスから最新日付を取得
-    const idxRes = await fetch(`${DATA_BASE}/index.json`);
+    const idxRes = await fetch(`${DATA_BASE}/index.json?t=${Date.now()}`, { cache: 'no-store' });
     if (idxRes.ok) {
       const idx = await idxRes.json();
       if (idx.latest) {
