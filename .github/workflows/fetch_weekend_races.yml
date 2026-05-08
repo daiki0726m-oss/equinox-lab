@@ -13,6 +13,8 @@ on:
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -78,6 +80,59 @@ jobs:
 
           print(f'✅ 合計 {total} レース登録完了')
           "
+
+      - name: Fetch pedigree for weekend entries
+        run: |
+          python -c "
+          from database import init_db, get_db
+          import collect_pedigree
+          import requests, time
+
+          init_db()
+
+          with get_db() as conn:
+              rows = conn.execute('''
+                  SELECT DISTINCT h.horse_id FROM results r
+                  JOIN races ra ON r.race_id=ra.race_id
+                  LEFT JOIN horses h ON r.horse_id=h.horse_id
+                  WHERE ra.race_date >= date('now')
+                    AND ra.race_date <= date('now', '+10 days')
+                    AND h.horse_id IS NOT NULL AND h.horse_id != ''
+                    AND (h.sire IS NULL OR h.sire = '')
+              ''').fetchall()
+              horse_ids = [r['horse_id'] for r in rows]
+
+          print(f'🧬 来週末の出走馬血統取得: {len(horse_ids)}頭')
+          if horse_ids:
+              sess = requests.Session()
+              sess.headers.update(collect_pedigree.HEADERS)
+              ok = 0
+              for i, hid in enumerate(horse_ids):
+                  p = collect_pedigree.scrape_horse_pedigree(sess, hid)
+                  if p:
+                      with get_db() as conn:
+                          conn.execute('UPDATE horses SET sire=?, damsire=? WHERE horse_id=?',
+                                       (p['sire'], p['damsire'], hid))
+                      ok += 1
+                  if (i+1) % 20 == 0:
+                      print(f'  [{i+1}/{len(horse_ids)}] OK:{ok}')
+                  time.sleep(0.6)
+              print(f'  ✅ 完了: {ok}/{len(horse_ids)}頭')
+          else:
+              print('  → 全頭取得済み')
+          "
+
+      - name: Commit DB to repo (so future Actions inherit pedigree)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add keiba.db 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no DB changes to commit"
+          else
+            git commit -m "auto: weekend races + pedigree $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+            git push || echo "push failed (non-fatal)"
+          fi
 
       - name: Save keiba.db to cache
         uses: actions/cache/save@v4
