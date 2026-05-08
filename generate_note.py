@@ -103,19 +103,29 @@ def get_race_predictions(date_str, model, strategy):
                 myomi_raw = max_ev
                 myomi = ""  # 後で上書き
 
-                # 信頼度（◎のpred_winベースで再計算）
+                # 信頼度: predict.py と同一ロジック (3要素合成 + 重賞別閾値)
                 honmei_h = next((h for h in horses if h.get('mark') == '◎'), None)
-                honmei_win = honmei_h['pred_win'] if honmei_h else 0
-                if honmei_win >= 50:
-                    confidence = "S"
-                elif honmei_win >= 35:
-                    confidence = "A"
-                elif honmei_win >= 22:
-                    confidence = "B"
-                elif honmei_win >= 12:
-                    confidence = "C"
+                honmei_win = honmei_h['pred_win'] if honmei_h else 0  # %
+                n_horses = len(horses) if horses else 1
+                even_pct = 100 / max(n_horses, 1)
+                relative = honmei_win / even_pct if even_pct > 0 else 0
+                top3_sum = sum(h.get('pred_win', 0) for h in
+                               sorted(horses, key=lambda x: x.get('pred_win', 0), reverse=True)[:3])
+                score = honmei_win * relative + top3_sum * 0.3
+                grade = (race_info.get('grade') or '').strip()
+                is_graded = grade in ('G1', 'G2', 'G3')
+                if is_graded:
+                    if score >= 30: confidence = "S"
+                    elif score >= 22: confidence = "A"
+                    elif score >= 16: confidence = "B"
+                    elif score >= 10: confidence = "C"
+                    else: confidence = "D"
                 else:
-                    confidence = "D"
+                    if score >= 80: confidence = "S"
+                    elif score >= 50: confidence = "A"
+                    elif score >= 30: confidence = "B"
+                    elif score >= 15: confidence = "C"
+                    else: confidence = "D"
 
                 # レース傾向
                 sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
