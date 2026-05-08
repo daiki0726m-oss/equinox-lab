@@ -695,6 +695,93 @@ class NetkeibaScraper:
         return None
 
     # =========================================================
+    # 追い切り評価 (netkeiba oikiri.html)
+    # =========================================================
+    def scrape_workouts(self, race_id):
+        """指定レースの追い切り評価を全馬分取得。
+
+        Returns:
+            list[dict]: [{horse_id, horse_number, horse_name,
+                          evaluation_grade(A/B/C), evaluation_text, comment}, ...]
+            取得失敗時は空リスト。
+        """
+        url = f"{self.BASE_URL}/race/oikiri.html?race_id={race_id}"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return []
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        table = soup.find("table", class_="OikiriTable")
+        if not table:
+            return []
+
+        out = []
+        for tr in table.find_all("tr", class_=re.compile(r"OikiriDataHead\d+")):
+            tds = tr.find_all("td")
+            if len(tds) < 6:
+                continue
+            try:
+                num_text = tds[1].get_text(strip=True)
+                horse_number = int(num_text) if num_text.isdigit() else 0
+
+                horse_a = tds[3].find("a", href=True)
+                horse_name = horse_a.get_text(strip=True) if horse_a else ""
+                horse_id = ""
+                if horse_a:
+                    m = re.search(r"/horse/(\d{10,})", horse_a["href"])
+                    if m:
+                        horse_id = m.group(1)
+
+                full_text = tds[3].get_text(strip=True)
+                comment = full_text.replace(horse_name, "").strip()
+                evaluation_text = tds[4].get_text(strip=True)
+                evaluation_grade = tds[5].get_text(strip=True) or None
+
+                # gradeはA/B/Cのみ正規化(他は None)
+                if evaluation_grade and evaluation_grade not in ("A", "B", "C"):
+                    evaluation_grade = None
+
+                if not horse_id:
+                    continue
+
+                out.append({
+                    "race_id": race_id,
+                    "horse_id": horse_id,
+                    "horse_number": horse_number,
+                    "horse_name": horse_name,
+                    "evaluation_text": evaluation_text or None,
+                    "evaluation_grade": evaluation_grade,
+                    "comment": comment[:80] if comment else None,
+                })
+            except Exception:
+                continue
+        return out
+
+    def save_workouts_to_db(self, workouts):
+        """workouts(list[dict]) を DBに保存。
+        Returns: 保存件数"""
+        if not workouts:
+            return 0
+        from database import get_db
+        n = 0
+        with get_db() as conn:
+            for w in workouts:
+                try:
+                    conn.execute("""
+                        INSERT OR REPLACE INTO workouts
+                        (race_id, horse_id, horse_number, evaluation_grade, evaluation_text, comment)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (
+                        w["race_id"], w["horse_id"], w["horse_number"],
+                        w.get("evaluation_grade"), w.get("evaluation_text"),
+                        w.get("comment"),
+                    ))
+                    n += 1
+                except Exception:
+                    continue
+        return n
+
+    # =========================================================
     # 出馬表（未来レース）の取得
     # =========================================================
     def scrape_shutuba(self, race_id):
