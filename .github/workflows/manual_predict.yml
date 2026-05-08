@@ -1,0 +1,127 @@
+name: 🧪 Manual Predict (test/debug)
+
+# 任意日付の予測を手動実行するためのワークフロー。
+# 通常の auto_post_x.yml は日付固定+10時ロックがあるため、
+# テスト/デバッグ用にここで実行可能にする。
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 (YYYYMMDD)'
+        required: true
+        type: string
+      force:
+        description: '10時ロックを無視して再予測する'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore keiba.db from cache
+        uses: actions/cache@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_id }}
+          restore-keys: |
+            keiba-db-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Init DB
+        run: python -c "from database import init_db; init_db()"
+
+      - name: DB status
+        run: |
+          DATE="${{ inputs.date }}"
+          DATE_HYPHEN="${DATE:0:4}-${DATE:4:2}-${DATE:6:2}"
+          SIZE=$(du -h keiba.db | cut -f1)
+          echo "📂 keiba.db: $SIZE"
+          python3 - <<PYEOF
+          from database import get_db
+          with get_db() as conn:
+              total = conn.execute("SELECT COUNT(*) FROM races").fetchone()[0]
+              today = conn.execute("SELECT COUNT(*) FROM races WHERE race_date = ? OR race_date = ?", ("${DATE}", "${DATE_HYPHEN}")).fetchone()[0]
+              cache = conn.execute("SELECT COUNT(*) FROM predictions_cache").fetchone()[0]
+              print(f"📊 total races: {total}")
+              print(f"📊 ${DATE} races: {today}")
+              print(f"📊 cache entries: {cache}")
+          PYEOF
+
+      - name: Collect race entries (if missing)
+        run: |
+          DATE="${{ inputs.date }}"
+          python predict.py collect --date "$DATE" || true
+
+      - name: Run prediction
+        run: |
+          DATE="${{ inputs.date }}"
+          FORCE="${{ inputs.force }}"
+          echo "🧠 予測実行: $DATE (force=$FORCE)"
+          if [ "$FORCE" = "true" ]; then
+            python predict.py predict --date "$DATE" --force
+          else
+            python predict.py predict --date "$DATE"
+          fi
+
+      - name: Sync race_id (handle day-shift)
+        run: |
+          DATE="${{ inputs.date }}"
+          python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')"
+
+      - name: Export predictions JSON
+        run: |
+          DATE="${{ inputs.date }}"
+          python export_predictions.py "$DATE" || true
+
+      - name: Save DB cache
+        uses: actions/cache/save@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_id }}
+
+      - name: Commit and push JSON
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/predictions_*.json docs/data/index.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no JSON changes to commit"
+          else
+            git commit -m "🧪 Manual predict ${{ inputs.date }} ($(TZ=Asia/Tokyo date '+%H:%M JST'))"
+            git push
+          fi
+
+      - name: Summary
+        run: |
+          DATE="${{ inputs.date }}"
+          python3 - <<PYEOF
+          import json, os
+          path = f"docs/data/predictions_${DATE}.json"
+          if os.path.exists(path):
+              with open(path) as f:
+                  d = json.load(f)
+              print(f"✅ JSON生成: {path}")
+              print(f"   total_races: {d.get('total_races')}")
+              print(f"   venues: {list(d.get('venues',{}).keys())}")
+              for v, races in d.get('venues',{}).items():
+                  graded = [r for r in races if r.get('grade') in ('G1','G2','G3') and r.get('race_number')==11]
+                  for r in graded:
+                      print(f"   {v} 11R {r.get('race_name')} ({r.get('grade')}) horses={len(r.get('horses',[]))}")
+          else:
+              print(f"⚠️ JSONなし: {path}")
+          PYEOF
