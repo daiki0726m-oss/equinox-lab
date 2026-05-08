@@ -123,6 +123,23 @@ def init_db(db_path=None):
 
             CREATE INDEX IF NOT EXISTS idx_payouts_race ON payouts(race_id);
 
+            -- 追い切り評価テーブル(netkeiba oikiri.html)
+            CREATE TABLE IF NOT EXISTS workouts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                race_id TEXT NOT NULL,
+                horse_id TEXT NOT NULL,
+                horse_number INTEGER,
+                evaluation_grade TEXT,         -- A/B/C
+                evaluation_text TEXT,          -- "気力充実" 等の自然言語ラベル
+                comment TEXT,                  -- 詳細コメント(あれば)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (race_id) REFERENCES races(race_id),
+                UNIQUE(race_id, horse_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_workouts_race ON workouts(race_id);
+            CREATE INDEX IF NOT EXISTS idx_workouts_horse ON workouts(horse_id);
+
             -- 予測キャッシュテーブル（予想固定化用）
             CREATE TABLE IF NOT EXISTS predictions_cache (
                 race_id TEXT PRIMARY KEY,
