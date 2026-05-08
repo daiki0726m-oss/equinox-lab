@@ -501,36 +501,45 @@ def cmd_predict(args):
             all_bets_json = json.dumps({}, ensure_ascii=False)
             print(f"\n❌ このレースは見送り推奨: {reason}")
 
-        # confidence計算（頭数相対勝率ベース）
-        # 均等勝率(1/頭数)に対する倍率で判定
-        # S: 1.90倍↑ (8頭:23.8%, 16頭:11.9%) 本命突出
-        # A: 1.75倍↑ (8頭:21.9%, 16頭:10.9%) 軸馬明確
-        # B: 1.55倍↑ (8頭:19.4%, 16頭:9.7%)  やや有力
-        # C: 1.35倍↑ (8頭:16.9%, 16頭:8.4%)  標準
-        # D: 1.35倍↓  混戦
+        # 信頼度: 3要素合成スコア + グレード別閾値
+        #   score = 本命勝率(%) × 均等比 + 上位3頭合計勝率(%) × 0.3
+        #   重賞(G1/G2/G3) と 平場 で閾値を分離(混戦傾向を補正)
         n_horses = len(sorted_preds) if sorted_preds else 1
         top_win = sorted_preds[0]["pred_win"] * 100 if sorted_preds else 0
         even_pct = 100 / max(n_horses, 1)
         relative = top_win / even_pct if even_pct > 0 else 0
+        top3_sum = sum(p.get("pred_win", 0) * 100 for p in sorted_preds[:3])
 
-        if relative >= 1.90:
-            confidence = "S"
-        elif relative >= 1.75:
-            confidence = "A"
-        elif relative >= 1.55:
-            confidence = "B"
-        elif relative >= 1.35:
-            confidence = "C"
+        score = top_win * relative + top3_sum * 0.3
+
+        grade = (race_info.get('grade') or '').strip()
+        is_graded = grade in ('G1', 'G2', 'G3')
+
+        if is_graded:
+            # 重賞: 混戦が前提 → 緩めの閾値
+            if score >= 30: confidence = "S"
+            elif score >= 22: confidence = "A"
+            elif score >= 16: confidence = "B"
+            elif score >= 10: confidence = "C"
+            else: confidence = "D"
         else:
-            confidence = "D"
+            # 平場: 本命勝率が高くなりやすい → 厳しめの閾値
+            if score >= 80: confidence = "S"
+            elif score >= 50: confidence = "A"
+            elif score >= 30: confidence = "B"
+            elif score >= 15: confidence = "C"
+            else: confidence = "D"
 
-        # conf_reason生成
-        conf_reason = f"◎の勝率 {top_win:.1f}% ({n_horses}頭立て, 均等比{relative:.1f}倍)"
+        race_kind = "重賞" if is_graded else "平場"
+        conf_reason = (
+            f"◎勝率{top_win:.1f}%×均等比{relative:.2f} + 上位3計{top3_sum:.1f}%"
+            f" = {score:.1f} ({race_kind}基準)"
+        )
         if confidence == "S": conf_reason += " → 本命突出"
-        elif confidence == "A": conf_reason += " → 軸馬明確"
+        elif confidence == "A": conf_reason += " → 軸馬有力"
         elif confidence == "B": conf_reason += " → やや有力"
         elif confidence == "C": conf_reason += " → 標準"
-        else: conf_reason += " → 混戦で読みにくい"
+        else: conf_reason += " → 混戦"
 
         # キャッシュ更新（買い目・confidence・conf_reason・should_bet・bet_reason）
         with get_db() as conn:
