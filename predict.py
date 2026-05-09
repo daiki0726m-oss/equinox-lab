@@ -132,6 +132,10 @@ def cmd_predict(args):
         print("❌ --race-id か --date を指定してください")
         return
 
+    # silent skip 検知: 各continueでreason付きで記録
+    _predicted_count = 0
+    _skipped_races = []  # [(race_id, reason), ...]
+
     # ─── 10時ロック: 既存キャッシュがある場合は再予測を禁止 ───
     now_hour = datetime.now(timezone(timedelta(hours=9))).hour
     force = getattr(args, 'force', False)
@@ -267,10 +271,12 @@ def cmd_predict(args):
                 print(f"  ✅ {len(results)}頭の出馬表を取得")
             else:
                 print(f"  ⚠️ 出馬表を取得できませんでした")
+                _skipped_races.append((race_id, '出馬表取得失敗'))
                 continue
 
         if not race:
             print(f"  ⚠️ レースデータが見つかりません")
+            _skipped_races.append((race_id, 'レースデータ無し'))
             continue
 
         race_info = dict(race)
@@ -280,10 +286,16 @@ def cmd_predict(args):
             pred_df = model.predict_race(race_id)
         except ValueError as e:
             print(f"  ⚠️ {e}")
+            _skipped_races.append((race_id, f'predict_race: {e}'))
+            continue
+        except Exception as e:
+            print(f"  ❌ 予期しないエラー: {e}")
+            _skipped_races.append((race_id, f'予期しないエラー: {e}'))
             continue
 
         if pred_df.empty:
             print(f"  ⚠️ 予測データを構築できません")
+            _skipped_races.append((race_id, '予測データ空'))
             continue
 
         # 予測結果表示
@@ -526,6 +538,27 @@ def cmd_predict(args):
                   1 if should_bet else 0, reason if not should_bet else "OK",
                   race_id))
         print(f"  💾 予測キャッシュを保存 (信頼度: {confidence}, 理由: {conf_reason})")
+        _predicted_count += 1
+
+    # ─── 完了サマリー + sanity check ───
+    print("\n" + "="*60)
+    print(f"📊 予測完了: 成功 {_predicted_count}/{len(race_ids)} レース")
+    if _skipped_races:
+        print(f"⚠️  スキップ {len(_skipped_races)} レース:")
+        for rid, reason in _skipped_races:
+            print(f"    {rid}: {reason}")
+
+        # メインレース(11R)が含まれていたら異常終了
+        main_skipped = [(rid, r) for rid, r in _skipped_races if rid[10:12] == '11']
+        if main_skipped:
+            print(f"\n❌ メインレース(11R)を {len(main_skipped)} 件スキップ → 異常状態")
+            for rid, r in main_skipped:
+                print(f"    {rid}: {r}")
+            # CI環境では exit 1 でワークフロー失敗扱いに
+            if os.environ.get('CI') or os.environ.get('GITHUB_ACTIONS'):
+                print("🚨 CI環境のため exit 1(workflow失敗扱い)")
+                sys.exit(1)
+    print("="*60)
 
 
 def cmd_backtest(args):
