@@ -1149,10 +1149,11 @@ if __name__ == "__main__":
     print("   http://localhost:5001")
     print("   予測ダッシュボード: http://localhost:5001/predict")
 
-    # バックグラウンド結果取得スレッド起動
-    bg_thread = threading.Thread(target=_bg_result_fetcher, daemon=True)
-    bg_thread.start()
-    print("   🔄 結果自動取得: ON (5分間隔, 10:00-17:30)")
+    # 注: バックグラウンド結果取得は GitHub Actions 側に一本化(課題#10解消)
+    # 旧: bg_thread = threading.Thread(target=_bg_result_fetcher, daemon=True); bg_thread.start()
+    # 結果取得は collect_results.yml / refresh_live.yml が担当
+    # app.py はダッシュボード閲覧専用に縮小
+    print("   ℹ️  結果自動取得は GitHub Actions(refresh_live.yml/collect_results.yml)に委譲")
 
     app.run(debug=True, host="0.0.0.0", port=5001)
 
