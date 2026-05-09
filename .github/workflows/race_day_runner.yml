@@ -97,7 +97,7 @@ jobs:
             else
               git commit -m "🏇 Race day runner iter=$ITER ($(TZ=Asia/Tokyo date '+%H:%M') JST)"
               for i in 1 2 3; do
-                git pull --rebase origin main || true
+                git pull --rebase --autostash origin main || true
                 if git push; then echo "🚀 deployed (try $i)"; break; fi
                 echo "⚠️ push失敗→retry($i)"; sleep 5
               done
@@ -126,7 +126,7 @@ jobs:
           else
             git commit -m "📊 Race day data: $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
             for i in 1 2 3; do
-              git pull --rebase origin main || true
+              git pull --rebase --autostash origin main || true
               if git push; then echo "🚀 DB committed (try $i)"; break; fi
               echo "⚠️ push失敗→retry($i)"; sleep 5
             done

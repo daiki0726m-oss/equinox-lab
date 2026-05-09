@@ -67,7 +67,7 @@ jobs:
             git commit -m "🧠 Weekly model retrain $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
             # 他workflowが先にpushしている可能性に備え、rebaseしてからpush(最大3回リトライ)
             for i in 1 2 3; do
-              git pull --rebase origin main || true
+              git pull --rebase --autostash origin main || true
               if git push; then
                 echo "🚀 モデルをデプロイ完了 (試行$i)"
                 break
