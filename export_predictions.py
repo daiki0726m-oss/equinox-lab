@@ -336,8 +336,14 @@ if __name__ == "__main__":
     from database import init_db
     init_db()
 
-    if len(sys.argv) > 1:
-        date_arg = sys.argv[1]
+    # positional("20260509") と --date flag の両方を受け付ける(誤呼び出し耐性)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("date_pos", nargs='?', help="対象日 YYYYMMDD")
+    parser.add_argument("--date", dest="date_flag", help="対象日 YYYYMMDD (--date 形式)")
+    args = parser.parse_args()
+    date_arg = args.date_pos or args.date_flag
+    if date_arg:
         export_predictions(date_arg)
     else:
         export_predictions()
