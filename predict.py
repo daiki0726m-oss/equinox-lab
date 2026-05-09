@@ -501,45 +501,19 @@ def cmd_predict(args):
             all_bets_json = json.dumps({}, ensure_ascii=False)
             print(f"\n❌ このレースは見送り推奨: {reason}")
 
-        # 信頼度: 3要素合成スコア + グレード別閾値
-        #   score = 本命勝率(%) × 均等比 + 上位3頭合計勝率(%) × 0.3
-        #   重賞(G1/G2/G3) と 平場 で閾値を分離(混戦傾向を補正)
+        # 信頼度: confidence.py(単一のSource of Truth)に委譲
+        from confidence import evaluate as eval_confidence
         n_horses = len(sorted_preds) if sorted_preds else 1
         top_win = sorted_preds[0]["pred_win"] * 100 if sorted_preds else 0
-        even_pct = 100 / max(n_horses, 1)
-        relative = top_win / even_pct if even_pct > 0 else 0
         top3_sum = sum(p.get("pred_win", 0) * 100 for p in sorted_preds[:3])
-
-        score = top_win * relative + top3_sum * 0.3
-
-        grade = (race_info.get('grade') or '').strip()
-        is_graded = grade in ('G1', 'G2', 'G3')
-
-        if is_graded:
-            # 重賞: 混戦が前提 → 緩めの閾値
-            if score >= 30: confidence = "S"
-            elif score >= 22: confidence = "A"
-            elif score >= 16: confidence = "B"
-            elif score >= 10: confidence = "C"
-            else: confidence = "D"
-        else:
-            # 平場: 本命勝率が高くなりやすい → 厳しめの閾値
-            if score >= 80: confidence = "S"
-            elif score >= 50: confidence = "A"
-            elif score >= 30: confidence = "B"
-            elif score >= 15: confidence = "C"
-            else: confidence = "D"
-
-        race_kind = "重賞" if is_graded else "平場"
-        conf_reason = (
-            f"◎勝率{top_win:.1f}%×均等比{relative:.2f} + 上位3計{top3_sum:.1f}%"
-            f" = {score:.1f} ({race_kind}基準)"
+        c = eval_confidence(
+            top_win_pct=top_win,
+            n_horses=n_horses,
+            top3_sum_pct=top3_sum,
+            grade=race_info.get('grade'),
         )
-        if confidence == "S": conf_reason += " → 本命突出"
-        elif confidence == "A": conf_reason += " → 軸馬有力"
-        elif confidence == "B": conf_reason += " → やや有力"
-        elif confidence == "C": conf_reason += " → 標準"
-        else: conf_reason += " → 混戦"
+        confidence = c['confidence']
+        conf_reason = c['reason']
 
         # キャッシュ更新（買い目・confidence・conf_reason・should_bet・bet_reason）
         with get_db() as conn:
