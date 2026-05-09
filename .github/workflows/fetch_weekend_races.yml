@@ -162,7 +162,7 @@ jobs:
             git commit -m "auto: weekend races + pedigree $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
             # 他workflowが先にpushしている可能性に備え、rebase&リトライ
             for i in 1 2 3; do
-              git pull --rebase origin main || true
+              git pull --rebase --autostash origin main || true
               if git push; then
                 echo "✅ pushed (試行$i)"
                 break

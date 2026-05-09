@@ -122,9 +122,9 @@ jobs:
             echo "📭 データ変更なし"
           else
             git commit -m "🔄 Live update: $(TZ=Asia/Tokyo date '+%H:%M') JST"
-            # 競合を回避するリトライ付きpush
+            # 競合を回避するリトライ付きpush(--autostash で keiba.db 等の未staged変更を自動退避)
             for i in 1 2 3; do
-              git pull --rebase origin main && git push && break
+              git pull --rebase --autostash origin main && git push && break
               echo "⚠️ push失敗 (${i}/3) - 再試行..."
               sleep 5
             done

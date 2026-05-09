@@ -441,7 +441,7 @@ jobs:
             git commit -m "📊 Update predictions $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
             # 並行workflow対策: rebase+retry
             for i in 1 2 3; do
-              git pull --rebase origin main || true
+              git pull --rebase --autostash origin main || true
               if git push; then echo "🚀 デプロイ完了 (試行$i)"; break; fi
               echo "⚠️ push失敗→リトライ($i)"; sleep 5
             done
@@ -459,7 +459,7 @@ jobs:
               git commit -m "📝 Update post history $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
               # 並行workflow対策: rebase+retry
               for i in 1 2 3; do
-                git pull --rebase origin main || true
+                git pull --rebase --autostash origin main || true
                 if git push; then echo "✅ 投稿履歴を保存 (試行$i)"; break; fi
                 echo "⚠️ push失敗→リトライ($i)"; sleep 5
               done
