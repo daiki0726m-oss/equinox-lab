@@ -2,8 +2,12 @@ name: 🔄 Live Dashboard Refresh
 
 on:
   schedule:
-    # 土日 JST 9:00-19:45(UTC 0:00-10:45) 15分おき
-    # 第1R(9:50)〜全R結果反映(18時頃)+α をフルカバー
+    # 土日朝 8-9時に複数回 cron 設定 → 1回でもfireすればchain開始
+    # その後はworkflow末尾で自己トリガーするので cron 不発でも継続する
+    - cron: '0 23 * * 5,6'        # JST 8:00 (UTC 23:00 前日)
+    - cron: '30 23 * * 5,6'       # JST 8:30
+    - cron: '0 0 * * 6,0'         # JST 9:00
+    # 念のため cron も 15分おき(自己トリガーが死んだ時のbackup)
     - cron: '0,15,30,45 0-10 * * 6,0'
   workflow_dispatch:
     inputs:
@@ -15,10 +19,23 @@ on:
         options:
           - 'false'
           - 'true'
+      no_chain:
+        description: '自己永続化を無効にする(単発実行)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: write
+  actions: write
 
 concurrency:
   group: live-refresh
-  cancel-in-progress: true  # 前回がまだ動いていたらキャンセル
+  # 重要: false にして 自己トリガーした次runを cancel しない
+  cancel-in-progress: false
 
 jobs:
   refresh:
@@ -119,3 +136,34 @@ jobs:
         with:
           path: keiba.db
           key: keiba-db-${{ github.run_number }}
+
+      # ── 自己永続化 chain: 10分後に自分自身をdispatch ──
+      # 旧cron依存を脱して、1回起動すれば 19時まで自動継続させる仕組み。
+      # public repo は Actions時間無制限なので長時間 sleep してOK。
+      - name: Self-trigger next iteration
+        if: always() && github.event.inputs.no_chain != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DOW=$(TZ=Asia/Tokyo date +%u)
+          HOUR=$(TZ=Asia/Tokyo date +%H)
+          # 終了条件: 19時以降 or 平日
+          if [ "$HOUR" -ge 19 ]; then
+            echo "🏁 19時到達 → chain終了"
+            exit 0
+          fi
+          if [ "$DOW" -lt 6 ]; then
+            echo "🏁 平日 → chain終了"
+            exit 0
+          fi
+          # 9時前なら chain 早期起動を待つ
+          if [ "$HOUR" -lt 9 ]; then
+            echo "⏳ 9時前 → chain開始は9時から(15分後にretrigger)"
+            sleep 900
+          else
+            echo "💤 10分sleep して次のrunをdispatch"
+            sleep 600
+          fi
+          gh workflow run refresh_live.yml -R ${{ github.repository }} \
+            && echo "🔁 next refresh_live dispatched" \
+            || echo "⚠️ self-trigger失敗(watchdogが補完するはず)"
