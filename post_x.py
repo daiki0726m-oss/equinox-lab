@@ -1257,16 +1257,18 @@ def fetch_weekend_races():
                               data['horse_count'], data['start_time']))
 
                         # 出走馬もresultsに仮登録（horse_number, horse_id, odds, popularity等）
+                        # impost(斤量)もINSERTするように修正(features.pyがdtype要求するため必須)
                         for entry in data.get('entries', []):
                             if entry.get('horse_id'):
                                 conn.execute("""
                                     INSERT OR IGNORE INTO results
                                     (race_id, horse_id, horse_number, odds, popularity, post_position,
-                                     finish_position, finish_time, last_3f, passing_order, weight, weight_change)
-                                    VALUES (?,?,?,?,?,?, 0,0,0,0,0,0)
+                                     finish_position, finish_time, last_3f, passing_order, weight, weight_change, impost)
+                                    VALUES (?,?,?,?,?,?, 0,0,0,0,0,0,?)
                                 """, (rid, entry['horse_id'], entry.get('horse_number', 0),
                                       entry.get('odds', 0), entry.get('popularity', 0),
-                                      entry.get('post_position', 0)))
+                                      entry.get('post_position', 0),
+                                      entry.get('impost', 57.0)))
                                 # horsesテーブルにも登録
                                 conn.execute("""
                                     INSERT OR IGNORE INTO horses (horse_id, horse_name)
