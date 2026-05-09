@@ -10,15 +10,16 @@ predict.py / generate_note.py / 将来の他モジュールから利用される
   重賞(G1/G2/G3): 混戦が前提 → 緩い閾値
     S>=30 / A>=22 / B>=16 / C>=10 / D<10
 
-  平場(条件戦/未勝利/OP): 実力差が出やすい → 厳しい閾値
-    S>=80 / A>=50 / B>=30 / C>=15 / D<15
+  平場(条件戦/未勝利/OP): 本命勝率の絶対値が高くなりやすい → 厳しい閾値
+    S>=190 / A>=130 / B>=80 / C>=50 / D<50
+    (新モデル(11k racesで再学習)で平場スコアが全体上振れしたため引き上げ)
 """
 
 from typing import Iterable, Tuple, Optional
 
 
 GRADED_THRESHOLDS = [(30, "S"), (22, "A"), (16, "B"), (10, "C")]
-NORMAL_THRESHOLDS = [(80, "S"), (50, "A"), (30, "B"), (15, "C")]
+NORMAL_THRESHOLDS = [(190, "S"), (130, "A"), (80, "B"), (50, "C")]
 
 GRADE_LABELS = {
     "S": "本命突出",
