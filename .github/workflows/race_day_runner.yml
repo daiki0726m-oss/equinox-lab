@@ -2,32 +2,16 @@ name: 🏇 Race Day Runner
 
 # GitHub Actions cron は fire しないことが頻発するため、
 # 1回の起動で 10時間 内部ループする long-running workflow に統一する。
-# - 8:30 JST に起動 → 内部で 10分間隔 + 19:00 JST まで継続
+# - 8:50 JST に 1回だけ起動(cron 1本で済む = 不発リスク最小)
+# - 内部で 10分間隔 + 19:00 JST まで継続
 # - 各 iteration で: collect/refresh_odds/collect_payouts/export/deploy
 #
-# #59 (2026-06-10): レース日の結果収集は本 workflow に一本化。
-# 旧 refresh_live.yml (15分 cron、機能は本 loop の部分集合) は削除した。
-# 生存監視は refresh_watchdog.yml (15分毎に in_progress を確認、死んでいれば再起動)。
-# 夜間の最終スイープのみ collect_results.yml (20:00/22:00 JST) が担う。
+# refresh_live.yml と並行動作可能(冗長配置)。どちらかが動けばOK。
 
 on:
   schedule:
-    # 土日 8:30 JST 起動 (UTC 前日23:30) — primary (#59 で 8:50→8:30 前倒し。
-    # 旧 refresh_live が担っていた 8時台のオッズ/ダッシュボード更新を吸収)
-    - cron: '30 23 * * 5,6'
-    # ↓ cron 不発の保険として 8:50 / 9:00 / 9:30 / 10:00 JST にも backup 起動
-    #   concurrency:race-day-runner により 1本だけ実行(他は queue → 19時即終了)
-    - cron: '50 23 * * 5,6'    # 8:50 JST
-    - cron: '0 0 * * 6,0'      # 9:00 JST
-    - cron: '30 0 * * 6,0'     # 9:30 JST
-    - cron: '0 1 * * 6,0'      # 10:00 JST
-    # 🆕 #89: 朝の backup 帯 (8:30-10:00) が GitHub Actions cron skip で丸ごと不発だと
-    #   一日中 collect ゼロ → 結果がリアルタイム反映されない事故 (2026-06-21 実発生)。
-    #   昼以降にも保険 cron を分散。collect は当日全完走レースを毎回拾うので、
-    #   遅い起動でも「それまでに終わったレース」を一括収集できる (取りこぼし無し)。
-    - cron: '0 2 * * 6,0'      # 11:00 JST
-    - cron: '0 4 * * 6,0'      # 13:00 JST
-    - cron: '0 6 * * 6,0'      # 15:00 JST
+    # 土日 8:50 JST 起動 (UTC 前日23:50)
+    - cron: '50 23 * * 5,6'
   workflow_dispatch:
     inputs:
       end_hour:
@@ -45,7 +29,6 @@ jobs:
     timeout-minutes: 600
     permissions:
       contents: write
-      actions: write   # ← cron 不発時に auto_post_x.yml を内部 dispatch できるように
     steps:
       - uses: actions/checkout@v4
 
@@ -57,18 +40,6 @@ jobs:
           restore-keys: |
             keiba-db-
 
-
-      # 🛡 git を source of truth に強制 (cache 古さの事故防止 - 2026-05-24)
-      - name: Force git DB (override stale cache)
-        run: |
-          # 🆕 #61: checkout SHA は run 作成時点で固定されるため、ほぼ同時 dispatch の
-          # 先行 run が push した posted_slots lock が見えない (stale checkout)。
-          # fetch + reset で「真の origin/main 最新」に進めてから DB を採用する。
-          git fetch origin "${GITHUB_REF_NAME:-main}" --depth 1
-          git reset --hard "origin/${GITHUB_REF_NAME:-main}"
-          git checkout HEAD -- keiba.db.gz
-          bash scripts/db_unpack.sh
-          echo "✅ keiba.db を git HEAD に復元"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -83,64 +54,15 @@ jobs:
       - name: Loop until end_hour JST
         env:
           END_HOUR: ${{ inputs.end_hour || '19' }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
           END_HH=${END_HOUR:-19}
-          # 投稿トリガーフラグ(/tmp は run 内で永続)
-          TRIGGER_FILE="/tmp/race_day_post_${DATE}.flags"
-          touch "$TRIGGER_FILE"
-
-          # cron 不発時の保険として、loop内で時刻が来たら直接 auto_post_x.yml を dispatch する。
-          # 各 mode は当日 1 回だけ発火 (TRIGGER_FILE + posted_slots で記録)。
-          # auto_post_x.yml の dedup_cron は scheduled event のみ働くので、
-          # ここからの workflow_dispatch は素通りで実行される。
-          #
-          # 🔒 #41 (2026-06-07): /tmp の TRIGGER_FILE は run-scoped (= 別 run では空)。
-          # 遅延 cron 発火で別 run が起動すると flag check を素通りして重複 dispatch していた
-          # (6/7 17:03 二重投稿事故の原因)。対策として **posted_slots テーブル** を事前 check し、
-          # atomic lock が既に取られていれば dispatch しない。
-          trigger_post() {
-            local mode=$1
-            local minimum_jst_hm=$2  # 例: 1015 = 10:15
-            local current_jst_hm=$3
-
-            # 🔒 atomic lock (posted_slots) 事前 check — run 間でも共有される
-            TODAY=$(TZ=Asia/Tokyo date +%Y-%m-%d)
-            EXISTING=$(sqlite3 keiba.db \
-              "SELECT run_id FROM posted_slots WHERE post_date='$TODAY' AND slot_name='$mode' LIMIT 1" \
-              2>/dev/null)
-            if [ -n "$EXISTING" ]; then
-              echo "⏭️ [$mode] posted_slots に lock 済み (run=$EXISTING) → dispatch skip"
-              # /tmp flag にも記録して次 iter で再 check しない
-              grep -q "^${mode}\$" "$TRIGGER_FILE" 2>/dev/null || echo "${mode}" >> "$TRIGGER_FILE"
-              return 0
-            fi
-
-            # 同 run 内の /tmp flag check (旧仕組み)
-            if grep -q "^${mode}\$" "$TRIGGER_FILE" 2>/dev/null; then
-              return 0
-            fi
-
-            if [ "$current_jst_hm" -ge "$minimum_jst_hm" ]; then
-              echo "🚀 [SAFETY-NET] ${mode} を dispatch (予定 ${minimum_jst_hm:0:2}:${minimum_jst_hm:2:4} 到達, 現在 $(TZ=Asia/Tokyo date +%H:%M))"
-              if gh workflow run auto_post_x.yml -R ${{ github.repository }} -f mode="$mode" 2>&1; then
-                echo "${mode}" >> "$TRIGGER_FILE"
-                echo "  ✅ dispatch 成功 → flag 記録"
-              else
-                echo "  ⚠️ dispatch 失敗 (次の iter で再試行)"
-              fi
-            fi
-          }
-
           echo "🏇 Race Day Runner start. date=$DATE, end_hour=${END_HH}:00 JST"
-          echo "📋 投稿 safety net: odds_flash@9:30 / post_predict@10:15 / results@17:30 / refresh_dashboard@18:30"
 
           ITER=0
           while true; do
             JST_HOUR=$(TZ=Asia/Tokyo date +%H)
             JST_MIN=$(TZ=Asia/Tokyo date +%M)
-            JST_HM="${JST_HOUR}${JST_MIN}"  # 例: 1015
             ITER=$((ITER + 1))
             echo ""
             echo "============================================="
@@ -160,9 +82,6 @@ jobs:
             python refresh_odds.py --date "$DATE" || echo "⚠️ refresh_odds エラー(継続)"
             python collect_payouts.py --date "$DATE" || echo "⚠️ payouts なし"
 
-            # 🛡 Pre-flight check (#18 教訓: races/runners/predictions 完整性)
-            python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || echo "⚠️ Pre-flight 警告(継続)"
-
             # race_id 同期
             python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')" || true
 
@@ -173,32 +92,16 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add docs/data/ 2>/dev/null || true
-            # 🆕 #68: iter ごとに DB 結果も push する (旧版は loop 後の最終 step まで保留 →
-            # collect で結果が入っても origin に届かず JSON の has_results=False 状態が
-            # 終日続く事故が 6/13 に発生)。
-            bash scripts/db_pack.sh 2>/dev/null || true
-            git add keiba.db.gz 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "📭 変更なし"
             else
               git commit -m "🏇 Race day runner iter=$ITER ($(TZ=Asia/Tokyo date '+%H:%M') JST)"
               for i in 1 2 3; do
-                # binary 衝突は --theirs (= 自分の最新 DB) を採用 (seed_historical と同パターン)
-                if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" && \
-                   git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
-                  echo "🚀 deployed (try $i)"; break
-                fi
-                git rebase --abort 2>/dev/null || true
+                git pull --rebase origin main || true
+                if git push; then echo "🚀 deployed (try $i)"; break; fi
                 echo "⚠️ push失敗→retry($i)"; sleep 5
               done
             fi
-
-            # ── 投稿 safety net: 時刻が来たら post mode を dispatch ──
-            # (hit_flash@15:30 は #57 で削除 — 完走ガードで常にスキップされる no-op だった)
-            trigger_post odds_flash    0930 "$JST_HM"
-            trigger_post post_predict  1015 "$JST_HM"
-            trigger_post results       1730 "$JST_HM"
-            trigger_post refresh_dashboard 1830 "$JST_HM"
 
             # cache保存
             ELAPSED=$(( $(date +%s) - ITER_START ))
@@ -211,24 +114,6 @@ jobs:
               sleep "$SLEEP"
             fi
           done
-
-      - name: Commit keiba.db to repo (永続データ蓄積)
-        if: always()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          bash scripts/db_pack.sh || true
-          git add keiba.db.gz 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "📭 keiba.db 変更なし"
-          else
-            git commit -m "📊 Race day data: $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
-            for i in 1 2 3; do
-              git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" || true
-              if git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then echo "🚀 DB committed (try $i)"; break; fi
-              echo "⚠️ push失敗→retry($i)"; sleep 5
-            done
-          fi
 
       - name: Save keiba.db to cache
         if: always()
