@@ -252,30 +252,63 @@ class NetkeibaScraper:
 
         return info
 
+    def _build_col_map(self, table):
+        """テーブルのヘッダー行から列名→index map を構築。
+
+        netkeibaの列順が変更されても追従できるようにする。
+        """
+        first_row = table.find("tr")
+        if not first_row:
+            return {}
+        cells = first_row.find_all(["th", "td"])
+        headers = [c.get_text(strip=True) for c in cells]
+        cmap = {}
+        for i, h in enumerate(headers):
+            h = h.strip()
+            if not h:
+                continue
+            if h in ("着順", "着") or (h.endswith("着") and h != "着差"):
+                cmap.setdefault("finish_position", i)
+            elif h in ("枠", "枠番"):
+                cmap.setdefault("post_position", i)
+            elif h in ("馬番", "番号", "番"):
+                cmap.setdefault("horse_number", i)
+            elif h in ("馬名",):
+                cmap.setdefault("horse_name", i)
+            elif h in ("性齢", "性別/年齢"):
+                cmap.setdefault("sex_age", i)
+            elif h in ("斤量",) or h == "kg":
+                cmap.setdefault("impost", i)
+            elif h == "騎手":
+                cmap.setdefault("jockey", i)
+            elif h == "タイム":
+                cmap.setdefault("finish_time", i)
+            elif h == "着差":
+                cmap.setdefault("margin", i)
+            elif h in ("人気",):
+                cmap.setdefault("popularity", i)
+            elif h in ("単勝", "オッズ", "単勝オッズ"):
+                cmap.setdefault("odds", i)
+            elif "上がり" in h or "上り" in h or h == "後3F":
+                cmap.setdefault("last_3f", i)
+            elif h in ("通過", "通過順", "通過順位"):
+                cmap.setdefault("passing_order", i)
+            elif h == "調教師":
+                cmap.setdefault("trainer", i)
+            elif h in ("馬体重", "体重", "馬体重(増減)"):
+                cmap.setdefault("weight", i)
+        return cmap
+
     def _parse_result_table(self, soup, race_id):
         """
-        結果テーブルをパース
+        結果テーブルをパース。
 
-        netkeiba result.html のカラム構成 (2024年版):
-        col[0]:  着順
-        col[1]:  枠番
-        col[2]:  馬番
-        col[3]:  馬名 (リンク→horse_id)
-        col[4]:  性齢
-        col[5]:  斤量
-        col[6]:  騎手 (リンク→jockey_id)
-        col[7]:  タイム
-        col[8]:  着差
-        col[9]:  人気
-        col[10]: 単勝オッズ
-        col[11]: 上がり3F
-        col[12]: 通過順
-        col[13]: 調教師 (リンク→trainer_id)
-        col[14]: 馬体重(増減)
+        ヘッダー行から列を識別する robust 版。
+        netkeibaの列順が変わっても自動追従。
         """
         results = []
 
-        # テーブル検索: 複数のセレクタを試す
+        # テーブル検索
         table = None
         for selector in [
             ("table", {"class_": "RaceTable01"}),
@@ -287,7 +320,6 @@ class NetkeibaScraper:
                 break
 
         if not table:
-            # フォールバック: ヘッダーに「着順」か「着」を含むテーブルを探す
             for t in soup.find_all("table"):
                 ths = t.find_all("th")
                 texts = [th.get_text(strip=True) for th in ths]
@@ -299,96 +331,134 @@ class NetkeibaScraper:
             print(f"⚠️ 結果テーブルが見つかりません: {race_id}")
             return results
 
-        rows = table.find_all("tr")[1:]  # ヘッダーをスキップ
+        # ヘッダーから列map構築
+        cmap = self._build_col_map(table)
+        # 必須列の検証
+        required = ("finish_position", "horse_number")
+        missing = [k for k in required if k not in cmap]
+        if missing:
+            # ヘッダーが想定外フォーマット → 旧hardcodedにfallback
+            print(f"⚠️ {race_id}: ヘッダーから列識別失敗({missing})、旧固定index 使用")
+            cmap = {
+                "finish_position": 0, "post_position": 1, "horse_number": 2,
+                "horse_name": 3, "sex_age": 4, "impost": 5, "jockey": 6,
+                "finish_time": 7, "margin": 8, "popularity": 9,
+                "odds": 10, "last_3f": 11, "passing_order": 12,
+                "trainer": 13, "weight": 14,
+            }
+
+        def _get(cols, key):
+            i = cmap.get(key)
+            if i is None or i >= len(cols):
+                return ""
+            return cols[i].get_text(strip=True)
+
+        def _get_cell(cols, key):
+            i = cmap.get(key)
+            if i is None or i >= len(cols):
+                return None
+            return cols[i]
+
+        rows = table.find_all("tr")[1:]
+        skipped_no_finish = 0
 
         for row in rows:
             cols = row.find_all("td")
-            if len(cols) < 13:
+            if len(cols) < 8:  # 最低限の列数チェック(緩めに)
                 continue
 
             entry = {"race_id": race_id}
 
             try:
-                # col[0]: 着順
-                pos_text = cols[0].get_text(strip=True)
+                # 着順
+                pos_text = _get(cols, "finish_position")
                 entry["finish_position"] = int(pos_text) if pos_text.isdigit() else 0
 
-                # col[1]: 枠番
-                post_text = cols[1].get_text(strip=True)
+                # 枠番
+                post_text = _get(cols, "post_position")
                 entry["post_position"] = int(post_text) if post_text.isdigit() else 0
 
-                # col[2]: 馬番
-                num_text = cols[2].get_text(strip=True)
+                # 馬番(必須)
+                num_text = _get(cols, "horse_number")
                 entry["horse_number"] = int(num_text) if num_text.isdigit() else 0
                 if entry["horse_number"] == 0:
-                    continue  # 馬番0は不正データ
+                    continue
 
-                # col[3]: 馬名 + horse_id
-                horse_tag = cols[3].find("a")
-                entry["horse_name"] = cols[3].get_text(strip=True)
+                # 馬名 + horse_id
+                horse_cell = _get_cell(cols, "horse_name")
+                entry["horse_name"] = horse_cell.get_text(strip=True) if horse_cell else ""
                 entry["horse_id"] = ""
-                if horse_tag and horse_tag.get("href"):
-                    h_match = re.search(r"/horse/(\w+)", horse_tag["href"])
-                    if h_match:
-                        entry["horse_id"] = h_match.group(1)
+                if horse_cell:
+                    horse_tag = horse_cell.find("a")
+                    if horse_tag and horse_tag.get("href"):
+                        h_match = re.search(r"/horse/(\w+)", horse_tag["href"])
+                        if h_match:
+                            entry["horse_id"] = h_match.group(1)
 
-                # col[4]: 性齢
-                sex_age = cols[4].get_text(strip=True)
+                # 性齢
+                sex_age = _get(cols, "sex_age")
                 entry["sex"] = sex_age[0] if sex_age else ""
                 entry["age"] = int(sex_age[1:]) if len(sex_age) > 1 and sex_age[1:].isdigit() else 0
 
-                # col[5]: 斤量
-                impost_text = cols[5].get_text(strip=True)
+                # 斤量
+                impost_text = _get(cols, "impost")
                 entry["impost"] = float(impost_text) if self._is_number(impost_text) else 0
 
-                # col[6]: 騎手 + jockey_id
-                jockey_tag = cols[6].find("a")
-                entry["jockey_name"] = cols[6].get_text(strip=True)
+                # 騎手
+                jockey_cell = _get_cell(cols, "jockey")
+                entry["jockey_name"] = jockey_cell.get_text(strip=True) if jockey_cell else ""
                 entry["jockey_id"] = ""
-                if jockey_tag and jockey_tag.get("href"):
-                    j_match = re.search(r"/jockey/(?:result/recent/)?(\w+)", jockey_tag["href"])
-                    if j_match:
-                        entry["jockey_id"] = j_match.group(1)
+                if jockey_cell:
+                    jockey_tag = jockey_cell.find("a")
+                    if jockey_tag and jockey_tag.get("href"):
+                        j_match = re.search(r"/jockey/(?:result/recent/)?(\w+)", jockey_tag["href"])
+                        if j_match:
+                            entry["jockey_id"] = j_match.group(1)
 
-                # col[7]: タイム
-                time_text = cols[7].get_text(strip=True)
+                # タイム
+                time_text = _get(cols, "finish_time")
                 entry["finish_time"] = time_text
                 entry["finish_time_seconds"] = self._parse_time(time_text)
 
-                # col[8]: 着差
-                entry["margin"] = cols[8].get_text(strip=True)
+                # 着差
+                entry["margin"] = _get(cols, "margin")
 
-                # col[9]: 人気
-                pop_text = cols[9].get_text(strip=True) if len(cols) > 9 else ""
+                # 人気
+                pop_text = _get(cols, "popularity")
                 entry["popularity"] = int(pop_text) if pop_text.isdigit() else 0
 
-                # col[10]: 単勝オッズ
-                odds_text = cols[10].get_text(strip=True) if len(cols) > 10 else ""
+                # 着順0なら(中止/未確定など) skipped カウント
+                if entry["finish_position"] == 0:
+                    skipped_no_finish += 1
+
+                # 単勝オッズ
+                odds_text = _get(cols, "odds")
                 entry["odds"] = float(odds_text) if self._is_number(odds_text) else 0
 
-                # col[11]: 上がり3F
-                last3f_text = cols[11].get_text(strip=True) if len(cols) > 11 else ""
+                # 上がり3F
+                last3f_text = _get(cols, "last_3f")
                 entry["last_3f"] = float(last3f_text) if self._is_number(last3f_text) else 0
 
-                # col[12]: 通過順
-                entry["passing_order"] = cols[12].get_text(strip=True) if len(cols) > 12 else ""
+                # 通過順
+                entry["passing_order"] = _get(cols, "passing_order")
 
-                # col[13]: 調教師 + trainer_id
+                # 調教師
                 entry["trainer_name"] = ""
                 entry["trainer_id"] = ""
-                if len(cols) > 13:
-                    trainer_tag = cols[13].find("a")
-                    entry["trainer_name"] = cols[13].get_text(strip=True)
+                trainer_cell = _get_cell(cols, "trainer")
+                if trainer_cell:
+                    entry["trainer_name"] = trainer_cell.get_text(strip=True)
+                    trainer_tag = trainer_cell.find("a")
                     if trainer_tag and trainer_tag.get("href"):
                         t_match = re.search(r"/trainer/(?:result/recent/)?(\w+)", trainer_tag["href"])
                         if t_match:
                             entry["trainer_id"] = t_match.group(1)
 
-                # col[14]: 馬体重(増減)
+                # 馬体重(増減)
                 entry["weight"] = 0
                 entry["weight_change"] = 0
-                if len(cols) > 14:
-                    weight_text = cols[14].get_text(strip=True)
+                weight_text = _get(cols, "weight")
+                if weight_text:
                     w_match = re.match(r"(\d+)\(([+-]?\d+)\)", weight_text)
                     if w_match:
                         entry["weight"] = int(w_match.group(1))
@@ -401,6 +471,11 @@ class NetkeibaScraper:
             except (ValueError, IndexError) as e:
                 print(f"⚠️ パースエラー (行スキップ): {e}")
                 continue
+
+        # 全頭が finish_position=0 だった場合の警告(根本予防)
+        if results and skipped_no_finish == len(results):
+            print(f"⚠️ {race_id}: {len(results)}頭全員 finish_position=0 → 結果parse失敗の可能性大")
+            print(f"   ヘッダー検出列: {list(cmap.keys())}")
 
         return results
 
