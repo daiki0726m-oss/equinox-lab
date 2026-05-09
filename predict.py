@@ -184,6 +184,15 @@ def cmd_predict(args):
         print(f"🏇 レース予測: {race_id}")
         print(f"{'='*60}")
 
+        # ── 投稿済 seal チェック ──
+        # 一度 post_predict された予測は、--force でも上書き禁止。
+        # (結果配信時に「投稿時の予測」と異なる予測を引かないため)
+        from database import is_prediction_sealed
+        if is_prediction_sealed(race_id):
+            print(f"🔒 {race_id}: 投稿済(seal)のため再予測スキップ")
+            _skipped_races.append((race_id, '投稿済 seal'))
+            continue
+
         # レース情報取得
         with get_db() as conn:
             race = conn.execute(
