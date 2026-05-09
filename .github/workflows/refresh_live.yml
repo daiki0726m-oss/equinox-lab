@@ -137,6 +137,26 @@ jobs:
           path: keiba.db
           key: keiba-db-${{ github.run_number }}
 
+      # ── 永続化: keiba.db を repo にも commit ──
+      # cache@v4 は eviction / race condition で消える可能性があるので、
+      # git にも push して durable な source of truth を維持する。
+      - name: Commit keiba.db to repo (durable persistence)
+        if: steps.check.outputs.should_run == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f keiba.db 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "📭 keiba.db 変更なし"
+          else
+            git commit -m "📊 refresh_live: keiba.db update $(TZ=Asia/Tokyo date '+%H:%M') JST"
+            for i in 1 2 3; do
+              git pull --rebase --autostash origin main || true
+              if git push; then echo "🚀 DB committed (try $i)"; break; fi
+              echo "⚠️ push失敗→retry($i)"; sleep 5
+            done
+          fi
+
       # ── 自己永続化 chain: 10分後に自分自身をdispatch ──
       # 旧cron依存を脱して、1回起動すれば 19時まで自動継続させる仕組み。
       # public repo は Actions時間無制限なので長時間 sleep してOK。

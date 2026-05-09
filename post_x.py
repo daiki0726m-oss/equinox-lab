@@ -537,52 +537,65 @@ def cmd_predict(args):
 
 
 # ─── レース当日: 的中結果報告 ───
-def cmd_results(args):
-    """印別着順を報告するスレッド投稿(金額情報なし)。
-
-    各レース毎に1ツイート + 締めツイートで集計を表示。
-    ◎○▲△×注 それぞれの着順 + 1-3着には絵文字。
+def _build_results_from_json(date_str):
+    """公開済み JSON (docs/data/predictions_YYYYMMDD.json) から
+    11R の race_data を組み立てる。
+    JSON は git-tracked なので cache@v4 の race condition 影響なし。
+    結果未確定 (finish が 0/None) のレースは除外。
     """
-    date_str = args.date
-    dt = datetime.strptime(date_str, "%Y%m%d")
-    weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
-    date_label = f"{dt.month}/{dt.day}({weekday})"
-    date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    import requests as req
+    # 第一: ローカル checkout 内の最新 JSON (Actions でも main を checkout 済み)
+    local_path = os.path.join("docs", "data", f"predictions_{date_str}.json")
+    data = None
+    if os.path.exists(local_path):
+        try:
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            print(f"  📂 ローカル JSON 読み込み: {local_path}")
+        except Exception as e:
+            print(f"  ⚠️ ローカル JSON 読み込み失敗: {e}")
+    # 第二: GitHub Pages から取得
+    if data is None:
+        url = f"https://raw.githubusercontent.com/daiki0726m-oss/equinox-lab/main/docs/data/predictions_{date_str}.json"
+        try:
+            r = req.get(url, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                print(f"  🌐 GitHub から JSON 取得")
+            else:
+                print(f"  ⚠️ GitHub JSON HTTP {r.status_code}")
+                return []
+        except Exception as e:
+            print(f"  ⚠️ GitHub JSON 取得失敗: {e}")
+            return []
+    if not data:
+        return []
 
-    with get_db() as conn:
-        races = conn.execute("""
-            SELECT ra.race_id, ra.race_name, ra.venue, ra.grade,
-                   pc.predictions_json
-            FROM races ra
-            JOIN predictions_cache pc ON ra.race_id = pc.race_id
-            WHERE (ra.race_date = ? OR ra.race_date = ?)
-            AND ra.race_number = 11
-            ORDER BY ra.venue
-        """, (date_str, date_hyphen)).fetchall()
+    venues = data.get('venues', {}) if isinstance(data, dict) else {}
+    race_data = []
+    mark_order = ['◎', '○', '▲', '△', '×', '注']
 
-        if not races:
-            print(f"❌ {date_str} の予測データがありません")
-            return
-
-        race_data = []
+    for venue_name, races in venues.items():
         for race in races:
-            preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
+            if race.get('race_number') != 11:
+                continue
+            horses = race.get('horses', [])
+            # finish が 1 以上で確定しているか
+            has_finish = any(
+                isinstance(h.get('finish'), int) and h.get('finish', 0) >= 1
+                for h in horses
+            )
+            if not has_finish:
+                continue  # 未確定はスキップ
 
-            finishes = conn.execute("""
-                SELECT horse_number, finish_position FROM results
-                WHERE race_id = ? AND finish_position > 0
-            """, (race['race_id'],)).fetchall()
-            finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
-            if not finish_map:
-                continue  # 結果未確定レースはスキップ
-
-            mark_order = ['◎', '○', '▲', '△', '×', '注']
             marked = []
             for m in mark_order:
-                horse = next((p for p in preds if p.get('mark') == m), None)
+                horse = next((h for h in horses if h.get('mark') == m), None)
                 if not horse:
                     continue
-                fin = finish_map.get(horse.get('horse_number', 0))
+                fin = horse.get('finish')
+                if not isinstance(fin, int) or fin < 1:
+                    fin = None
                 marked.append({
                     'mark': m,
                     'horse_number': horse.get('horse_number', 0),
@@ -590,13 +603,113 @@ def cmd_results(args):
                     'finish': fin,
                 })
 
-            race_data.append({
-                'venue': race['venue'],
-                'race_name': race['race_name'],
-                'grade': race.get('grade') or '',
-                'marks': marked,
-            })
+            if marked:
+                race_data.append({
+                    'venue': race.get('venue', venue_name),
+                    'race_name': race.get('race_name', ''),
+                    'grade': race.get('grade') or '',
+                    'marks': marked,
+                })
 
+    return race_data
+
+
+def _build_results_from_db(date_str, date_hyphen):
+    """DB (predictions_cache + results) から 11R の race_data を組み立てる。
+    JSON が無い場合のフォールバック。
+    """
+    race_data = []
+    try:
+        with get_db() as conn:
+            races = conn.execute("""
+                SELECT ra.race_id, ra.race_name, ra.venue, ra.grade,
+                       pc.predictions_json
+                FROM races ra
+                JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                WHERE (ra.race_date = ? OR ra.race_date = ?)
+                AND ra.race_number = 11
+                ORDER BY ra.venue
+            """, (date_str, date_hyphen)).fetchall()
+
+            if not races:
+                return []
+
+            for race in races:
+                # sqlite3.Row は dict 形式アクセスのみ。.get() は使えないので keys() ベースで安全に。
+                row_keys = race.keys() if hasattr(race, 'keys') else []
+                preds_raw = race['predictions_json'] if 'predictions_json' in row_keys else None
+                preds = json.loads(preds_raw) if preds_raw else []
+
+                race_id = race['race_id'] if 'race_id' in row_keys else None
+                if not race_id:
+                    continue
+
+                finishes = conn.execute("""
+                    SELECT horse_number, finish_position FROM results
+                    WHERE race_id = ? AND finish_position > 0
+                """, (race_id,)).fetchall()
+                finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
+                if not finish_map:
+                    continue
+
+                mark_order = ['◎', '○', '▲', '△', '×', '注']
+                marked = []
+                for m in mark_order:
+                    horse = next((p for p in preds if p.get('mark') == m), None)
+                    if not horse:
+                        continue
+                    fin = finish_map.get(horse.get('horse_number', 0))
+                    marked.append({
+                        'mark': m,
+                        'horse_number': horse.get('horse_number', 0),
+                        'horse_name': horse.get('horse_name', ''),
+                        'finish': fin,
+                    })
+
+                grade_val = race['grade'] if 'grade' in row_keys else ''
+                race_data.append({
+                    'venue': race['venue'] if 'venue' in row_keys else '',
+                    'race_name': race['race_name'] if 'race_name' in row_keys else '',
+                    'grade': grade_val or '',
+                    'marks': marked,
+                })
+    except Exception as e:
+        print(f"  ⚠️ DB フォールバック失敗: {e}")
+        return []
+    return race_data
+
+
+def cmd_results(args):
+    """印別着順を報告するスレッド投稿(金額情報なし)。
+
+    各レース毎に1ツイート + 締めツイートで集計を表示。
+    ◎○▲△×注 それぞれの着順 + 1-3着には絵文字。
+
+    データソース優先順位 (root-cause-fix: cache@v4 が脆いので JSON-first):
+      1. GitHub Pages の docs/data/predictions_YYYYMMDD.json (git-tracked, 永続)
+      2. ローカル DB (predictions_cache + results) — ephemeral cache のフォールバック
+    """
+    date_str = args.date
+    dt = datetime.strptime(date_str, "%Y%m%d")
+    weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
+    date_label = f"{dt.month}/{dt.day}({weekday})"
+    date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+    # ── 1) JSON-first: 公開済み JSON から読む(永続・cache不要) ──
+    race_data = _build_results_from_json(date_str)
+    src = "JSON" if race_data else None
+
+    # ── 2) DB fallback: JSON が無い・古い場合 ──
+    if not race_data:
+        race_data = _build_results_from_db(date_str, date_hyphen)
+        src = "DB" if race_data else None
+
+    if not race_data:
+        print(f"❌ {date_str} の予測データがありません(JSON/DB共に)")
+        return
+    print(f"📥 結果ソース: {src}")
+
+    # 結果未確定 (finish_map 空) のレースは _build_*_ 内ですでに除外済み
     if not race_data:
         print(f"❌ {date_str} の結果がまだ出ていません")
         return
