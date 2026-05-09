@@ -93,7 +93,7 @@ jobs:
         run: |
           DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
           echo "📊 予測データを静的JSONに書き出し..."
-          python export_predictions.py --date "$DATE"
+          python export_predictions.py "$DATE"
 
       - name: Deploy to GitHub Pages
         if: steps.check.outputs.should_run == 'true'
