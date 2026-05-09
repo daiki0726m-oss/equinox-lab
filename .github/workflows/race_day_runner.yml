@@ -1,0 +1,123 @@
+name: 🏇 Race Day Runner
+
+# GitHub Actions cron は fire しないことが頻発するため、
+# 1回の起動で 10時間 内部ループする long-running workflow に統一する。
+# - 8:50 JST に 1回だけ起動(cron 1本で済む = 不発リスク最小)
+# - 内部で 10分間隔 + 19:00 JST まで継続
+# - 各 iteration で: collect/refresh_odds/collect_payouts/export/deploy
+#
+# refresh_live.yml と並行動作可能(冗長配置)。どちらかが動けばOK。
+
+on:
+  schedule:
+    # 土日 8:50 JST 起動 (UTC 前日23:50)
+    - cron: '50 23 * * 5,6'
+  workflow_dispatch:
+    inputs:
+      end_hour:
+        description: '終了時刻(JST hour)'
+        required: false
+        default: '19'
+
+concurrency:
+  group: race-day-runner
+  cancel-in-progress: false  # 重複起動を許可しない
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore keiba.db from cache
+        uses: actions/cache@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_number }}
+          restore-keys: |
+            keiba-db-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Init DB
+        run: python -c "from database import init_db; init_db()"
+
+      - name: Loop until end_hour JST
+        env:
+          END_HOUR: ${{ inputs.end_hour || '19' }}
+        run: |
+          DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
+          END_HH=${END_HOUR:-19}
+          echo "🏇 Race Day Runner start. date=$DATE, end_hour=${END_HH}:00 JST"
+
+          ITER=0
+          while true; do
+            JST_HOUR=$(TZ=Asia/Tokyo date +%H)
+            JST_MIN=$(TZ=Asia/Tokyo date +%M)
+            ITER=$((ITER + 1))
+            echo ""
+            echo "============================================="
+            echo "iter=$ITER  JST $(TZ=Asia/Tokyo date +%H:%M:%S)"
+            echo "============================================="
+
+            # 終了時刻判定
+            if [ "$JST_HOUR" -ge "$END_HH" ]; then
+              echo "🏁 終了時刻($END_HH時) 到達 → loop終了"
+              break
+            fi
+
+            ITER_START=$(date +%s)
+
+            # 結果収集 + オッズ + 配当
+            python predict.py collect --date "$DATE" || echo "⚠️ collect エラー(継続)"
+            python refresh_odds.py --date "$DATE" || echo "⚠️ refresh_odds エラー(継続)"
+            python collect_payouts.py --date "$DATE" || echo "⚠️ payouts なし"
+
+            # race_id 同期
+            python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')" || true
+
+            # JSON書き出し
+            python export_predictions.py "$DATE" || echo "⚠️ export エラー"
+
+            # デプロイ
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add docs/data/ 2>/dev/null || true
+            if git diff --cached --quiet; then
+              echo "📭 変更なし"
+            else
+              git commit -m "🏇 Race day runner iter=$ITER ($(TZ=Asia/Tokyo date '+%H:%M') JST)"
+              for i in 1 2 3; do
+                git pull --rebase origin main || true
+                if git push; then echo "🚀 deployed (try $i)"; break; fi
+                echo "⚠️ push失敗→retry($i)"; sleep 5
+              done
+            fi
+
+            # cache保存
+            ELAPSED=$(( $(date +%s) - ITER_START ))
+            echo "⏱️  iter elapsed=${ELAPSED}s"
+
+            # 次のiterまで sleep (合計10分間隔を保つ)
+            SLEEP=$(( 600 - ELAPSED ))
+            if [ "$SLEEP" -gt 0 ]; then
+              echo "💤 sleep ${SLEEP}s"
+              sleep "$SLEEP"
+            fi
+          done
+
+      - name: Save keiba.db to cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_number }}
