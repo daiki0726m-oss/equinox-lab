@@ -81,12 +81,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/data/
+          # docs/data/ + keiba.db を一緒にcommit (永続データ蓄積)
+          git add docs/data/ keiba.db 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "📋 変更なし"
           else
-            git commit -m "📊 Auto collect results $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-            # 並行workflow対策: rebase+retry
+            git commit -m "📊 Auto collect results + DB $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
             for i in 1 2 3; do
               git pull --rebase origin main || true
               if git push; then echo "✅ pushed (試行$i)"; break; fi
