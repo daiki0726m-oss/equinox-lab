@@ -1,4 +1,6 @@
 name: 🐦 Auto Post to X
+# run-name に mode を入れることで dedup_cron で同モード判定できる
+run-name: "${{ github.event.inputs.mode || 'cron' }}"
 
 on:
   # ─── GASからの直接呼び出し（メイン） ───
@@ -66,22 +68,49 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🔍 cron実行: 重複チェック中..."
-          RECENT=$(gh api repos/${{ github.repository }}/actions/runs?per_page=5 \
-            --jq '[.workflow_runs[] | select(.name == "🐦 Auto Post to X" and .conclusion == "success" and .event == "workflow_dispatch")] | .[0].created_at // empty')
-          
+          echo "🔍 cron実行: モード別重複チェック中..."
+
+          # 現在の cron schedule から期待される mode を判定
+          SCHEDULE="${{ github.event.schedule }}"
+          case "$SCHEDULE" in
+            "30 22 * * 0-4")  EXPECTED_MODE="morning" ;;
+            "0 22 * * 5,6")   EXPECTED_MODE="predict" ;;
+            "30 3 * * 1-5")   EXPECTED_MODE="weekday" ;;
+            "0 11 * * 1-5")   EXPECTED_MODE="evening" ;;
+            "30 0 * * 6,0")   EXPECTED_MODE="odds_flash" ;;
+            "15 1 * * 6,0")   EXPECTED_MODE="post_predict" ;;
+            "30 6 * * 6,0")   EXPECTED_MODE="hit_flash" ;;
+            "30 8 * * 6,0")   EXPECTED_MODE="results" ;;
+            "30 9 * * 6,0")   EXPECTED_MODE="refresh_dashboard" ;;
+            *)                EXPECTED_MODE="" ;;
+          esac
+          echo "📋 期待モード: $EXPECTED_MODE (schedule=$SCHEDULE)"
+
+          if [ -z "$EXPECTED_MODE" ]; then
+            echo "⚠️ 未知のschedule → 安全のため実行"
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 直近の workflow_dispatch を期待モードでフィルタ
+          # (run-name に mode が入るので display_title で判定可能)
+          RECENT=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=20" \
+            --jq "[.workflow_runs[] | select(.name == \"🐦 Auto Post to X\" and .conclusion == \"success\" and .event == \"workflow_dispatch\" and .display_title == \"$EXPECTED_MODE\")] | .[0].created_at // empty")
+
           if [ -n "$RECENT" ]; then
             RECENT_TS=$(date -d "$RECENT" +%s 2>/dev/null || echo 0)
             NOW_TS=$(date +%s)
             DIFF=$(( NOW_TS - RECENT_TS ))
-            echo "📊 直近GAS実行: $RECENT (${DIFF}秒前)"
+            echo "📊 直近の同モード(${EXPECTED_MODE})実行: $RECENT (${DIFF}秒前)"
             if [ "$DIFF" -lt 5400 ]; then
-              echo "⏭️ GASが${DIFF}秒前に実行済み → cronスキップ"
+              echo "⏭️ 同モードが${DIFF}秒前に実行済み → cronスキップ"
               echo "should_run=false" >> $GITHUB_OUTPUT
               exit 0
             fi
+            echo "✅ 90分以上経過 → cronフォールバック実行"
+          else
+            echo "✅ 同モードの直近実行なし → cronフォールバック実行"
           fi
-          echo "✅ GAS未実行 → cronフォールバック実行"
           echo "should_run=true" >> $GITHUB_OUTPUT
 
   post:
