@@ -526,6 +526,15 @@ def cmd_predict(args):
 
     post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
+    # 投稿成功 → 予測キャッシュを seal(以降 --force でも上書き不可)
+    # これで結果配信時に「投稿時の予測」と異なる予測を参照する事故を防ぐ
+    if not args.dry_run:
+        try:
+            from database import seal_predictions_for_date
+            seal_predictions_for_date(date_str)
+        except Exception as e:
+            print(f"⚠️ seal失敗(非致命): {e}")
+
 
 # ─── レース当日: 的中結果報告 ───
 def cmd_results(args):

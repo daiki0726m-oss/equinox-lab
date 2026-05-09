@@ -149,7 +149,8 @@ def init_db(db_path=None):
                 conf_reason TEXT,                   -- 信頼度理由
                 should_bet INTEGER DEFAULT 1,
                 bet_reason TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                posted_at TIMESTAMP NULL            -- post_predict 投稿時刻(これが入ったら以降変更不可)
             );
 
             -- 収支管理テーブル
@@ -178,7 +179,43 @@ def init_db(db_path=None):
             CREATE INDEX IF NOT EXISTS idx_bets_race ON bets(race_id);
             CREATE INDEX IF NOT EXISTS idx_bets_date ON bets(bet_date);
         """)
+
+        # ── マイグレーション: predictions_cache に posted_at がなければ追加 ──
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(predictions_cache)").fetchall()]
+        if 'posted_at' not in cols:
+            conn.execute("ALTER TABLE predictions_cache ADD COLUMN posted_at TIMESTAMP NULL")
+            print("🔧 predictions_cache: posted_at カラム追加")
     print("✅ データベース初期化完了")
+
+
+def seal_predictions_for_date(date_str):
+    """指定日の predictions_cache を「投稿済み」としてロック。
+    post_predict 投稿成功時に呼ぶ。
+    """
+    if len(date_str) == 8:
+        hy = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    else:
+        hy = date_str
+    with get_db() as conn:
+        n = conn.execute("""
+            UPDATE predictions_cache
+            SET posted_at = CURRENT_TIMESTAMP
+            WHERE race_id IN (
+                SELECT race_id FROM races WHERE race_date = ? OR race_date = ?
+            ) AND posted_at IS NULL
+        """, (date_str, hy)).rowcount
+    print(f"🔒 predictions_cache を {n} レース seal({date_str})")
+    return n
+
+
+def is_prediction_sealed(race_id):
+    """そのレースの予測が投稿済み(seal)かを返す"""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT posted_at FROM predictions_cache WHERE race_id = ?",
+            (race_id,)
+        ).fetchone()
+        return row is not None and row['posted_at'] is not None
 
 
 def sync_cache_race_ids(race_date_str):
