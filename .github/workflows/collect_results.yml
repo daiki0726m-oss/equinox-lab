@@ -86,5 +86,10 @@ jobs:
             echo "📋 変更なし"
           else
             git commit -m "📊 Auto collect results $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-            git push
+            # 並行workflow対策: rebase+retry
+            for i in 1 2 3; do
+              git pull --rebase origin main || true
+              if git push; then echo "✅ pushed (試行$i)"; break; fi
+              echo "⚠️ push失敗→リトライ($i)"; sleep 5
+            done
           fi
