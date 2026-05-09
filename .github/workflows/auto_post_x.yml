@@ -410,8 +410,12 @@ jobs:
             echo "📭 変更なし - デプロイスキップ"
           else
             git commit -m "📊 Update predictions $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-            git push
-            echo "🚀 GitHub Pages に予測データをデプロイ完了"
+            # 並行workflow対策: rebase+retry
+            for i in 1 2 3; do
+              git pull --rebase origin main || true
+              if git push; then echo "🚀 デプロイ完了 (試行$i)"; break; fi
+              echo "⚠️ push失敗→リトライ($i)"; sleep 5
+            done
           fi
 
       # ── 投稿履歴を永続化（重複防止用） ──
@@ -424,7 +428,11 @@ jobs:
             git add docs/data/.post_history.json
             if ! git diff --staged --quiet; then
               git commit -m "📝 Update post history $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-              git push
-              echo "✅ 投稿履歴を保存"
+              # 並行workflow対策: rebase+retry
+              for i in 1 2 3; do
+                git pull --rebase origin main || true
+                if git push; then echo "✅ 投稿履歴を保存 (試行$i)"; break; fi
+                echo "⚠️ push失敗→リトライ($i)"; sleep 5
+              done
             fi
           fi
