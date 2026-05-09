@@ -2,10 +2,9 @@ name: 🔄 Live Dashboard Refresh
 
 on:
   schedule:
-    # 土日のレース時間帯に15分おきに実行 (UTC → JST +9時間)
-    # JST 10:00-16:45 → UTC 1:00-7:45
-    # 毎時 0分, 15分, 30分, 45分
-    - cron: '0,15,30,45 1-7 * * 6,0'
+    # 土日 JST 9:00-19:45(UTC 0:00-10:45) 15分おき
+    # 第1R(9:50)〜全R結果反映(18時頃)+α をフルカバー
+    - cron: '0,15,30,45 0-10 * * 6,0'
   workflow_dispatch:
     inputs:
       force_predict:
@@ -51,9 +50,9 @@ jobs:
           HOUR=$(TZ=Asia/Tokyo date +%H)
           echo "dow=$DOW hour=$HOUR"
           
-          # 土日(6,7)のレース時間帯(10-17時)のみ実行
+          # 土日(6,7)のレース時間帯(9-19時)のみ実行
           if [ "$DOW" -eq 6 ] || [ "$DOW" -eq 7 ]; then
-            if [ "$HOUR" -ge 10 ] && [ "$HOUR" -le 17 ]; then
+            if [ "$HOUR" -ge 9 ] && [ "$HOUR" -le 19 ]; then
               echo "should_run=true" >> $GITHUB_OUTPUT
             else
               echo "⏭️ レース時間外 (${HOUR}時)"
