@@ -99,9 +99,13 @@ class FeatureBuilder:
 
         # ── 6. 馬の実績系 (12次元) ── ※v2で大幅強化
         features["horse_count"] = horse_count
-        features["weight"] = weight / 500 if weight else 0
-        features["weight_change"] = weight_change / 20 if weight_change else 0
-        features["impost"] = impost
+        features["weight"] = (weight or 0) / 500
+        features["weight_change"] = (weight_change or 0) / 20
+        # impostがNULL/None/'' でも float に強制変換(出馬表時点で未取得な場合あり)
+        try:
+            features["impost"] = float(impost) if impost is not None and impost != '' else 57.0
+        except (TypeError, ValueError):
+            features["impost"] = 57.0
         features["distance_cat"] = self._encode_distance(distance)
         features["surface_turf"] = 1 if surface == "芝" else 0
 
