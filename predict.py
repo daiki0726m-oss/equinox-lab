@@ -522,16 +522,31 @@ def cmd_predict(args):
             all_bets_json = json.dumps({}, ensure_ascii=False)
             print(f"\n❌ このレースは見送り推奨: {reason}")
 
-        # 信頼度: confidence.py(単一のSource of Truth)に委譲
+        # 信頼度: confidence.py(v2 6軸合成、単一のSource of Truth)に委譲
         from confidence import evaluate as eval_confidence
         n_horses = len(sorted_preds) if sorted_preds else 1
-        top_win = sorted_preds[0]["pred_win"] * 100 if sorted_preds else 0
+        top1 = sorted_preds[0] if sorted_preds else {}
+        top2 = sorted_preds[1] if len(sorted_preds) >= 2 else top1
+        top_win = top1.get("pred_win", 0) * 100
+        top2_win = top2.get("pred_win", 0) * 100
+        # ◎の複勝率 (pred_top3 がなければ pred_win*2.2 で推定)
+        top_top3 = top1.get("pred_top3", 0) * 100 if top1.get("pred_top3") is not None else None
         top3_sum = sum(p.get("pred_win", 0) * 100 for p in sorted_preds[:3])
+        top_pop = top1.get("popularity")
+        try:
+            top_pop = int(top_pop) if top_pop else None
+            if top_pop is not None and top_pop <= 0:
+                top_pop = None
+        except (TypeError, ValueError):
+            top_pop = None
         c = eval_confidence(
             top_win_pct=top_win,
             n_horses=n_horses,
             top3_sum_pct=top3_sum,
             grade=race_info.get('grade'),
+            second_win_pct=top2_win,
+            top_top3_pct=top_top3,
+            top_popularity=top_pop,
         )
         confidence = c['confidence']
         conf_reason = c['reason']

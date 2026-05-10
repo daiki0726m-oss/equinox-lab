@@ -1,25 +1,75 @@
-"""信頼度判定モジュール
+"""信頼度判定モジュール (v2: 6軸合成スコア)
 
 予測結果から S/A/B/C/D の信頼度ラベルを返す共通ロジック。
-predict.py / generate_note.py / 将来の他モジュールから利用される単一の Source of Truth。
+predict.py / generate_note.py / 将来の他モジュールから利用される
+single source of truth。
 
-設計:
-  score = 本命勝率(%) × 均等比 + 上位3頭合計勝率(%) × 0.3
-  - 絶対値・相対倍率・上位の固さ を全部反映
+## 設計思想 (v2 — 旧 grade-bifurcated logic を破棄)
 
-  重賞(G1/G2/G3): 混戦が前提 → 緩い閾値
-    S>=30 / A>=22 / B>=16 / C>=10 / D<10
+「信頼度 = AI が ◎(本命)を当てる(複勝圏内に入る)確信度」と定義。
+6軸の独立シグナルを 0-1 にnormalize し、重み付き合計で 0-1 の
+composite score を算出 → 5段階に bucket 化する。
 
-  平場(条件戦/未勝利/OP): 本命勝率の絶対値が高くなりやすい → 厳しい閾値
-    S>=190 / A>=130 / B>=80 / C>=50 / D<50
-    (新モデル(11k racesで再学習)で平場スコアが全体上振れしたため引き上げ)
+旧 v1 では「重賞=緩い閾値、平場=厳しい閾値」と grade で二分していた
+ため、G1 の薄い予測(◎勝率15%)が S、平場の濃い予測(◎勝率36%)が A
+という直感に反する反転が起きていた。v2 では絶対値ベースの統一スコアに。
+
+## 6軸シグナル
+
+| 軸 | 重み | 説明 | 満点条件 |
+|---|---|---|---|
+| win_score | 0.22 | ◎の予測勝率(%) | 35%以上 |
+| top3_score | 0.20 | ◎の予測複勝率(%) | 70%以上 |
+| gap_score | 0.18 | ◎vs○の勝率gap(%) | 12pt以上 |
+| conc_score | 0.15 | 上位3頭の勝率合計(%) | 75%以上 |
+| pop_score | 0.10 | ◎の人気(市場との一致) | 1人気=1.0 |
+| size_score | 0.15 | 頭数(少ないほど有利) | 8頭以下 |
+
+重賞(G1/G2/G3)は混戦が前提なので合計から **-0.03** の補正。
+
+## ラベル化 (composite 0-1)
+
+| composite | rating | 意味 |
+|---|---|---|
+| >= 0.72 | S | ◎複勝圏入り highly likely (推定70%+) |
+| >= 0.58 | A | ◎複勝圏入り likely (50-70%) |
+| >= 0.44 | B | ◎複勝圏入り decent (30-50%) |
+| >= 0.30 | C | ◎複勝圏入り uncertain (15-30%) |
+| < 0.30  | D | 全シグナル弱 — 見送り推奨 |
 """
 
 from typing import Iterable, Tuple, Optional
 
 
-GRADED_THRESHOLDS = [(30, "S"), (22, "A"), (16, "B"), (10, "C")]
-NORMAL_THRESHOLDS = [(190, "S"), (130, "A"), (80, "B"), (50, "C")]
+# ── 6軸の重み (sum = 1.0) ──
+WEIGHTS = {
+    'win': 0.22,    # ◎の予測勝率
+    'top3': 0.20,   # ◎の予測複勝率
+    'gap': 0.18,    # ◎vs○のgap
+    'conc': 0.15,   # 上位3頭の合計勝率
+    'pop': 0.10,    # ◎の市場人気
+    'size': 0.15,   # 頭数(少ないほど高得点)
+}
+
+# 各シグナルの満点(満点=1.0となる絶対値)
+NORMS = {
+    'win': 35.0,    # 勝率35%で満点
+    'top3': 70.0,   # 複勝率70%で満点
+    'gap': 12.0,    # 12pt差で満点
+    'conc': 75.0,   # top3合計75%で満点
+}
+
+# 重賞補正(混戦前提)
+GRADED_PENALTY = 0.03
+
+# composite → rating の閾値
+RATING_THRESHOLDS = [
+    (0.72, "S"),
+    (0.58, "A"),
+    (0.44, "B"),
+    (0.30, "C"),
+]
+DEFAULT_RATING = "D"
 
 GRADE_LABELS = {
     "S": "本命突出",
@@ -30,35 +80,85 @@ GRADE_LABELS = {
 }
 
 
-def is_graded_race(grade: Optional[str]) -> bool:
+def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, x))
+
+
+def _is_graded(grade: Optional[str]) -> bool:
     g = (grade or "").strip()
     return g in ("G1", "G2", "G3")
 
 
-def compute_score(top_win_pct: float, n_horses: int, top3_sum_pct: float) -> Tuple[float, float]:
-    """信頼度スコアと均等比を返す
+def _pop_score(pop: Optional[int]) -> float:
+    """人気→pop_score (◎が1人気なら市場と一致 = 信頼度↑)。
+    人気不明(0/None/負の値) は中庸 0.5 を返す(ペナルティしない)。
+    """
+    if pop is None or pop <= 0:
+        return 0.5
+    table = {1: 1.0, 2: 0.85, 3: 0.7, 4: 0.55, 5: 0.45, 6: 0.4}
+    return table.get(pop, 0.25)
+
+
+def _size_score(n: int) -> float:
+    """頭数→size_score (少頭数ほど予想しやすい)。
+    8頭以下=満点、18頭=0.5、それ以上は 0.4 で下限。
+    """
+    return _clamp(1.0 - max(0, n - 8) * 0.05, lo=0.4, hi=1.0)
+
+
+def compute_composite(
+    top1_win: float,
+    top2_win: float,
+    top1_top3: float,
+    top3_sum: float,
+    n_horses: int,
+    top1_popularity: Optional[int],
+    grade: Optional[str] = None,
+) -> dict:
+    """6軸合成スコアを計算して返す。
 
     Args:
-        top_win_pct: 本命の勝率(%)
+        top1_win: ◎(予測トップ)の勝率(%、0-100)
+        top2_win: ○(予測2位)の勝率(%、0-100)
+        top1_top3: ◎の複勝率(%、0-100)
+        top3_sum: 上位3頭の勝率合計(%、0-100)
         n_horses: 出走頭数
-        top3_sum_pct: 上位3頭の勝率合計(%)
+        top1_popularity: ◎の市場人気(1=1番人気)
+        grade: レースグレード('G1'/'G2'/'G3'/'OP'/...)
+
     Returns:
-        (score, relative_ratio)
+        {'composite': float, 'breakdown': {...軸別 0-1 score}, 'is_graded': bool}
     """
     n = max(int(n_horses), 1)
-    even_pct = 100.0 / n
-    relative = top_win_pct / even_pct if even_pct > 0 else 0
-    score = top_win_pct * relative + top3_sum_pct * 0.3
-    return score, relative
+
+    breakdown = {
+        'win': _clamp(top1_win / NORMS['win']),
+        'top3': _clamp(top1_top3 / NORMS['top3']),
+        'gap': _clamp((top1_win - top2_win) / NORMS['gap']),
+        'conc': _clamp(top3_sum / NORMS['conc']),
+        'pop': _pop_score(top1_popularity),
+        'size': _size_score(n),
+    }
+
+    composite = sum(WEIGHTS[k] * breakdown[k] for k in WEIGHTS)
+
+    is_graded = _is_graded(grade)
+    if is_graded:
+        composite -= GRADED_PENALTY
+
+    return {
+        'composite': _clamp(composite, lo=0.0, hi=1.0),
+        'breakdown': breakdown,
+        'is_graded': is_graded,
+    }
 
 
-def grade_from_score(score: float, is_graded: bool) -> str:
-    """スコアから S/A/B/C/D ラベルを返す"""
-    thresholds = GRADED_THRESHOLDS if is_graded else NORMAL_THRESHOLDS
-    for thr, label in thresholds:
-        if score >= thr:
+def grade_from_composite(composite: float) -> str:
+    """composite (0-1) → S/A/B/C/D ラベル"""
+    for thr, label in RATING_THRESHOLDS:
+        if composite >= thr:
             return label
-    return "D"
+    return DEFAULT_RATING
 
 
 def evaluate(
@@ -66,54 +166,153 @@ def evaluate(
     n_horses: int,
     top3_sum_pct: float,
     grade: Optional[str] = None,
+    *,
+    second_win_pct: Optional[float] = None,
+    top_top3_pct: Optional[float] = None,
+    top_popularity: Optional[int] = None,
 ) -> dict:
-    """主要エントリポイント。
+    """主要エントリポイント。互換のため第1〜4引数は v1 と同じシグネチャ。
+
+    新しい3軸を活かすには second_win_pct / top_top3_pct / top_popularity を
+    キーワード引数で渡すこと。省略時は中庸推定で計算する(下記)。
 
     Args:
-        top_win_pct: 本命の勝率(%、0-100)
+        top_win_pct: ◎の勝率(%、0-100)
         n_horses: 出走頭数
         top3_sum_pct: 上位3頭の勝率合計(%、0-100)
-        grade: レースグレード文字列('G1'/'G2'/'G3'/'OP'/'' 等)
+        grade: レースグレード
+        second_win_pct: ○(予測2位)の勝率(%、省略時は top3_sum_pct から推定)
+        top_top3_pct: ◎の複勝率(%、省略時は top_win_pct*2.2 で推定)
+        top_popularity: ◎の市場人気(1〜N、省略時は中庸 0.5扱い=None)
+
     Returns:
-        {
-            'confidence': 'S'/'A'/'B'/'C'/'D',
-            'score': float,
-            'relative_ratio': float,  # 本命勝率 / 均等勝率
-            'reason': str,  # 説明文
-            'is_graded': bool,
-        }
+        {'confidence': 'S'/'A'/'B'/'C'/'D',
+         'score': float (0-1, composite),
+         'reason': str, 'is_graded': bool, 'breakdown': {...}}
     """
-    score, relative = compute_score(top_win_pct, n_horses, top3_sum_pct)
-    is_graded = is_graded_race(grade)
-    confidence = grade_from_score(score, is_graded)
-    race_kind = "重賞" if is_graded else "平場"
-    label = GRADE_LABELS[confidence]
+    # 省略値の推定
+    if second_win_pct is None:
+        # top3_sum から ◎ を引いて 2/3 が ○ と仮定
+        rest = max(0.0, top3_sum_pct - top_win_pct)
+        second_win_pct = rest * 0.6
+    if top_top3_pct is None:
+        # 経験則: ◎複勝率 ≒ 勝率 × 2.0 ~ 2.5
+        top_top3_pct = min(95.0, top_win_pct * 2.2)
+
+    result = compute_composite(
+        top1_win=top_win_pct,
+        top2_win=second_win_pct,
+        top1_top3=top_top3_pct,
+        top3_sum=top3_sum_pct,
+        n_horses=n_horses,
+        top1_popularity=top_popularity,
+        grade=grade,
+    )
+    rating = grade_from_composite(result['composite'])
+    label = GRADE_LABELS[rating]
+    br = result['breakdown']
     reason = (
-        f"◎勝率{top_win_pct:.1f}%×均等比{relative:.2f} + 上位3計{top3_sum_pct:.1f}%"
-        f" = {score:.1f} ({race_kind}基準) → {label}"
+        f"◎勝率{top_win_pct:.1f}% / 複勝{top_top3_pct:.1f}% / "
+        f"gap{(top_win_pct - second_win_pct):.1f}pt / "
+        f"上位3計{top3_sum_pct:.1f}% / "
+        f"人気{top_popularity if top_popularity else '?'} / "
+        f"{n_horses}頭 → {result['composite']:.2f} ({label})"
     )
     return {
-        "confidence": confidence,
-        "score": round(score, 1),
-        "relative_ratio": round(relative, 2),
-        "reason": reason,
-        "is_graded": is_graded,
+        'confidence': rating,
+        'score': round(result['composite'], 3),
+        'reason': reason,
+        'is_graded': result['is_graded'],
+        'breakdown': {k: round(v, 3) for k, v in br.items()},
     }
 
 
-def evaluate_from_horses(horses: Iterable[dict], grade: Optional[str] = None,
-                         win_key: str = "pred_win_pct") -> dict:
-    """horses(辞書のリスト)から自動的に top1, top3, n を計算して評価する
+def evaluate_from_horses(
+    horses: Iterable[dict],
+    grade: Optional[str] = None,
+    win_key: str = "pred_win_pct",
+    top3_key: str = "pred_top3_pct",
+    pop_key: str = "popularity",
+) -> dict:
+    """horses(辞書のリスト)から自動的に top1/top2/top3 を計算して評価する。
 
     Args:
-        horses: 各馬の予測dict。win_key で勝率(%)を取れる前提
+        horses: 各馬の予測dict。win_key/top3_key/pop_key を持つ前提
         grade: レースグレード
-        win_key: 勝率フィールド名(predict.py内では 'pred_win'(0-1)を *100 する場合あり)
+        win_key: 勝率フィールド名
+        top3_key: 複勝率フィールド名
+        pop_key: 市場人気フィールド名
     """
     horses_list = list(horses) if horses else []
     if not horses_list:
-        return evaluate(0, 1, 0, grade)
-    sorted_h = sorted(horses_list, key=lambda h: h.get(win_key, 0), reverse=True)
-    top1 = sorted_h[0].get(win_key, 0)
-    top3_sum = sum(h.get(win_key, 0) for h in sorted_h[:3])
-    return evaluate(top1, len(horses_list), top3_sum, grade)
+        return evaluate(0.0, 1, 0.0, grade)
+
+    sorted_h = sorted(
+        horses_list,
+        key=lambda h: float(h.get(win_key, 0) or 0),
+        reverse=True,
+    )
+    top1 = sorted_h[0]
+    top2 = sorted_h[1] if len(sorted_h) >= 2 else top1
+
+    top1_win = float(top1.get(win_key, 0) or 0)
+    top2_win = float(top2.get(win_key, 0) or 0)
+    top1_top3 = float(top1.get(top3_key, 0) or 0)
+    top3_sum = sum(float(h.get(win_key, 0) or 0) for h in sorted_h[:3])
+
+    pop = top1.get(pop_key, 0)
+    try:
+        pop = int(pop)
+    except (TypeError, ValueError):
+        pop = 0
+
+    return evaluate(
+        top_win_pct=top1_win,
+        n_horses=len(horses_list),
+        top3_sum_pct=top3_sum,
+        grade=grade,
+        second_win_pct=top2_win,
+        top_top3_pct=top1_top3,
+        top_popularity=pop if pop > 0 else None,
+    )
+
+
+# ─── 後方互換 (旧 API) ───
+def is_graded_race(grade: Optional[str]) -> bool:
+    """v1 互換ヘルパー"""
+    return _is_graded(grade)
+
+
+def compute_score(top_win_pct: float, n_horses: int, top3_sum_pct: float) -> Tuple[float, float]:
+    """v1 互換: 旧 score (0-200程度) を擬似的に再現する。
+
+    新ロジックでは 6軸 composite(0-1) が真のスコアだが、外部から
+    旧 (score, relative_ratio) を期待されている呼び出しもあるため、
+    composite を 100倍した値と均等比を返す。
+    """
+    n = max(int(n_horses), 1)
+    even_pct = 100.0 / n
+    relative = top_win_pct / even_pct if even_pct > 0 else 0.0
+    # composite を簡易計算(top2/top3pct/popularity を省略するため精度低)
+    rough = compute_composite(
+        top1_win=top_win_pct,
+        top2_win=max(0.0, top3_sum_pct - top_win_pct) * 0.6,
+        top1_top3=min(95.0, top_win_pct * 2.2),
+        top3_sum=top3_sum_pct,
+        n_horses=n,
+        top1_popularity=None,
+        grade=None,
+    )
+    return rough['composite'] * 100.0, relative
+
+
+def grade_from_score(score: float, is_graded: bool) -> str:
+    """v1 互換: score(0-100) → ラベル。
+
+    score は compute_score の戻り値前提。100倍 composite なので
+    閾値は RATING_THRESHOLDS * 100 で再計算。
+    """
+    composite = score / 100.0
+    if is_graded:
+        composite -= GRADED_PENALTY
+    return grade_from_composite(composite)
