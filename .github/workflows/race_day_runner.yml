@@ -10,8 +10,13 @@ name: 🏇 Race Day Runner
 
 on:
   schedule:
-    # 土日 8:50 JST 起動 (UTC 前日23:50)
+    # 土日 8:50 JST 起動 (UTC 前日23:50) — primary
     - cron: '50 23 * * 5,6'
+    # ↓ cron 不発の保険として 9:00 / 9:30 / 10:00 JST にも backup 起動
+    #   concurrency:race-day-runner により 1本だけ実行(他は queue → 19時即終了)
+    - cron: '0 0 * * 6,0'      # 9:00 JST
+    - cron: '30 0 * * 6,0'     # 9:30 JST
+    - cron: '0 1 * * 6,0'      # 10:00 JST
   workflow_dispatch:
     inputs:
       end_hour:
@@ -29,6 +34,7 @@ jobs:
     timeout-minutes: 600
     permissions:
       contents: write
+      actions: write   # ← cron 不発時に auto_post_x.yml を内部 dispatch できるように
     steps:
       - uses: actions/checkout@v4
 
@@ -54,15 +60,44 @@ jobs:
       - name: Loop until end_hour JST
         env:
           END_HOUR: ${{ inputs.end_hour || '19' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
           END_HH=${END_HOUR:-19}
+          # 投稿トリガーフラグ(/tmp は run 内で永続)
+          TRIGGER_FILE="/tmp/race_day_post_${DATE}.flags"
+          touch "$TRIGGER_FILE"
+
+          # cron 不発時の保険として、loop内で時刻が来たら直接 auto_post_x.yml を dispatch する。
+          # 各 mode は当日 1 回だけ発火 (TRIGGER_FILE で記録)。
+          # auto_post_x.yml の dedup_cron は scheduled event のみ働くので、
+          # ここからの workflow_dispatch は素通りで実行される。
+          trigger_post() {
+            local mode=$1
+            local minimum_jst_hm=$2  # 例: 1015 = 10:15
+            local current_jst_hm=$3
+            if grep -q "^${mode}\$" "$TRIGGER_FILE" 2>/dev/null; then
+              return 0
+            fi
+            if [ "$current_jst_hm" -ge "$minimum_jst_hm" ]; then
+              echo "🚀 [SAFETY-NET] ${mode} を dispatch (予定 ${minimum_jst_hm:0:2}:${minimum_jst_hm:2:4} 到達, 現在 $(TZ=Asia/Tokyo date +%H:%M))"
+              if gh workflow run auto_post_x.yml -R ${{ github.repository }} -f mode="$mode" 2>&1; then
+                echo "${mode}" >> "$TRIGGER_FILE"
+                echo "  ✅ dispatch 成功 → flag 記録"
+              else
+                echo "  ⚠️ dispatch 失敗 (次の iter で再試行)"
+              fi
+            fi
+          }
+
           echo "🏇 Race Day Runner start. date=$DATE, end_hour=${END_HH}:00 JST"
+          echo "📋 投稿 safety net: odds_flash@9:30 / post_predict@10:15 / hit_flash@15:30 / results@17:30 / refresh_dashboard@18:30"
 
           ITER=0
           while true; do
             JST_HOUR=$(TZ=Asia/Tokyo date +%H)
             JST_MIN=$(TZ=Asia/Tokyo date +%M)
+            JST_HM="${JST_HOUR}${JST_MIN}"  # 例: 1015
             ITER=$((ITER + 1))
             echo ""
             echo "============================================="
@@ -102,6 +137,13 @@ jobs:
                 echo "⚠️ push失敗→retry($i)"; sleep 5
               done
             fi
+
+            # ── 投稿 safety net: 時刻が来たら post mode を dispatch ──
+            trigger_post odds_flash    0930 "$JST_HM"
+            trigger_post post_predict  1015 "$JST_HM"
+            trigger_post hit_flash     1530 "$JST_HM"
+            trigger_post results       1730 "$JST_HM"
+            trigger_post refresh_dashboard 1830 "$JST_HM"
 
             # cache保存
             ELAPSED=$(( $(date +%s) - ITER_START ))
