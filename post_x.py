@@ -2691,7 +2691,19 @@ def fact_check_tweet(tweet_text):
 
 # ─── 的中速報ポスト ───
 def cmd_hit_flash(args):
-    """的中速報ツイート（全レース対象・インパクト重視）"""
+    """的中速報ツイート — cmd_results に委譲(印別着順、金額なし)。
+
+    旧実装は「投資/回収/ROI」を含む金額入りの的中速報だったが、
+    ユーザー要件に統一: 結果系の post は金額表示なし、印別着順のみ。
+    cmd_hit_flash と cmd_results の出力フォーマットを単一化することで、
+    cron schedule が hit_flash でも results でも同じ post が出るようになる。
+    """
+    print("ℹ️ hit_flash → results に委譲(金額なし・印別着順フォーマット)")
+    return cmd_results(args)
+
+
+def _legacy_cmd_hit_flash_DEPRECATED(args):  # noqa: N802
+    """旧 hit_flash 実装(金額/ROI 入り)。互換目的で参照可能だが呼ばない。"""
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
