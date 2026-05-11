@@ -198,36 +198,99 @@ def x_weighted_len(text):
     return count
 
 
-def post_thread(client, tweets, dry_run=False, threads_client=None):
-    """ツイートのリスト（スレッド）をX + Threadsに投稿（重複チェック付き）"""
+def _post_history_paths():
+    """投稿履歴ファイルパス(優先順)"""
+    repo_root = os.path.dirname(__file__)
+    return [
+        os.path.join(repo_root, "docs", "data", ".post_history.json"),
+        os.path.join(repo_root, ".post_history.json"),
+    ]
+
+
+def _load_post_history():
+    """投稿履歴を読み込む。docs/data/ 配下優先、なければローカル fallback。"""
+    for p in _post_history_paths():
+        if os.path.exists(p):
+            try:
+                with open(p, 'r') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError):
+                continue
+    return {}
+
+
+def _save_post_history(history):
+    """投稿履歴を保存(docs/data/ 配下 + ローカル fallback)"""
+    paths = _post_history_paths()
+    primary = paths[0]
+    try:
+        os.makedirs(os.path.dirname(primary), exist_ok=True)
+    except Exception:
+        pass
+    for p in paths:
+        try:
+            with open(p, 'w') as f:
+                json.dump(history, f, indent=2)
+        except Exception:
+            pass
+
+
+def race_recently_posted(race_id, hours=18):
+    """race_id が直近 N 時間以内に投稿されているか。
+
+    weekday/morning/evening の slot 間で同レース連発を回避するために使う。
+    """
+    if not race_id:
+        return False
+    history = _load_post_history()
+    key = f"race:{race_id}"
+    if key not in history:
+        return False
+    last_ts = history[key]
+    try:
+        elapsed = now_jst().timestamp() - float(last_ts)
+        return elapsed < hours * 3600
+    except (TypeError, ValueError):
+        return False
+
+
+def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None):
+    """ツイートのリスト（スレッド）をX + Threadsに投稿（重複チェック付き）
+
+    Args:
+        race_id: 任意。指定すると `race:<id>` キーで履歴に記録し、
+                 同じ race_id が直近24h で投稿済みなら skip する。
+                 (同一レースを別 mode で連発するのを防ぐ)
+    """
     import hashlib
 
     # ─── 重複投稿チェック ───
     # 全ツイートの内容をハッシュ化（先頭だけでなく全文）
     content_key = hashlib.md5("||".join(tweets).encode()).hexdigest()[:16]
 
-    # 投稿履歴ファイル: docs/data/ 配下（git管理 → GitHub Actions でも永続化）
-    repo_root = os.path.dirname(__file__)
-    history_path = os.path.join(repo_root, "docs", "data", ".post_history.json")
-    # ローカル用のフォールバック
-    local_history_path = os.path.join(repo_root, ".post_history.json")
+    # 投稿履歴ファイル
+    history_path, local_history_path = _post_history_paths()
 
     if not dry_run:
         try:
             now_ts = now_jst().timestamp()
-            history = {}
+            history = _load_post_history()
 
-            # 永続化ファイルがあれば読み込み（git管理版優先）
-            for hp in [history_path, local_history_path]:
-                if os.path.exists(hp):
+            # 1) race_id ベース重複チェック (mode 跨ぎでも検出)
+            if race_id:
+                race_key = f"race:{race_id}"
+                if race_key in history:
                     try:
-                        with open(hp, 'r') as f:
-                            history = json.load(f)
-                        break
-                    except (json.JSONDecodeError, IOError):
+                        rlast = float(history[race_key])
+                        relapsed = now_ts - rlast
+                        if relapsed < 86400:  # 24h
+                            rmin = int(relapsed / 60)
+                            print(f"⚠️ 同レース重複: race_id={race_id} が{rmin//60}h{rmin%60}m前に投稿済み → スキップ")
+                            return []
+                    except (TypeError, ValueError):
                         pass
 
-            # 24時間以内に同じハッシュがあればスキップ
+            # 2) 24時間以内に同じハッシュがあればスキップ (従来通り)
             if content_key in history:
                 last_ts = history[content_key]
                 elapsed = now_ts - last_ts
@@ -260,17 +323,15 @@ def post_thread(client, tweets, dry_run=False, threads_client=None):
                     print(f"  ℹ️ X API重複チェックスキップ: {api_err}")
 
             # 投稿履歴を記録（古いエントリは削除: 7日超）
-            history = {k: v for k, v in history.items() if now_ts - v < 604800}
+            history = {k: v for k, v in history.items()
+                       if isinstance(v, (int, float)) and (now_ts - v) < 604800}
             history[content_key] = now_ts
+            # race_id を指定された場合は race:<id> キーも記録
+            # → 別 mode/別 hash で同じレースを 24h以内に再投稿することを防ぐ
+            if race_id:
+                history[f"race:{race_id}"] = now_ts
 
-            # docs/data/ 配下に保存（git push で永続化）
-            os.makedirs(os.path.dirname(history_path), exist_ok=True)
-            with open(history_path, 'w') as f:
-                json.dump(history, f, indent=2)
-
-            # ローカルにもコピー
-            with open(local_history_path, 'w') as f:
-                json.dump(history, f, indent=2)
+            _save_post_history(history)
 
         except Exception as e:
             print(f"⚠️ 重複チェックエラー（続行）: {e}")
@@ -311,11 +372,14 @@ def post_thread(client, tweets, dry_run=False, threads_client=None):
     return tweet_ids
 
 
-def post_tweet(client, text, reply_to=None, dry_run=False, threads_client=None):
-    """単一ツイートまたは自動分割して投稿（X + Threads同時）"""
+def post_tweet(client, text, reply_to=None, dry_run=False, threads_client=None, race_id=None):
+    """単一ツイートまたは自動分割して投稿（X + Threads同時）
+
+    race_id を指定すると、post_thread の race-id ベース dedup を有効化する。
+    """
     if isinstance(text, list):
-        return post_thread(client, text, dry_run=dry_run, threads_client=threads_client)
-    return post_thread(client, [text], dry_run=dry_run, threads_client=threads_client)
+        return post_thread(client, text, dry_run=dry_run, threads_client=threads_client, race_id=race_id)
+    return post_thread(client, [text], dry_run=dry_run, threads_client=threads_client, race_id=race_id)
 
 
 def _fetch_predictions_from_pages(date_str):
@@ -795,12 +859,16 @@ def _build_weekday_post(slot, today):
 
     weekday_engine.py に委譲し、course_stats / 騎手フィルタなど post_x の
     既存ヘルパーを差し込む。
+
+    Returns:
+        (tweet_str, race_id) のタプル。生成失敗時は (None, None)。
+        race_id は post_thread に渡して同レース連発を防ぐ。
     """
     try:
         from weekday_engine import build_post_for_slot
     except Exception as e:
         print(f"⚠️ weekday_engine インポート失敗: {e}")
-        return None
+        return None, None
 
     today_d = today.date() if hasattr(today, 'date') else today
 
@@ -811,7 +879,7 @@ def _build_weekday_post(slot, today):
 
     try:
         with get_db() as conn:
-            tweet = build_post_for_slot(
+            result = build_post_for_slot(
                 slot=slot,
                 today_d=today_d,
                 conn=conn,
@@ -820,13 +888,16 @@ def _build_weekday_post(slot, today):
                 get_entry_jockeys_fn=get_entry_jockeys,
                 hashtags_fn=make_race_hashtags,
                 jockey_filter_fn=filter_jockey_stats,
+                return_race=True,
             )
-        return tweet
+        if isinstance(result, tuple) and len(result) == 2:
+            return result
+        return result, None
     except Exception as e:
         print(f"⚠️ {slot} 投稿エラー: {e}")
         import traceback
         traceback.print_exc()
-        return None
+        return None, None
 
 
 def cmd_weekday(args):
@@ -836,7 +907,7 @@ def cmd_weekday(args):
     dow = today.weekday()
     print(f"📅 昼投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
 
-    tweet = _build_weekday_post('weekday', today)
+    tweet, race_id = _build_weekday_post('weekday', today)
 
     if not tweet:
         print("⚠️ 投稿コンテンツを生成できませんでした → 投稿スキップ")
@@ -849,7 +920,7 @@ def cmd_weekday(args):
         if not client:
             return
 
-    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client)
+    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client, race_id=race_id)
 
 
 def generate_weekly_summary():
@@ -1463,21 +1534,16 @@ def get_main_weekend_race(conn):
 
 
 def get_todays_race(conn, slot=0):
-    """今日の曜日＋時間帯に応じて週末レースをローテーションで返す
+    """今日の曜日＋時間帯に応じて週末レースをローテーションで返す。
+
+    v2: 直近18h で投稿済みのレースを deprioritize し、同レース連発を防ぐ。
 
     slot: 0=朝, 1=昼, 2=夜
 
-    重賞3つの場合:
-      月: 朝=Race1, 昼=Race2, 夜=Race3
-      火: 朝=Race2, 昼=Race3, 夜=Race1
-      水: 朝=Race3, 昼=Race1, 夜=Race2
-      木: 朝=Race1, 昼=Race2, 夜=Race3
-      金: 朝=Race1(まとめ), 昼=Race1, 夜=Race1
-
-    重賞2つの場合:
-      朝と昼で別レース、夜はメイン
-
-    重賞1つの場合: 全て同じレース
+    優先順位:
+      1) 直近18hで未投稿の graded レースから、ローテ式で選ぶ
+      2) 全 graded が直近投稿済みなら、最も古いものを選ぶ
+      3) 金曜 / graded=1 の場合は graded[0] 固定(まとめ)
     """
     all_races = get_weekend_graded_races(conn)
     if not all_races:
@@ -1498,9 +1564,38 @@ def get_todays_race(conn, slot=0):
     if dow == 4:
         return graded[0]
 
-    # 曜日 + 時間帯でローテーション
-    idx = (dow + slot) % len(graded)
-    return graded[idx]
+    # ── 投稿履歴ベースで「直近未投稿」を優先 ──
+    history = _load_post_history()
+    now_ts = now_jst().timestamp()
+
+    # 各 race の「最終投稿からの経過時間」を計算 (未投稿は無限大)
+    annotated = []
+    for r in graded:
+        key = f"race:{r['race_id']}"
+        last_ts = history.get(key)
+        if isinstance(last_ts, (int, float)) and last_ts > 0:
+            elapsed = now_ts - last_ts
+        else:
+            elapsed = float('inf')
+        annotated.append({'race': r, 'elapsed': elapsed})
+
+    # 直近18h で未投稿のものを候補に
+    fresh = [a for a in annotated if a['elapsed'] >= 18 * 3600]
+
+    if fresh:
+        # fresh 内で従来通りローテ index を使うが、graded リストでの位置を基準にする
+        # (idx の意味を保つ)
+        idx = (dow + slot) % len(fresh)
+        chosen = fresh[idx]['race']
+        print(f"  📌 get_todays_race: fresh候補{len(fresh)}件から {chosen['race_name']} を選択 (dow={dow}, slot={slot})")
+        return chosen
+
+    # 全部直近投稿済み → 最も古いものを選ぶ(複数あればローテ順で)
+    annotated.sort(key=lambda x: x['elapsed'], reverse=True)
+    chosen = annotated[0]['race']
+    eh = annotated[0]['elapsed'] / 3600 if annotated[0]['elapsed'] != float('inf') else -1
+    print(f"  ⚠️ get_todays_race: 全レース直近投稿済み → 最古({eh:.1f}h前) {chosen['race_name']} を選択")
+    return chosen
 
 
 def get_top_races(conn, n=3):
@@ -3011,7 +3106,7 @@ def cmd_morning(args):
     dow = today.weekday()
     print(f"📅 朝投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
 
-    tweet = _build_weekday_post('morning', today)
+    tweet, race_id = _build_weekday_post('morning', today)
 
     if not tweet:
         print("⚠️ 投稿コンテンツを生成できませんでした（レース未登録 or データ不足）→ 投稿スキップ")
@@ -3028,7 +3123,7 @@ def cmd_morning(args):
         if not client:
             return
 
-    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client)
+    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client, race_id=race_id)
 
 
 
@@ -3040,7 +3135,7 @@ def cmd_evening(args):
     dow = today.weekday()
     print(f"📅 夜投稿 JST曜日: {['月','火','水','木','金','土','日'][dow]}曜日")
 
-    tweet = _build_weekday_post('evening', today)
+    tweet, race_id = _build_weekday_post('evening', today)
 
     if not tweet:
         print("⚠️ 投稿コンテンツを生成できませんでした → 投稿スキップ")
@@ -3057,7 +3152,7 @@ def cmd_evening(args):
         if not client:
             return
 
-    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client)
+    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client, race_id=race_id)
 
 
 

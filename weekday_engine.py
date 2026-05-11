@@ -529,13 +529,19 @@ def build_evening_tweet(race, stats, sires, damsires, entries, workouts, today_d
 # ───────────────────────────────────────────
 
 def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stats_fn,
-                        get_entry_jockeys_fn, hashtags_fn, jockey_filter_fn):
-    """slot='morning'|'weekday'|'evening' のツイートを生成"""
+                        get_entry_jockeys_fn, hashtags_fn, jockey_filter_fn,
+                        return_race=False):
+    """slot='morning'|'weekday'|'evening' のツイートを生成
+
+    Args:
+        return_race: True を返すと(tweet, race_id)タプルで返す。
+                     後方互換のため省略時は tweet 文字列のみ返す。
+    """
     dow = today_d.weekday()
     # 平日のみ稼働(土日は別の予測/結果系cmdが受け持つ)
     if dow >= 5:
         print(f"⚠️ {slot}: 土日({['月','火','水','木','金','土','日'][dow]}曜)は平日テンプレ対象外 → スキップ")
-        return None
+        return (None, None) if return_race else None
     slot_idx = {'morning': 0, 'weekday': 1, 'evening': 2}[slot]
 
     # 金曜は土曜重賞(昼) / 日曜G1(夜) で分岐
@@ -553,20 +559,20 @@ def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stat
         race = get_todays_race_fn(conn, slot=slot_idx)
 
     if not race:
-        return None
+        return (None, None) if return_race else None
 
     # フォールバックで「先週末のレース」が返ってきたら投稿しない(混乱回避)
     rd = parse_race_date(race)
     if rd and rd < today_d:
         print(f"⚠️ {slot}: 取得したレース({race.get('race_name','')})の日付が過去({rd}) → 投稿スキップ")
-        return None
+        return (None, None) if return_race else None
 
     venue = race['venue']
     surface = race['surface']
     distance = race['distance']
     stats = get_course_stats_fn(venue, surface, distance)
     if not stats:
-        return None
+        return (None, race.get('race_id')) if return_race else None
 
     # 種牡馬・母父(top=10にしてからクロス参照)
     sires = []
@@ -592,8 +598,12 @@ def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stat
         pass
 
     if slot == 'morning':
-        return build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn)
+        tweet = build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn)
     elif slot == 'weekday':
-        return build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
+        tweet = build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
     else:
-        return build_evening_tweet(race, stats, sires, damsires, entries, workouts, today_d, hashtags_fn, dow)
+        tweet = build_evening_tweet(race, stats, sires, damsires, entries, workouts, today_d, hashtags_fn, dow)
+
+    if return_race:
+        return tweet, race.get('race_id')
+    return tweet
