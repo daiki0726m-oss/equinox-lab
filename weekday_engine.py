@@ -445,6 +445,270 @@ def _course_scope_label(race, stats):
     return f"{race['venue']}{race['surface']}{race['distance']}m / 全レース過去6年({n}R)"
 
 
+# ───────────────────────────────────────────
+# v8: 中身のある投稿のための共通ヘルパー
+# 全 slot で「注目馬1頭+数値根拠+行動指針」の3要素を保証する
+# ───────────────────────────────────────────
+
+def get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3):
+    """8軸スコア(血統/末脚/斤量/状態/同コース/馬齢/重賞/騎手) で上位を返す。
+
+    既存の ai_spotlight_horses (4軸) を拡張した完全版。各馬を
+    多角的に評価し、TOP N を返す。
+    """
+    if not entries:
+        return []
+    K_SIRES = {'ルーラーシップ', 'キングカメハメハ', 'キズナ', 'ドゥラメンテ',
+               'レイデオロ', 'エピファネイア', 'ロードカナロア'}
+    K_DAMSIRES = K_SIRES | {'ハービンジャー', 'ハービンジャーHarbinger(英)',
+                            'フジキセキ', 'スクリーンヒーロー'}
+    TOP_JOCKEYS = {'ルメール', 'C.ルメール', '武豊', '岩田康', '岩田康誠',
+                   '川田', '戸崎', '横山典', '横山武', '池添', '浜中', '丹内'}
+
+    race_id = race.get('race_id', '')
+    venue = race.get('venue', '')
+    surface = race.get('surface', '')
+    distance = race.get('distance', 0) or 0
+
+    # 出走馬に jockey 情報が無ければ補完
+    if entries and 'jockey' not in (entries[0] or {}):
+        try:
+            entries_full = get_entry_with_jockey(conn, race_id)
+            byname = {e.get('name'): e for e in entries}
+            for ef in entries_full:
+                if ef.get('name') in byname:
+                    byname[ef['name']]['jockey'] = ef.get('jockey', '')
+                    byname[ef['name']]['pop'] = byname[ef['name']].get('pop') or ef.get('pop')
+                    byname[ef['name']]['num'] = byname[ef['name']].get('num') or ef.get('num')
+            for ef in entries_full:
+                if ef.get('name') and ef['name'] not in byname:
+                    byname[ef['name']] = ef
+            entries = list(byname.values())
+        except Exception:
+            pass
+
+    scored = []
+    for e in entries:
+        score = 0
+        reasons = []
+        name = e.get('name', '?')
+        sire = e.get('sire', '') or ''
+        damsire = e.get('damsire', '') or ''
+        impost = e.get('impost')
+        try:
+            impost = float(impost) if impost else 0.0
+        except (TypeError, ValueError):
+            impost = 0.0
+        age = e.get('age')
+        try:
+            age = int(age) if age else 0
+        except (TypeError, ValueError):
+            age = 0
+        jockey = e.get('jockey', '') or ''
+        horse_id = e.get('hid') or e.get('horse_id', '')
+        pop = e.get('pop') or 0
+        try:
+            pop = int(pop) if pop else 0
+        except (TypeError, ValueError):
+            pop = 0
+
+        # ① 血統 (W条件は +5、片方K系は +3 or +2)
+        s_score = 0
+        if sire in K_SIRES:
+            s_score += 3
+        if damsire in K_DAMSIRES:
+            s_score += 2
+        if s_score >= 5:
+            score += 5
+            reasons.append('W血統')
+        elif s_score > 0:
+            score += s_score
+            if sire in K_SIRES:
+                reasons.append(f'父{sire}')
+            else:
+                reasons.append(f'母父{damsire}')
+
+        # ② 末脚 (直近5走の上り3F最速回数)
+        fastest = 0
+        if horse_id and conn:
+            try:
+                pasts = conn.execute("""
+                    SELECT r.last_3f, r.race_id
+                    FROM results r JOIN races ra ON r.race_id=ra.race_id
+                    WHERE r.horse_id=? AND r.last_3f>0 AND r.finish_position>0
+                      AND ra.race_date<?
+                    ORDER BY ra.race_date DESC LIMIT 5
+                """, (horse_id, str(today_d_default()))).fetchall()
+                for p in pasts:
+                    min_l3 = conn.execute(
+                        "SELECT MIN(last_3f) m FROM results WHERE race_id=? AND last_3f>0",
+                        (p['race_id'],)
+                    ).fetchone()
+                    if min_l3 and min_l3['m'] and abs(p['last_3f'] - min_l3['m']) < 0.05:
+                        fastest += 1
+            except Exception:
+                pass
+        if fastest >= 2:
+            score += 2; reasons.append(f'上り最速{fastest}回')
+        elif fastest == 1:
+            score += 1; reasons.append('上り最速1回')
+
+        # ③ 斤量
+        if impost > 0:
+            if impost <= 54:
+                score += 2; reasons.append(f'軽斤量{impost}')
+            elif impost <= 56:
+                score += 1
+            elif impost >= 58:
+                score -= 1; reasons.append(f'重斤量{impost}')
+
+        # ④ 直近3走の状態
+        f3 = []
+        if horse_id and conn:
+            try:
+                pasts3 = conn.execute("""
+                    SELECT r.finish_position
+                    FROM results r JOIN races ra ON r.race_id=ra.race_id
+                    WHERE r.horse_id=? AND r.finish_position>0 AND ra.race_date<?
+                    ORDER BY ra.race_date DESC LIMIT 3
+                """, (horse_id, str(today_d_default()))).fetchall()
+                f3 = list(reversed([p['finish_position'] for p in pasts3]))
+            except Exception:
+                pass
+        if len(f3) >= 3:
+            if f3[2] < f3[1] < f3[0]:  # 急上昇
+                score += 2; reasons.append(f'急上昇({f3[0]}→{f3[1]}→{f3[2]}着)')
+            elif all(x <= 5 for x in f3):  # 上位安定
+                score += 2; reasons.append(f'上位安定({f3[0]}→{f3[1]}→{f3[2]}着)')
+            elif sum(1 for x in f3 if x >= 10) >= 2:  # 低調
+                score -= 2; reasons.append(f'低調')
+            elif f3[2] >= 10:  # 前走凡走
+                score -= 1; reasons.append(f'前走{f3[2]}着で凡走')
+
+        # ⑤ 同コース実績
+        if horse_id and conn and venue and surface and distance:
+            try:
+                sc = conn.execute("""
+                    SELECT COUNT(*) t, SUM(CASE WHEN finish_position<=3 THEN 1 ELSE 0 END) t3
+                    FROM results r JOIN races ra ON r.race_id=ra.race_id
+                    WHERE r.horse_id=? AND ra.venue=? AND ra.surface=? AND ra.distance=?
+                      AND r.finish_position>0 AND ra.race_date<?
+                """, (horse_id, venue, surface, distance, str(today_d_default()))).fetchone()
+                if sc and sc['t3'] and sc['t3'] >= 1:
+                    score += 2; reasons.append('同コース複勝経験')
+            except Exception:
+                pass
+
+        # ⑥ 馬齢 (4-5歳ピーク)
+        if 4 <= age <= 5:
+            score += 1
+        elif age >= 8:
+            score -= 1; reasons.append(f'{age}歳高齢')
+
+        # ⑦ 重賞経験
+        if horse_id and conn:
+            try:
+                gr = conn.execute("""
+                    SELECT SUM(CASE WHEN finish_position<=3 THEN 1 ELSE 0 END) t3
+                    FROM results r JOIN races ra ON r.race_id=ra.race_id
+                    WHERE r.horse_id=? AND ra.grade IN ('G1','G2','G3')
+                      AND r.finish_position>0 AND ra.race_date<?
+                """, (horse_id, str(today_d_default()))).fetchone()
+                if gr and gr['t3']:
+                    if gr['t3'] >= 2:
+                        score += 2; reasons.append(f'重賞複勝{gr["t3"]}回')
+                    elif gr['t3'] >= 1:
+                        score += 1; reasons.append('重賞経験')
+            except Exception:
+                pass
+
+        # ⑧ 騎手
+        if jockey in TOP_JOCKEYS:
+            score += 1; reasons.append(f'鞍上{jockey}')
+
+        scored.append({
+            'name': name,
+            'num': e.get('num') or e.get('horse_number', 0),
+            'score': score,
+            'reasons': reasons,
+            'sire': sire,
+            'damsire': damsire,
+            'jockey': jockey,
+            'impost': impost,
+            'pop': pop,
+        })
+
+    scored.sort(key=lambda x: -x['score'])
+    return scored[:max_horses]
+
+
+def today_d_default():
+    """racing-day cutoff: 今日の日付を YYYY-MM-DD で返す"""
+    return now_jst().date().isoformat()
+
+
+def get_undervalued_horses(entries, max_horses=2):
+    """市場が過小評価している可能性のある馬を抽出。
+    人気外 (7番人気以下) で、血統/騎手等が強い馬。
+    実 AI 予測値(pred_win)があれば EV>=1.5 で抽出するが、無ければ
+    人気外 + 血統条件マッチで代替。
+    """
+    if not entries:
+        return []
+    K_SIRES = {'ルーラーシップ', 'キングカメハメハ', 'キズナ', 'ドゥラメンテ',
+               'レイデオロ', 'エピファネイア', 'ロードカナロア'}
+    candidates = []
+    for e in entries:
+        pop = e.get('pop') or 0
+        try:
+            pop = int(pop) if pop else 0
+        except (TypeError, ValueError):
+            pop = 0
+        sire = e.get('sire', '') or ''
+        # 人気外 (7-12) で血統 OK
+        if 7 <= pop <= 12 and sire in K_SIRES:
+            candidates.append({
+                'name': e.get('name', '?'),
+                'num': e.get('num') or e.get('horse_number', 0),
+                'pop': pop,
+                'sire': sire,
+                'damsire': e.get('damsire', ''),
+                'reason': f'{pop}人気想定 + 父{sire}(K系・コース複勝率高)',
+            })
+    return candidates[:max_horses]
+
+
+def get_dangerous_favorites(entries, conn, race, max_horses=2):
+    """危険な人気馬を抽出。1-3人気だが評価が低い馬。
+    8軸スコアで人気と乖離が大きい馬。
+    """
+    if not entries or not conn:
+        return []
+    # 全頭のスコア計算
+    all_scored = get_ai_spotlight_top(conn, race, [], [], entries, max_horses=len(entries))
+    dangerous = []
+    for s in all_scored:
+        pop = s.get('pop') or 0
+        score = s.get('score', 0)
+        # 1-3人気だが score 低い (≤2) = 過大評価
+        if 1 <= pop <= 3 and score <= 2:
+            dangerous.append({
+                'name': s['name'],
+                'num': s.get('num', 0),
+                'pop': pop,
+                'score': score,
+                'reason': s.get('reasons', []),
+            })
+    return dangerous[:max_horses]
+
+
+def short_race_label(race):
+    """ヘッダー用の短いレース名。例: '🎯 ヴィクトリアマイル(G1) | 東京芝1600m'"""
+    grade = race.get('grade') or ''
+    grade_part = f"({grade})" if grade else ''
+    return f"{race.get('race_name','')}{grade_part} | {race.get('venue','')}{race.get('surface','')}{race.get('distance','')}m"
+
+
 def build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow=None):
     """朝テンプレ: 曜日別 angle で同レースでも違う content を出す。
 
@@ -840,14 +1104,572 @@ def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stat
     except Exception:
         pass
 
-    if slot == 'morning':
-        tweet = build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow=dow)
-    elif slot == 'weekday':
-        tweet = build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
-    else:
-        tweet = build_evening_tweet(race, stats, sires, damsires, entries, workouts,
-                                    today_d, hashtags_fn, dow, conn=conn)
+    # v8: dow × slot で 15 専用ビルダーに dispatch
+    # 各 builder は「注目馬1頭+数値根拠+行動指針」の3要素を必ず含む
+    tweet = _dispatch_v8(dow, slot, race, stats, entries, sires, damsires,
+                         workouts, conn, today_d, hashtags_fn)
+    # フォールバック: v8 builder が None なら旧テンプレ
+    if not tweet:
+        if slot == 'morning':
+            tweet = build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow=dow)
+        elif slot == 'weekday':
+            tweet = build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
+        else:
+            tweet = build_evening_tweet(race, stats, sires, damsires, entries, workouts,
+                                        today_d, hashtags_fn, dow, conn=conn)
 
     if return_race:
         return tweet, race.get('race_id')
     return tweet
+
+
+def _dispatch_v8(dow, slot, race, stats, entries, sires, damsires,
+                 workouts, conn, today_d, hashtags_fn):
+    """v8 投稿: dow(0-4) × slot('morning'|'weekday'|'evening') で15専用ビルダーへ"""
+    # 月曜 (週始)
+    if dow == 0:
+        if slot == 'morning':
+            try:
+                from post_x import get_weekend_graded_races
+                graded = get_weekend_graded_races(conn)
+            except Exception:
+                graded = [race]
+            return build_mon_morning(graded, today_d, hashtags_fn)
+        elif slot == 'weekday':
+            return build_mon_weekday(race, stats, entries, sires, today_d, hashtags_fn)
+        else:
+            return build_mon_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn)
+    # 火曜
+    elif dow == 1:
+        if slot == 'morning':
+            return build_tue_morning(race, sires, damsires, entries, today_d, hashtags_fn)
+        elif slot == 'weekday':
+            return build_tue_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn)
+        else:
+            return build_tue_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn)
+    # 水曜
+    elif dow == 2:
+        if slot == 'morning':
+            return build_wed_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn)
+        elif slot == 'weekday':
+            return build_wed_weekday(race, conn, today_d, hashtags_fn)
+        else:
+            return build_wed_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn)
+    # 木曜
+    elif dow == 3:
+        if slot == 'morning':
+            return build_thu_morning(race, sires, damsires, entries, today_d, hashtags_fn)
+        elif slot == 'weekday':
+            return build_thu_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn)
+        else:
+            return build_thu_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn)
+    # 金曜
+    elif dow == 4:
+        if slot == 'morning':
+            return build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn)
+        elif slot == 'weekday':
+            return build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn)
+        else:
+            try:
+                from post_x import get_weekend_graded_races
+                graded = get_weekend_graded_races(conn)
+            except Exception:
+                graded = [race]
+            return build_fri_evening(graded, today_d, hashtags_fn)
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# v8: 15 slot 専用ビルダー (注目馬+数値根拠+行動指針 を必ず含む)
+# ═══════════════════════════════════════════════════════════════
+
+def _format_spotlight_line(sp, with_reasons=True, max_reasons=1):
+    """spotlight 1頭を1行で表示。圧縮版:理由は1個のみ表示"""
+    num = sp.get('num', 0)
+    name = sp.get('name', '?')
+    score = sp.get('score', 0)
+    if with_reasons and sp.get('reasons'):
+        rs = sp['reasons'][0] if sp['reasons'] else ''
+        # 理由の括弧内文字列を 12 文字以内に
+        if len(rs) > 14:
+            rs = rs[:13] + '…'
+        return f"{num}番 {name}({score}・{rs})"
+    return f"{num}番 {name}(score{score})"
+
+
+def _race_label_short(race):
+    """短いラベル。例: 'ヴィクトリアマイル(G1) 東京芝1600m'"""
+    grade = race.get('grade') or ''
+    g = f"({grade})" if grade else ''
+    return f"{race.get('race_name','')}{g} {race.get('venue','')}{race.get('surface','')}{race.get('distance','')}m"
+
+
+def _phrase_when(race, today_d):
+    """日付フレーズ。例: '5/18(日)', '今週末(日)'"""
+    rd = parse_race_date(race)
+    if not rd or not today_d:
+        return ''
+    delta = (rd - today_d).days
+    wd = WEEKDAY_LABELS[rd.weekday()]
+    if delta == 1: return f'明日({wd})'
+    if delta == 2: return f'明後日({wd})'
+    if 3 <= delta <= 6: return f'今週末({wd})'
+    return f"{rd.month}/{rd.day}({wd})"
+
+
+def _entry_for_sire(entries, sire_name):
+    """出走馬の中で父が一致する馬を返す"""
+    return [e for e in (entries or []) if e.get('sire') == sire_name]
+
+
+# ─── 月曜 朝: 今週末ラインナップ + 最注目重賞 ───
+
+def build_mon_morning(graded_races, today_d, hashtags_fn):
+    """週始め:今週末の重賞を一覧で紹介、AIが最注目するレースを1つ提示"""
+    if not graded_races:
+        return None
+    top = graded_races[0]  # G1 > G2 > G3 順
+
+    parts = [f"📅 今週末の重賞ラインナップ\n"]
+    # 最大3件 + 短縮表記
+    for r in graded_races[:3]:
+        grade = r.get('grade') or ''
+        rd = parse_race_date(r)
+        wd = WEEKDAY_LABELS[rd.weekday()] if rd else '?'
+        parts.append(f"・{wd}曜{rd.day if rd else '?'}日 {r.get('race_name','')}({grade}) {r.get('venue','')}{r.get('distance','')}m")
+
+    parts.append(f"\n🎯 AI最注目:{top.get('race_name','')}({top.get('grade','')})")
+    parts.append(f"火-木で深層分析を毎日配信🔔")
+    parts.append('')
+    parts.append(hashtags_fn(top))
+    return '\n'.join(parts)
+
+
+# ─── 月曜 昼: レース#1 のコース傾向 + 該当馬 ───
+
+def build_mon_weekday(race, stats, entries, sires, today_d, hashtags_fn):
+    """月曜昼:該当レースの最重要コース傾向を1つに絞り、該当する出走馬を提示"""
+    if not race or not stats:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+
+    # 最強の傾向データを選ぶ:上がり3F最速 or 脚質
+    parts = [f"🔍 {when} {label}\n"]
+    parts.append("【コース傾向の核心(過去6年)】")
+
+    # 上がり3F最速の威力
+    last3_top = None
+    try:
+        l3 = stats.get('last3f_stats') or []
+        if l3:
+            # 上がり最速馬の複勝率
+            top_l3 = max(l3, key=lambda x: x.get('top3_rate', 0))
+            if top_l3.get('top3_rate', 0) >= 50:
+                last3_top = top_l3
+                parts.append(f"🚀 上がり最速馬の複勝率:{top_l3.get('top3_rate')}%")
+    except Exception:
+        pass
+
+    # 脚質 best
+    try:
+        rs = stats.get('running_style_stats') or []
+        if rs:
+            best = max(rs, key=lambda x: x.get('top3_rate', 0))
+            parts.append(f"💨 {best.get('style','')}が複勝率{best.get('top3_rate')}%")
+    except Exception:
+        pass
+
+    # 該当する出走馬 (父コースTOPの産駒)
+    parts.append("")
+    if entries and sires:
+        cs = cross_reference_sires(sires, entries, key='sire', limit=2)
+        if cs:
+            parts.append("【データに合致する出走馬】")
+            for s in cs[:2]:
+                names = '・'.join(s['entries'][:1])
+                parts.append(f"🧬{s['name']}産駒({names}):複勝率{s['top3']}%")
+            parts.append("\n→ 今夜AI注目馬TOP3を配信🔔")
+        else:
+            parts.append("→ 詳細は今夜のAI注目馬TOP3配信で🔔")
+
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 月曜 夜: レース#1 AI注目馬TOP3 ───
+
+def build_mon_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn):
+    """月曜夜:8軸スコアでTOP3を発表"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
+
+    parts = [f"⭐ {when} {label} AI注目馬TOP3\n"]
+    parts.append("【8軸スコア:血統×末脚×斤量×状態×同コース×馬齢×重賞×騎手】")
+    parts.append("")
+    if spots:
+        for i, sp in enumerate(spots, 1):
+            mark = ['◎', '○', '▲'][i-1]
+            parts.append(f"{mark} {_format_spotlight_line(sp, max_reasons=2)}")
+    else:
+        parts.append("(出走馬データ取得中、明日朝以降に再配信)")
+
+    parts.append("\n📊 週中で枠順・追い切り反映、木曜夜に最終版発表")
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 火曜 朝: レース#2 血統データ + 該当馬 ───
+
+def build_tue_morning(race, sires, damsires, entries, today_d, hashtags_fn):
+    """火曜朝:コース×父TOPと該当出走馬"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+
+    parts = [f"🧬 {when} {label} 父血統分析\n"]
+    parts.append("【当コース複勝率TOP3父(過去6年)】")
+    parts.append("")
+    if sires:
+        for s in (sires or [])[:3]:
+            parts.append(f"・{s['name']}:{s['top3']}%({s['runs']}走)")
+    parts.append("")
+
+    if entries and sires:
+        cs = cross_reference_sires(sires, entries, key='sire', limit=3)
+        if cs:
+            parts.append("【該当する出走馬】")
+            for s in cs[:3]:
+                names = '・'.join(s['entries'][:1])
+                parts.append(f"🎯{names}(父{s['name']})")
+            parts.append("\n→ 今日12:30に8軸スコアで本格評価")
+        else:
+            parts.append("該当出走馬なし → 12:30に別軸で評価")
+
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 火曜 昼: レース#2 AI注目馬TOP3 ───
+
+def build_tue_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn):
+    """火曜昼:レース#2の AI注目馬TOP3"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    grade = race.get('grade') or ''
+    g = f"({grade})" if grade else ''
+
+    parts = [f"🎯 {when}{race.get('race_name','')}{g} AI注目馬TOP3"]
+    parts.append("(8軸スコア:血統×末脚×コース×状態 等)")
+    parts.append("")
+    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
+    if spots:
+        for i, sp in enumerate(spots, 1):
+            mark = ['◎', '○', '▲'][i-1]
+            parts.append(f"{mark} {_format_spotlight_line(sp)}")
+    else:
+        parts.append("(出走馬データ取得中)")
+
+    parts.append("\n💡 今夜:深層分析note記事を公開")
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 火曜 夜: note 記事誘導 ───
+
+def build_tue_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn):
+    """火曜夜:note 記事を予告 + AI 本命をチラ見せ"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=1)
+
+    parts = [f"📝 {when} {label} 深層分析note公開\n"]
+    parts.append("【記事の中身】")
+    parts.append("・過去6年データで判明した勝ち馬の型")
+    parts.append("・コース×血統TOP10")
+    parts.append("・AI 8軸スコア TOP6")
+    parts.append("")
+    if spots:
+        parts.append(f"◎本命候補:{_format_spotlight_line(spots[0], max_reasons=2)}")
+        parts.append("")
+    parts.append("note▶ (記事公開後にURL差し替え)")
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 水曜 朝: 枠順抽選結果 + 評価変化 ───
+
+def build_wed_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn):
+    """水曜朝:枠順を踏まえた評価変化"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+    venue = race.get('venue', '')
+    surface = race.get('surface', '')
+    distance = race.get('distance', 0)
+
+    parts = [f"🎲 {when} {label} 枠順発表\n"]
+
+    # コース別枠順 best/worst
+    if conn:
+        try:
+            best = conn.execute("""
+                SELECT post_position, COUNT(*) t,
+                       100.0*SUM(CASE WHEN finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*) rate
+                FROM results r JOIN races ra ON r.race_id=ra.race_id
+                WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+                  AND r.finish_position>0 AND ra.race_date>='2020-01-01'
+                GROUP BY post_position HAVING t>=20
+                ORDER BY rate DESC LIMIT 1
+            """, (venue, surface, distance)).fetchone()
+            if best:
+                parts.append(f"【枠順の鉄則】")
+                parts.append(f"⭐{best['post_position']}番枠が複勝率{best['rate']:.1f}%でベスト")
+        except Exception:
+            pass
+
+    parts.append("")
+    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
+    if spots:
+        parts.append("【現時点のAI注目馬】")
+        for sp in spots[:3]:
+            num = sp.get('num', 0)
+            name = sp.get('name', '?')
+            parts.append(f"・{num}番 {name}(score{sp.get('score',0)})")
+        parts.append("\n→ 抽選後、外枠の馬は評価UP/内枠2-4は評価DOWN")
+
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 水曜 昼: 追い切り情報 ───
+
+def build_wed_weekday(race, conn, today_d, hashtags_fn):
+    """水曜昼:出走馬の追い切り評価から注目馬"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+    race_id = race.get('race_id', '')
+
+    parts = [f"🏃 {when} {label} 追い切り評価\n"]
+
+    workouts = []
+    if conn and race_id:
+        try:
+            workouts = conn.execute("""
+                SELECT w.horse_number, h.horse_name, w.evaluation_grade, w.evaluation_text
+                FROM workouts w LEFT JOIN horses h ON w.horse_id=h.horse_id
+                WHERE w.race_id=? ORDER BY w.horse_number
+            """, (race_id,)).fetchall()
+        except Exception:
+            pass
+
+    a_horses = [w for w in workouts if w['evaluation_grade'] == 'A']
+    b_horses = [w for w in workouts if w['evaluation_grade'] == 'B']
+
+    if a_horses:
+        parts.append("【A評価の出走馬】")
+        for w in a_horses[:4]:
+            txt = w['evaluation_text'][:20] if w['evaluation_text'] else ''
+            parts.append(f"🏅A {w['horse_number']}番 {w['horse_name']}({txt})")
+    elif b_horses:
+        parts.append("【B評価注目馬】")
+        for w in b_horses[:3]:
+            txt = w['evaluation_text'][:20] if w['evaluation_text'] else ''
+            parts.append(f"◯B {w['horse_number']}番 {w['horse_name']}({txt})")
+    else:
+        parts.append("(追い切り評価データ収集中)")
+
+    parts.append("\n→ A評価馬は調教師の自信表れ、複勝率10pt上振れ傾向")
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 水曜 夜: 危険な人気馬警告 ───
+
+def build_wed_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn):
+    """水曜夜:1-3人気だがAI評価低い"危険人気馬"を警告"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+
+    parts = [f"⚠️ {when} {label} 危険な人気馬警告\n"]
+    dangerous = get_dangerous_favorites(entries, conn, race, max_horses=2)
+    if dangerous:
+        for d in dangerous:
+            parts.append(f"🚨 {d['num']}番 {d['name']}({d['pop']}人気想定だが…)")
+            parts.append(f"  → AI score {d['score']}と低評価")
+            parts.append("")
+        parts.append("【代わりに狙うべき馬】")
+        spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=2)
+        for sp in spots:
+            num = sp.get('num', 0)
+            name = sp.get('name', '?')
+            pop = sp.get('pop', 0)
+            parts.append(f"⭐{num}番 {name}(想定{pop}人気・score{sp.get('score',0)})")
+    else:
+        parts.append("人気と AI 評価は概ね一致、堅い決着の可能性")
+
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 木曜 朝: 最終血統 cross + 出走確定 ───
+
+def build_thu_morning(race, sires, damsires, entries, today_d, hashtags_fn):
+    """木曜朝:出走確定 + 最終血統cross"""
+    return build_tue_morning(race, sires, damsires, entries, today_d, hashtags_fn)  # 火曜朝と同等
+
+
+# ─── 木曜 昼: 8軸最終ランキング TOP6 ───
+
+def build_thu_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn):
+    """木曜昼:8軸スコアで最終ランキング TOP4 (本命〜単穴)"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    grade = race.get('grade') or ''
+    g = f"({grade})" if grade else ''
+    parts = [f"🏆 {when}{race.get('race_name','')}{g} 最終8軸TOP4"]
+    parts.append("")
+    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=4)
+    if spots:
+        marks = ['◎', '○', '▲', '△']
+        for i, sp in enumerate(spots):
+            mark = marks[i] if i < len(marks) else '・'
+            parts.append(f"{mark} {_format_spotlight_line(sp)}")
+    else:
+        parts.append("(出走馬データ取得中)")
+
+    parts.append("\n→ 金曜:オッズ妙味の過小評価馬を発表")
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 木曜 夜: 最終注目馬 + note 完成版誘導 ───
+
+def build_thu_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn):
+    """木曜夜:最終注目馬 + note 記事最終版"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
+
+    parts = [f"📊 {when} {label} 完全予想公開\n"]
+    parts.append("【AI最終3頭】")
+    if spots:
+        marks = ['◎', '○', '▲']
+        for i, sp in enumerate(spots[:3]):
+            parts.append(f"{marks[i]} {sp.get('num',0)}番 {sp.get('name','?')}")
+    parts.append("")
+    parts.append("【note記事で詳しく】")
+    parts.append("・8軸スコア全頭")
+    parts.append("・過去6年の勝ち馬パターン")
+    parts.append("・馬券戦略フレームワーク")
+    parts.append("")
+    parts.append("note▶ (URL)")
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 金曜 朝: 過小評価馬(オッズ妙味)発見 ───
+
+def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn):
+    """金曜朝:オッズ妙味のある馬を発表"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+
+    parts = [f"💎 {when} {label} 過小評価馬(オッズ妙味)\n"]
+    undervalued = get_undervalued_horses(entries, max_horses=2)
+    if undervalued:
+        for u in undervalued:
+            parts.append(f"🚨 {u['num']}番 {u['name']}")
+            parts.append(f"  {u['reason']}")
+            parts.append("")
+        parts.append("→ AIの予測勝率は想定オッズより高い妙味馬")
+    else:
+        parts.append("AIと市場の評価が一致 → 上位人気から素直に狙う")
+        spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=1)
+        if spots:
+            parts.append(f"\n◎ {spots[0].get('num',0)}番 {spots[0].get('name','?')}")
+
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 金曜 昼: 馬券戦略 ───
+
+def build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn):
+    """金曜昼:推奨買い目フレームワーク"""
+    if not race:
+        return None
+    when = _phrase_when(race, today_d)
+    label = _race_label_short(race)
+    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
+
+    parts = [f"💰 {when} {label} 推奨買い目戦略\n"]
+    if spots:
+        marks = ['◎', '○', '▲']
+        parts.append("【軸馬】")
+        for i, sp in enumerate(spots[:3]):
+            parts.append(f"{marks[i]} {sp.get('num',0)}番 {sp.get('name','?')}")
+        parts.append("")
+        parts.append("【推奨買い目】")
+        if len(spots) >= 3:
+            n1, n2, n3 = spots[0].get('num',0), spots[1].get('num',0), spots[2].get('num',0)
+            parts.append(f"・単勝 ◎{n1}")
+            parts.append(f"・馬連 {n1}-{n2}・{n1}-{n3}")
+            parts.append(f"・三連複 {n1}-{n2}-{n3}")
+            parts.append(f"・ワイド {n1}-{n2}(保険)")
+
+    parts.append("\n→ 明日朝AI予測完了後、最終確定")
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+# ─── 金曜 夜: 翌朝予想配信告知 ───
+
+def build_fri_evening(graded_races, today_d, hashtags_fn):
+    """金曜夜:明日のAI予想配信告知"""
+    if not graded_races:
+        return None
+
+    parts = [f"🔔 明日土曜のAI予想配信お知らせ\n"]
+    parts.append("【明日(土)の重賞】")
+    for r in graded_races:
+        rd = parse_race_date(r)
+        if rd and rd.weekday() == 5:  # 土曜
+            parts.append(f"・{r.get('race_name','')}({r.get('grade','')}) {r.get('venue','')}")
+    parts.append("")
+    parts.append("⏰ 土曜朝7:00-10:15に印付き完全予想を配信")
+    parts.append("印:◎○▲△×注 + 推奨買い目")
+    parts.append("")
+    parts.append("(日曜分は別途配信)")
+    parts.append("")
+    parts.append("#競馬予想 #AI予想")
+    return '\n'.join(parts)
