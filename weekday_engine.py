@@ -1459,10 +1459,11 @@ def build_tue_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
     return '\n'.join(parts)
 
 
-# ─── 水曜 朝: 枠順抽選結果 + 評価変化 ───
+# ─── 水曜 朝: コース×騎手 cross (新規) ───
+# 注: 枠順は金曜抽選なので水曜には出ない。代わりに「騎手×当該コース」を発表
 
 def build_wed_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn):
-    """水曜朝:枠順を踏まえた評価変化"""
+    """水曜朝:当該コースで実績のある騎手を抽出 + 出走馬の中で該当鞍上"""
     if not race:
         return None
     when = _phrase_when(race, today_d)
@@ -1471,36 +1472,54 @@ def build_wed_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
     surface = race.get('surface', '')
     distance = race.get('distance', 0)
 
-    parts = [f"🎲 {when} {label} 枠順発表\n"]
+    parts = [f"🏇 {when} {label} 騎手コース適性\n"]
 
-    # コース別枠順 best/worst
+    # コース×騎手 TOP3 (過去6年, min_runs=10)
+    jockey_top = []
     if conn:
         try:
-            best = conn.execute("""
-                SELECT post_position, COUNT(*) t,
-                       100.0*SUM(CASE WHEN finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*) rate
+            rows = conn.execute("""
+                SELECT j.jockey_name AS name, COUNT(*) AS runs,
+                       ROUND(100.0*SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*),1) AS top3
                 FROM results r JOIN races ra ON r.race_id=ra.race_id
+                JOIN jockeys j ON r.jockey_id=j.jockey_id
                 WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
                   AND r.finish_position>0 AND ra.race_date>='2020-01-01'
-                GROUP BY post_position HAVING t>=20
-                ORDER BY rate DESC LIMIT 1
-            """, (venue, surface, distance)).fetchone()
-            if best:
-                parts.append(f"【枠順の鉄則】")
-                parts.append(f"⭐{best['post_position']}番枠が複勝率{best['rate']:.1f}%でベスト")
+                GROUP BY j.jockey_name HAVING runs>=10
+                ORDER BY top3 DESC, runs DESC LIMIT 5
+            """, (venue, surface, distance)).fetchall()
+            jockey_top = [dict(r) for r in rows]
         except Exception:
             pass
 
-    parts.append("")
-    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
-    if spots:
-        parts.append("【現時点のAI注目馬】")
-        for sp in spots[:3]:
-            num = sp.get('num', 0)
-            name = sp.get('name', '?')
-            parts.append(f"・{num}番 {name}(score{sp.get('score',0)})")
-        parts.append("\n→ 抽選後、外枠の馬は評価UP/内枠2-4は評価DOWN")
+    if jockey_top:
+        parts.append("【当コース複勝率TOP騎手(過去6年)】")
+        for j in jockey_top[:3]:
+            parts.append(f"・{j['name']}:{j['top3']}%({j['runs']}走)")
 
+    # 出走馬の中で該当鞍上をクロス
+    if entries:
+        # entries に jockey が無ければ取得
+        if 'jockey' not in (entries[0] or {}):
+            try:
+                ent_full = get_entry_with_jockey(conn, race.get('race_id', ''))
+                entries = ent_full or entries
+            except Exception:
+                pass
+        top_names = {j['name'] for j in jockey_top[:5]}
+        matched = []
+        for e in entries:
+            jk = e.get('jockey', '') or ''
+            if jk and jk in top_names:
+                matched.append((e.get('num') or e.get('horse_number', 0),
+                                e.get('name', '?'), jk))
+        if matched:
+            parts.append("")
+            parts.append("【該当する出走馬】")
+            for num, name, jk in matched[:3]:
+                parts.append(f"🎯{num}番 {name}(鞍上{jk})")
+
+    parts.append("\n→ 木曜に出走馬確定、金曜に枠順抽選")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -1645,29 +1664,51 @@ def build_thu_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
     return '\n'.join(parts)
 
 
-# ─── 金曜 朝: 過小評価馬(オッズ妙味)発見 ───
+# ─── 金曜 朝: 枠順抽選結果 + 評価変化 ───
+# 金曜午前が JRA 枠順抽選のタイミング
 
 def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn):
-    """金曜朝:オッズ妙味のある馬を発表"""
+    """金曜朝:枠順抽選結果を踏まえた評価変化(出走2日前)"""
     if not race:
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
+    venue = race.get('venue', '')
+    surface = race.get('surface', '')
+    distance = race.get('distance', 0)
 
-    parts = [f"💎 {when} {label} 過小評価馬(オッズ妙味)\n"]
-    undervalued = get_undervalued_horses(entries, max_horses=2)
-    if undervalued:
-        for u in undervalued:
-            parts.append(f"🚨 {u['num']}番 {u['name']}")
-            parts.append(f"  {u['reason']}")
-            parts.append("")
-        parts.append("→ AIの予測勝率は想定オッズより高い妙味馬")
-    else:
-        parts.append("AIと市場の評価が一致 → 上位人気から素直に狙う")
-        spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=1)
-        if spots:
-            parts.append(f"\n◎ {spots[0].get('num',0)}番 {spots[0].get('name','?')}")
+    parts = [f"🎲 {when} {label} 枠順抽選結果\n"]
 
+    # コース別 枠順ベスト/ワースト
+    if conn:
+        try:
+            best = conn.execute("""
+                SELECT post_position, COUNT(*) t,
+                       100.0*SUM(CASE WHEN finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*) rate
+                FROM results r JOIN races ra ON r.race_id=ra.race_id
+                WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+                  AND r.finish_position>0 AND ra.race_date>='2020-01-01'
+                GROUP BY post_position HAVING t>=20
+                ORDER BY rate DESC LIMIT 1
+            """, (venue, surface, distance)).fetchone()
+            if best:
+                parts.append("【枠順の鉄則(過去6年)】")
+                parts.append(f"⭐{best['post_position']}番枠:複勝率{best['rate']:.1f}%でベスト")
+                parts.append("")
+        except Exception:
+            pass
+
+    # 出走馬の post_position が登録されていれば、有利/不利を判定
+    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
+    if spots:
+        parts.append("【AI注目馬の枠順】")
+        for sp in spots[:3]:
+            num = sp.get('num', 0)
+            name = sp.get('name', '?')
+            score = sp.get('score', 0)
+            parts.append(f"・{num}番 {name}(score{score})")
+
+    parts.append("\n→ 今日12:30に推奨買い目、明日朝に完全予想配信🔔")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -1676,29 +1717,37 @@ def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
 # ─── 金曜 昼: 馬券戦略 ───
 
 def build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn):
-    """金曜昼:推奨買い目フレームワーク"""
+    """金曜昼:過小評価馬(オッズ妙味) + 推奨買い目戦略"""
     if not race:
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
     spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
+    undervalued = get_undervalued_horses(entries, max_horses=1)
 
-    parts = [f"💰 {when} {label} 推奨買い目戦略\n"]
+    parts = [f"💰 {when} {label} 馬券戦略\n"]
     if spots:
         marks = ['◎', '○', '▲']
-        parts.append("【軸馬】")
+        parts.append("【AI 軸馬】")
         for i, sp in enumerate(spots[:3]):
             parts.append(f"{marks[i]} {sp.get('num',0)}番 {sp.get('name','?')}")
         parts.append("")
-        parts.append("【推奨買い目】")
-        if len(spots) >= 3:
-            n1, n2, n3 = spots[0].get('num',0), spots[1].get('num',0), spots[2].get('num',0)
-            parts.append(f"・単勝 ◎{n1}")
-            parts.append(f"・馬連 {n1}-{n2}・{n1}-{n3}")
-            parts.append(f"・三連複 {n1}-{n2}-{n3}")
-            parts.append(f"・ワイド {n1}-{n2}(保険)")
 
-    parts.append("\n→ 明日朝AI予測完了後、最終確定")
+    # 過小評価馬(オッズ妙味)
+    if undervalued:
+        u = undervalued[0]
+        parts.append(f"💎妙味:{u['num']}番 {u['name']}(人気外+K系)")
+        parts.append("")
+
+    # 推奨買い目
+    if spots and len(spots) >= 3:
+        n1, n2, n3 = spots[0].get('num',0), spots[1].get('num',0), spots[2].get('num',0)
+        parts.append("【推奨買い目】")
+        parts.append(f"・単勝/複勝 ◎{n1}")
+        parts.append(f"・馬連 {n1}-{n2}・{n1}-{n3}")
+        parts.append(f"・三連複 {n1}-{n2}-{n3}")
+
+    parts.append("\n→ 明日朝AI予測完了後、最終確定🔔")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
