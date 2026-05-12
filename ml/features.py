@@ -192,7 +192,14 @@ class FeatureBuilder:
         features["graded_exp"] = ge["graded_exp"]
         features["graded_top3_rate"] = ge["graded_top3_rate"]
 
-        # ── 17. v6新規: 市場シグナル (オッズ・人気) ──
+        # ── 17. v7新規: 血統 × コース cross (sire/damsire × venue/surface/distance) ──
+        ped_cross = self._get_pedigree_cross(horse_id, venue, surface, distance, race_date)
+        features["sire_course_top3_rate"] = ped_cross["sire_course_top3_rate"]
+        features["sire_surface_top3_rate"] = ped_cross["sire_surface_top3_rate"]
+        features["damsire_course_top3_rate"] = ped_cross["damsire_course_top3_rate"]
+        features["damsire_surface_top3_rate"] = ped_cross["damsire_surface_top3_rate"]
+
+        # ── 18. v6新規: 市場シグナル (オッズ・人気) ──
         # ⚠️ 循環参照懸念について:
         # - モデル学習時にオッズを feature にする ≠ EV計算時にオッズを使う、は別軸
         # - 過去6年 1人気の複勝率 65% は強力な市場シグナル
@@ -841,6 +848,69 @@ class FeatureBuilder:
             }
         return {'graded_exp': 0.0, 'graded_top3_rate': 0.0}
 
+    def _get_pedigree_cross(self, horse_id, venue, surface, distance, race_date=None):
+        """v7: sire/damsire × course/surface の cross 集計。
+        旧 sire_top3_rate(全期間集計)が無価値だった反省から、
+        コース×血統 / 馬場×血統 の具体的 cross を取る。
+        """
+        result = {
+            'sire_course_top3_rate': 0.0,
+            'sire_surface_top3_rate': 0.0,
+            'damsire_course_top3_rate': 0.0,
+            'damsire_surface_top3_rate': 0.0,
+        }
+        with get_db() as conn:
+            horse = conn.execute(
+                "SELECT sire, damsire FROM horses WHERE horse_id = ?", (horse_id,)
+            ).fetchone()
+        if not horse:
+            return result
+        sire = (horse['sire'] or '').strip()
+        damsire = (horse['damsire'] or '').strip()
+        if not (sire or damsire):
+            return result
+
+        date_filter = "AND ra.race_date < ?" if race_date else ""
+        params_base = (race_date,) if race_date else ()
+
+        def _query_one(name, name_field, key, min_runs):
+            """name_field: 'h.sire' or 'h.damsire'。key: course or surface only"""
+            if not name:
+                return 0.0
+            if key == 'course':
+                sql = f"""
+                    SELECT COUNT(*) AS total,
+                           SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END) AS t3
+                    FROM results r
+                    JOIN races ra ON r.race_id=ra.race_id
+                    JOIN horses h ON r.horse_id=h.horse_id
+                    WHERE {name_field}=? AND ra.venue=? AND ra.surface=? AND ra.distance=?
+                      AND r.finish_position>0 {date_filter}
+                """
+                params = (name, venue, surface, distance) + params_base
+            else:  # surface
+                sql = f"""
+                    SELECT COUNT(*) AS total,
+                           SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END) AS t3
+                    FROM results r
+                    JOIN races ra ON r.race_id=ra.race_id
+                    JOIN horses h ON r.horse_id=h.horse_id
+                    WHERE {name_field}=? AND ra.surface=?
+                      AND r.finish_position>0 {date_filter}
+                """
+                params = (name, surface) + params_base
+            with get_db() as conn:
+                row = conn.execute(sql, params).fetchone()
+            if row and row['total'] and row['total'] >= min_runs:
+                return row['t3'] / row['total']
+            return 0.0
+
+        result['sire_course_top3_rate'] = _query_one(sire, 'h.sire', 'course', min_runs=5)
+        result['sire_surface_top3_rate'] = _query_one(sire, 'h.sire', 'surface', min_runs=10)
+        result['damsire_course_top3_rate'] = _query_one(damsire, 'h.damsire', 'course', min_runs=5)
+        result['damsire_surface_top3_rate'] = _query_one(damsire, 'h.damsire', 'surface', min_runs=10)
+        return result
+
     @staticmethod
     def get_feature_columns():
         """学習に使用する特徴量カラム一覧 (v5: 役立たない9個を削除 + 5個新規追加)
@@ -889,5 +959,8 @@ class FeatureBuilder:
             "graded_exp", "graded_top3_rate",
             # v6新規 - 市場シグナル(オッズ・人気) ※競馬予想で最も強い feature の一つ
             "odds_log", "popularity_norm", "is_favorite", "is_top3_pop",
+            # v7新規 - 血統×コース cross (旧 sire_top3 が重要度0だった反省)
+            "sire_course_top3_rate", "sire_surface_top3_rate",
+            "damsire_course_top3_rate", "damsire_surface_top3_rate",
         ]
 
