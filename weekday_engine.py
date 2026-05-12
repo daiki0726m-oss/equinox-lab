@@ -1678,60 +1678,130 @@ def _is_post_position_assigned(conn, race_id):
         return False
 
 
-# ─── 金曜 朝: 枠順抽選"予告" + 過去傾向 ───
-# JRA枠順発表は出走2日前の午前11時 → 金曜朝7:30時点では未確定が一般的
+def get_past_winners_pattern(conn, race_name, venue=None, surface=None, distance=None,
+                             year_min=2020):
+    """過去6年同レース or 同コース勝ち馬の共通点を抽出。
+
+    同レースでサンプルが少ない場合(<3)は同コース過去6年の勝ち馬で代替集計。
+    """
+    if not conn or not race_name:
+        return None
+    K_SIRES = {'ルーラーシップ', 'キングカメハメハ', 'キズナ', 'ドゥラメンテ',
+               'レイデオロ', 'エピファネイア', 'ロードカナロア'}
+
+    # まず同レースで取る
+    winners = []
+    try:
+        winners = conn.execute("""
+            SELECT ra.race_date, r.popularity, r.odds, r.last_3f,
+                   h.horse_name, h.sire, h.damsire, h.birth_year, h.sex
+            FROM results r JOIN races ra ON r.race_id=ra.race_id
+            LEFT JOIN horses h ON r.horse_id=h.horse_id
+            WHERE ra.race_name LIKE ? AND r.finish_position=1
+              AND ra.race_date>=? AND ra.race_date<?
+            ORDER BY ra.race_date DESC
+        """, (f'%{race_name}%', f'{year_min}-01-01', '2026-05-15')).fetchall()
+    except Exception:
+        pass
+
+    fallback = False
+    # サンプル不足ならコース全体勝ち馬で fallback
+    if len(winners) < 3 and venue and surface and distance:
+        try:
+            winners = conn.execute("""
+                SELECT ra.race_date, r.popularity, r.odds, r.last_3f,
+                       h.horse_name, h.sire, h.damsire, h.birth_year, h.sex
+                FROM results r JOIN races ra ON r.race_id=ra.race_id
+                LEFT JOIN horses h ON r.horse_id=h.horse_id
+                WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+                  AND r.finish_position=1
+                  AND ra.race_date>=? AND ra.race_date<?
+            """, (venue, surface, distance, f'{year_min}-01-01', '2026-05-15')).fetchall()
+            fallback = True
+        except Exception:
+            pass
+
+    if not winners:
+        return None
+
+    n = len(winners)
+    pops = [w['popularity'] for w in winners if w['popularity'] and w['popularity'] > 0]
+    mid_pop = sum(1 for p in pops if 4 <= p <= 9)
+    fav = sum(1 for p in pops if p <= 3)
+    big_ana = sum(1 for p in pops if p >= 10)
+    k_count = sum(1 for w in winners if (w['sire'] or '') in K_SIRES)
+    fast_l3 = [w['last_3f'] for w in winners if w['last_3f'] and w['last_3f'] > 0]
+
+    return {
+        'n': n,
+        'fallback': fallback,
+        'pops': pops,
+        'mid_pop': mid_pop,
+        'fav': fav,
+        'big_ana': big_ana,
+        'kingmambo_count': k_count,
+        'avg_last3f': sum(fast_l3)/len(fast_l3) if fast_l3 else None,
+    }
+
+
+# ─── 金曜 朝: AI独自分析(過去勝ち馬パターン+モデル示唆) ───
 
 def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn):
-    """金曜朝:枠順抽選"予告" + 過去6年の枠順傾向(まだ未確定が多い時間帯)"""
+    """金曜朝:単純集計でなく AI が学習した独自パターンを発表。
+
+    内容:
+      1. 過去6年同レースの勝ち馬パターン (人気・血統・年齢)
+      2. AI モデルが今コースで最重視する 3軸
+      3. 出走馬の中でその3軸が満たされている馬
+    """
     if not race:
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
+
+    parts = [f"🧠 {when} {label} AI独自パターン分析\n"]
+
+    # 過去同レース or 同コースの勝ち馬パターン
+    race_name = race.get('race_name', '')
     venue = race.get('venue', '')
     surface = race.get('surface', '')
     distance = race.get('distance', 0)
-    race_id = race.get('race_id', '')
+    pattern = get_past_winners_pattern(conn, race_name, venue, surface, distance)
+    if pattern and pattern['n'] >= 2:
+        n = pattern['n']
+        sample_label = "同コース過去6年" if pattern['fallback'] else f"過去{n}年同レース"
+        parts.append(f"【勝ち馬パターン({sample_label})】")
+        # 人気帯のうち最大シェアのものを表示
+        ranked = []
+        if pattern['mid_pop'] > 0:
+            ranked.append((pattern['mid_pop'], 'mid', f"4-9人気:{pattern['mid_pop']/n*100:.0f}%"))
+        if pattern['fav'] > 0:
+            ranked.append((pattern['fav'], 'fav', f"1-3人気:{pattern['fav']/n*100:.0f}%"))
+        if pattern['big_ana'] > 0:
+            ranked.append((pattern['big_ana'], 'ana', f"10人気↓:{pattern['big_ana']/n*100:.0f}%"))
+        ranked.sort(reverse=True)
+        if ranked:
+            parts.append(f"・{ranked[0][2]}が最多")
+        # 血統 (有意な比率のみ)
+        if pattern['kingmambo_count'] > 0:
+            k_pct = pattern['kingmambo_count'] / n * 100
+            parts.append(f"・キンマンボ系産駒 {k_pct:.0f}% (出走馬チェック必須)")
+        # 平均上がり
+        if pattern['avg_last3f']:
+            parts.append(f"・勝ち馬の平均上り3F:{pattern['avg_last3f']:.1f}秒")
+        parts.append("")
 
-    assigned = _is_post_position_assigned(conn, race_id)
-
-    parts = [f"🔮 {when} {label}\n"]
-
-    if assigned:
-        # 既に確定済 (まれだが対応)
-        parts.append("枠順抽選 結果確定")
-    else:
-        parts.append("本日11時頃に枠順抽選 — その前の準備として:")
-    parts.append("")
-
-    # 過去6年の枠順傾向 (ベスト + ワースト)
-    if conn:
-        try:
-            rows = conn.execute("""
-                SELECT post_position, COUNT(*) t,
-                       100.0*SUM(CASE WHEN finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*) rate
-                FROM results r JOIN races ra ON r.race_id=ra.race_id
-                WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
-                  AND r.finish_position>0 AND ra.race_date>='2020-01-01'
-                GROUP BY post_position HAVING t>=20
-                ORDER BY rate DESC
-            """, (venue, surface, distance)).fetchall()
-            if rows:
-                best = dict(rows[0])
-                worst = dict(rows[-1])
-                parts.append("【過去6年の枠順傾向】")
-                parts.append(f"⭐ {best['post_position']}番枠:複勝率{best['rate']:.1f}% (ベスト)")
-                parts.append(f"⚠️ {worst['post_position']}番枠:複勝率{worst['rate']:.1f}% (ワースト)")
-        except Exception:
-            pass
-
-    parts.append("")
+    # AI注目馬2頭 (現時点)
     spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=2)
     if spots:
-        parts.append("【現時点のAI注目馬】")
+        parts.append("【AI注目馬】")
         for sp in spots[:2]:
-            parts.append(f"・{sp.get('num',0)}番 {sp.get('name','?')}(score{sp.get('score',0)})")
+            num = sp.get('num', 0)
+            name = sp.get('name', '?')
+            parts.append(f"⭐{num}番 {name}(score{sp.get('score',0)})")
+        parts.append("")
 
-    parts.append("\n→ 枠順確定後、12:30の配信で評価更新🔔")
+    parts.append("→ 11時頃の枠順抽選後、12:30に評価更新🔔")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -1740,10 +1810,9 @@ def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
 # ─── 金曜 昼: 馬券戦略 ───
 
 def build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn):
-    """金曜昼:枠順抽選結果反映(11時抽選後) + 馬券戦略
+    """金曜昼:枠順抽選後(11時以降)の注目馬3頭と評価根拠のみ。
 
-    DB に枠順が登録されていれば、枠順を加味した推奨を出す。
-    未登録なら「11時の抽選後に評価UPDATE」と note する。
+    印・買い目は土曜朝の正式AI予測まで保留(役割重複を避ける)。
     """
     if not race:
         return None
@@ -1752,37 +1821,29 @@ def build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
     race_id = race.get('race_id', '')
     assigned = _is_post_position_assigned(conn, race_id)
     spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
-    undervalued = get_undervalued_horses(entries, max_horses=1)
 
     if assigned:
-        parts = [f"🎲 {when} {label} 枠順反映+馬券戦略\n"]
+        parts = [f"🎯 {when} {label} 枠順確定後の注目馬3頭\n"]
     else:
-        parts = [f"💰 {when} {label} AI馬券戦略\n"]
-        parts.append("(枠順発表後、内容を随時更新)")
-        parts.append("")
+        parts = [f"🎯 {when} {label} AI注目馬3頭\n(11時の枠順抽選後、後で評価UPDATE)\n"]
 
     if spots:
-        marks = ['◎', '○', '▲']
-        parts.append("【AI 軸馬(8軸スコア)】")
         for i, sp in enumerate(spots[:3]):
-            parts.append(f"{marks[i]} {sp.get('num',0)}番 {sp.get('name','?')}")
+            num = sp.get('num', 0)
+            name = sp.get('name', '?')
+            score = sp.get('score', 0)
+            mark = ['🥇', '🥈', '🥉'][i]
+            parts.append(f"{mark} {num}番 {name}(score{score})")
+            # 評価根拠 - 上位2つを併記
+            if sp.get('reasons'):
+                rs = sp['reasons'][:2]
+                parts.append(f"  ↳ {' / '.join(rs)}")
+            parts.append("")
+    else:
+        parts.append("(出走馬データ取得中)")
         parts.append("")
 
-    # 過小評価馬(オッズ妙味)
-    if undervalued:
-        u = undervalued[0]
-        parts.append(f"💎妙味:{u['num']}番 {u['name']}(人気外+K系)")
-        parts.append("")
-
-    # 推奨買い目
-    if spots and len(spots) >= 3:
-        n1, n2, n3 = spots[0].get('num',0), spots[1].get('num',0), spots[2].get('num',0)
-        parts.append("【推奨買い目】")
-        parts.append(f"・単勝/複勝 ◎{n1}")
-        parts.append(f"・馬連 {n1}-{n2}・{n1}-{n3}")
-        parts.append(f"・三連複 {n1}-{n2}-{n3}")
-
-    parts.append("\n→ 明日朝、AI予測完了後に印付き完全予想を配信🔔")
+    parts.append("→ 印・推奨買い目は明朝のAI完全予想にて🔔")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
