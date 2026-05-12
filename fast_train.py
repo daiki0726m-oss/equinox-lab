@@ -65,61 +65,144 @@ def build_horse_history(results_df, races_df):
 
 
 def build_jockey_trainer_stats(results_df, races_df):
-    """騎手・調教師の成績統計をプリコンパイル"""
-    print("🔧 騎手・調教師統計を構築中...")
+    """騎手・調教師の成績統計をプリコンパイル (temporal-safe, v6)。
+
+    ⚠️ v5 までは全期間集計で temporal leakage が発生していた:
+        2020年のレースに対する combo_top3 が、2020-2025年の全データから
+        計算され、未来のデータがモデル学習に漏れていた。
+
+    v6 では、各 (jockey, trainer) について時系列順に累積カウントを保持し、
+    実行時に「対象 race_date 直前の累積値」を取り出すことで leakage を排除。
+
+    Returns:
+        jockey_stats: {jid: [(race_date, win_cum, top3_cum, total_cum), ...]}
+        trainer_stats: {tid: [(race_date, top3_cum, total_cum), ...]}
+        combo_stats: {(jid, tid): [(race_date, top3_cum, total_cum), ...]}
+
+    feature 計算時は `lookup_stat_at()` で対象 race_date より前の最新値を取る。
+    """
+    print("🔧 騎手・調教師統計を構築中(temporal-safe v6)...")
     t0 = time.time()
 
-    needed_cols = ["venue", "distance", "surface", "track_condition"]
-    if all(c in results_df.columns for c in needed_cols):
+    needed_cols = ["venue", "distance", "surface", "track_condition", "race_date"]
+    avail = [c for c in needed_cols if c in races_df.columns]
+    # race_date が results_df に無い場合は必ず merge する(temporal累積に必須)
+    if "race_date" not in results_df.columns:
+        res = results_df.merge(races_df[["race_id"] + avail], on="race_id", how="left")
+    elif all(c in results_df.columns for c in needed_cols):
         res = results_df.copy()
     else:
-        res = results_df.merge(
-            races_df[["race_id"] + needed_cols],
-            on="race_id", how="left"
-        )
+        # race_date はあるが他が無い場合のみ merge
+        missing = [c for c in avail if c not in results_df.columns]
+        if missing:
+            res = results_df.merge(races_df[["race_id"] + missing], on="race_id", how="left")
+        else:
+            res = results_df.copy()
     confirmed = res[res["finish_position"] > 0].copy()
+    if "race_date" not in confirmed.columns:
+        raise RuntimeError("temporal-safe stat build には race_date が必須")
+    confirmed = confirmed.sort_values("race_date")
 
-    # 騎手の全体成績
+    # 騎手別: 時系列累積
     jockey_stats = {}
     for jid, g in confirmed.groupby("jockey_id"):
-        total = len(g)
-        if total < 5:
-            jockey_stats[jid] = {"win_rate": 0, "top3_rate": 0, "total": total}
+        if not jid:
             continue
-        wins = (g["finish_position"] == 1).sum()
-        top3 = (g["finish_position"] <= 3).sum()
-        jockey_stats[jid] = {
-            "win_rate": wins / total,
-            "top3_rate": top3 / total,
-            "total": total,
-        }
+        win_cum = 0
+        top3_cum = 0
+        total_cum = 0
+        records = []
+        for _, row in g.iterrows():
+            # NOTE: ここで「行の値を見る前」に records.append すると、
+            # その行はまだ未確定 = race_date 当日まで「行を見ない」状態の累積になる
+            records.append((row["race_date"], win_cum, top3_cum, total_cum))
+            # この行を反映
+            total_cum += 1
+            if row["finish_position"] == 1:
+                win_cum += 1
+            if row["finish_position"] <= 3:
+                top3_cum += 1
+        jockey_stats[jid] = records
 
-    # 調教師の全体成績
+    # 調教師別
     trainer_stats = {}
     for tid, g in confirmed.groupby("trainer_id"):
-        total = len(g)
-        if total < 5:
-            trainer_stats[tid] = {"top3_rate": 0, "total": total}
+        if not tid:
             continue
-        top3 = (g["finish_position"] <= 3).sum()
-        trainer_stats[tid] = {
-            "top3_rate": top3 / total,
-            "total": total,
-        }
+        top3_cum = 0
+        total_cum = 0
+        records = []
+        for _, row in g.iterrows():
+            records.append((row["race_date"], top3_cum, total_cum))
+            total_cum += 1
+            if row["finish_position"] <= 3:
+                top3_cum += 1
+        trainer_stats[tid] = records
 
     # 騎手×調教師コンビ
     combo_stats = {}
     for (jid, tid), g in confirmed.groupby(["jockey_id", "trainer_id"]):
-        total = len(g)
-        if total < 3:
+        if not jid or not tid:
             continue
-        top3 = (g["finish_position"] <= 3).sum()
-        combo_stats[(jid, tid)] = {"top3_rate": top3 / total, "total": total}
+        top3_cum = 0
+        total_cum = 0
+        records = []
+        for _, row in g.iterrows():
+            records.append((row["race_date"], top3_cum, total_cum))
+            total_cum += 1
+            if row["finish_position"] <= 3:
+                top3_cum += 1
+        combo_stats[(jid, tid)] = records
 
     elapsed = time.time() - t0
     print(f"  ✅ 騎手{len(jockey_stats)}, 調教師{len(trainer_stats)}, "
-          f"コンビ{len(combo_stats)} ({elapsed:.1f}秒)")
+          f"コンビ{len(combo_stats)} (temporal累積, {elapsed:.1f}秒)")
     return jockey_stats, trainer_stats, combo_stats
+
+
+def _lookup_at(records, target_date, kind):
+    """records (時系列累積) から target_date 直前の累積値を取り出す。
+
+    Args:
+        records: jockey_stats[jid] or trainer_stats[tid] or combo_stats[(jid,tid)]
+        target_date: 対象レースの race_date (str 'YYYY-MM-DD')
+        kind: 'jockey'|'trainer'|'combo'
+    Returns:
+        dict like {'win_rate':..., 'top3_rate':..., 'total':...} (kind に応じて)
+    """
+    import bisect
+    if not records or not target_date:
+        return _empty_stat(kind)
+    # records is list of tuples, first element = race_date
+    # bisect で target_date 未満の最後のインデックスを探す
+    dates = [r[0] for r in records]
+    idx = bisect.bisect_left(dates, target_date)
+    if idx == 0:
+        return _empty_stat(kind)
+    rec = records[idx - 1]
+    if kind == 'jockey':
+        _, win_cum, top3_cum, total_cum = rec
+        if total_cum < 5:
+            return {'win_rate': 0, 'top3_rate': 0, 'total': total_cum}
+        return {'win_rate': win_cum / total_cum, 'top3_rate': top3_cum / total_cum, 'total': total_cum}
+    elif kind == 'trainer':
+        _, top3_cum, total_cum = rec
+        if total_cum < 5:
+            return {'top3_rate': 0, 'total': total_cum}
+        return {'top3_rate': top3_cum / total_cum, 'total': total_cum}
+    else:  # combo
+        _, top3_cum, total_cum = rec
+        if total_cum < 3:
+            return {'top3_rate': 0, 'total': total_cum}
+        return {'top3_rate': top3_cum / total_cum, 'total': total_cum}
+
+
+def _empty_stat(kind):
+    if kind == 'jockey':
+        return {'win_rate': 0, 'top3_rate': 0, 'total': 0}
+    if kind == 'trainer':
+        return {'top3_rate': 0, 'total': 0}
+    return {'top3_rate': 0, 'total': 0}
 
 
 def build_speed_index_cache(results_df, races_df):
@@ -229,10 +312,11 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
         f["sire_top3_rate"] = 0
         f["sire_sample_size"] = 0
 
-        # === 騎手・調教師系 (5) ===
-        js = jockey_stats.get(jockey_id, {})
-        ts = trainer_stats.get(trainer_id, {})
-        cs = combo_stats.get((jockey_id, trainer_id), {})
+        # === 騎手・調教師系 (5) — v6 temporal-safe ===
+        # ⚠️ race_date より前の累積のみを使う(leakage 防止)
+        js = _lookup_at(jockey_stats.get(jockey_id, []), race_date, 'jockey')
+        ts = _lookup_at(trainer_stats.get(trainer_id, []), race_date, 'trainer')
+        cs = _lookup_at(combo_stats.get((jockey_id, trainer_id), []), race_date, 'combo')
 
         jt_score = 50
         if js.get("total", 0) >= 30:
