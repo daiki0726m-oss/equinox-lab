@@ -229,7 +229,7 @@ class KeibaModel:
         }
 
     def predict(self, features_df):
-        """予測を実行"""
+        """予測を実行 (v6: isotonic regression による post-fit 校正付き)"""
         if self.model_top3 is None or self.model_win is None:
             self.load()
 
@@ -240,6 +240,16 @@ class KeibaModel:
 
         pred_top3 = self.model_top3.predict(X)
         pred_win = self.model_win.predict(X)
+
+        # ── 校正 (isotonic regression) を適用 ──
+        # 2025データで「本命級が +8.6pt 過小評価」されていた問題を補正。
+        # calibrator_*.pkl が存在すれば自動適用。無ければそのまま。
+        try:
+            pred_win = self._calibrate(pred_win, kind='win')
+            pred_top3 = self._calibrate(pred_top3, kind='top3')
+        except Exception as e:
+            # 校正子が無い場合は warning だけ出して raw 値を返す
+            print(f"  ℹ️ Calibrator skip: {e}")
 
         # LambdaRankモデルがある場合はランキング予測
         if self.model_rank is not None:
@@ -252,6 +262,26 @@ class KeibaModel:
             "prob_top3": pred_top3,
             "prob_win": pred_win,
         }
+
+    def _calibrate(self, probs, kind='win'):
+        """isotonic regression calibrator を probs に適用。
+
+        Lazy load: 最初に呼ばれた時 calibrator_{kind}.pkl を読み込み、
+        以降キャッシュする。
+        """
+        if not hasattr(self, '_calibrators'):
+            self._calibrators = {}
+        if kind not in self._calibrators:
+            path = os.path.join(MODEL_DIR, f"calibrator_{kind}.pkl")
+            if not os.path.exists(path):
+                self._calibrators[kind] = None
+                raise FileNotFoundError(f"{path} not found (uncalibrated output)")
+            with open(path, "rb") as f:
+                self._calibrators[kind] = pickle.load(f)
+        cal = self._calibrators[kind]
+        if cal is None:
+            raise FileNotFoundError(f"calibrator_{kind} unavailable")
+        return cal.predict(probs)
 
     def predict_race(self, race_id):
         """レース全頭の予測"""

@@ -744,6 +744,41 @@ def train_models(df, feature_cols, num_boost_round=500, early_stopping_rounds=50
         pickle.dump(model_win, f)
     print(f"\n💾 モデル保存完了: {MODEL_DIR}")
 
+    # ── Isotonic Regression 校正子を学習 (val set で fit) ──
+    # 「本命級が +8.6pt 過小評価」されていた問題を補正。
+    # val set (時系列で後ろ20%) は学習時に未使用なので、honest holdout に近い。
+    try:
+        from sklearn.isotonic import IsotonicRegression
+        print("\n🎯 Calibrator 学習中 (isotonic regression)...")
+        iso_win = IsotonicRegression(out_of_bounds='clip', y_min=0.0, y_max=1.0)
+        iso_win.fit(pred_w, y_win[val_mask])
+        iso_t3 = IsotonicRegression(out_of_bounds='clip', y_min=0.0, y_max=1.0)
+        iso_t3.fit(pred_t3, y_top3[val_mask])
+        with open(os.path.join(MODEL_DIR, "calibrator_win.pkl"), "wb") as f:
+            pickle.dump(iso_win, f)
+        with open(os.path.join(MODEL_DIR, "calibrator_top3.pkl"), "wb") as f:
+            pickle.dump(iso_t3, f)
+        # ECE 改善を表示
+        import numpy as np
+        def _ece(y, p, n_bins=10):
+            bins = np.linspace(0, 1, n_bins+1)
+            bi = np.clip(np.digitize(p, bins)-1, 0, n_bins-1)
+            e = 0
+            for b in range(n_bins):
+                m = bi == b
+                if m.sum() == 0: continue
+                e += (m.sum()/len(y)) * abs(p[m].mean() - y[m].mean())
+            return e
+        e_w0 = _ece(y_win[val_mask].values, pred_w)
+        e_w1 = _ece(y_win[val_mask].values, iso_win.predict(pred_w))
+        e_t0 = _ece(y_top3[val_mask].values, pred_t3)
+        e_t1 = _ece(y_top3[val_mask].values, iso_t3.predict(pred_t3))
+        print(f"  ECE(win):  {e_w0*100:.2f}% → {e_w1*100:.2f}%")
+        print(f"  ECE(top3): {e_t0*100:.2f}% → {e_t1*100:.2f}%")
+        print(f"  ✅ Calibrator 保存完了")
+    except Exception as e:
+        print(f"  ⚠️ Calibrator 学習失敗: {e}")
+
     return model_rank, model_top3, model_win, auc_t3, auc_w
 
 
