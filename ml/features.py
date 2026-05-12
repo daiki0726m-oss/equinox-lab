@@ -192,6 +192,38 @@ class FeatureBuilder:
         features["graded_exp"] = ge["graded_exp"]
         features["graded_top3_rate"] = ge["graded_top3_rate"]
 
+        # ── 17. v6新規: 市場シグナル (オッズ・人気) ──
+        # ⚠️ 循環参照懸念について:
+        # - モデル学習時にオッズを feature にする ≠ EV計算時にオッズを使う、は別軸
+        # - 過去6年 1人気の複勝率 65% は強力な市場シグナル
+        # - 「市場の集合知」を捨てるのはモデル精度を意図的に落とすこと
+        try:
+            odds_val = float(odds) if odds else 0.0
+        except (TypeError, ValueError):
+            odds_val = 0.0
+        try:
+            pop_val = int(popularity) if popularity else 0
+        except (TypeError, ValueError):
+            pop_val = 0
+
+        # log(odds): 単勝オッズの対数。30→log(30)=3.4, 1.5→0.4 と圧縮
+        import math
+        if odds_val >= 1.0:
+            features["odds_log"] = math.log(odds_val)
+        else:
+            # オッズ未取得時は中央値相当 ~log(10)=2.3
+            features["odds_log"] = 2.3
+
+        # 人気の相対位置 (頭数で正規化)
+        if pop_val > 0 and horse_count > 0:
+            features["popularity_norm"] = pop_val / horse_count
+        else:
+            features["popularity_norm"] = 0.5  # 中央
+
+        # 補助フラグ
+        features["is_favorite"] = 1 if pop_val == 1 else 0
+        features["is_top3_pop"] = 1 if 1 <= pop_val <= 3 else 0
+
         return features
 
     def build_features_for_race(self, race_id):
@@ -855,5 +887,7 @@ class FeatureBuilder:
             "impost_diff",
             # v5新規 - 重賞経験 + 重賞複勝率
             "graded_exp", "graded_top3_rate",
+            # v6新規 - 市場シグナル(オッズ・人気) ※競馬予想で最も強い feature の一つ
+            "odds_log", "popularity_norm", "is_favorite", "is_top3_pop",
         ]
 
