@@ -92,15 +92,122 @@ class BettingStrategy:
 
         return True, "OK"
 
+    def _honor_bets(self, sorted_preds, enabled, budget):
+        """印通り保証買い目を生成 (◎○▲注 を信じた素直な組合せ)。
+
+        EV/閾値判定を一切せず、AI が印を出した責任として必ず含める買い目。
+        これにより「印が当たれば最低限の回収」が保証され、
+        印的中時の ROI 0% を撲滅する。
+
+        含めるもの:
+          1. ◎単勝 (本命の宣言)
+          2. ◎複勝 (保険)
+          3. ◎○馬連 (上位2の素直なペア)
+          4. ◎○ワイド (馬連の保険)
+          5. ◎○▲三連複Box (上位3の素直なボックス)
+
+        各 100円 = 最大500円 を honor 用に確保。残りは EV bets が使う。
+        """
+        bets = []
+        if len(sorted_preds) < 1:
+            return bets, 0
+
+        amt = self.MIN_BET  # 100円固定で honor bets
+        spent = 0
+        signatures = set()  # 重複検知
+
+        def add(t, detail, hns, odds, prob, name):
+            nonlocal spent
+            sig = (t, tuple(sorted(hns)))
+            if sig in signatures:
+                return
+            if spent + amt > budget:
+                return
+            signatures.add(sig)
+            spent += amt
+            bets.append({
+                "type": t,
+                "detail": detail,
+                "horse_numbers": hns,
+                "amount": amt,
+                "odds": round(odds, 1),
+                "ev": round(prob * odds, 2),
+                "prob": round(prob, 3),
+                "horse_name": name,
+                "honor": True,  # honor bet マーカー (post 整形で利用可)
+            })
+
+        p1 = sorted_preds[0]                                              # ◎
+        p2 = sorted_preds[1] if len(sorted_preds) >= 2 else None          # ○
+        p3 = sorted_preds[2] if len(sorted_preds) >= 3 else None          # ▲
+
+        # 1. ◎単勝
+        if "単勝" in enabled:
+            odds_w = p1.get("odds_win") or 5.0
+            add("単勝", f"{p1['horse_number']}", [p1["horse_number"]],
+                odds_w, p1.get("pred_win", 0), p1.get("horse_name", ""))
+
+        # 2. ◎複勝
+        if "複勝" in enabled:
+            odds_p = p1.get("odds_place")
+            if not odds_p or odds_p <= 1.0:
+                odds_p = max(1.2, (p1.get("odds_win", 5) or 5) / 3.0)
+            add("複勝", f"{p1['horse_number']}", [p1["horse_number"]],
+                odds_p, p1.get("pred_top3", 0), p1.get("horse_name", ""))
+
+        # 3. ◎○馬連
+        if "馬連" in enabled and p2:
+            ow1 = p1.get("odds_win", 3) or 3
+            ow2 = p2.get("odds_win", 5) or 5
+            est_odds = max(3.0, ow1 * ow2 * 0.45)
+            est_prob = (p1.get("pred_win", 0) + p2.get("pred_win", 0)) * 0.4
+            nums = sorted([p1["horse_number"], p2["horse_number"]])
+            add("馬連", f"{nums[0]}-{nums[1]}", nums, est_odds, est_prob,
+                f"{p1.get('horse_name','')}-{p2.get('horse_name','')}")
+
+        # 4. ◎○ワイド
+        if "ワイド" in enabled and p2:
+            ow1 = p1.get("odds_win", 3) or 3
+            ow2 = p2.get("odds_win", 5) or 5
+            est_odds = max(1.5, (ow1 + ow2) * 0.25)
+            est_prob = min(p1.get("pred_top3", 0.2) * 3, 0.85) * \
+                       min(p2.get("pred_top3", 0.15) * 3, 0.7) * 0.85
+            nums = sorted([p1["horse_number"], p2["horse_number"]])
+            add("ワイド", f"{nums[0]}-{nums[1]}", nums, est_odds, est_prob,
+                f"{p1.get('horse_name','')}-{p2.get('horse_name','')}")
+
+        # 5. ◎○▲ 三連複Box
+        if "三連複" in enabled and p2 and p3:
+            ow1 = p1.get("odds_win", 3) or 3
+            ow2 = p2.get("odds_win", 5) or 5
+            ow3 = p3.get("odds_win", 8) or 8
+            est_odds = max(8.0, ow1 * ow2 * ow3 * 0.06)
+            est_prob = min(p1.get("pred_top3", 0.2) * 3, 0.85) * \
+                       min(p2.get("pred_top3", 0.15) * 3, 0.7) * \
+                       min(p3.get("pred_top3", 0.1) * 3, 0.55) * 0.5
+            est_prob = min(est_prob, 0.25)
+            nums = sorted([p1["horse_number"], p2["horse_number"], p3["horse_number"]])
+            add("三連複", f"{nums[0]}-{nums[1]}-{nums[2]}", nums, est_odds, est_prob,
+                f"{p1.get('horse_name','')}-{p2.get('horse_name','')}-{p3.get('horse_name','')}")
+
+        return bets, spent
+
     def generate_bets(self, predictions, bankroll=None, bet_types=None):
-        """予測結果から推奨馬券を生成（回収率重視版）"""
+        """予測結果から推奨馬券を生成（回収率重視版 + honor bets）"""
         budget = bankroll or self.MAX_BET_PER_RACE
         enabled = set(bet_types) if bet_types else set(self.ALL_BET_TYPES)
-        bets = []
-        total_amount = 0
 
         # 勝率順でソート
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
+
+        # ── 0. 印通り保証買い目 (EV 関係なく必ず含める) ──
+        # AI が印(◎○▲)を出した責任として、素直な組合せに最低額(100円x5=500円)を確保。
+        # これがないと「印は完璧、買い目は外れ、ROI=0%」が再発する(2026-05-10 事例)。
+        honor_list, honor_spent = self._honor_bets(sorted_preds, enabled, budget)
+        bets = list(honor_list)
+        total_amount = honor_spent
+        # honor で既に bet した signature を以後の EV bets で重複させない
+        honor_signatures = {(b["type"], tuple(sorted(b["horse_numbers"]))) for b in honor_list}
 
         # 複勝率8%以上（÷3済み値で判定、実質24%以上）の上位馬
         top_horses = [p for p in sorted_preds if p["pred_top3"] >= 0.08][:4]
@@ -402,8 +509,24 @@ class BettingStrategy:
                         })
                         total_amount += bets[-1]["amount"]
 
-        # EV順にソート
-        bets.sort(key=lambda x: x["ev"], reverse=True)
+        # ── 重複除去 (honor bet と同じ組合せの EV bet は除外) ──
+        # honor bet を優先的に残し、EV bet で同じ印通り組合せを重複させない。
+        deduped = []
+        seen = set()
+        for b in bets:
+            sig = (b["type"], tuple(sorted(b.get("horse_numbers", []))))
+            if sig in seen:
+                # 重複 → honor を残すために、後出を捨てる
+                continue
+            seen.add(sig)
+            deduped.append(b)
+        bets = deduped
+
+        # ── ソート: honor bet を上に、その下を EV 降順 ──
+        bets.sort(key=lambda x: (-1 if x.get("honor") else 0, -x["ev"]))
+
+        # total_amount を実態(deduped 後)に再計算
+        total_amount = sum(b["amount"] for b in bets)
 
         return {
             "bets": bets,
