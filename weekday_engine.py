@@ -312,32 +312,86 @@ def _course_scope_label(race, stats):
     return f"{race['venue']}{race['surface']}{race['distance']}m / 全レース過去6年({n}R)"
 
 
-def build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn):
-    """朝テンプレ: コース概要をコンパクトに(280字以内、データ範囲明示)"""
+def build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow=None):
+    """朝テンプレ: 曜日別 angle で同レースでも違う content を出す。
+
+    同じレース(例:ヴィクトリアマイル)を月-金で feature しても、各日違う
+    切り口になるよう dow で section を切り替える:
+
+      月: 枠順 + 脚質 + 上がり3F (基本傾向)
+      火: 種牡馬×コース実績 + 出走馬クロス
+      水: 母父×コース実績 + 出走馬クロス
+      木: 人気別成績(妙味のある人気帯)
+      金: 当日のまとめ(枠+末脚+父+予告) ※従来通り
+    """
     if not race or not stats:
         return None
+    if dow is None:
+        dow = today_d.weekday() if today_d else 0
     day_phrase = race_day_phrase(race, today_d, with_paren=True)
+    grade_label = f"({race['grade']})" if race.get('grade') else ""
+
     parts = [
-        f"📊 {day_phrase}の{race.get('race_name','')}{('('+race['grade']+')') if race.get('grade') else ''}",
+        f"📊 {day_phrase}の{race.get('race_name','')}{grade_label}",
         _course_scope_label(race, stats),
         "",
     ]
-    f = sec_frame(stats, depth='brief')
-    if f:
-        parts.append(f)
-    p = sec_pace(stats)
-    if p:
-        parts.append(p)
-    l3 = sec_last3f(stats, depth='brief')
-    if l3:
-        parts.append(l3)
-    # 出走馬血統が揃っている場合は1行だけクロス参照を入れる
-    if entries:
-        cs = cross_reference_sires(sires or [], entries, key='sire', limit=1)
+
+    if dow == 0:  # 月曜朝: 基本傾向 (枠/脚質/上がり)
+        f = sec_frame(stats, depth='brief')
+        if f: parts.append(f)
+        p = sec_pace(stats)
+        if p: parts.append(p)
+        l3 = sec_last3f(stats, depth='brief')
+        if l3: parts.append(l3)
+
+    elif dow == 1:  # 火曜朝: 種牡馬×コース(出走馬クロス) — top2に圧縮
+        cs = cross_reference_sires(sires or [], entries or [], key='sire', limit=2)
         if cs:
-            s = cs[0]
-            names = '・'.join(s['entries'][:2])
-            parts.append(f"🧬 {s['name']}産駒({names})は当コース複勝{s['top3']}%")
+            parts.append("【出走馬の父×コース】")
+            for s in cs[:2]:
+                parts.append(f" 🧬{s['name']}:複勝{s['top3']}%")
+        else:
+            parts.append("【当コース注目種牡馬】")
+            for s in (sires or [])[:2]:
+                parts.append(f" ⭐{s['name']}:複勝{s['top3']}%")
+
+    elif dow == 2:  # 水曜朝: 母父×コース(出走馬クロス) — top2に圧縮
+        cd = cross_reference_sires(damsires or [], entries or [], key='damsire', limit=2)
+        if cd:
+            parts.append("【出走馬の母父×コース】")
+            for d in cd[:2]:
+                parts.append(f" 🧬{d['name']}:複勝{d['top3']}%")
+        else:
+            parts.append("【当コース注目母父】")
+            for d in (damsires or [])[:2]:
+                parts.append(f" ⭐{d['name']}:複勝{d['top3']}%")
+
+    elif dow == 3:  # 木曜朝: 人気別成績 — top3に圧縮、形式短く
+        ps = stats.get('popularity_stats') or []
+        parts.append("【人気別 成績(過去6年)】")
+        if ps:
+            for p in ps[:3]:
+                rec = p.get('recovery', 0)
+                mark = '🔥' if rec >= 80 else ''
+                parts.append(f" {p['label']}:複勝{p['top3_rate']}%/回収{rec}%{mark}")
+        else:
+            parts.append("  人気別データ集計中")
+
+    else:  # 金曜朝: 当日まとめ (従来 morning の content)
+        f = sec_frame(stats, depth='brief')
+        if f: parts.append(f)
+        p = sec_pace(stats)
+        if p: parts.append(p)
+        l3 = sec_last3f(stats, depth='brief')
+        if l3: parts.append(l3)
+        if entries:
+            cs = cross_reference_sires(sires or [], entries, key='sire', limit=1)
+            if cs:
+                s = cs[0]
+                names = '・'.join(s['entries'][:2])
+                parts.append(f"🧬 {s['name']}産駒({names})は当コース複勝{s['top3']}%")
+
     parts.append("")
     pa = predict_announce_phrase(race, today_d)
     if pa:
@@ -598,7 +652,7 @@ def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stat
         pass
 
     if slot == 'morning':
-        tweet = build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn)
+        tweet = build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow=dow)
     elif slot == 'weekday':
         tweet = build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
     else:

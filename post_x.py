@@ -276,21 +276,10 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
             now_ts = now_jst().timestamp()
             history = _load_post_history()
 
-            # 1) race_id ベース重複チェック (mode 跨ぎでも検出)
-            if race_id:
-                race_key = f"race:{race_id}"
-                if race_key in history:
-                    try:
-                        rlast = float(history[race_key])
-                        relapsed = now_ts - rlast
-                        if relapsed < 86400:  # 24h
-                            rmin = int(relapsed / 60)
-                            print(f"⚠️ 同レース重複: race_id={race_id} が{rmin//60}h{rmin%60}m前に投稿済み → スキップ")
-                            return []
-                    except (TypeError, ValueError):
-                        pass
+            # race_id ベース dedup は廃止 (同レース別 angle の投稿は OK)。
+            # 同レース短時間ベタ重複は content_key (本文ハッシュ) で十分防げる。
 
-            # 2) 24時間以内に同じハッシュがあればスキップ (従来通り)
+            # 24時間以内に同じハッシュがあればスキップ (本文重複のみ防御)
             if content_key in history:
                 last_ts = history[content_key]
                 elapsed = now_ts - last_ts
@@ -1536,20 +1525,21 @@ def get_main_weekend_race(conn):
 def get_todays_race(conn, slot=0):
     """今日の曜日＋時間帯に応じて週末レースをローテーションで返す。
 
-    v2: 直近18h で投稿済みのレースを deprioritize し、同レース連発を防ぐ。
+    方針: 同じレースを複数日 featured するのは OK(同レースのストーリー積み上げ)。
+    重複防止は build_morning/weekday/evening_tweet が dow 別 angle で
+    違う content を出すことで実現する(同じハッシュは content_key で弾く)。
 
     slot: 0=朝, 1=昼, 2=夜
 
-    優先順位:
-      1) 直近18hで未投稿の graded レースから、ローテ式で選ぶ
-      2) 全 graded が直近投稿済みなら、最も古いものを選ぶ
-      3) 金曜 / graded=1 の場合は graded[0] 固定(まとめ)
+    重賞3件: dow と slot を組合せてローテ
+    重賞2件: 同上(2巡で1サイクル)
+    重賞1件: 全て同レース(同じレースだが日替りで content 変わる)
+    金曜: メイン固定
     """
     all_races = get_weekend_graded_races(conn)
     if not all_races:
         return None
 
-    # G1/G2/G3のみをローテーション対象にする
     graded = [r for r in all_races
               if detect_grade(r['race_name'], r.get('grade')) in ('G1', 'G2', 'G3')]
     if not graded:
@@ -1560,42 +1550,12 @@ def get_todays_race(conn, slot=0):
     if len(graded) == 1:
         return graded[0]
 
-    # 金曜はメインレース固定（まとめ）
-    if dow == 4:
+    if dow == 4:  # 金曜はメイン固定(まとめツイート用)
         return graded[0]
 
-    # ── 投稿履歴ベースで「直近未投稿」を優先 ──
-    history = _load_post_history()
-    now_ts = now_jst().timestamp()
-
-    # 各 race の「最終投稿からの経過時間」を計算 (未投稿は無限大)
-    annotated = []
-    for r in graded:
-        key = f"race:{r['race_id']}"
-        last_ts = history.get(key)
-        if isinstance(last_ts, (int, float)) and last_ts > 0:
-            elapsed = now_ts - last_ts
-        else:
-            elapsed = float('inf')
-        annotated.append({'race': r, 'elapsed': elapsed})
-
-    # 直近18h で未投稿のものを候補に
-    fresh = [a for a in annotated if a['elapsed'] >= 18 * 3600]
-
-    if fresh:
-        # fresh 内で従来通りローテ index を使うが、graded リストでの位置を基準にする
-        # (idx の意味を保つ)
-        idx = (dow + slot) % len(fresh)
-        chosen = fresh[idx]['race']
-        print(f"  📌 get_todays_race: fresh候補{len(fresh)}件から {chosen['race_name']} を選択 (dow={dow}, slot={slot})")
-        return chosen
-
-    # 全部直近投稿済み → 最も古いものを選ぶ(複数あればローテ順で)
-    annotated.sort(key=lambda x: x['elapsed'], reverse=True)
-    chosen = annotated[0]['race']
-    eh = annotated[0]['elapsed'] / 3600 if annotated[0]['elapsed'] != float('inf') else -1
-    print(f"  ⚠️ get_todays_race: 全レース直近投稿済み → 最古({eh:.1f}h前) {chosen['race_name']} を選択")
-    return chosen
+    # ローテ式: dow * 3 + slot を使うことで slot 跨ぎ・日跨ぎでも循環する
+    idx = (dow * 3 + slot) % len(graded)
+    return graded[idx]
 
 
 def get_top_races(conn, n=3):
