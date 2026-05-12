@@ -205,6 +205,90 @@ def _empty_stat(kind):
     return {'top3_rate': 0, 'total': 0}
 
 
+def build_pedigree_cross_stats(results_df, races_df):
+    """v7: 血統 × コース cross 集計 (temporal-safe)
+
+    旧 sire_top3_rate は「全期間全コースの sire 通算」だったので
+    ノイズで重要度0だった。v7 では:
+
+      - sire × (venue, surface, distance) — 最も具体的(その馬の種牡馬は
+        このコースで何頭走って何頭3着内?)
+      - sire × surface — 芝/ダ別の汎適性(サンプル多め)
+      - damsire 同様 2軸
+
+    すべて temporal cumulative (race_date 直前の累積のみ参照)。
+
+    Returns: dict of 4 lookup tables
+    """
+    print("🔧 血統cross統計を構築中(v7 temporal-safe)...")
+    t0 = time.time()
+
+    needed = ["race_date", "venue", "surface", "distance"]
+    avail = [c for c in needed if c in races_df.columns]
+    if "race_date" not in results_df.columns:
+        df = results_df.merge(races_df[["race_id"] + avail], on="race_id", how="left")
+    else:
+        df = results_df.copy()
+
+    df = df[(df["finish_position"] > 0) & (df["sire"].notna() | df["damsire"].notna())]
+    df = df.sort_values("race_date")
+
+    sire_course = {}    # key=(sire, venue, surface, distance) → [(date, t3_cum, total_cum), ...]
+    sire_surface = {}   # key=(sire, surface)
+    damsire_course = {} # key=(damsire, venue, surface, distance)
+    damsire_surface = {}# key=(damsire, surface)
+
+    def _push(d, key, race_date, finish):
+        if key not in d:
+            d[key] = [(race_date, 0, 0)]
+            prev = (0, 0)
+        else:
+            prev = (d[key][-1][1], d[key][-1][2])
+            d[key].append((race_date, prev[0], prev[1]))
+        # 当該行を反映 (次の検索で見える累積)
+        d[key][-1] = (race_date, prev[0] + (1 if finish <= 3 else 0), prev[1] + 1)
+
+    for row in df.itertuples():
+        sire = getattr(row, 'sire', None) or ''
+        damsire = getattr(row, 'damsire', None) or ''
+        venue = getattr(row, 'venue', None) or ''
+        surface = getattr(row, 'surface', None) or ''
+        distance = getattr(row, 'distance', None) or 0
+        rd = row.race_date
+        fp = row.finish_position
+
+        if sire:
+            _push(sire_course, (sire, venue, surface, distance), rd, fp)
+            _push(sire_surface, (sire, surface), rd, fp)
+        if damsire:
+            _push(damsire_course, (damsire, venue, surface, distance), rd, fp)
+            _push(damsire_surface, (damsire, surface), rd, fp)
+
+    elapsed = time.time() - t0
+    print(f"  ✅ sire_course{len(sire_course)}, sire_surface{len(sire_surface)}, "
+          f"damsire_course{len(damsire_course)}, damsire_surface{len(damsire_surface)} "
+          f"({elapsed:.1f}秒)")
+    return sire_course, sire_surface, damsire_course, damsire_surface
+
+
+def _lookup_pedigree(records, target_date, min_runs=5):
+    """血統 cross 累積から target_date 直前の top3 率を取得。
+    サンプル数 < min_runs なら 0 を返す(信頼度なし)。
+    """
+    import bisect
+    if not records:
+        return 0.0
+    dates = [r[0] for r in records]
+    idx = bisect.bisect_left(dates, target_date)
+    if idx == 0:
+        return 0.0
+    _, t3_cum, total_cum = records[idx - 1]
+    # 当該位置は「その行までを含む累積」だが target_date より前のものなので使ってOK
+    if total_cum < min_runs:
+        return 0.0
+    return t3_cum / total_cum
+
+
 def build_speed_index_cache(results_df, races_df):
     """スピード指数をプリコンパイル"""
     print("🔧 スピード指数を計算中...")
@@ -275,11 +359,21 @@ def build_speed_index_cache(results_df, races_df):
 
 
 def compute_features_fast(race, race_results, horse_history, jockey_stats,
-                          trainer_stats, combo_stats, si_cache):
-    """1レース分の特徴量を高速計算"""
+                          trainer_stats, combo_stats, si_cache,
+                          sire_course=None, sire_surface=None,
+                          damsire_course=None, damsire_surface=None):
+    """1レース分の特徴量を高速計算
+
+    v7: pedigree_cross 引数を追加(temporal-safe 血統 cross stats)。
+    後方互換のため省略可。
+    """
     rows = []
     race_date = race["race_date"]
     hc = race["horse_count"] or len(race_results)
+    # race-level info (cross 集計の lookup キー)
+    venue = race.get("venue", "")
+    surface = race.get("surface", "")
+    distance = race.get("distance", 0) or 0
 
     for r in race_results:
         f = {}
@@ -572,6 +666,28 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
         f["is_favorite"] = 1 if pop_val == 1 else 0
         f["is_top3_pop"] = 1 if 1 <= pop_val <= 3 else 0
 
+        # ── v7新規: 血統 × コース cross (temporal-safe) ──
+        # 旧 sire_top3_rate(全期間集計) は重要度0だった。コース×距離×血統の
+        # cross で「東京芝1600m での Lord Kanaloa 産駒」のような具体的 signal に。
+        sire = r.get("sire", "") or ""
+        damsire = r.get("damsire", "") or ""
+        if sire_course is not None and sire:
+            f["sire_course_top3_rate"] = _lookup_pedigree(
+                sire_course.get((sire, venue, surface, distance)), race_date, min_runs=5)
+            f["sire_surface_top3_rate"] = _lookup_pedigree(
+                sire_surface.get((sire, surface)), race_date, min_runs=10)
+        else:
+            f["sire_course_top3_rate"] = 0.0
+            f["sire_surface_top3_rate"] = 0.0
+        if damsire_course is not None and damsire:
+            f["damsire_course_top3_rate"] = _lookup_pedigree(
+                damsire_course.get((damsire, venue, surface, distance)), race_date, min_runs=5)
+            f["damsire_surface_top3_rate"] = _lookup_pedigree(
+                damsire_surface.get((damsire, surface)), race_date, min_runs=10)
+        else:
+            f["damsire_course_top3_rate"] = 0.0
+            f["damsire_surface_top3_rate"] = 0.0
+
         # === ターゲット ===
         fp = r.get("finish_position", 0) or 0
         f["target_win"] = 1 if fp == 1 else 0
@@ -634,6 +750,9 @@ def get_feature_columns():
         "graded_exp", "graded_top3_rate",
         # v6: 市場シグナル(オッズ・人気) ※競馬予想で最も強い signal の一つ
         "odds_log", "popularity_norm", "is_favorite", "is_top3_pop",
+        # v7: 血統×コース cross (temporal-safe)
+        "sire_course_top3_rate", "sire_surface_top3_rate",
+        "damsire_course_top3_rate", "damsire_surface_top3_rate",
     ]
 
 
@@ -906,6 +1025,9 @@ def main():
     horse_history = build_horse_history(results_df, races_df)
     jockey_stats, trainer_stats, combo_stats = build_jockey_trainer_stats(results_df, races_df)
     si_cache = build_speed_index_cache(results_df, races_df)
+    # v7: 血統 cross stats (temporal-safe)
+    sire_course, sire_surface, damsire_course, damsire_surface = \
+        build_pedigree_cross_stats(results_df, races_df)
 
     # Step 3: 特徴量一括計算
     print("\n🔧 全レースの特徴量を一括計算中...")
@@ -929,7 +1051,9 @@ def main():
 
         rows = compute_features_fast(
             race_dict, results_list, horse_history,
-            jockey_stats, trainer_stats, combo_stats, si_cache
+            jockey_stats, trainer_stats, combo_stats, si_cache,
+            sire_course=sire_course, sire_surface=sire_surface,
+            damsire_course=damsire_course, damsire_surface=damsire_surface,
         )
         all_rows.extend(rows)
 
