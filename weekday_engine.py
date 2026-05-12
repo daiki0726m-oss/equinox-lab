@@ -1204,6 +1204,44 @@ def _race_label_short(race):
     return f"{race.get('race_name','')}{g} {race.get('venue','')}{race.get('surface','')}{race.get('distance','')}m"
 
 
+def get_note_article_url(race):
+    """指定レースのnote記事URLを取得。
+    優先順位:
+      1. 環境変数 NOTE_ARTICLES (JSON: {"race_id": "url"})
+      2. 環境変数 NOTE_<RACE_ID>
+      3. ローカル設定 docs/data/note_articles.json
+    どれも無ければ None を返す(投稿には URL 行を入れない)。
+    """
+    import os, json
+    race_id = race.get('race_id') if isinstance(race, dict) else None
+    if not race_id:
+        return None
+    # 1. JSON 環境変数
+    raw = os.getenv('NOTE_ARTICLES', '')
+    if raw:
+        try:
+            m = json.loads(raw)
+            if race_id in m and m[race_id]:
+                return m[race_id]
+        except json.JSONDecodeError:
+            pass
+    # 2. 個別環境変数
+    indiv = os.getenv(f'NOTE_{race_id}', '')
+    if indiv:
+        return indiv
+    # 3. ローカル設定ファイル
+    try:
+        cfg_path = os.path.join(os.path.dirname(__file__), 'docs', 'data', 'note_articles.json')
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                cfg = json.load(f)
+            if race_id in cfg and cfg[race_id]:
+                return cfg[race_id]
+    except (IOError, json.JSONDecodeError):
+        pass
+    return None
+
+
 def _phrase_when(race, today_d):
     """日付フレーズ。例: '5/18(日)', '今週末(日)'"""
     rd = parse_race_date(race)
@@ -1387,23 +1425,35 @@ def build_tue_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
 # ─── 火曜 夜: note 記事誘導 ───
 
 def build_tue_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn):
-    """火曜夜:note 記事を予告 + AI 本命をチラ見せ"""
+    """火曜夜:詳細分析 + AI 本命チラ見せ(noteURLあれば誘導)"""
     if not race:
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
-    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=1)
+    spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=2)
+    note_url = get_note_article_url(race)
 
-    parts = [f"📝 {when} {label} 深層分析note公開\n"]
-    parts.append("【記事の中身】")
-    parts.append("・過去6年データで判明した勝ち馬の型")
-    parts.append("・コース×血統TOP10")
-    parts.append("・AI 8軸スコア TOP6")
-    parts.append("")
-    if spots:
-        parts.append(f"◎本命候補:{_format_spotlight_line(spots[0], max_reasons=2)}")
+    if note_url:
+        # URLあり → note誘導テンプレ
+        parts = [f"📝 {when} {label} 深層分析note公開\n"]
+        parts.append("【記事の中身】")
+        parts.append("・過去6年データで判明した勝ち馬の型")
+        parts.append("・コース×血統TOP10 + AI 8軸スコア")
         parts.append("")
-    parts.append("note▶ (記事公開後にURL差し替え)")
+        if spots:
+            parts.append(f"◎本命候補:{_format_spotlight_line(spots[0])}")
+            parts.append("")
+        parts.append(f"▶ {note_url}")
+    else:
+        # URLなし → AI注目馬TOP2 を別フォーマットで提示
+        parts = [f"📊 {when} {label} AI予想ハイライト\n"]
+        if spots:
+            parts.append("【現時点の AI 注目馬】")
+            marks = ['◎', '○']
+            for i, sp in enumerate(spots[:2]):
+                parts.append(f"{marks[i]} {_format_spotlight_line(sp)}")
+            parts.append("")
+        parts.append("→ 木曜夜に最終予想、土曜朝に印付き完全予想配信🔔")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -1568,26 +1618,28 @@ def build_thu_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
 # ─── 木曜 夜: 最終注目馬 + note 完成版誘導 ───
 
 def build_thu_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn):
-    """木曜夜:最終注目馬 + note 記事最終版"""
+    """木曜夜:最終注目馬3頭(noteURLあれば誘導)"""
     if not race:
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
     spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
+    note_url = get_note_article_url(race)
 
-    parts = [f"📊 {when} {label} 完全予想公開\n"]
-    parts.append("【AI最終3頭】")
+    parts = [f"📊 {when} {label} AI完全予想\n"]
+    # spots が取れた場合のみ最終3頭を出す
     if spots:
+        parts.append("【最終3頭(8軸スコア)】")
         marks = ['◎', '○', '▲']
         for i, sp in enumerate(spots[:3]):
-            parts.append(f"{marks[i]} {sp.get('num',0)}番 {sp.get('name','?')}")
-    parts.append("")
-    parts.append("【note記事で詳しく】")
-    parts.append("・8軸スコア全頭")
-    parts.append("・過去6年の勝ち馬パターン")
-    parts.append("・馬券戦略フレームワーク")
-    parts.append("")
-    parts.append("note▶ (URL)")
+            parts.append(f"{marks[i]} {_format_spotlight_line(sp)}")
+        parts.append("")
+    if note_url:
+        parts.append("【詳細分析記事】")
+        parts.append(f"▶ {note_url}")
+    else:
+        parts.append("→ 明日金曜:過小評価馬発見")
+        parts.append("→ 土曜朝に印付き完全予想配信🔔")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
