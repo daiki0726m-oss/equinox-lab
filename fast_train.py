@@ -40,16 +40,18 @@ def load_all_data():
 
 
 def build_horse_history(results_df, races_df):
-    """馬ごとの過去レース履歴をプリコンパイル"""
+    """馬ごとの過去レース履歴をプリコンパイル。
+    v5: venue/surface/distance/grade/track_condition も merge して
+        same_course / graded_exp などの新 feature 計算に必要なフィールドを揃える。
+    """
     print("🔧 馬の履歴データを構築中...")
     t0 = time.time()
 
-    # race_id → race_date マッピング
-    race_dates = dict(zip(races_df["race_id"], races_df["race_date"]))
-
-    # 結果に日付を追加
-    res = results_df.copy()
-    res["race_date"] = res["race_id"].map(race_dates)
+    # race info を results に merge (v5 新 features 用)
+    needed_race_cols = ["race_id", "race_date", "venue", "surface", "distance",
+                        "grade", "track_condition", "horse_count"]
+    avail = [c for c in needed_race_cols if c in races_df.columns]
+    res = results_df.merge(races_df[avail], on="race_id", how="left", suffixes=("", "_r"))
     res = res.sort_values(["horse_id", "race_date"])
 
     # 馬ごとのデータをグループ化
@@ -404,6 +406,65 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
             f["dist_win_rate"] = 0
             f["dist_top3_rate"] = 0
 
+        # ── v5新規: 着差 (margin) ──
+        def _parse_margin(s):
+            if not s: return None
+            s = str(s).strip()
+            jp = {'ハナ':0.02, 'アタマ':0.05, 'クビ':0.15, '同着':0.0, '大差':10.0}
+            if s in jp: return jp[s]
+            try:
+                if ' ' in s:
+                    parts = s.split()
+                    base = float(parts[0])
+                    if '/' in parts[1]:
+                        num,den = parts[1].split('/')
+                        return base + float(num)/float(den)
+                    return base
+                if '/' in s:
+                    num,den = s.split('/')
+                    return float(num)/float(den)
+                return float(s)
+            except (ValueError, IndexError):
+                return None
+        margins = []
+        for pr in past_races[:5]:
+            m = _parse_margin(pr.get('margin'))
+            if m is not None:
+                if pr['finish_position'] == 1:
+                    margins.append(0.0)
+                else:
+                    margins.append(min(m, 10.0))
+        f["margin_avg"] = (sum(margins)/len(margins)) if margins else 5.0
+        f["margin_best"] = min(margins) if margins else 5.0
+
+        # ── v5新規: 同コース過去成績 (course familiarity) ──
+        same_course_past = [pr for pr in past_races
+                            if pr.get('venue') == venue
+                            and pr.get('surface') == surface
+                            and (pr.get('distance') or 0) == dist]
+        if same_course_past:
+            f["same_course_top3_rate"] = sum(1 for p in same_course_past if p["finish_position"] <= 3) / len(same_course_past)
+            f["same_course_runs"] = min(len(same_course_past), 10) / 10
+        else:
+            f["same_course_top3_rate"] = 0.0
+            f["same_course_runs"] = 0.0
+
+        # ── v5新規: 斤量変化 (前走比) ──
+        current_impost = f.get("impost") or 57.0
+        try:
+            prev_impost = float(past_races[0].get("impost") or 0) if past_races else 0
+        except (TypeError, ValueError):
+            prev_impost = 0
+        f["impost_diff"] = (current_impost - prev_impost) if prev_impost > 0 else 0.0
+
+        # ── v5新規: 重賞経験 + 重賞複勝率 ──
+        graded_past = [pr for pr in past_races if pr.get('grade') in ('G1','G2','G3')]
+        f["graded_exp"] = min(len(graded_past), 10) / 10
+        if graded_past:
+            f["graded_top3_rate"] = sum(1 for p in graded_past if p["finish_position"] <= 3) / len(graded_past)
+        else:
+            f["graded_top3_rate"] = 0.0
+
         # === ターゲット ===
         fp = r.get("finish_position", 0) or 0
         f["target_win"] = 1 if fp == 1 else 0
@@ -421,26 +482,49 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
 
 
 def get_feature_columns():
-    """特徴量カラム一覧 — ml/features.py と完全一致させること"""
+    """特徴量カラム一覧 v5 — ml/features.py と完全一致させること
+
+    v5変更:
+      削除(重要度0): pedigree_score, sire_top3_rate, sire_sample_size,
+                     bias_score, horse_age, is_peak_age, age_class_top3_rate,
+                     is_heavy_track, post_win_rate_course
+      追加: margin_avg, margin_best, same_course_top3_rate, same_course_runs,
+            impost_diff, graded_exp, graded_top3_rate
+    """
     return [
+        # SI (6)
         "si_avg", "si_max", "si_min", "si_std", "si_latest", "si_count",
-        "pedigree_score", "sire_top3_rate", "sire_sample_size",
+        # 騎手/調教師 (5) — 最重要群
         "jt_score", "jockey_cond_top3", "jockey_cond_win",
         "trainer_cond_top3", "combo_top3",
-        "bias_score", "post_position_ratio",
+        # 枠順 (1)
+        "post_position_ratio",
+        # ペース (3)
         "front_rate", "avg_pos_ratio", "avg_last_3f",
+        # 馬情報 (7)
         "horse_count", "weight", "weight_change",
         "impost", "distance_cat", "surface_turf", "rest_days",
+        # 過去成績 (5)
         "avg_finish_5r", "win_rate_10r", "top3_rate_10r",
         "finish_trend", "race_experience",
+        # コンテキスト (5)
         "distance_diff", "jockey_change", "course_top3_rate",
         "last_3f_best", "weight_trend",
-        "track_cond_code", "weather_code", "is_heavy_track",
+        # 天気・馬場 (4)
+        "track_cond_code", "weather_code",
         "horse_wet_win_rate", "horse_wet_top3_rate",
-        "horse_age", "is_peak_age",
-        "post_win_rate_course", "post_top3_rate_course",
-        "age_class_top3_rate",
+        # コース別枠順 (1)
+        "post_top3_rate_course",
+        # 距離別 (2)
         "dist_win_rate", "dist_top3_rate",
+        # v5: 着差
+        "margin_avg", "margin_best",
+        # v5: 同コース familiarity
+        "same_course_top3_rate", "same_course_runs",
+        # v5: 斤量変化
+        "impost_diff",
+        # v5: 重賞経験
+        "graded_exp", "graded_top3_rate",
     ]
 
 
