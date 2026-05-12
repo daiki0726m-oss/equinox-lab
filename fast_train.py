@@ -549,6 +549,29 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
         else:
             f["graded_top3_rate"] = 0.0
 
+        # ── v6新規: 市場シグナル (オッズ・人気) ──
+        # 過去6年 1人気の複勝率 65% は実勢でモデル外せない強力シグナル
+        try:
+            odds_val = float(r.get("odds", 0) or 0)
+        except (TypeError, ValueError):
+            odds_val = 0.0
+        try:
+            pop_val = int(r.get("popularity", 0) or 0)
+        except (TypeError, ValueError):
+            pop_val = 0
+
+        import math
+        if odds_val >= 1.0:
+            f["odds_log"] = math.log(odds_val)
+        else:
+            f["odds_log"] = 2.3
+        if pop_val > 0 and hc > 0:
+            f["popularity_norm"] = pop_val / hc
+        else:
+            f["popularity_norm"] = 0.5
+        f["is_favorite"] = 1 if pop_val == 1 else 0
+        f["is_top3_pop"] = 1 if 1 <= pop_val <= 3 else 0
+
         # === ターゲット ===
         fp = r.get("finish_position", 0) or 0
         f["target_win"] = 1 if fp == 1 else 0
@@ -609,6 +632,8 @@ def get_feature_columns():
         "impost_diff",
         # v5: 重賞経験
         "graded_exp", "graded_top3_rate",
+        # v6: 市場シグナル(オッズ・人気) ※競馬予想で最も強い signal の一つ
+        "odds_log", "popularity_norm", "is_favorite", "is_top3_pop",
     ]
 
 
