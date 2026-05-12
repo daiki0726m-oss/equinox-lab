@@ -173,6 +173,25 @@ class FeatureBuilder:
         features["dist_win_rate"] = dist_stats["win_rate"]
         features["dist_top3_rate"] = dist_stats["top3_rate"]
 
+        # ── 13. v5新規: 着差 (前走の走行品質) ──
+        margin_stats = self._get_margin_avg(horse_id, race_date, n=5)
+        features["margin_avg"] = margin_stats["margin_avg"]
+        features["margin_best"] = margin_stats["margin_best"]
+
+        # ── 14. v5新規: 同コース過去成績 (course familiarity) ──
+        same_course = self._get_same_course_stats(horse_id, venue, surface, distance, race_date)
+        features["same_course_top3_rate"] = same_course["same_course_top3_rate"]
+        features["same_course_runs"] = same_course["same_course_runs"]
+
+        # ── 15. v5新規: 斤量変化 (前走比) ──
+        impost_d = self._get_impost_diff(horse_id, features.get("impost", 57.0), race_date)
+        features["impost_diff"] = impost_d["impost_diff"]
+
+        # ── 16. v5新規: 重賞経験 + 重賞複勝率 ──
+        ge = self._get_grade_experience(horse_id, race_date)
+        features["graded_exp"] = ge["graded_exp"]
+        features["graded_top3_rate"] = ge["graded_top3_rate"]
+
         return features
 
     def build_features_for_race(self, race_id):
@@ -660,19 +679,156 @@ class FeatureBuilder:
             }
         return {"win_rate": 0, "top3_rate": 0}
 
+    # ─── v5 新規 features (機能していない features を置換) ──
+
+    @staticmethod
+    def _parse_margin(margin_str):
+        """results.margin (テキスト) を着差(馬身)に変換。
+        例: 'クビ'→0.15, 'アタマ'→0.05, 'ハナ'→0.02, '1/2'→0.5,
+             '3/4'→0.75, '1'→1.0, '1 1/2'→1.5, '大差'→10.0
+        """
+        if not margin_str:
+            return None
+        s = str(margin_str).strip()
+        if not s:
+            return None
+        japanese_map = {'ハナ': 0.02, 'アタマ': 0.05, 'クビ': 0.15,
+                        '同着': 0.0, '大差': 10.0}
+        if s in japanese_map:
+            return japanese_map[s]
+        # 1 1/2 のような表記
+        try:
+            if ' ' in s:
+                parts = s.split()
+                base = float(parts[0])
+                if '/' in parts[1]:
+                    num, den = parts[1].split('/')
+                    return base + float(num) / float(den)
+                return base
+            if '/' in s:
+                num, den = s.split('/')
+                return float(num) / float(den)
+            return float(s)
+        except (ValueError, IndexError):
+            return None
+
+    def _get_margin_avg(self, horse_id, race_date=None, n=5):
+        """直近 N 走の平均着差 (1着馬からの差・馬身)。
+        着差が小さいほど高品質な走り。"""
+        with get_db() as conn:
+            date_filter = "AND ra.race_date < ?" if race_date else ""
+            params = (horse_id,) + ((race_date,) if race_date else ())
+            rows = conn.execute(f"""
+                SELECT r.margin, r.finish_position
+                FROM results r
+                JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.horse_id = ? AND r.finish_position > 0 {date_filter}
+                ORDER BY ra.race_date DESC
+                LIMIT ?
+            """, params + (n,)).fetchall()
+        if not rows:
+            return {'margin_avg': 5.0, 'margin_best': 5.0}
+        margins = []
+        for r in rows:
+            m = self._parse_margin(r['margin'])
+            if m is None:
+                continue
+            # 1着馬は margin が空のことが多い → 0 として扱う
+            if r['finish_position'] == 1:
+                margins.append(0.0)
+            else:
+                margins.append(min(m, 10.0))
+        if not margins:
+            return {'margin_avg': 5.0, 'margin_best': 5.0}
+        return {
+            'margin_avg': sum(margins) / len(margins),
+            'margin_best': min(margins),
+        }
+
+    def _get_same_course_stats(self, horse_id, venue, surface, distance, race_date=None):
+        """同馬の同コース(venue+surface+distance) 過去成績。"""
+        with get_db() as conn:
+            date_filter = "AND ra.race_date < ?" if race_date else ""
+            params = (horse_id, venue, surface, distance)
+            if race_date:
+                params = params + (race_date,)
+            stats = conn.execute(f"""
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN r.finish_position = 1 THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
+                FROM results r
+                JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.horse_id = ? AND ra.venue = ? AND ra.surface = ?
+                  AND ra.distance = ? AND r.finish_position > 0 {date_filter}
+            """, params).fetchone()
+        if stats and stats['total'] > 0:
+            return {
+                'same_course_top3_rate': stats['top3'] / stats['total'],
+                'same_course_runs': min(stats['total'], 10) / 10,
+            }
+        return {'same_course_top3_rate': 0.0, 'same_course_runs': 0.0}
+
+    def _get_impost_diff(self, horse_id, current_impost, race_date=None):
+        """前走比 斤量変化(kg)。重くなれば負担増→不利、軽くなれば有利。"""
+        if not current_impost:
+            return {'impost_diff': 0.0}
+        with get_db() as conn:
+            date_filter = "AND ra.race_date < ?" if race_date else ""
+            params = (horse_id,) + ((race_date,) if race_date else ())
+            row = conn.execute(f"""
+                SELECT r.impost
+                FROM results r
+                JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.horse_id = ? AND r.finish_position > 0 {date_filter}
+                ORDER BY ra.race_date DESC LIMIT 1
+            """, params).fetchone()
+        if row and row['impost']:
+            return {'impost_diff': float(current_impost) - float(row['impost'])}
+        return {'impost_diff': 0.0}
+
+    def _get_grade_experience(self, horse_id, race_date=None):
+        """重賞(G1/G2/G3) 出走経験 + 複勝経験。"""
+        with get_db() as conn:
+            date_filter = "AND ra.race_date < ?" if race_date else ""
+            params = (horse_id,) + ((race_date,) if race_date else ())
+            row = conn.execute(f"""
+                SELECT
+                  SUM(CASE WHEN ra.grade IN ('G1','G2','G3') THEN 1 ELSE 0 END) as graded_runs,
+                  SUM(CASE WHEN ra.grade IN ('G1','G2','G3') AND r.finish_position <= 3
+                           THEN 1 ELSE 0 END) as graded_top3
+                FROM results r
+                JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.horse_id = ? AND r.finish_position > 0 {date_filter}
+            """, params).fetchone()
+        if row:
+            runs = row['graded_runs'] or 0
+            top3 = row['graded_top3'] or 0
+            return {
+                'graded_exp': min(runs, 10) / 10,
+                'graded_top3_rate': (top3 / runs) if runs > 0 else 0.0,
+            }
+        return {'graded_exp': 0.0, 'graded_top3_rate': 0.0}
+
     @staticmethod
     def get_feature_columns():
-        """学習に使用する特徴量カラム一覧 (v4: 枠順・年齢・距離強化)"""
+        """学習に使用する特徴量カラム一覧 (v5: 役立たない9個を削除 + 5個新規追加)
+
+        v4 → v5 変更:
+          削除(モデルで重要度0だった): pedigree_score, sire_top3_rate, sire_sample_size,
+                                        bias_score, horse_age, is_peak_age,
+                                        age_class_top3_rate, is_heavy_track, post_win_rate_course
+
+          追加(機会損失だった): margin_avg, margin_best, same_course_top3_rate,
+                                same_course_runs, impost_diff, graded_exp, graded_top3_rate
+        """
         return [
             # スピード指数 (6)
             "si_avg", "si_max", "si_min", "si_std", "si_latest", "si_count",
-            # 血統 (3)
-            "pedigree_score", "sire_top3_rate", "sire_sample_size",
-            # 騎手・調教師 (5)
+            # 騎手・調教師 (5) ← 最重要群
             "jt_score", "jockey_cond_top3", "jockey_cond_win",
             "trainer_cond_top3", "combo_top3",
-            # 馬場バイアス (2)
-            "bias_score", "post_position_ratio",
+            # 枠順 (1)
+            "post_position_ratio",
             # ペース (3)
             "front_rate", "avg_pos_ratio", "avg_last_3f",
             # 馬情報 (7)
@@ -684,16 +840,20 @@ class FeatureBuilder:
             # コンテキスト (5)
             "distance_diff", "jockey_change", "course_top3_rate",
             "last_3f_best", "weight_trend",
-            # 天候・馬場 (5)
-            "track_cond_code", "weather_code", "is_heavy_track",
+            # 天候・馬場 (3)
+            "track_cond_code", "weather_code",
             "horse_wet_win_rate", "horse_wet_top3_rate",
-            # 年齢 (2)
-            "horse_age", "is_peak_age",
-            # コース別枠順 (2) ※新規
-            "post_win_rate_course", "post_top3_rate_course",
-            # グレード×距離×年齢 (1) ※新規
-            "age_class_top3_rate",
-            # 同距離限定成績 (2) ※新規
+            # コース別枠順 (1)
+            "post_top3_rate_course",
+            # 同距離限定成績 (2)
             "dist_win_rate", "dist_top3_rate",
+            # v5新規 - 着差(前走の質を示す強シグナル)
+            "margin_avg", "margin_best",
+            # v5新規 - 同馬の同コース過去成績(course familiarity)
+            "same_course_top3_rate", "same_course_runs",
+            # v5新規 - 斤量変化
+            "impost_diff",
+            # v5新規 - 重賞経験 + 重賞複勝率
+            "graded_exp", "graded_top3_rate",
         ]
 
