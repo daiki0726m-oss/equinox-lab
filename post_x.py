@@ -1690,9 +1690,9 @@ def get_race_entries(conn, race_id):
 
 
 def make_race_hashtags(race):
-    """レースからハッシュタグを生成"""
+    """レースからハッシュタグを生成 (brand line は冗長なので省略)"""
     tag = race['race_name'].replace(' ', '').replace('　', '')
-    return f"#{tag} #競馬予想 #AI予想\n{data_credit(short=True)}"
+    return f"#{tag} #競馬予想 #AI予想"
 
 
 # ─── DB統計情報（投稿に期間情報を自動挿入） ───
