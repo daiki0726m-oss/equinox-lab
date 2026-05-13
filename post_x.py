@@ -2732,6 +2732,54 @@ def fact_check_tweet(tweet_text):
             issues.append("🚫 投資0円の的中報告は不正です")
             critical = True
 
+    # ── v9 「中身なし」検出 — データ薄い slot は投稿ブロック ──
+    # 「(○○データ収集中)」「該当なし」「(取得中)」等のプレースホルダー残存
+    empty_patterns = [
+        r'\(.*データ?(収集|取得)中\)',
+        r'\(.*未確定\)',
+        r'\(.*未登録\)',
+        r'該当(する|なし|データなし)',
+        r'\[URL\]',
+        r'\(URL\)',
+        r'\(記事公開後',
+        r'\[TODO\]',
+        r'\[馬名\]',
+    ]
+    for pat in empty_patterns:
+        if re.search(pat, tweet_text):
+            issues.append(f"🚫 中身なしプレースホルダー: {pat}")
+            critical = True
+
+    # 投稿に具体的な馬名/馬番が1つも含まれない 「中身なし」検出
+    # → 「{番号}番 {馬名}」or「⭐{番号}番」or「{年}年:{馬名}」のパターン
+    has_specific_horse = (
+        re.search(r'\d{1,2}番\s*[ァ-ヴー]', tweet_text) or
+        re.search(r'⭐\s*\d', tweet_text) or
+        re.search(r'\d{4}\s+[ァ-ヴー]{3,}', tweet_text) or
+        re.search(r'\d{4}年:?\s*[ァ-ヴー]{3,}', tweet_text)
+    )
+    # ただし「週末ラインナップ」「翌朝配信告知」など馬名不要な slot もある
+    no_horse_ok_keywords = [
+        'ラインナップ', '配信お知らせ', '配信予定', '騎手コース適性',
+        '騎手TOP', '父TOP', '母父TOP', '勝ち馬パターン', '独自パターン分析',
+        'コース傾向', '上がり3F最速馬の実績', '末脚分析', '末脚有望馬',
+        '【勝ち馬パターン', '当コース', '【枠順', '【脚質',
+    ]
+    needs_horse = not any(kw in tweet_text for kw in no_horse_ok_keywords)
+    if needs_horse and not has_specific_horse:
+        issues.append("🚫 具体的な馬名/馬番が含まれない投稿(中身なし)")
+        critical = True
+
+    # 本文(ハッシュタグ・URLを除く)が極端に短い (有意なinfo がない)
+    body_lines = [
+        ln for ln in tweet_text.split('\n')
+        if ln.strip() and not ln.startswith('#')
+        and not re.match(r'^https?://', ln.strip())
+    ]
+    if len(body_lines) < 5:
+        # 5行未満なら情報量不足の可能性
+        issues.append(f"⚠️ 本文の行数が少ない({len(body_lines)}行)、内容希薄の可能性")
+
     if issues:
         print("🔍 ファクトチェック結果:")
         for issue in issues:
