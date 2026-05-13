@@ -1052,52 +1052,167 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
     surface = race.get('surface', '')
     distance = race.get('distance', 0)
 
+    dow = today_d.weekday()
+    slot_idx = {'morning': 0, 'weekday': 1, 'evening': 2}.get(slot, 1)
+    # (dow*3+slot) % 8 で 8テーマからローテ → 重複防止
+    theme_idx = (dow * 3 + slot_idx) % 8
     slot_emoji = {'morning':'📊', 'weekday':'🔍', 'evening':'🌙'}.get(slot, '📊')
-    parts = [f"{slot_emoji} {when}{race.get('race_name','')}{g} コース分析"]
+
+    theme_title = ""
+    body_lines = []
+
+    if theme_idx == 0:  # 枠順傾向
+        theme_title = "枠順傾向(過去6年)"
+        try:
+            fs = sorted(stats.get('frame_stats') or [],
+                        key=lambda x: x.get('top3_rate', 0), reverse=True)
+            if fs:
+                best, worst = fs[0], fs[-1]
+                body_lines.append(f"⭐ {best.get('frame')}枠:複勝率{best.get('top3_rate')}%(ベスト)")
+                body_lines.append(f"⚠️ {worst.get('frame')}枠:複勝率{worst.get('top3_rate')}%(ワースト)")
+                if len(fs) >= 2:
+                    body_lines.append(f"・{fs[1].get('frame')}枠:複勝率{fs[1].get('top3_rate')}%")
+        except Exception:
+            pass
+
+    elif theme_idx == 1:  # 脚質傾向
+        theme_title = "脚質傾向(過去6年)"
+        try:
+            rs = sorted(stats.get('running_style_stats') or [],
+                        key=lambda x: x.get('top3_rate', 0), reverse=True)
+            for r in (rs or [])[:4]:
+                body_lines.append(f"・{r.get('style','')}:複勝率{r.get('top3_rate')}%")
+        except Exception:
+            pass
+
+    elif theme_idx == 2:  # 上り3F最速馬
+        theme_title = "末脚の威力(過去6年)"
+        try:
+            l3 = stats.get('last3f_stats') or []
+            if l3:
+                top_l3 = max(l3, key=lambda x: x.get('top3_rate', 0))
+                body_lines.append(f"🚀 上り3F最速馬の複勝率:{top_l3.get('top3_rate')}%")
+            if conn:
+                row = conn.execute("""
+                    SELECT 100.0*SUM(CASE WHEN r.finish_position=1 THEN 1 ELSE 0 END)/COUNT(*) wr
+                    FROM results r JOIN races ra ON r.race_id=ra.race_id
+                    WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+                      AND r.finish_position>0 AND ra.race_date>='2020-01-01' AND r.last_3f>0
+                      AND r.last_3f = (SELECT MIN(r2.last_3f) FROM results r2 WHERE r2.race_id=r.race_id AND r2.last_3f>0)
+                """, (venue, surface, distance)).fetchone()
+                if row and row['wr']:
+                    body_lines.append(f"・勝率も{row['wr']:.0f}%と異常値")
+            body_lines.append("→ 末脚絶対値が勝敗を分ける")
+        except Exception:
+            pass
+
+    elif theme_idx == 3:  # 人気別傾向
+        theme_title = "人気別 成績(過去6年)"
+        try:
+            ps = stats.get('popularity_stats') or []
+            for p in (ps or [])[:4]:
+                body_lines.append(f"・{p.get('label','')}:複勝率{p.get('top3_rate')}%")
+        except Exception:
+            pass
+
+    elif theme_idx == 4:  # 父血統TOP
+        theme_title = "コース×父血統TOP(過去6年)"
+        if conn:
+            try:
+                rows = conn.execute("""
+                    SELECT h.sire, COUNT(*) runs,
+                           ROUND(100.0*SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*),1) top3
+                    FROM results r JOIN races ra ON r.race_id=ra.race_id JOIN horses h ON r.horse_id=h.horse_id
+                    WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+                      AND ra.race_date>='2020-01-01' AND r.finish_position>0
+                      AND h.sire IS NOT NULL AND h.sire != ''
+                    GROUP BY h.sire HAVING runs>=10
+                    ORDER BY top3 DESC LIMIT 3
+                """, (venue, surface, distance)).fetchall()
+                for r in rows:
+                    body_lines.append(f"🧬{r['sire']}:複勝率{r['top3']}%({r['runs']}走)")
+            except Exception:
+                pass
+
+    elif theme_idx == 5:  # 母父血統TOP
+        theme_title = "コース×母父TOP(過去6年)"
+        if conn:
+            try:
+                rows = conn.execute("""
+                    SELECT h.damsire, COUNT(*) runs,
+                           ROUND(100.0*SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*),1) top3
+                    FROM results r JOIN races ra ON r.race_id=ra.race_id JOIN horses h ON r.horse_id=h.horse_id
+                    WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+                      AND ra.race_date>='2020-01-01' AND r.finish_position>0
+                      AND h.damsire IS NOT NULL AND h.damsire != ''
+                    GROUP BY h.damsire HAVING runs>=10
+                    ORDER BY top3 DESC LIMIT 3
+                """, (venue, surface, distance)).fetchall()
+                for r in rows:
+                    body_lines.append(f"🧬{r['damsire']}:複勝率{r['top3']}%")
+            except Exception:
+                pass
+
+    elif theme_idx == 6:  # 騎手×コース
+        theme_title = "コース騎手TOP(過去6年)"
+        if conn:
+            try:
+                rows = conn.execute("""
+                    SELECT j.jockey_name, COUNT(*) runs,
+                           ROUND(100.0*SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END)/COUNT(*),1) top3
+                    FROM results r JOIN races ra ON r.race_id=ra.race_id JOIN jockeys j ON r.jockey_id=j.jockey_id
+                    WHERE ra.venue=? AND ra.surface=? AND ra.distance=?
+                      AND ra.race_date>='2020-01-01' AND r.finish_position>0
+                    GROUP BY j.jockey_name HAVING runs>=30
+                    ORDER BY top3 DESC LIMIT 3
+                """, (venue, surface, distance)).fetchall()
+                for r in rows:
+                    body_lines.append(f"・{r['jockey_name']}:複勝率{r['top3']}%")
+            except Exception:
+                pass
+
+    elif theme_idx == 7:  # 過去勝ち馬パターン
+        theme_title = "過去勝ち馬パターン"
+        pattern = get_past_winners_pattern(conn, race.get('race_name', ''), venue, surface, distance)
+        if pattern and pattern['n'] >= 3:
+            n = pattern['n']
+            sample = "同コース過去6年" if pattern['fallback'] else f"過去{n}年同レース"
+            body_lines.append(f"({sample}・{n}頭)")
+            if pattern['mid_pop'] > 0:
+                body_lines.append(f"・4-9人気:{pattern['mid_pop']/n*100:.0f}%")
+            if pattern['fav'] > 0:
+                body_lines.append(f"・1-3人気:{pattern['fav']/n*100:.0f}%")
+            if pattern['kingmambo_count'] > 0:
+                body_lines.append(f"・キンマンボ系:{pattern['kingmambo_count']/n*100:.0f}%")
+            if pattern['avg_last3f']:
+                body_lines.append(f"・平均上り3F:{pattern['avg_last3f']:.1f}秒")
+
+    # body が空ならデフォルトテーマで埋める
+    if not body_lines:
+        theme_title = "コース傾向(過去6年)"
+        try:
+            l3 = stats.get('last3f_stats') or []
+            if l3:
+                top_l3 = max(l3, key=lambda x: x.get('top3_rate', 0))
+                body_lines.append(f"🚀 上り最速馬:複勝率{top_l3.get('top3_rate')}%")
+            rs = stats.get('running_style_stats') or []
+            if rs:
+                best = max(rs, key=lambda x: x.get('top3_rate', 0))
+                body_lines.append(f"💨 {best.get('style','')}:複勝率{best.get('top3_rate')}%")
+        except Exception:
+            pass
+
+    parts = [f"{slot_emoji} {when}{race.get('race_name','')}{g} {theme_title}"]
     parts.append("")
-    parts.append("【過去6年データ】")
-
-    # 上がり3F最速馬の威力 (最強シグナル)
-    try:
-        l3 = stats.get('last3f_stats') or []
-        if l3:
-            top_l3 = max(l3, key=lambda x: x.get('top3_rate', 0))
-            t3rate = top_l3.get('top3_rate', 0)
-            if t3rate >= 50:
-                parts.append(f"🚀 上り3F最速馬の複勝率:{t3rate}%")
-    except Exception:
-        pass
-
-    # 脚質 best
-    try:
-        rs = stats.get('running_style_stats') or []
-        if rs:
-            best = max(rs, key=lambda x: x.get('top3_rate', 0))
-            parts.append(f"💨 {best.get('style','')}:複勝率{best.get('top3_rate')}%")
-    except Exception:
-        pass
-
-    # 枠順 best
-    try:
-        fs = stats.get('frame_stats') or []
-        if fs:
-            best = max(fs, key=lambda x: x.get('top3_rate', 0))
-            parts.append(f"⭐ {best.get('frame')}枠:複勝率{best.get('top3_rate')}%")
-    except Exception:
-        pass
-
-    # 過去勝ち馬パターン
-    pattern = get_past_winners_pattern(conn, race.get('race_name', ''), venue, surface, distance)
-    if pattern and pattern['n'] >= 3:
-        n = pattern['n']
-        # 人気分布の最大シェア
-        if pattern['mid_pop'] >= pattern['fav']:
-            parts.append(f"🎯 勝ち馬は4-9人気:{pattern['mid_pop']/n*100:.0f}%(中穴傾向)")
-        elif pattern['fav'] >= 1:
-            parts.append(f"🎯 勝ち馬は1-3人気:{pattern['fav']/n*100:.0f}%(堅実)")
-
+    parts.extend(body_lines)
     parts.append("")
-    parts.append("→ 土曜朝に印付き完全予想を配信🔔")
+    # 行動指針 (slotで変える)
+    if slot_idx == 0:
+        parts.append("→ 詳細はnote記事・土曜朝に印付き完全予想🔔")
+    elif slot_idx == 1:
+        parts.append("→ 今夜AI注目馬TOP3、土曜朝に印付き完全予想🔔")
+    else:
+        parts.append("→ 土曜朝に印付き完全予想を配信🔔")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
