@@ -187,6 +187,14 @@ def load_x_client():
         access_token=access_token,
         access_token_secret=access_secret
     )
+    # 画像 upload 用に v1.1 API も attach (tweepy.Client は media_upload を持たない)
+    try:
+        auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_secret)
+        v1_api = tweepy.API(auth)
+        client._v1_api = v1_api  # 画像 upload に使う
+    except Exception as e:
+        print(f"  ℹ️ V1 API 初期化失敗(画像投稿無効): {e}")
+        client._v1_api = None
     return client
 
 
@@ -254,13 +262,16 @@ def race_recently_posted(race_id, hours=18):
         return False
 
 
-def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None):
+def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None,
+                image_paths=None):
     """ツイートのリスト（スレッド）をX + Threadsに投稿（重複チェック付き）
 
     Args:
         race_id: 任意。指定すると `race:<id>` キーで履歴に記録し、
                  同じ race_id が直近24h で投稿済みなら skip する。
-                 (同一レースを別 mode で連発するのを防ぐ)
+        image_paths: 各ツイートに添付する画像パスのリスト(同 index で対応)。
+                     例: [None, "chart1.png", None] = ツイート2にだけ画像。
+                     画像は X API v1.1 で upload → media_id 取得 → create_tweet。
     """
     import hashlib
 
@@ -344,6 +355,17 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                 kwargs = {"text": text}
                 if parent_id:
                     kwargs["in_reply_to_tweet_id"] = parent_id
+                # 画像添付 (image_paths が指定されていれば該当 index の画像を upload)
+                if image_paths and i < len(image_paths) and image_paths[i]:
+                    img_path = image_paths[i]
+                    v1_api = getattr(client, '_v1_api', None)
+                    if v1_api and os.path.exists(img_path):
+                        try:
+                            media = v1_api.media_upload(img_path)
+                            kwargs["media_ids"] = [media.media_id]
+                            print(f"  📷 画像 upload 完了 ({img_path})")
+                        except Exception as me:
+                            print(f"  ⚠️ 画像 upload 失敗: {me} (text のみで投稿)")
                 result = client.create_tweet(**kwargs)
                 tid = result.data["id"]
                 tweet_ids.append(tid)

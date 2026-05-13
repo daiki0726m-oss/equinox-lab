@@ -1346,7 +1346,7 @@ def _dispatch_v8(dow, slot, race, stats, entries, sires, damsires,
                 graded = get_weekend_graded_races(conn)
             except Exception:
                 graded = [race]
-            return build_mon_morning(graded, today_d, hashtags_fn)
+            return build_mon_morning(graded, today_d, hashtags_fn, conn=conn)
         elif slot == 'weekday':
             return build_mon_weekday(race, stats, entries, sires, today_d, hashtags_fn)
         else:
@@ -1475,22 +1475,129 @@ def _entry_for_sire(entries, sire_name):
 
 # ─── 月曜 朝: 今週末ラインナップ + 最注目重賞 ───
 
-def build_mon_morning(graded_races, today_d, hashtags_fn):
-    """週始め:今週末の重賞を一覧で紹介、AIが最注目するレースを1つ提示"""
+def get_last_weekend_roi(conn, today_d):
+    """先週末の重賞 ◎ の的中履歴と ROI を計算。
+
+    Returns:
+        {'races': [{'name', 'venue', 'mark_top_pos', 'odds_win', ...}],
+         'wins': int, 'top3': int, 'total': int, 'roi_estimate': float}
+        または None (データ無い場合)
+    """
+    if not conn or not today_d:
+        return None
+    # 過去 7日以内の土日重賞 11R
+    from datetime import timedelta
+    end = today_d - timedelta(days=1)
+    start = today_d - timedelta(days=7)
+    try:
+        races = conn.execute("""
+            SELECT ra.race_id, ra.race_name, ra.venue, ra.race_date, ra.grade,
+                   pc.predictions_json
+            FROM races ra
+            LEFT JOIN predictions_cache pc ON ra.race_id = pc.race_id
+            WHERE ra.race_date BETWEEN ? AND ? AND ra.race_number = 11
+              AND ra.grade IN ('G1','G2','G3')
+            ORDER BY ra.race_date, ra.venue
+        """, (start.isoformat(), end.isoformat())).fetchall()
+    except Exception:
+        return None
+    if not races:
+        return None
+
+    summary = []
+    wins = top3 = 0
+    invested = 0
+    payout = 0
+    import json
+    for ra in races:
+        if not ra['predictions_json']:
+            continue
+        try:
+            preds = json.loads(ra['predictions_json'])
+        except Exception:
+            continue
+        # ◎ (mark = '◎') の馬を探す
+        top_horse = next((p for p in preds if p.get('mark') == '◎'), None)
+        if not top_horse:
+            continue
+        hn = top_horse.get('horse_number')
+        # 結果取得
+        try:
+            res = conn.execute("""
+                SELECT finish_position, odds FROM results
+                WHERE race_id=? AND horse_number=?
+            """, (ra['race_id'], hn)).fetchone()
+        except Exception:
+            continue
+        if not res or not res['finish_position']:
+            continue
+        finish = res['finish_position']
+        odds = res['odds'] or top_horse.get('odds_win', 0)
+        # 単勝1点 + 複勝1点を simulate
+        invested += 200  # 単勝100 + 複勝100
+        if finish == 1:
+            wins += 1
+            payout += 100 * odds  # 単勝当たり
+        if finish <= 3:
+            top3 += 1
+            payout += 100 * (max(1.2, odds * 0.3))  # 複勝オッズ ~ 0.3倍想定
+        summary.append({
+            'race_name': ra['race_name'],
+            'venue': ra['venue'],
+            'mark_horse': top_horse.get('horse_name', '?'),
+            'mark_num': hn,
+            'finish': finish,
+            'odds': odds,
+        })
+
+    if not summary:
+        return None
+    roi = (payout / invested * 100) if invested else 0
+    return {
+        'races': summary,
+        'wins': wins,
+        'top3': top3,
+        'total': len(summary),
+        'roi_estimate': roi,
+    }
+
+
+def build_mon_morning(graded_races, today_d, hashtags_fn, conn=None):
+    """月曜朝:先週末ROIサマリー + 今週末重賞ラインナップ"""
     if not graded_races:
         return None
-    top = graded_races[0]  # G1 > G2 > G3 順
+    top = graded_races[0]
 
-    parts = [f"📅 今週末の重賞ラインナップ\n"]
-    # 最大3件 + 短縮表記
+    parts = []
+
+    # === セクション1: 先週末ROIサマリー ===
+    roi_data = get_last_weekend_roi(conn, today_d) if conn else None
+    if roi_data and roi_data['total'] >= 1:
+        parts.append("📊 先週末のAI予想結果")
+        parts.append("")
+        for r in roi_data['races'][:3]:
+            grade = ''  # 結果なので grade 省略
+            finish_emoji = '🏆' if r['finish'] == 1 else ('🥈' if r['finish'] == 2 else
+                            ('🥉' if r['finish'] == 3 else ''))
+            parts.append(f"・{r['venue']}{r['race_name']} ◎{r['mark_horse']}→{r['finish']}着 {finish_emoji}")
+        win_str = f"{roi_data['wins']}勝" if roi_data['wins'] > 0 else ""
+        top3_str = f"{roi_data['top3']}/{roi_data['total']}複"
+        parts.append("")
+        parts.append(f"◎の戦績:{win_str} {top3_str} / 想定ROI {roi_data['roi_estimate']:.0f}%")
+        parts.append("")
+        parts.append("━━━━━━━━━━━━")
+        parts.append("")
+
+    # === セクション2: 今週末重賞ラインナップ ===
+    parts.append("📅 今週末の重賞")
     for r in graded_races[:3]:
         grade = r.get('grade') or ''
         rd = parse_race_date(r)
         wd = WEEKDAY_LABELS[rd.weekday()] if rd else '?'
-        parts.append(f"・{wd}曜{rd.day if rd else '?'}日 {r.get('race_name','')}({grade}) {r.get('venue','')}{r.get('distance','')}m")
+        parts.append(f"・{wd}曜 {r.get('race_name','')}({grade}) {r.get('venue','')}{r.get('distance','')}m")
 
     parts.append(f"\n🎯 AI最注目:{top.get('race_name','')}({top.get('grade','')})")
-    parts.append(f"火-木で深層分析を毎日配信🔔")
+    parts.append("火-木で深層分析配信🔔")
     parts.append('')
     parts.append(hashtags_fn(top))
     return '\n'.join(parts)
