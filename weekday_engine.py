@@ -1035,6 +1035,102 @@ def build_evening_tweet(race, stats, sires, damsires, entries, workouts, today_d
 # 統合エントリポイント
 # ───────────────────────────────────────────
 
+def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='weekday'):
+    """中身ある最終手段 fallback. 出走馬情報が無くても投稿可能。
+
+    内容:
+      - 過去6年のコース傾向 (上がり3F最速・脚質・枠順)
+      - 過去6年勝ち馬パターン (人気帯分布)
+      - 「土曜朝に完全予想配信」誘導
+    """
+    if not race or not stats:
+        return None
+    when = _phrase_when(race, today_d)
+    grade = race.get('grade') or ''
+    g = f"({grade})" if grade else ''
+    venue = race.get('venue', '')
+    surface = race.get('surface', '')
+    distance = race.get('distance', 0)
+
+    slot_emoji = {'morning':'📊', 'weekday':'🔍', 'evening':'🌙'}.get(slot, '📊')
+    parts = [f"{slot_emoji} {when}{race.get('race_name','')}{g} コース分析"]
+    parts.append("")
+    parts.append("【過去6年データ】")
+
+    # 上がり3F最速馬の威力 (最強シグナル)
+    try:
+        l3 = stats.get('last3f_stats') or []
+        if l3:
+            top_l3 = max(l3, key=lambda x: x.get('top3_rate', 0))
+            t3rate = top_l3.get('top3_rate', 0)
+            if t3rate >= 50:
+                parts.append(f"🚀 上り3F最速馬の複勝率:{t3rate}%")
+    except Exception:
+        pass
+
+    # 脚質 best
+    try:
+        rs = stats.get('running_style_stats') or []
+        if rs:
+            best = max(rs, key=lambda x: x.get('top3_rate', 0))
+            parts.append(f"💨 {best.get('style','')}:複勝率{best.get('top3_rate')}%")
+    except Exception:
+        pass
+
+    # 枠順 best
+    try:
+        fs = stats.get('frame_stats') or []
+        if fs:
+            best = max(fs, key=lambda x: x.get('top3_rate', 0))
+            parts.append(f"⭐ {best.get('frame')}枠:複勝率{best.get('top3_rate')}%")
+    except Exception:
+        pass
+
+    # 過去勝ち馬パターン
+    pattern = get_past_winners_pattern(conn, race.get('race_name', ''), venue, surface, distance)
+    if pattern and pattern['n'] >= 3:
+        n = pattern['n']
+        # 人気分布の最大シェア
+        if pattern['mid_pop'] >= pattern['fav']:
+            parts.append(f"🎯 勝ち馬は4-9人気:{pattern['mid_pop']/n*100:.0f}%(中穴傾向)")
+        elif pattern['fav'] >= 1:
+            parts.append(f"🎯 勝ち馬は1-3人気:{pattern['fav']/n*100:.0f}%(堅実)")
+
+    parts.append("")
+    parts.append("→ 土曜朝に印付き完全予想を配信🔔")
+    parts.append('')
+    parts.append(hashtags_fn(race))
+    return '\n'.join(parts)
+
+
+def post_has_meaningful_content(tweet):
+    """投稿に中身があるか判定 (fact_check の前段チェック)。
+
+    最低限の条件 (どれか1つ満たせば OK):
+      - 馬名/馬番 が含まれる
+      - 年度+馬名 (歴代勝ち馬)
+      - 数値%が2個以上(コース傾向ベース)
+      - 「【○○】」セクション + 数値%が1個以上(統計の見せ方)
+    """
+    import re
+    if not tweet:
+        return False
+    # 馬番ベースの馬名表記
+    if re.search(r'\d{1,2}番\s*[ァ-ヴー]', tweet):
+        return True
+    # 年度+馬名 (歴代勝ち馬)
+    if re.search(r'\b20\d\d\b\s*[ァ-ヴー]{3,}', tweet):
+        return True
+    # 数値データが2つ以上(コース傾向の各種パーセント)
+    nums = re.findall(r'\d+\.?\d*%', tweet)
+    if len(nums) >= 2:
+        return True
+    # 【○○】の見出し + 数値で具体性あり
+    if re.search(r'【[^】]+】', tweet) and len(nums) >= 1:
+        return True
+    return False
+
+
 def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stats_fn,
                         get_entry_jockeys_fn, hashtags_fn, jockey_filter_fn,
                         return_race=False):
@@ -1108,15 +1204,16 @@ def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stat
     # 各 builder は「注目馬1頭+数値根拠+行動指針」の3要素を必ず含む
     tweet = _dispatch_v8(dow, slot, race, stats, entries, sires, damsires,
                          workouts, conn, today_d, hashtags_fn)
-    # フォールバック: v8 builder が None なら旧テンプレ
-    if not tweet:
-        if slot == 'morning':
-            tweet = build_morning_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow=dow)
-        elif slot == 'weekday':
-            tweet = build_weekday_tweet(race, stats, sires, damsires, entries, today_d, hashtags_fn, dow)
-        else:
-            tweet = build_evening_tweet(race, stats, sires, damsires, entries, workouts,
-                                        today_d, hashtags_fn, dow, conn=conn)
+
+    # v9: 投稿に「中身」がない場合 universal_fallback を試す (沈黙回避)
+    # 旧 v7 builder へのフォールバックは廃止 (universal_fallback で常に中身ある投稿を保証)
+    if not tweet or not post_has_meaningful_content(tweet):
+        print(f"⚠️ {slot}({dow}曜): 中身なし検出 → universal_fallback に切替")
+        tweet = build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot)
+    # それでも中身がない or 取れない → 最終的に投稿スキップ
+    if not tweet or not post_has_meaningful_content(tweet):
+        print(f"⚠️ {slot}({dow}曜): universal_fallback も空 → 投稿スキップ")
+        tweet = None
 
     if return_race:
         return tweet, race.get('race_id')
