@@ -2780,12 +2780,22 @@ def fact_check_tweet(tweet_text):
         re.search(r'\d{4}\s+[ァ-ヴー]{3,}', tweet_text) or
         re.search(r'\d{4}年:?\s*[ァ-ヴー]{3,}', tweet_text)
     )
-    # ただし「週末ラインナップ」「翌朝配信告知」など馬名不要な slot もある
+    # ただし馬名不要な投稿カテゴリは許容 (universal_fallback の8テーマ + その他)
+    # v9 universal_fallback で出る theme_title を網羅
     no_horse_ok_keywords = [
-        'ラインナップ', '配信お知らせ', '配信予定', '騎手コース適性',
-        '騎手TOP', '父TOP', '母父TOP', '勝ち馬パターン', '独自パターン分析',
-        'コース傾向', '上がり3F最速馬の実績', '末脚分析', '末脚有望馬',
+        'ラインナップ', '配信お知らせ', '配信予定',
+        # v8 builder 由来
+        '騎手コース適性', '騎手TOP', '父TOP', '母父TOP',
+        # v9 universal_fallback の 8テーマ
+        '枠順傾向', '脚質傾向', '末脚の威力', '人気別 成績',
+        'コース×父血統', 'コース×母父', 'コース騎手TOP', '過去勝ち馬パターン',
+        '独自パターン分析', '勝ち馬パターン',
+        # 汎用カテゴリ
+        'コース傾向', 'コース分析', '上がり3F最速馬の実績',
+        '末脚分析', '末脚有望馬',
+        # 見出し記号からの判定
         '【勝ち馬パターン', '当コース', '【枠順', '【脚質',
+        '【人気別', '【末脚', '【コース',
     ]
     needs_horse = not any(kw in tweet_text for kw in no_horse_ok_keywords)
     if needs_horse and not has_specific_horse:
