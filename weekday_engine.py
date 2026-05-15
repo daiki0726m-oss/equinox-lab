@@ -265,6 +265,58 @@ def get_entry_with_jockey(conn, race_id):
     return [dict(r) for r in rows if r['name']]
 
 
+def get_entry_or_shutuba(conn, race_id):
+    """results に未保存なら出馬表(shutuba)を直接スクレイプして取得。
+
+    平日テンプレ生成時、出走確定済み (results に finish_position=0 で保存) なら
+    DB から、未保存なら netkeiba shutuba.html をフェッチ。
+    sire/damsire は horses テーブルから JOIN (horse_id 一致で)。
+
+    出走確定前 (月-木前半) に該当馬名を出すための拡張。
+    """
+    entries = get_entry_with_jockey(conn, race_id)
+    if entries:
+        return entries
+
+    try:
+        from scraper import NetkeibaScraper
+        sc = NetkeibaScraper()
+        data = sc.scrape_shutuba(race_id)
+    except Exception as ex:
+        print(f"⚠️ scrape_shutuba 失敗: {ex}")
+        return []
+
+    if not data or not data.get('entries'):
+        return []
+
+    out = []
+    for e in data['entries']:
+        hid = e.get('horse_id') or ''
+        sire, damsire = None, None
+        if hid:
+            try:
+                row = conn.execute(
+                    "SELECT sire, damsire FROM horses WHERE horse_id = ?", (hid,)
+                ).fetchone()
+                if row:
+                    sire = row['sire']
+                    damsire = row['damsire']
+            except Exception:
+                pass
+        out.append({
+            'name': e.get('horse_name', ''),
+            'hid': hid,
+            'sire': sire,
+            'damsire': damsire,
+            'num': e.get('horse_number'),
+            'frame': e.get('post_position'),  # 枠順抽選前は 0
+            'pop': None,
+            'odds': None,
+            'jockey': e.get('jockey_name', ''),
+        })
+    return [e for e in out if e['name']]
+
+
 def _compact_reason(reason):
     """spotlight の reason を短縮形に圧縮。
     例: '父リアルスティールは当コース複勝65.0%' → '父65%'
@@ -1142,10 +1194,11 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
     slot_emoji = {'morning':'📊', 'weekday':'🔍', 'evening':'🌙'}.get(slot, '📊')
 
     # v9.3: 出走馬データを取得(該当馬名併記用)
+    # 出走確定前なら shutuba.html を直接フェッチして登録馬から該当馬を出す
     entries = []
     if conn and race.get('race_id'):
         try:
-            entries = get_entry_with_jockey(conn, race['race_id'])
+            entries = get_entry_or_shutuba(conn, race['race_id'])
         except Exception:
             entries = []
 
