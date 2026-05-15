@@ -249,11 +249,12 @@ def get_jockey_course_top(conn, venue, surface, distance,
 
 
 def get_entry_with_jockey(conn, race_id):
-    """出走馬と騎手のセット(+pop/odds)。AI synthesis 用。"""
+    """出走馬と騎手のセット(+pop/odds/枠)。AI synthesis 用。"""
     rows = conn.execute("""
         SELECT h.horse_name AS name, h.horse_id AS hid,
                h.sire AS sire, h.damsire AS damsire,
-               r.horse_number AS num, r.popularity AS pop, r.odds AS odds,
+               r.horse_number AS num, r.post_position AS frame,
+               r.popularity AS pop, r.odds AS odds,
                j.jockey_name AS jockey
         FROM results r
         LEFT JOIN horses h ON r.horse_id=h.horse_id
@@ -1084,6 +1085,35 @@ def _quick_frame_best(stats):
     return None, None
 
 
+def _short_name(name, n=6):
+    """馬名を表示用に短縮(全角換算)。Noneや空は空文字。"""
+    if not name:
+        return ''
+    return name[:n]
+
+
+def _matched_horses_line(entries, predicate, label='該当', max_n=2):
+    """entries から predicate(e) が True の馬を抽出し『該当:○番○○』形式で1行返す。
+    マッチ無し or entries 空なら空文字。
+    """
+    if not entries:
+        return ''
+    matched = [e for e in entries if predicate(e)]
+    if not matched:
+        return ''
+    # 馬番ある馬を優先(出走確定後)
+    matched_with_num = sorted(matched, key=lambda e: (e.get('num') or 99))
+    tags = []
+    for m in matched_with_num[:max_n]:
+        num = m.get('num')
+        name = _short_name(m.get('name', ''))
+        if num:
+            tags.append(f"{num}番{name}")
+        else:
+            tags.append(name)
+    return f"  └{label}:{'/'.join(tags)}"
+
+
 def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='weekday'):
     """中身ある最終手段 fallback.
 
@@ -1092,6 +1122,9 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
       1. メインデータ (3-4行)
       2. サブ軸の補完データ (異なる視点1行)
       3. 組合せ示唆 (シンセシス1行)
+
+    v9.3: 「データだけでなく該当馬名まで入れて」というユーザー指摘を反映。
+    出走馬を取得し、各テーマで該当する出走馬を『  └該当:○番○○』形式で併記。
     """
     if not race or not stats:
         return None
@@ -1108,6 +1141,14 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
     theme_idx = (dow * 3 + slot_idx) % 8
     slot_emoji = {'morning':'📊', 'weekday':'🔍', 'evening':'🌙'}.get(slot, '📊')
 
+    # v9.3: 出走馬データを取得(該当馬名併記用)
+    entries = []
+    if conn and race.get('race_id'):
+        try:
+            entries = get_entry_with_jockey(conn, race['race_id'])
+        except Exception:
+            entries = []
+
     theme_title = ""
     body_lines = []
 
@@ -1119,9 +1160,31 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
             if fs:
                 best, worst = fs[0], fs[-1]
                 body_lines.append(f"⭐{best.get('frame')}枠:複勝{best.get('top3_rate')}%(ベスト)")
+                # v9.3: ベスト枠の出走馬を併記
+                try:
+                    best_frame = int(best.get('frame'))
+                    line = _matched_horses_line(
+                        entries,
+                        lambda e, f=best_frame: (e.get('frame') or 0) == f,
+                        label='該当', max_n=3
+                    )
+                    if line:
+                        body_lines.append(line)
+                except Exception:
+                    pass
                 body_lines.append(f"⚠️{worst.get('frame')}枠:複勝{worst.get('top3_rate')}%(ワースト)")
-                if len(fs) >= 2:
-                    body_lines.append(f"・{fs[1].get('frame')}枠:複勝{fs[1].get('top3_rate')}%")
+                # v9.3: ワースト枠の出走馬も併記(回避候補)
+                try:
+                    worst_frame = int(worst.get('frame'))
+                    line = _matched_horses_line(
+                        entries,
+                        lambda e, f=worst_frame: (e.get('frame') or 0) == f,
+                        label='該当', max_n=2
+                    )
+                    if line:
+                        body_lines.append(line)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -1132,6 +1195,20 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
                         key=lambda x: x.get('top3_rate', 0), reverse=True)
             for r in (rs or [])[:4]:
                 body_lines.append(f"・{r.get('style','')}:複勝{r.get('top3_rate')}%")
+            # v9.3: 脚質は出走前不確定なので、AI synthesis の本命候補を併記
+            try:
+                _sires = get_sire_top(conn, venue, surface, distance, min_runs=5, top=15)
+                _damsires = get_damsire_top(conn, venue, surface, distance, min_runs=5, top=15)
+                _spots = get_ai_spotlight_top(conn, race, _sires, _damsires, entries, max_horses=2)
+                if _spots:
+                    tags = []
+                    for sp in _spots[:2]:
+                        num = sp.get('num', 0)
+                        name = _short_name(sp.get('name', ''))
+                        tags.append(f"{num}番{name}")
+                    body_lines.append(f"  └AI本命候補:{'/'.join(tags)}")
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1153,6 +1230,20 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
                 if row and row['wr']:
                     body_lines.append(f"・勝率も{row['wr']:.0f}%と異常値")
             body_lines.append("→ 末脚絶対値が勝敗を分ける")
+            # v9.3: 末脚有望候補を AI synthesis で抽出
+            try:
+                _sires = get_sire_top(conn, venue, surface, distance, min_runs=5, top=15)
+                _damsires = get_damsire_top(conn, venue, surface, distance, min_runs=5, top=15)
+                _spots = get_ai_spotlight_top(conn, race, _sires, _damsires, entries, max_horses=2)
+                if _spots:
+                    tags = []
+                    for sp in _spots[:2]:
+                        num = sp.get('num', 0)
+                        name = _short_name(sp.get('name', ''))
+                        tags.append(f"{num}番{name}")
+                    body_lines.append(f"  └末脚注目:{'/'.join(tags)}")
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1160,8 +1251,25 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
         theme_title = "人気別傾向"
         try:
             ps = stats.get('popularity_stats') or []
+            # v9.3: 人気帯別データだけだと浅い → 該当出走馬を本命候補として併記
+            # 1-3人気の馬 / 4-9人気の馬 をそれぞれ抽出
             for p in (ps or [])[:3]:
                 body_lines.append(f"・{p.get('label','')}:複勝{p.get('top3_rate')}%")
+            # 該当馬: 1-3人気の出走馬を「本命候補」、4-9人気を「中穴候補」として併記
+            fav_line = _matched_horses_line(
+                entries,
+                lambda e: 1 <= (e.get('pop') or 0) <= 3,
+                label='1-3人気', max_n=3
+            )
+            if fav_line:
+                body_lines.append(fav_line)
+            mid_line = _matched_horses_line(
+                entries,
+                lambda e: 4 <= (e.get('pop') or 0) <= 9,
+                label='中穴', max_n=2
+            )
+            if mid_line:
+                body_lines.append(mid_line)
         except Exception:
             pass
 
@@ -1180,9 +1288,16 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
                     ORDER BY top3 DESC LIMIT 3
                 """, (venue, surface, distance)).fetchall()
                 for r in rows:
-                    # 馬名 12文字でtruncate
                     name = r['sire'][:12]
                     body_lines.append(f"🧬{name}:複勝{r['top3']}%")
+                    # v9.3: 該当出走馬を併記
+                    line = _matched_horses_line(
+                        entries,
+                        lambda e, s=r['sire']: (e.get('sire') or '').strip() == s,
+                        label='該当', max_n=2
+                    )
+                    if line:
+                        body_lines.append(line)
             except Exception:
                 pass
 
@@ -1203,6 +1318,14 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
                 for r in rows:
                     name = r['damsire'][:10]
                     body_lines.append(f"🧬{name}:複勝{r['top3']}%")
+                    # v9.3: 該当出走馬を併記
+                    line = _matched_horses_line(
+                        entries,
+                        lambda e, s=r['damsire']: (e.get('damsire') or '').strip() == s,
+                        label='該当', max_n=2
+                    )
+                    if line:
+                        body_lines.append(line)
             except Exception:
                 pass
 
@@ -1221,6 +1344,14 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
                 """, (venue, surface, distance)).fetchall()
                 for r in rows:
                     body_lines.append(f"・{r['jockey_name']}:複勝{r['top3']}%")
+                    # v9.3: 該当出走馬(その騎手が騎乗する馬)を併記
+                    line = _matched_horses_line(
+                        entries,
+                        lambda e, j=r['jockey_name']: (e.get('jockey') or '').strip() == j,
+                        label='騎乗', max_n=2
+                    )
+                    if line:
+                        body_lines.append(line)
             except Exception:
                 pass
 
@@ -1239,6 +1370,20 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
                 body_lines.append(f"・キンマンボ系:{pattern['kingmambo_count']/n*100:.0f}%")
             if pattern['avg_last3f']:
                 body_lines.append(f"・平均上り3F:{pattern['avg_last3f']:.1f}秒")
+            # v9.3: パターン該当馬を AI synthesis で抽出
+            try:
+                _sires = get_sire_top(conn, venue, surface, distance, min_runs=5, top=15)
+                _damsires = get_damsire_top(conn, venue, surface, distance, min_runs=5, top=15)
+                _spots = get_ai_spotlight_top(conn, race, _sires, _damsires, entries, max_horses=2)
+                if _spots:
+                    tags = []
+                    for sp in _spots[:2]:
+                        num = sp.get('num', 0)
+                        name = _short_name(sp.get('name', ''))
+                        tags.append(f"{num}番{name}")
+                    body_lines.append(f"  └該当:{'/'.join(tags)}")
+            except Exception:
+                pass
 
     # body が空ならデフォルトテーマで埋める
     if not body_lines:
