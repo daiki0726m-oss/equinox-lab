@@ -113,3 +113,9 @@ JRA の出走スケジュール:
 9. **2026-05-16**: 結果スレッドの重複検出が tweets[0] 先頭一致で誤判定 (hit_flash が京都1件投稿後、results の続編 3件が永遠に投稿不能) → tweets[1] (2件目) で判定する形に修正 (PR #69)
 10. **2026-05-16**: 信頼度 S < A の逆転現象 (S は1着率 27.8%、A は 35.3%) → 原因は AI 過信・少頭数バイアス・人気外馬過信・クラス分布偏り → WEIGHTS で pop_score 0.30 重視 + post-calibrate (12%超過を60%圧縮) で対処 (PR #64)
 11. **2026-05-16**: 血統補完作業中に `git checkout -- keiba.db` で補完分が消えた → DB 補完作業中は git pull/checkout 禁止のルールを徹底
+12. **2026-05-16**: **予測ロジック (血統/ML/補正) を変えても DB の predictions_cache が seal で古いまま** → 明日朝 cron で古いデタラメ予想 (◎17人気) が X 投稿される寸前。dry-run で発見。**「予測ロジック変更時は対象日の seal を NULL に戻して predict.py 再実行が必須」**:
+    ```sql
+    UPDATE predictions_cache SET posted_at = NULL
+    WHERE race_id IN (SELECT race_id FROM races WHERE race_date='YYYY-MM-DD');
+    ```
+    続けて `python3 predict.py predict --date YYYYMMDD --force` で再予測 → DB 最新化
