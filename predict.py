@@ -432,7 +432,27 @@ def cmd_predict(args):
         else:
             popularity_map = {p["horse_number"]: 0 for p in sorted_preds}
 
-        # 印を付与（AI勝率順）
+        # NEW: Contrarian 補正 — 「市場が見落としている過小評価馬」を加点
+        # 「ほぼ全レース1人気が本命」を避け、AI が見抜いた人気外妙味を◎候補に。
+        # 4-18人気で AI 予測勝率 > 市場想定確率(1/pop*0.6) のとき、その差に応じて加点。
+        # popularity_map が全頭 0 (未確定) の場合はスキップ (現状ソートのまま)。
+        # シミュレーション (5/9-10 各72R) では ◎1-3人気率 74%→65% / 4-9人気率 26%→35% 程度。
+        CONTRARIAN_STRENGTH = 1.0
+        if any(popularity_map.values()):
+            def _final_sort_key(p):
+                win = p["pred_win"]
+                rank = p.get("rank_score", 0)
+                si = max(p.get("si_avg", 0), 0) / 100
+                base = win * 0.50 + rank * 0.25 + si * 0.25
+                pop = popularity_map.get(p["horse_number"], 0) or 0
+                if 4 <= pop <= 18:
+                    market_implied = 1.0 / pop * 0.6
+                    if win > market_implied:
+                        base += (win - market_implied) * (pop - 3) * 0.10 * CONTRARIAN_STRENGTH
+                return base
+            sorted_preds = sorted(sorted_preds, key=_final_sort_key, reverse=True)
+
+        # 印を付与（AI勝率順 + Contrarian 補正後)
         mark_labels = ['◎', '○', '▲', '△', '×']
         for i, p in enumerate(sorted_preds):
             if i < 5:
