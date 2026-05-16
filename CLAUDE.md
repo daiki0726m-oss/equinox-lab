@@ -91,10 +91,14 @@ JRA の出走スケジュール:
 
 ## 💻 開発時のルール
 
-- DB の write は必ず `git checkout -- keiba.db` で取り消し可能
+- DB の write は必ず `git checkout -- keiba.db` で取り消し可能 (= **DB に補完作業中は git checkout NG。書き込み完了まで pull/checkout 禁止**)
 - features.py と fast_train.py の `get_feature_columns()` は**完全一致**
 - post_history.json はチェックインしない(git tracked だが手動触らない)
 - weekly_retrain が走ると models/*.pkl が更新される(自動デプロイ)
+- ML 特徴量を変えたら **必ず retrain が必要** (古い models/*.pkl は新 features で predict できずエラー)
+- confidence.py の NORMS は ML 分布に依存 → モデル変更時に再キャリブが必要
+- 結果スレッド投稿の重複検出は tweets[1] (2件目) で判定 (tweets[0] は常に「📊 印別着順」で同じ)
+- 血統データは horses テーブル全体で 60%+ 欠落しがち → `scripts/auto_pedigree.py` (cron で自動補完) を整備済
 
 ## 🐛 過去のミス事例 (繰り返さない)
 
@@ -103,3 +107,9 @@ JRA の出走スケジュール:
 3. **2026-05-13**: ヴィクトリアマイル 2023 ソングランが抜けた → verify_article.py 新設
 4. **2026-05-09**: combo_top3 temporal leakage で偽 importance → v6 で時系列累積化
 5. **2026-05-10**: 直近着順表記「[7-1-1]」を「連勝中」と誤読(競馬慣習は着度数) → 「7着→1着→1着」表記に統一
+6. **2026-05-16**: ML から popularity 完全削除 (v8) → バックテスト ROI -7pt 大幅悪化 → 当日中に revert (PR #67)。「市場の集合知を捨てる = モデル精度を意図的に落とす」を実証
+7. **2026-05-16**: 血統データが horses 全体の 66% で欠落 → 8軸スコアロジックが過小評価多発 (◎エンブロイダリー 桜花賞・秋華賞 G1 2勝の超強豪が「血統+0」で記事から漏れた) → `scripts/auto_pedigree.py` + cron で自動補完運用に
+8. **2026-05-16**: post_predict の印表記「◎{馬名}」だと馬番なしで fact_check ブロック → 「◎ {番}番 {馬名}」形式に統一 (PR #60)
+9. **2026-05-16**: 結果スレッドの重複検出が tweets[0] 先頭一致で誤判定 (hit_flash が京都1件投稿後、results の続編 3件が永遠に投稿不能) → tweets[1] (2件目) で判定する形に修正 (PR #69)
+10. **2026-05-16**: 信頼度 S < A の逆転現象 (S は1着率 27.8%、A は 35.3%) → 原因は AI 過信・少頭数バイアス・人気外馬過信・クラス分布偏り → WEIGHTS で pop_score 0.30 重視 + post-calibrate (12%超過を60%圧縮) で対処 (PR #64)
+11. **2026-05-16**: 血統補完作業中に `git checkout -- keiba.db` で補完分が消えた → DB 補完作業中は git pull/checkout 禁止のルールを徹底
