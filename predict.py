@@ -480,25 +480,8 @@ def cmd_predict(args):
                 return base
             sorted_preds = sorted(sorted_preds, key=_final_sort_key, reverse=True)
 
-        # 印を付与（AI勝率順 + Contrarian 補正後)
-        mark_labels = ['◎', '○', '▲', '△', '×']
-        for i, p in enumerate(sorted_preds):
-            if i < 5:
-                p["mark"] = mark_labels[i]
-            else:
-                p["mark"] = ""
-        # 「注」 v2 (2026-05-16): 人気に依存せず「他データで推せる穴馬」を抽出。
-        # 旧版は `pop >= 6 + pred_win >= 5%` で「人気外」が必須だった。
-        # 新版は 6位以下の馬を AI/SI/血統/騎手/直近実績の複合スコアで評価し、
-        # データ強度が一定以上(>= 4点)で最高得点の馬を「注」に。
-        #
-        # スコア配点:
-        #   AI 勝率 7%+ (3点) / 5%+ (2点) / 4%+ (1点)
-        #   SI指数 90+ (3点) / 80+ (2点) / 70+ (1点)
-        #   血統スコア 60+ (2点) / 50+ (1点)
-        #   騎手スコア 65+ (2点) / 55+ (1点)
-        #   直近複勝率 50%+ (2点) / 30%+ (1点)
-        #   直近実績 50+ (1点)
+        # 「データ強度」スコア (◎以外の印付けと「注」で共用)
+        # AI 勝率 / SI 指数 / 血統 / 騎手 / 直近実績 の合計 (0-13点)
         def _data_strength(p):
             s = 0
             win_pct = (p.get('pred_win', 0) or 0) * 100
@@ -522,7 +505,48 @@ def cmd_predict(args):
             if rec >= 50: s += 1
             return s
 
-        scored_outside = [(p, _data_strength(p)) for p in sorted_preds[5:]]
+        # 印付け v3 (2026-05-17): 「◎は人気でも OK、相手だけ穴志向」モード
+        # 旧版は ML 上位5頭をそのまま ◎○▲△× にしていた → 全部人気順になる弊害。
+        # 新版は ○▲△ を「ML 上位2-7位の中で人気外+データ強度を重視」して選ぶ。
+        # × は残り、◎ は従来通り ML 1位。
+        # ユーザー要望「◎は人気でも構わない、相手だけ穴志向」を反映。
+
+        # 全頭の mark を一旦リセット
+        for p in sorted_preds:
+            p['mark'] = ''
+
+        # ◎ = ML 1位 (Contrarian 補正後)
+        if sorted_preds:
+            sorted_preds[0]['mark'] = '◎'
+
+        # 相手候補プール (ML 2-7位 / 6頭)
+        relay_pool = sorted_preds[1:7]
+
+        def _relay_score(p):
+            """相手選定スコア: ML 評価 + データ強度 + 人気外ボーナス。"""
+            pred = (p.get('pred_win', 0) or 0) * 80  # base ML 評価
+            si = (p.get('si_avg', 0) or 0) / 4
+            data = _data_strength(p) * 3
+            pop = p.get('popularity', 0) or 0
+            # 4-12人気を妙味とみなしてボーナス (1-3人気は加点なし)
+            pop_bonus = max(min(pop - 3, 9), 0) * 1.5
+            return pred + si + data + pop_bonus
+
+        # 相手候補をスコア順に並べ替え → ○▲△ に割当
+        relay_sorted = sorted(relay_pool, key=_relay_score, reverse=True)
+        for i, mk in enumerate(['○', '▲', '△']):
+            if i < len(relay_sorted):
+                relay_sorted[i]['mark'] = mk
+
+        # × = 相手候補で ○▲△ にならなかった残り中で AI 勝率最高
+        remaining_relay = [p for p in relay_sorted[3:]]
+        if remaining_relay:
+            remaining_relay.sort(key=lambda p: -(p.get('pred_win', 0) or 0))
+            remaining_relay[0]['mark'] = '×'
+
+        # 注 = ◎○▲△× 外でデータ強度最大かつ 4点以上
+        unmarked = [p for p in sorted_preds if not p.get('mark')]
+        scored_outside = [(p, _data_strength(p)) for p in unmarked]
         scored_outside.sort(key=lambda x: -x[1])
         if scored_outside and scored_outside[0][1] >= 4:
             scored_outside[0][0]['mark'] = '注'
