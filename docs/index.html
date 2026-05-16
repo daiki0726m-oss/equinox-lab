@@ -111,7 +111,8 @@ body {
 
 /* ─── Bet Type Selector ─── */
 .bet-selector {
-  position: sticky; top: 56px; z-index: 90;
+  /* 競馬場タブの下に固定 (top = header 56px + venue-tabs ~44px = 100px) */
+  position: sticky; top: 100px; z-index: 90;
   background: rgba(11,20,38,0.95);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
@@ -190,9 +191,10 @@ body {
   box-shadow: inset 0 -2px 0 var(--gold);
 }
 
-/* ─── Venue Tabs ─── */
+/* ─── Venue Tabs (header内に配置されているので header と一緒に sticky 化される) ─── */
 .venue-tabs {
-  display: flex; gap: 0; margin: 4px 0 0;
+  display: flex; gap: 0;
+  margin: 4px 0 0;
   border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border);
@@ -764,7 +766,7 @@ body {
       <span class="budget-label">予算</span>
       <input type="number" id="budgetInput" class="input-budget" value="1000" min="100" max="100000" step="100">
       <span class="budget-unit">円</span>
-      <button id="predictBtn" class="btn-predict" onclick="loadPredictions()">予測実行</button>
+      <button id="predictBtn" class="btn-predict" onclick="loadPredictions()">予想実行</button>
     </div>
   </div>
   <!-- Venue Tabs (header内でsticky固定) -->
@@ -806,15 +808,15 @@ body {
 <div class="main" id="mainContent">
   <div class="empty-state">
     <div class="empty-icon">🏇</div>
-    <div class="empty-title">AI競馬予測</div>
-    <div class="empty-desc">日付を選択して「予測実行」をタップ</div>
+    <div class="empty-title">AI競馬予想</div>
+    <div class="empty-desc">日付を選択して「予想実行」をタップ</div>
   </div>
 </div>
 
 <!-- Loading -->
 <div class="loading-overlay" id="loading">
   <div class="spinner"></div>
-  <div class="loading-text">AI予測を実行中...</div>
+  <div class="loading-text">AI予想を実行中...</div>
   <div class="loading-progress" id="loadingProgress"></div>
 </div>
 
@@ -914,10 +916,10 @@ async function loadPredictions() {
 
     renderAll();
   } catch (e) {
-    alert('予測の取得に失敗: ' + e.message);
+    alert('予想の取得に失敗: ' + e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = '予測実行';
+    btn.textContent = '予想実行';
     document.getElementById('loading').classList.remove('visible');
   }
 }
@@ -1165,7 +1167,7 @@ function createRaceCard(race) {
       </div>
       <div class="race-body">
         <div class="tab-bar">
-          <button class="tab-btn active" onclick="switchTab(this,'${race.race_id}','pred')">📊 予測</button>
+          <button class="tab-btn active" onclick="switchTab(this,'${race.race_id}','pred')">📊 予想</button>
           ${hasResults ? `<button class="tab-btn" onclick="switchTab(this,'${race.race_id}','result')">✅ 結果</button>` : ''}
         </div>
         <div class="tab-content" id="tab-pred-${race.race_id}">${renderPredTab(race)}</div>
@@ -1370,7 +1372,7 @@ function renderHorseRow(h, showReasons) {
     </div>
     <div class="horse-prob">
       <div class="prob-value">${predWin}%</div>
-      <div class="prob-label">勝率予測</div>
+      <div class="prob-label">勝率予想</div>
       <div class="rank-bar"><div class="rank-bar-fill" style="width:${rankPct}%"></div></div>
     </div>
   </div>`;
