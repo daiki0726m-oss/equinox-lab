@@ -199,11 +199,13 @@ class FeatureBuilder:
         features["damsire_course_top3_rate"] = ped_cross["damsire_course_top3_rate"]
         features["damsire_surface_top3_rate"] = ped_cross["damsire_surface_top3_rate"]
 
-        # ── 18. v6新規: 市場シグナル (オッズ・人気) ──
-        # ⚠️ 循環参照懸念について:
-        # - モデル学習時にオッズを feature にする ≠ EV計算時にオッズを使う、は別軸
-        # - 過去6年 1人気の複勝率 65% は強力な市場シグナル
-        # - 「市場の集合知」を捨てるのはモデル精度を意図的に落とすこと
+        # ── 18. v7: 市場シグナル (人気押さえ型に調整) ──
+        # 旧 v6: popularity_norm + is_favorite + is_top3_pop の3特徴量で
+        # 人気シグナルを強力に学習 → 「ほぼ全レース1人気が本命」になる弊害。
+        # v7: ユーザー要望「ML を人気押さえ型に調整」を反映:
+        #   - odds_log は残す (オッズには血統や調教の集合知も含まれる)
+        #   - popularity_norm は残すが値域を圧縮 (シグナル強度を約半分に)
+        #   - is_favorite / is_top3_pop は削除 (直接的人気フラグを排除)
         try:
             odds_val = float(odds) if odds else 0.0
         except (TypeError, ValueError):
@@ -221,15 +223,17 @@ class FeatureBuilder:
             # オッズ未取得時は中央値相当 ~log(10)=2.3
             features["odds_log"] = 2.3
 
-        # 人気の相対位置 (頭数で正規化)
+        # v7: 人気の相対位置を sqrt で圧縮 (シグナル強度を弱める)
+        # pop=1, horse=18 だと旧: 0.056、新: sqrt(0.056)=0.236 → 中央(0.5)に近づく
+        # pop=18, horse=18 だと旧: 1.000、新: sqrt(1.000)=1.000 → 変わらず
+        # 全体として「上位人気と下位人気の差」を圧縮
         if pop_val > 0 and horse_count > 0:
-            features["popularity_norm"] = pop_val / horse_count
+            features["popularity_norm"] = math.sqrt(pop_val / horse_count)
         else:
-            features["popularity_norm"] = 0.5  # 中央
+            features["popularity_norm"] = 0.7  # 中央付近
 
-        # 補助フラグ
-        features["is_favorite"] = 1 if pop_val == 1 else 0
-        features["is_top3_pop"] = 1 if 1 <= pop_val <= 3 else 0
+        # v7: is_favorite / is_top3_pop は削除 (直接的人気フラグを廃止)
+        # (旧コードで存在した場合の互換のため、ダミー値ではなく完全削除)
 
         return features
 
@@ -957,8 +961,8 @@ class FeatureBuilder:
             "impost_diff",
             # v5新規 - 重賞経験 + 重賞複勝率
             "graded_exp", "graded_top3_rate",
-            # v6新規 - 市場シグナル(オッズ・人気) ※競馬予想で最も強い feature の一つ
-            "odds_log", "popularity_norm", "is_favorite", "is_top3_pop",
+            # v6/v7: 市場シグナル (人気押さえ型に調整 — is_favorite/is_top3_pop は削除)
+            "odds_log", "popularity_norm",
             # v7新規 - 血統×コース cross (旧 sire_top3 が重要度0だった反省)
             "sire_course_top3_rate", "sire_surface_top3_rate",
             "damsire_course_top3_rate", "damsire_surface_top3_rate",

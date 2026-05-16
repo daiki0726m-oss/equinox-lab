@@ -659,12 +659,12 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
             f["odds_log"] = math.log(odds_val)
         else:
             f["odds_log"] = 2.3
+        # v7: 人気押さえ型 — sqrt 圧縮で上位/下位人気の差を弱める
+        # is_favorite / is_top3_pop は削除 (直接的人気フラグを排除)
         if pop_val > 0 and hc > 0:
-            f["popularity_norm"] = pop_val / hc
+            f["popularity_norm"] = math.sqrt(pop_val / hc)
         else:
-            f["popularity_norm"] = 0.5
-        f["is_favorite"] = 1 if pop_val == 1 else 0
-        f["is_top3_pop"] = 1 if 1 <= pop_val <= 3 else 0
+            f["popularity_norm"] = 0.7
 
         # ── v7新規: 血統 × コース cross (temporal-safe) ──
         # 旧 sire_top3_rate(全期間集計) は重要度0だった。コース×距離×血統の
@@ -749,7 +749,7 @@ def get_feature_columns():
         # v5: 重賞経験
         "graded_exp", "graded_top3_rate",
         # v6: 市場シグナル(オッズ・人気) ※競馬予想で最も強い signal の一つ
-        "odds_log", "popularity_norm", "is_favorite", "is_top3_pop",
+        "odds_log", "popularity_norm",
         # v7: 血統×コース cross (temporal-safe)
         "sire_course_top3_rate", "sire_surface_top3_rate",
         "damsire_course_top3_rate", "damsire_surface_top3_rate",
