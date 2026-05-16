@@ -312,12 +312,14 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                             tweet_fields=["created_at"]
                         )
                         if recent and recent.data:
-                            # 先頭80文字で厳密にマッチ (印付き馬名まで含めて判定)
-                            # 旧 30文字: 「📊 5/16(土) AI予想 印別着順」までしか拾わず、
-                            # hit_flash と results を「同じ」と誤判定する問題があった。
-                            # 80文字なら「📍京都11R 鞍馬S\n◎12番 フリッカージャブ 1着」まで
-                            # 含まれるため、別レース/別タイミングの投稿を区別できる。
-                            first_chunk = tweets[0][:80].strip()
+                            # 結果ツイート (📊 印別着順 系) はスレッド先頭が常に
+                            # 「📊 N/M AI予想 印別着順 + 📍京都11R...」で同じになる問題があった。
+                            # → 京都だけ投稿した hit_flash と、全 3R+集計 を投稿する results が
+                            #    tweets[0] 先頭一致で重複と誤判定されていた。
+                            # 修正: スレッドが 2件以上なら tweets[1] (2件目) で比較する。
+                            # 2件目は別レースか集計なので「未投稿の続き」を検出可能。
+                            check_tweet = tweets[1] if len(tweets) >= 2 else tweets[0]
+                            first_chunk = check_tweet[:80].strip()
                             if len(first_chunk) < 30:
                                 # 極端に短い tweet は判定不能 → スキップしない
                                 pass
