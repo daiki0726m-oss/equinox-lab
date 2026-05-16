@@ -307,6 +307,34 @@ def cmd_predict(args):
             _skipped_races.append((race_id, '予測データ空'))
             continue
 
+        # ── 追い切り (workout) 補正 — ML 統合できない過去データ不足を補う ──
+        # workouts は 2026年シーズン分のみ (513件) で、ML 学習データに統合できない。
+        # 代替として予測後に grade A/B/C で pred_win/pred_top3 を後処理スケール。
+        # A: 「気力充実」「好調持続」級 → +10%、B: 標準 → ±0、C: 仕上がり微妙 → -7%
+        try:
+            with get_db() as wconn:
+                wrows = wconn.execute(
+                    "SELECT horse_number, evaluation_grade FROM workouts WHERE race_id = ?",
+                    (race_id,)
+                ).fetchall()
+                workout_map = {r['horse_number']: r['evaluation_grade'] for r in wrows}
+        except Exception:
+            workout_map = {}
+
+        if workout_map:
+            WORKOUT_BOOST = {'A': 1.10, 'B': 1.00, 'C': 0.93}
+            for idx in pred_df.index:
+                hn = int(pred_df.at[idx, 'horse_number'])
+                grade = workout_map.get(hn)
+                if grade and grade in WORKOUT_BOOST and WORKOUT_BOOST[grade] != 1.0:
+                    pred_df.at[idx, 'pred_win_norm'] *= WORKOUT_BOOST[grade]
+                    pred_df.at[idx, 'pred_top3_norm'] *= WORKOUT_BOOST[grade]
+            # 再正規化 (合計 1.0 を維持)
+            total_win = pred_df['pred_win_norm'].sum()
+            if total_win > 0:
+                pred_df['pred_win_norm'] = pred_df['pred_win_norm'] / total_win
+            print(f"  💪 追い切り補正: {len(workout_map)}頭分 (A:+10% / C:-7%)")
+
         # 予測結果表示
         print(f"\n📊 予測結果: {race_info.get('race_name', '')} "
               f"({race_info['venue']} {race_info['race_number']}R "
