@@ -65,14 +65,17 @@ jobs:
             echo "📭 変更なし"
           else
             git commit -m "🧠 Weekly model retrain $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+            # 作業ブランチ (workflow_dispatch で --ref 指定された場合) でも動くよう
+            # GITHUB_REF_NAME を rebase 対象に。デフォルトは main。
+            BRANCH="${GITHUB_REF_NAME:-main}"
             # 他workflowが先にpushしている可能性に備え、rebaseしてからpush(最大3回リトライ)
             for i in 1 2 3; do
-              git pull --rebase --autostash origin main || true
-              if git push; then
-                echo "🚀 モデルをデプロイ完了 (試行$i)"
+              git pull --rebase --autostash origin "$BRANCH" || true
+              if git push origin "HEAD:$BRANCH"; then
+                echo "🚀 モデルをデプロイ完了 (試行$i, branch=$BRANCH)"
                 break
               fi
-              echo "⚠️ push失敗 → rebaseしてリトライ ($i)"
+              echo "⚠️ push失敗 → rebaseしてリトライ ($i, branch=$BRANCH)"
               sleep 5
             done
           fi
