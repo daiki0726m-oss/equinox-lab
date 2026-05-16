@@ -312,13 +312,21 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                             tweet_fields=["created_at"]
                         )
                         if recent and recent.data:
-                            # 先頭30文字で緩くマッチ（絵文字やスペースの差異を吸収）
-                            first_chunk = tweets[0][:30].strip()
-                            for t in recent.data:
-                                if first_chunk in t.text:
-                                    print(f"⚠️ 重複検出（X API）: 同じ内容が既に投稿済み → スキップ")
-                                    print(f"  既存ツイート: {t.text[:80]}...")
-                                    return []
+                            # 先頭80文字で厳密にマッチ (印付き馬名まで含めて判定)
+                            # 旧 30文字: 「📊 5/16(土) AI予想 印別着順」までしか拾わず、
+                            # hit_flash と results を「同じ」と誤判定する問題があった。
+                            # 80文字なら「📍京都11R 鞍馬S\n◎12番 フリッカージャブ 1着」まで
+                            # 含まれるため、別レース/別タイミングの投稿を区別できる。
+                            first_chunk = tweets[0][:80].strip()
+                            if len(first_chunk) < 30:
+                                # 極端に短い tweet は判定不能 → スキップしない
+                                pass
+                            else:
+                                for t in recent.data:
+                                    if first_chunk in t.text:
+                                        print(f"⚠️ 重複検出（X API）: 同じ内容が既に投稿済み → スキップ")
+                                        print(f"  既存ツイート: {t.text[:80]}...")
+                                        return []
                 except Exception as api_err:
                     print(f"  ℹ️ X API重複チェックスキップ: {api_err}")
 
