@@ -2785,6 +2785,9 @@ def fact_check_tweet(tweet_text):
     # v9 universal_fallback で出る theme_title を網羅
     no_horse_ok_keywords = [
         'ラインナップ', '配信お知らせ', '配信予定',
+        # post_predict のフッター CTA (馬名なしが正常)
+        'AI予想印です', '結果は夕方に速報', '事前公開しています',
+        'レース前に事前公開',
         # v8 builder 由来
         '騎手コース適性', '騎手TOP', '父TOP', '母父TOP',
         # v9 universal_fallback の 8テーマ
