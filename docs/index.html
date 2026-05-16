@@ -109,14 +109,10 @@ body {
 .btn-predict:active { transform: translateY(0); }
 .btn-predict:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
 
-/* ─── Bet Type Selector ─── */
+/* ─── Bet Type Selector (header 内に配置されているので header と一緒に sticky 化) ─── */
 .bet-selector {
-  /* 競馬場タブの下に固定 (top = header 56px + venue-tabs ~44px = 100px) */
-  position: sticky; top: 100px; z-index: 90;
-  background: rgba(11,20,38,0.95);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border);
-  padding: 8px 16px;
+  margin-top: 4px;
+  padding: 8px 0 0;
   display: flex; gap: 6px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -637,10 +633,9 @@ body {
     flex-shrink: 0;
   }
 
-  /* Bet selector */
+  /* Bet selector (header 内に配置なので top 指定不要) */
   .bet-selector {
-    top: 95px;
-    padding: 8px 10px;
+    padding: 6px 0 0;
     gap: 6px;
   }
   .bet-chip {
@@ -771,17 +766,16 @@ body {
   </div>
   <!-- Venue Tabs (header内でsticky固定) -->
   <div class="venue-tabs" id="venueTabs" style="display:none;"></div>
+  <!-- Bet Type Selector (header 内で sticky 固定、スマホでもズレない) -->
+  <div class="bet-selector" id="betSelector">
+    <div class="bet-chip active" data-type="単勝" onclick="selectBetType(this)">単勝</div>
+    <div class="bet-chip" data-type="複勝" onclick="selectBetType(this)">複勝</div>
+    <div class="bet-chip" data-type="ワイド" onclick="selectBetType(this)">ワイド</div>
+    <div class="bet-chip" data-type="馬連" onclick="selectBetType(this)">馬連</div>
+    <div class="bet-chip" data-type="三連複" onclick="selectBetType(this)">三連複</div>
+    <div class="bet-chip" data-type="三連単" onclick="selectBetType(this)">三連単</div>
+  </div>
 </header>
-
-<!-- Bet Type Selector -->
-<div class="bet-selector" id="betSelector">
-  <div class="bet-chip active" data-type="単勝" onclick="selectBetType(this)">単勝</div>
-  <div class="bet-chip" data-type="複勝" onclick="selectBetType(this)">複勝</div>
-  <div class="bet-chip" data-type="ワイド" onclick="selectBetType(this)">ワイド</div>
-  <div class="bet-chip" data-type="馬連" onclick="selectBetType(this)">馬連</div>
-  <div class="bet-chip" data-type="三連複" onclick="selectBetType(this)">三連複</div>
-  <div class="bet-chip" data-type="三連単" onclick="selectBetType(this)">三連単</div>
-</div>
 
 <!-- Lock Banner -->
 <div class="lock-banner" id="lockBanner">🔒 10:00に予想確定済み</div>
