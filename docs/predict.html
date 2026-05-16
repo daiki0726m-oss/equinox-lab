@@ -820,7 +820,7 @@ const state = {
 function toggleBetsFilter() {
   state.filterBetsOnly = !state.filterBetsOnly;
   document.getElementById('sumBetsItem').classList.toggle('active', state.filterBetsOnly);
-  if (state.allData) renderAll();
+  if (state.allData) renderAllPreservingOpenState();
 }
 
 function setConfFilter(level) {
@@ -828,7 +828,16 @@ function setConfFilter(level) {
   document.querySelectorAll('.conf-filter-btn').forEach(btn => {
     btn.classList.toggle('active', btn.textContent.startsWith(level === 'ALL' ? '全て' : level));
   });
-  if (state.allData) renderRaceCards();
+  if (state.allData) {
+    // 開閉状態を記憶→再描画→復元
+    const openIds = Array.from(document.querySelectorAll('.race-card.open'))
+      .map(c => c.id.replace('race-', ''));
+    renderRaceCards();
+    openIds.forEach(id => {
+      const card = document.getElementById('race-' + id);
+      if (card) card.classList.add('open');
+    });
+  }
 }
 
 const BET_COLORS = {
@@ -838,18 +847,51 @@ const BET_COLORS = {
 };
 const CONF_ICONS = { S: '🔥', A: '★', B: '📊', C: '△', D: '—' };
 
+// ─── 開いているレースカードを記憶→再描画→復元 ───
+// 券種/予算変更で renderAll() が走ると DOM が作り直されて .open クラスが消える。
+// ユーザー指摘「買い目を変更すると開いてた予想欄が閉じる」への対応。
+function renderAllPreservingOpenState() {
+  const openIds = Array.from(document.querySelectorAll('.race-card.open'))
+    .map(c => c.id.replace('race-', ''));
+  // 選択中タブも記憶 (pred/result)
+  const activeTabs = {};
+  document.querySelectorAll('.race-card').forEach(card => {
+    const raceId = card.id.replace('race-', '');
+    const activeBtn = card.querySelector('.tab-btn.active');
+    if (activeBtn) {
+      const m = (activeBtn.getAttribute('onclick') || '').match(/'(pred|result)'/);
+      if (m) activeTabs[raceId] = m[1];
+    }
+  });
+
+  renderAll();
+
+  // 復元: 開閉状態
+  openIds.forEach(id => {
+    const card = document.getElementById('race-' + id);
+    if (card) card.classList.add('open');
+  });
+  // 復元: タブ選択
+  Object.entries(activeTabs).forEach(([raceId, tab]) => {
+    const card = document.getElementById('race-' + raceId);
+    if (!card) return;
+    const btn = card.querySelector(`.tab-btn[onclick*="'${tab}'"]`);
+    if (btn && !btn.classList.contains('active')) btn.click();
+  });
+}
+
 // ─── Bet Type Selector (Instant, no API call) ───
 function selectBetType(chip) {
   document.querySelectorAll('.bet-chip').forEach(c => c.classList.remove('active'));
   chip.classList.add('active');
   state.activeBetType = chip.dataset.type;
-  if (state.allData) renderAll();
+  if (state.allData) renderAllPreservingOpenState();
 }
 
 // ─── Budget Change (Instant recalc) ───
 document.getElementById('budgetInput').addEventListener('input', function() {
   state.budget = Math.max(100, Math.min(parseInt(this.value) || 1000, 100000));
-  if (state.allData) renderAll();
+  if (state.allData) renderAllPreservingOpenState();
 });
 
 
