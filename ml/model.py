@@ -251,8 +251,23 @@ class KeibaModel:
             # 校正子が無い場合は warning だけ出して raw 値を返す
             print(f"  ℹ️ Calibrator skip: {e}")
 
-        # v8: 市場シグナル削除に伴い post-calibrate を一旦無効化。
-        # 新モデルの分布は再学習後に再評価し、必要なら post-calibrate を再導入する。
+        # ── v7 post-calibrate: 高予測値の平準化 ──
+        # 過去 470R 分析で、信頼度 S(AI 勝率 34%平均)の実勝率 27.8% =
+        # AI 過信 +6.2pt を確認。val set fit の isotonic では吸収できない
+        # 「本番分布 vs val set のズレ」を post-process で平準化する。
+        # 12% 超過分を 60% に圧縮 (上限を実勝率に近づける)
+        import numpy as np
+        threshold = 0.12
+        pred_win = np.where(
+            pred_win > threshold,
+            threshold + (pred_win - threshold) * 0.60,
+            pred_win,
+        )
+        pred_top3 = np.where(
+            pred_top3 > threshold * 3,  # top3 は ~3倍スケール
+            threshold * 3 + (pred_top3 - threshold * 3) * 0.60,
+            pred_top3,
+        )
 
         # LambdaRankモデルがある場合はランキング予測
         if self.model_rank is not None:
