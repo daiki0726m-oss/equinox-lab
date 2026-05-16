@@ -487,12 +487,45 @@ def cmd_predict(args):
                 p["mark"] = mark_labels[i]
             else:
                 p["mark"] = ""
-        # 6番目以降で妙味のある馬に「注」
-        for p in sorted_preds[5:]:
-            pop = popularity_map.get(p["horse_number"], 99)
-            if pop >= 6 and p["pred_win"] * 100 >= 5.0:
-                p["mark"] = "注"
-                break
+        # 「注」 v2 (2026-05-16): 人気に依存せず「他データで推せる穴馬」を抽出。
+        # 旧版は `pop >= 6 + pred_win >= 5%` で「人気外」が必須だった。
+        # 新版は 6位以下の馬を AI/SI/血統/騎手/直近実績の複合スコアで評価し、
+        # データ強度が一定以上(>= 4点)で最高得点の馬を「注」に。
+        #
+        # スコア配点:
+        #   AI 勝率 7%+ (3点) / 5%+ (2点) / 4%+ (1点)
+        #   SI指数 90+ (3点) / 80+ (2点) / 70+ (1点)
+        #   血統スコア 60+ (2点) / 50+ (1点)
+        #   騎手スコア 65+ (2点) / 55+ (1点)
+        #   直近複勝率 50%+ (2点) / 30%+ (1点)
+        #   直近実績 50+ (1点)
+        def _data_strength(p):
+            s = 0
+            win_pct = (p.get('pred_win', 0) or 0) * 100
+            if win_pct >= 7.0: s += 3
+            elif win_pct >= 5.0: s += 2
+            elif win_pct >= 4.0: s += 1
+            si = p.get('si_avg', 0) or 0
+            if si >= 90: s += 3
+            elif si >= 80: s += 2
+            elif si >= 70: s += 1
+            ped = p.get('cat_pedigree', 0) or 0
+            if ped >= 60: s += 2
+            elif ped >= 50: s += 1
+            jk = p.get('cat_jockey', 0) or 0
+            if jk >= 65: s += 2
+            elif jk >= 55: s += 1
+            tr = p.get('top3_rate', 0) or 0
+            if tr >= 50: s += 2
+            elif tr >= 30: s += 1
+            rec = p.get('cat_record', 0) or 0
+            if rec >= 50: s += 1
+            return s
+
+        scored_outside = [(p, _data_strength(p)) for p in sorted_preds[5:]]
+        scored_outside.sort(key=lambda x: -x[1])
+        if scored_outside and scored_outside[0][1] >= 4:
+            scored_outside[0][0]['mark'] = '注'
 
         # 推奨理由を生成 (UI-2 fix)
         for i, p in enumerate(sorted_preds):
