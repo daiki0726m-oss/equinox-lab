@@ -643,28 +643,11 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
         else:
             f["graded_top3_rate"] = 0.0
 
-        # ── v6新規: 市場シグナル (オッズ・人気) ──
-        # 過去6年 1人気の複勝率 65% は実勢でモデル外せない強力シグナル
-        try:
-            odds_val = float(r.get("odds", 0) or 0)
-        except (TypeError, ValueError):
-            odds_val = 0.0
-        try:
-            pop_val = int(r.get("popularity", 0) or 0)
-        except (TypeError, ValueError):
-            pop_val = 0
-
-        import math
-        if odds_val >= 1.0:
-            f["odds_log"] = math.log(odds_val)
-        else:
-            f["odds_log"] = 2.3
-        # v7: 人気押さえ型 — sqrt 圧縮で上位/下位人気の差を弱める
-        # is_favorite / is_top3_pop は削除 (直接的人気フラグを排除)
-        if pop_val > 0 and hc > 0:
-            f["popularity_norm"] = math.sqrt(pop_val / hc)
-        else:
-            f["popularity_norm"] = 0.7
+        # ── v8: 市場シグナル完全削除 ──
+        # ユーザー要望「人気を予想ファクターに入れず、純粋に実力・血統・データで」。
+        # popularity_norm + odds_log + is_favorite + is_top3_pop の全市場シグナルを排除。
+        # モデルは血統(sire/damsire × course)・SI指数・直近10走実績・コース傾向・
+        # 馬齢・斤量・状態・重賞経験などの純粋データのみで学習する。
 
         # ── v7新規: 血統 × コース cross (temporal-safe) ──
         # 旧 sire_top3_rate(全期間集計) は重要度0だった。コース×距離×血統の
@@ -749,7 +732,7 @@ def get_feature_columns():
         # v5: 重賞経験
         "graded_exp", "graded_top3_rate",
         # v6: 市場シグナル(オッズ・人気) ※競馬予想で最も強い signal の一つ
-        "odds_log", "popularity_norm",
+        # v8: 市場シグナル (odds_log/popularity_norm) を完全削除
         # v7: 血統×コース cross (temporal-safe)
         "sire_course_top3_rate", "sire_surface_top3_rate",
         "damsire_course_top3_rate", "damsire_surface_top3_rate",

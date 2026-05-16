@@ -199,41 +199,14 @@ class FeatureBuilder:
         features["damsire_course_top3_rate"] = ped_cross["damsire_course_top3_rate"]
         features["damsire_surface_top3_rate"] = ped_cross["damsire_surface_top3_rate"]
 
-        # ── 18. v7: 市場シグナル (人気押さえ型に調整) ──
-        # 旧 v6: popularity_norm + is_favorite + is_top3_pop の3特徴量で
-        # 人気シグナルを強力に学習 → 「ほぼ全レース1人気が本命」になる弊害。
-        # v7: ユーザー要望「ML を人気押さえ型に調整」を反映:
-        #   - odds_log は残す (オッズには血統や調教の集合知も含まれる)
-        #   - popularity_norm は残すが値域を圧縮 (シグナル強度を約半分に)
-        #   - is_favorite / is_top3_pop は削除 (直接的人気フラグを排除)
-        try:
-            odds_val = float(odds) if odds else 0.0
-        except (TypeError, ValueError):
-            odds_val = 0.0
-        try:
-            pop_val = int(popularity) if popularity else 0
-        except (TypeError, ValueError):
-            pop_val = 0
-
-        # log(odds): 単勝オッズの対数。30→log(30)=3.4, 1.5→0.4 と圧縮
-        import math
-        if odds_val >= 1.0:
-            features["odds_log"] = math.log(odds_val)
-        else:
-            # オッズ未取得時は中央値相当 ~log(10)=2.3
-            features["odds_log"] = 2.3
-
-        # v7: 人気の相対位置を sqrt で圧縮 (シグナル強度を弱める)
-        # pop=1, horse=18 だと旧: 0.056、新: sqrt(0.056)=0.236 → 中央(0.5)に近づく
-        # pop=18, horse=18 だと旧: 1.000、新: sqrt(1.000)=1.000 → 変わらず
-        # 全体として「上位人気と下位人気の差」を圧縮
-        if pop_val > 0 and horse_count > 0:
-            features["popularity_norm"] = math.sqrt(pop_val / horse_count)
-        else:
-            features["popularity_norm"] = 0.7  # 中央付近
-
-        # v7: is_favorite / is_top3_pop は削除 (直接的人気フラグを廃止)
-        # (旧コードで存在した場合の互換のため、ダミー値ではなく完全削除)
+        # ── 18. v8: 市場シグナル完全削除 ──
+        # ユーザー要望「人気を予想ファクターに入れず、純粋に実力・血統・データで」。
+        # v6: popularity_norm + is_favorite + is_top3_pop + odds_log (4特徴量)
+        # v7: is_favorite/is_top3_pop 削除、popularity sqrt 圧縮、odds_log 残存
+        # v8: popularity_norm + odds_log を完全削除。市場依存ゼロに。
+        #
+        # モデルは血統(sire/damsire × course)・SI指数・直近10走実績・コース傾向・
+        # 馬齢・斤量・状態(直近着順推移)・重賞経験などの純粋データのみで学習する。
 
         return features
 
@@ -961,8 +934,8 @@ class FeatureBuilder:
             "impost_diff",
             # v5新規 - 重賞経験 + 重賞複勝率
             "graded_exp", "graded_top3_rate",
-            # v6/v7: 市場シグナル (人気押さえ型に調整 — is_favorite/is_top3_pop は削除)
-            "odds_log", "popularity_norm",
+            # v8: 市場シグナル完全削除 (popularity_norm/odds_log/is_favorite/is_top3_pop)
+            # → 純粋に実力・血統・データのみで学習
             # v7新規 - 血統×コース cross (旧 sire_top3 が重要度0だった反省)
             "sire_course_top3_rate", "sire_surface_top3_rate",
             "damsire_course_top3_rate", "damsire_surface_top3_rate",
