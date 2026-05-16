@@ -528,7 +528,8 @@ def cmd_predict(args):
         grade = f" [{race['grade']}]" if race['grade'] else ""
         t1 += f"📍{race['venue']}11R {race['race_name']}{grade}\n"
         if honmei:
-            t1 += f"  ◎{honmei.get('horse_name','?')}\n"
+            # 「◎ 5番 馬名」形式で fact_check の馬名/馬番検出を確実に通す
+            t1 += f"  ◎ {honmei.get('horse_number',0)}番 {honmei.get('horse_name','?')}\n"
 
     if s_races:
         t1 += f"\n🔥 AI高信頼レース: {len(s_races)}件\n"
@@ -562,11 +563,11 @@ def cmd_predict(args):
         t = f"{conf_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}\n"
         t += f"信頼度{race['confidence']} {is_main}\n\n"
 
-        # 印（全て表示）
+        # 印（全て表示)— 「{mark} {番号}番 {馬名}」形式で fact_check に確実に通す
         for mk in ['◎', '○', '▲', '△', '×', '注']:
             p = marks.get(mk)
             if p:
-                t += f"{mk} {p.get('horse_number',0)}.{p.get('horse_name','?')}\n"
+                t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
 
         bet_tweets.append(t)
 
