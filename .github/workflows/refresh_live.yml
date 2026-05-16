@@ -124,7 +124,7 @@ jobs:
             git commit -m "🔄 Live update: $(TZ=Asia/Tokyo date '+%H:%M') JST"
             # 競合を回避するリトライ付きpush(--autostash で keiba.db 等の未staged変更を自動退避)
             for i in 1 2 3; do
-              git pull --rebase --autostash origin main && git push && break
+              git pull --rebase --autostash origin "${GITHUB_REF_NAME:-main}" && git push && break
               echo "⚠️ push失敗 (${i}/3) - 再試行..."
               sleep 5
             done
@@ -151,8 +151,8 @@ jobs:
           else
             git commit -m "📊 refresh_live: keiba.db update $(TZ=Asia/Tokyo date '+%H:%M') JST"
             for i in 1 2 3; do
-              git pull --rebase --autostash origin main || true
-              if git push; then echo "🚀 DB committed (try $i)"; break; fi
+              git pull --rebase --autostash origin "${GITHUB_REF_NAME:-main}" || true
+              if git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then echo "🚀 DB committed (try $i)"; break; fi
               echo "⚠️ push失敗→retry($i)"; sleep 5
             done
           fi
