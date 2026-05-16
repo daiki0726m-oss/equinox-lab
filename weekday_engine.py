@@ -702,33 +702,79 @@ def today_d_default():
 
 def get_undervalued_horses(entries, max_horses=2):
     """市場が過小評価している可能性のある馬を抽出。
-    人気外 (7番人気以下) で、血統/騎手等が強い馬。
-    実 AI 予測値(pred_win)があれば EV>=1.5 で抽出するが、無ければ
-    人気外 + 血統条件マッチで代替。
+
+    v2 (2026-05-16): 旧版は「7-12人気 + K系血統」の機械的ルールだった。
+    v2 では「EV (期待値) = AI 予測勝率 / 市場想定確率」をベースに、
+    AI と市場の乖離が大きい馬を抽出する。血統 OK はボーナス扱い。
+
+    優先度:
+      1. EV >= 2.0 (AI 評価が市場の2倍以上) → 大穴妙味
+      2. EV >= 1.5 + 人気 5-12 + K系血統 → 中穴妙味
+      3. 人気 7-12 + K系血統 (フォールバック) → 旧ルール
     """
     if not entries:
         return []
     K_SIRES = {'ルーラーシップ', 'キングカメハメハ', 'キズナ', 'ドゥラメンテ',
-               'レイデオロ', 'エピファネイア', 'ロードカナロア'}
-    candidates = []
-    for e in entries:
-        pop = e.get('pop') or 0
+               'レイデオロ', 'エピファネイア', 'ロードカナロア', 'モーリス'}
+
+    def _to_int(v):
         try:
-            pop = int(pop) if pop else 0
+            return int(v) if v else 0
         except (TypeError, ValueError):
-            pop = 0
+            return 0
+
+    def _to_float(v):
+        try:
+            return float(v) if v else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    ranked = []
+    for e in entries:
+        pop = _to_int(e.get('pop'))
+        if pop < 4:
+            continue  # 1-3人気は除外 (過小評価対象外)
+        pred_win = _to_float(e.get('pred_win') or e.get('pred_win_pct', 0) / 100.0)
         sire = e.get('sire', '') or ''
-        # 人気外 (7-12) で血統 OK
-        if 7 <= pop <= 12 and sire in K_SIRES:
-            candidates.append({
+        if pred_win <= 0:
+            # AI予測値が無い場合は旧フォールバック (血統 + 人気)
+            if 7 <= pop <= 12 and sire in K_SIRES:
+                ranked.append({
+                    'name': e.get('name', '?'),
+                    'num': e.get('num') or e.get('horse_number', 0),
+                    'pop': pop, 'sire': sire,
+                    'damsire': e.get('damsire', ''),
+                    'ev': 0,
+                    'reason': f'{pop}人気・父{sire[:8]}(K系)',
+                })
+            continue
+        # EV 計算: AI 予測勝率 / 市場想定確率 (1/pop の近似)
+        # 1人気の市場想定は 0.30, 18人気は 0.02 程度
+        market_p = 1.0 / max(pop, 1) * 0.6  # JRA 控除率を考慮
+        ev = pred_win / max(market_p, 0.005)
+
+        if ev >= 2.0:  # 大穴妙味
+            ranked.append({
                 'name': e.get('name', '?'),
                 'num': e.get('num') or e.get('horse_number', 0),
-                'pop': pop,
-                'sire': sire,
+                'pop': pop, 'sire': sire,
                 'damsire': e.get('damsire', ''),
-                'reason': f'{pop}人気想定 + 父{sire}(K系・コース複勝率高)',
+                'ev': round(ev, 2),
+                'reason': f'{pop}人気・AI評価{pred_win*100:.0f}%(EV{ev:.1f})',
             })
-    return candidates[:max_horses]
+        elif ev >= 1.5 and 5 <= pop <= 12 and sire in K_SIRES:  # 中穴妙味
+            ranked.append({
+                'name': e.get('name', '?'),
+                'num': e.get('num') or e.get('horse_number', 0),
+                'pop': pop, 'sire': sire,
+                'damsire': e.get('damsire', ''),
+                'ev': round(ev, 2),
+                'reason': f'{pop}人気・父{sire[:8]}・EV{ev:.1f}',
+            })
+
+    # EV 降順、同 EV なら人気外を優先
+    ranked.sort(key=lambda x: (-x['ev'], -x['pop']))
+    return ranked[:max_horses]
 
 
 def get_dangerous_favorites(entries, conn, race, max_horses=2):
