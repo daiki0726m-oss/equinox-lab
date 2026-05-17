@@ -223,19 +223,24 @@ def export_predictions(date_str=None):
                     elif max_ev >= 1.2: myomi = "💎★"
                     else: myomi = ""
 
-                # レース傾向
-                sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
+                # レース傾向 (pred_win_pct ベース: 0-100 範囲)
+                # 旧版は pred_win (0-1 範囲) を見ていたが、JSON には pred_win_pct のみ存在
+                # → top_prob 常に 0 で全レース「波乱含み」になっていた
+                sorted_probs = sorted([h.get("pred_win_pct", 0) for h in horses], reverse=True)
                 top_prob = sorted_probs[0] if sorted_probs else 0
                 second_prob = sorted_probs[1] if len(sorted_probs) > 1 else 0
                 gap = top_prob - second_prob
                 top3_total = sum(sorted_probs[:3])
-                if top_prob >= 35 and gap >= 12:
+                # v2 (2026-05-17): 新モデル (popularity 弱化 + post-calibrate) で
+                # AI 勝率が圧縮された (max ~20%) → 旧閾値 (35/25/55) では全レース「波乱含み」に。
+                # 新モデルの実分布に合わせて約半分にスケール再調整。
+                if top_prob >= 18 and gap >= 5:
                     race_tendency = "堅い（本命突出）"
-                elif top_prob >= 25 and gap >= 6:
+                elif top_prob >= 14 and gap >= 3:
                     race_tendency = "やや堅い（軸馬明確）"
-                elif top3_total >= 55:
+                elif top3_total >= 35:
                     race_tendency = "上位拮抗（実力伯仲）"
-                elif top_prob <= 12:
+                elif top_prob <= 8:
                     race_tendency = "波乱含み（大混戦）"
                 else:
                     race_tendency = "普通（中穴狙い可）"
