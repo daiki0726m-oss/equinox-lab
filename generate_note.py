@@ -113,10 +113,10 @@ def get_race_predictions(date_str, model, strategy):
                 sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
                 top_p = sorted_probs[0] if sorted_probs else 0
                 gap = (top_p - sorted_probs[1]) if len(sorted_probs) > 1 else 0
-                # v2 (2026-05-17): 新モデル分布に合わせて閾値半分にスケール
-                if top_p >= 18 and gap >= 5:
+                # v3 (2026-05-17): gap 廃止、◎絶対値のみで判定
+                if top_p >= 18:
                     tendency = "堅い（本命突出）"
-                elif top_p >= 14 and gap >= 3:
+                elif top_p >= 14:
                     tendency = "やや堅い"
                 elif sum(sorted_probs[:3]) >= 35:
                     tendency = "上位拮抗"
@@ -330,13 +330,12 @@ def get_race_predictions(date_str, model, strategy):
             else:
                 myomi = ""
 
-            # レース傾向 v2 (2026-05-17): 新モデル分布に合わせて閾値スケール
+            # レース傾向 v3 (2026-05-17): gap 廃止、◎絶対値のみで判定
             sorted_probs = sorted([h["pred_win"] for h in horses], reverse=True)
             top_p = sorted_probs[0] if sorted_probs else 0
-            gap = (top_p - sorted_probs[1]) if len(sorted_probs) > 1 else 0
-            if top_p >= 18 and gap >= 5:
+            if top_p >= 18:
                 tendency = "堅い（本命突出）"
-            elif top_p >= 14 and gap >= 3:
+            elif top_p >= 14:
                 tendency = "やや堅い"
             elif sum(sorted_probs[:3]) >= 35:
                 tendency = "上位拮抗"

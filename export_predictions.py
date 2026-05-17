@@ -231,12 +231,11 @@ def export_predictions(date_str=None):
                 second_prob = sorted_probs[1] if len(sorted_probs) > 1 else 0
                 gap = top_prob - second_prob
                 top3_total = sum(sorted_probs[:3])
-                # v2 (2026-05-17): 新モデル (popularity 弱化 + post-calibrate) で
-                # AI 勝率が圧縮された (max ~20%) → 旧閾値 (35/25/55) では全レース「波乱含み」に。
-                # 新モデルの実分布に合わせて約半分にスケール再調整。
-                if top_prob >= 18 and gap >= 5:
+                # v3 (2026-05-17): gap 廃止 — ◎の絶対値のみで判定。
+                # 「AI 20% > 18% なのに『やや堅い』になる」直感矛盾を解消。
+                if top_prob >= 18:
                     race_tendency = "堅い（本命突出）"
-                elif top_prob >= 14 and gap >= 3:
+                elif top_prob >= 14:
                     race_tendency = "やや堅い（軸馬明確）"
                 elif top3_total >= 35:
                     race_tendency = "上位拮抗（実力伯仲）"
