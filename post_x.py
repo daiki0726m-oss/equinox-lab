@@ -666,13 +666,21 @@ def _build_results_from_json(date_str):
             if race.get('race_number') != 11:
                 continue
             horses = race.get('horses', [])
-            # finish が 1 以上で確定しているか
-            has_finish = any(
-                isinstance(h.get('finish'), int) and h.get('finish', 0) >= 1
-                for h in horses
-            )
-            if not has_finish:
-                continue  # 未確定はスキップ
+            # v3 (2026-05-17): ユーザー指摘「中途半端な状態で投稿しないで」への対応。
+            # 旧版は any() で「1頭でも確定なら投稿」→ 「?着」が並ぶ未完成投稿が発生。
+            # 新版は「全頭 finish 確定」かつ「1-3着がすべて確定」を必須とする。
+            # (除外/中止が複数あるレースは confirmed=horse_count - 失格 を許容)
+            finishes = [
+                h.get('finish', 0) or 0 for h in horses
+                if isinstance(h.get('finish'), int)
+            ]
+            top3_set = set(f for f in finishes if 1 <= f <= 3)
+            confirmed_count = sum(1 for f in finishes if f >= 1)
+            unconfirmed = sum(1 for h in horses
+                              if not isinstance(h.get('finish'), int) or h.get('finish', 0) < 1)
+            # 1-3着全部確定 + 未確定馬が 1 頭以下 (除外/中止許容) で初めて投稿
+            if len(top3_set) < 3 or unconfirmed > 1:
+                continue  # 中途半端は投稿しない
 
             marked = []
             for m in mark_order:
@@ -804,7 +812,10 @@ def cmd_results(args):
         return {1: '🏆', 2: '🥈', 3: '🥉'}.get(fin, '')
 
     def fmt_finish(fin):
-        return f'{fin}着' if fin else '?着'
+        # v3 (2026-05-17): 「?着」表示を廃止 (中途半端表示を禁止)。
+        # 上記の has_finish フィルタで「全頭確定」レースのみ通過するため、
+        # ここで未確定 (0/None) になることは原則ない (除外/中止のみ)。
+        return f'{fin}着' if fin else '除外'
 
     # 集計
     n_races = len(race_data)
