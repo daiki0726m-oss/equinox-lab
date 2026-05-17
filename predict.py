@@ -430,6 +430,33 @@ def cmd_predict(args):
                 "top3_rate": round(row.get("top3_rate_10r", 0) * 100, 1),
             })
 
+        # ── 穴予兆スコア (anasanee_score) と波乱度 (race_volatility) を計算 ──
+        # 過去 11265R 統計を元に、前走凡走 + 距離変更 + 脚質 + 血統 等から
+        # 各馬の「穴を出しやすさ」をスコア化 (○▲△ 選定で活用)。
+        try:
+            from volatility import (
+                fetch_horse_history, compute_anasanee_score,
+                compute_race_volatility, compute_jockey_trust,
+            )
+            hns = [p["horse_number"] for p in predictions]
+            ana_feats = fetch_horse_history(race_id, hns)
+            for p in predictions:
+                feat = ana_feats.get(p["horse_number"], {})
+                ana = compute_anasanee_score(feat, p.get("jockey_name", ""))
+                p["anasanee_score"] = ana["score"]
+                p["anasanee_reasons"] = ana["reasons"]
+                p["jockey_trust"] = compute_jockey_trust(
+                    p.get("jockey_name", ""), p.get("popularity", 0) or 0
+                )
+            race_volatility = compute_race_volatility(race_info)
+        except Exception as e:
+            print(f"  ⚠️ 穴予兆計算スキップ: {e}")
+            for p in predictions:
+                p["anasanee_score"] = 0
+                p["anasanee_reasons"] = []
+                p["jockey_trust"] = 0
+            race_volatility = {"score": 0, "factors": [], "conf_adjust": 0}
+
         # predictions_cache に保存
         # ソート: 勝率だけだと同率で内枠順になるため、
         # rank_score(モデルの順位スコア)とSI指数を加味した複合スコアで順位付け
@@ -523,14 +550,16 @@ def cmd_predict(args):
         relay_pool = sorted_preds[1:7]
 
         def _relay_score(p):
-            """相手選定スコア: ML 評価 + データ強度 + 人気外ボーナス。"""
+            """相手選定スコア: ML 評価 + データ強度 + 人気外ボーナス + 穴予兆。"""
             pred = (p.get('pred_win', 0) or 0) * 80  # base ML 評価
             si = (p.get('si_avg', 0) or 0) / 4
             data = _data_strength(p) * 3
             pop = p.get('popularity', 0) or 0
             # 4-12人気を妙味とみなしてボーナス (1-3人気は加点なし)
             pop_bonus = max(min(pop - 3, 9), 0) * 1.5
-            return pred + si + data + pop_bonus
+            # 穴予兆スコア (前走凡走 + 距離変更 + 脚質 + 血統 等) を 2倍重み
+            ana = (p.get('anasanee_score', 0) or 0) * 2.0
+            return pred + si + data + pop_bonus + ana
 
         # 相手候補をスコア順に並べ替え → ○▲△ に割当
         relay_sorted = sorted(relay_pool, key=_relay_score, reverse=True)
@@ -595,6 +624,8 @@ def cmd_predict(args):
             "cat_weather": p.get("cat_weather", 0),
             "win_rate": p.get("win_rate", 0),
             "top3_rate": p.get("top3_rate", 0),
+            "anasanee_score": p.get("anasanee_score", 0),
+            "anasanee_reasons": p.get("anasanee_reasons", []),
             "reasons": p.get("reasons", []),
         } for p in sorted_preds], ensure_ascii=False)
 
@@ -655,6 +686,33 @@ def cmd_predict(args):
         )
         confidence = c['confidence']
         conf_reason = c['reason']
+
+        # ── race_volatility 補正: 16頭以上・重賞・芝1200m 等は信頼度を1-2段下げる ──
+        # 過去 11265R で 10+人気が3着内に絡む確率が顕著に上昇するパターンを反映。
+        if race_volatility and race_volatility.get("conf_adjust"):
+            adj = race_volatility["conf_adjust"]
+            grades = ["S", "A", "B", "C", "D"]
+            try:
+                idx = grades.index(confidence)
+                new_idx = max(0, min(len(grades) - 1, idx - adj))
+                if new_idx != idx:
+                    new_conf = grades[new_idx]
+                    factors = ",".join(race_volatility.get("factors", []))
+                    conf_reason = f"{conf_reason} / 波乱補正{adj:+d}({factors})"
+                    confidence = new_conf
+            except ValueError:
+                pass
+
+        # ── jockey_trust 補正: ◎が信頼/不信騎手の上位人気のとき微調整 ──
+        top_jt = top1.get("jockey_trust", 0) if top1 else 0
+        if top_jt >= 2 and confidence in ("A", "B", "C"):
+            grades = ["S", "A", "B", "C", "D"]
+            confidence = grades[max(0, grades.index(confidence) - 1)]
+            conf_reason = f"{conf_reason} / 信頼騎手{top_jt:+d}"
+        elif top_jt <= -2 and confidence in ("S", "A"):
+            grades = ["S", "A", "B", "C", "D"]
+            confidence = grades[min(len(grades) - 1, grades.index(confidence) + 1)]
+            conf_reason = f"{conf_reason} / 不信騎手{top_jt:+d}"
 
         # キャッシュ更新（買い目・confidence・conf_reason・should_bet・bet_reason）
         with get_db() as conn:

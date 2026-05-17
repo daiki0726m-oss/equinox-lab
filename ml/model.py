@@ -251,21 +251,22 @@ class KeibaModel:
             # 校正子が無い場合は warning だけ出して raw 値を返す
             print(f"  ℹ️ Calibrator skip: {e}")
 
-        # ── v7 post-calibrate: 高予測値の平準化 ──
-        # 過去 470R 分析で、信頼度 S(AI 勝率 34%平均)の実勝率 27.8% =
-        # AI 過信 +6.2pt を確認。val set fit の isotonic では吸収できない
-        # 「本番分布 vs val set のズレ」を post-process で平準化する。
-        # 12% 超過分を 60% に圧縮 (上限を実勝率に近づける)
+        # ── v8 post-calibrate: 圧縮を緩和 ──
+        # v7 では 12% 超過分を 60% 圧縮していたが、過剰圧縮で C 信頼度の
+        # AI 勝率 8-10% レンジに実勝率 50% の馬が混入する事象が頻発した
+        # (2026-05-17 京都1R シエーナカラー 9.7%→1着 等)。
+        # 圧縮率を 60% → 85% に緩和し、AI 予測の山(8-15%)を抑えすぎない。
+        # threshold も 0.12 → 0.15 に上げ、平均的な本命馬は素通しにする。
         import numpy as np
-        threshold = 0.12
+        threshold = 0.15
         pred_win = np.where(
             pred_win > threshold,
-            threshold + (pred_win - threshold) * 0.60,
+            threshold + (pred_win - threshold) * 0.85,
             pred_win,
         )
         pred_top3 = np.where(
             pred_top3 > threshold * 3,  # top3 は ~3倍スケール
-            threshold * 3 + (pred_top3 - threshold * 3) * 0.60,
+            threshold * 3 + (pred_top3 - threshold * 3) * 0.85,
             pred_top3,
         )
 
