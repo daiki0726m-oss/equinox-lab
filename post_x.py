@@ -315,10 +315,17 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                             # 結果ツイート (📊 印別着順 系) はスレッド先頭が常に
                             # 「📊 N/M AI予想 印別着順 + 📍京都11R...」で同じになる問題があった。
                             # → 京都だけ投稿した hit_flash と、全 3R+集計 を投稿する results が
-                            #    tweets[0] 先頭一致で重複と誤判定されていた。
-                            # 修正: スレッドが 2件以上なら tweets[1] (2件目) で比較する。
-                            # 2件目は別レースか集計なので「未投稿の続き」を検出可能。
-                            check_tweet = tweets[1] if len(tweets) >= 2 else tweets[0]
+                            #    tweets[0] / tweets[1] 一致で重複と誤判定されていた。
+                            # 修正 v2: results 投稿は集計ツイート (「📊 X/Y 集計」を含む) を
+                            # 持つので、これで判定すれば hit_flash と確実に差別化できる。
+                            # 集計ツイートがあればそれを、無ければ tweets[1] を使用。
+                            check_tweet = None
+                            for t in tweets:
+                                if "集計" in t and ("◎の戦績" in t or "印馬の" in t):
+                                    check_tweet = t
+                                    break
+                            if check_tweet is None:
+                                check_tweet = tweets[1] if len(tweets) >= 2 else tweets[0]
                             first_chunk = check_tweet[:80].strip()
                             if len(first_chunk) < 30:
                                 # 極端に短い tweet は判定不能 → スキップしない
