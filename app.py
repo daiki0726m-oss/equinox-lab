@@ -598,14 +598,25 @@ def api_predict_date(date_str):
                         ev = b.get("ev", 0)
                         if ev > max_ev:
                             max_ev = ev
-                if max_ev >= 5.0:
-                    myomi = "💎★★★"
-                elif max_ev >= 2.5:
-                    myomi = "💎★★"
-                elif max_ev >= 1.5:
-                    myomi = "💎★"
-                else:
-                    myomi = ""
+                # 妙味判定 v2 (2026-05-17): 信頼度を考慮
+                # 旧版は max_ev のみで判定 → S レース (堅軸推奨) でも ★★★ になり
+                # 「予想固いのに大穴チャンス」と矛盾していた。
+                # 新版は信頼度 S/A では ★★★ を出さない (堅軸 vs 大穴の矛盾解消)。
+                conf_for_myomi = locals().get('confidence', 'C')
+                if conf_for_myomi in ('S', 'A'):
+                    if max_ev >= 5.0: myomi = "💎★★"
+                    elif max_ev >= 3.0: myomi = "💎★"
+                    else: myomi = ""
+                elif conf_for_myomi == 'B':
+                    if max_ev >= 5.0: myomi = "💎★★★"
+                    elif max_ev >= 2.5: myomi = "💎★★"
+                    elif max_ev >= 1.5: myomi = "💎★"
+                    else: myomi = ""
+                else:  # C/D
+                    if max_ev >= 4.0: myomi = "💎★★★"
+                    elif max_ev >= 2.0: myomi = "💎★★"
+                    elif max_ev >= 1.2: myomi = "💎★"
+                    else: myomi = ""
             else:
                 # ── 出馬表確保 ──
                 with get_db() as conn:
