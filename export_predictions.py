@@ -206,14 +206,22 @@ def export_predictions(date_str=None):
                     else:
                         max_ev = 2.5  # 普通
 
-                if max_ev >= 5.0:
-                    myomi = "💎★★★"
-                elif max_ev >= 2.5:
-                    myomi = "💎★★"
-                elif max_ev >= 1.5:
-                    myomi = "💎★"
-                else:
-                    myomi = ""
+                # 妙味判定 v2 (2026-05-17): 信頼度を考慮
+                # S/A (堅軸推奨) では ★★★ を出さない (堅軸 vs 大穴の矛盾解消)。
+                if confidence in ('S', 'A'):
+                    if max_ev >= 5.0: myomi = "💎★★"
+                    elif max_ev >= 3.0: myomi = "💎★"
+                    else: myomi = ""
+                elif confidence == 'B':
+                    if max_ev >= 5.0: myomi = "💎★★★"
+                    elif max_ev >= 2.5: myomi = "💎★★"
+                    elif max_ev >= 1.5: myomi = "💎★"
+                    else: myomi = ""
+                else:  # C/D
+                    if max_ev >= 4.0: myomi = "💎★★★"
+                    elif max_ev >= 2.0: myomi = "💎★★"
+                    elif max_ev >= 1.2: myomi = "💎★"
+                    else: myomi = ""
 
                 # レース傾向
                 sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
@@ -265,18 +273,22 @@ def export_predictions(date_str=None):
                 continue
 
             # 妙味再計算（相対パーセンタイル、同値グループ均等分配）
+            # v2 (2026-05-17): 信頼度を考慮。S/A (堅軸推奨) は ★★★ を出さない
+            # (「予想固いのに大穴チャンス」と矛盾するため)。
             if len(all_races) >= 2:
                 # EVでソートし、各レースに順位を付与
                 sorted_races = sorted(all_races, key=lambda r: r["max_ev"])
                 n = len(sorted_races)
                 for i, r in enumerate(sorted_races):
                     pct = i / (n - 1) if n > 1 else 0.5
+                    conf = r.get('confidence', 'C')
+                    is_kataku = conf in ('S', 'A')  # 堅軸推奨レース
                     if pct >= 0.80:
-                        r["myomi"] = "💎★★★"
+                        r["myomi"] = "💎★★" if is_kataku else "💎★★★"
                     elif pct >= 0.50:
-                        r["myomi"] = "💎★★"
+                        r["myomi"] = "💎★" if is_kataku else "💎★★"
                     elif pct >= 0.20:
-                        r["myomi"] = "💎★"
+                        r["myomi"] = "" if is_kataku else "💎★"
                     else:
                         r["myomi"] = ""
 
