@@ -173,8 +173,11 @@ def get_workouts_for_race(conn, race_id):
     return [dict(r) for r in rows]
 
 
-def workout_section(workouts, max_show=4):
-    """調教評価セクション(A評価馬を中心に表示)"""
+def workout_section(workouts, max_show=4, assigned=True):
+    """調教評価セクション(A評価馬を中心に表示)
+
+    assigned=False (馬番未確定の月-水) なら馬番を省略し馬名のみ表示。
+    """
     if not workouts:
         return None
     a_grade = [w for w in workouts if w.get('grade') == 'A']
@@ -184,13 +187,13 @@ def workout_section(workouts, max_show=4):
     lines = ["【追い切り評価(netkeiba)】"]
     if a_grade:
         for w in a_grade[:max_show]:
-            lines.append(f"  🏅A {w['num']}番 {w['name']} ({w['text']})")
+            lines.append(f"  🏅A {_h(w['num'], w['name'], assigned)} ({w['text']})")
     elif b_grade:
         # Aがいない場合は上位B評価の中から目立つコメントを抜粋
         prio_b = [w for w in b_grade if w.get('text') and any(
             kw in w['text'] for kw in ('絶好','気力','上積','好気配','益々','気配上'))]
         for w in prio_b[:max_show]:
-            lines.append(f"  ◯B {w['num']}番 {w['name']} ({w['text']})")
+            lines.append(f"  ◯B {_h(w['num'], w['name'], assigned)} ({w['text']})")
         if not prio_b:
             return None
     return "\n".join(lines)
@@ -1190,12 +1193,19 @@ def _short_name(name, n=6):
     return name[:n]
 
 
-def _matched_horses_line(entries, predicate, label='該当', max_n=2):
+def _matched_horses_line(entries, predicate, label='該当', max_n=2, assigned=None):
     """entries から predicate(e) が True の馬を抽出し『該当:○番○○』形式で1行返す。
     マッチ無し or entries 空なら空文字。
+
+    assigned=None (デフォルト) なら entries から自動推定: 全ての出走馬に num が
+    付いていれば「馬番確定済」、欠落があれば「未確定」(=馬名のみ)。
+    明示的に True/False を渡すと優先される。
     """
     if not entries:
         return ''
+    # assigned 自動推定 (月-水で num が無い馬がいれば全体を「未確定」扱い)
+    if assigned is None:
+        assigned = all((e.get('num') or 0) > 0 for e in entries)
     matched = [e for e in entries if predicate(e)]
     if not matched:
         return ''
@@ -1205,7 +1215,7 @@ def _matched_horses_line(entries, predicate, label='該当', max_n=2):
     for m in matched_with_num[:max_n]:
         num = m.get('num')
         name = _short_name(m.get('name', ''))
-        if num:
+        if assigned and num:
             tags.append(f"{num}番{name}")
         else:
             tags.append(name)
@@ -1247,6 +1257,8 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
             entries = get_entry_or_shutuba(conn, race['race_id'])
         except Exception:
             entries = []
+    # 馬番確定 (木曜以降) か判定。月-水なら馬番省略で馬名のみ。
+    assigned = is_horse_number_assigned(conn, race.get('race_id', ''))
 
     theme_title = ""
     body_lines = []
@@ -1304,7 +1316,7 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
                     for sp in _spots[:2]:
                         num = sp.get('num', 0)
                         name = _short_name(sp.get('name', ''))
-                        tags.append(f"{num}番{name}")
+                        tags.append(f"{num}番{name}" if assigned and num else name)
                     body_lines.append(f"  └AI本命候補:{'/'.join(tags)}")
             except Exception:
                 pass
@@ -1339,7 +1351,7 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
                     for sp in _spots[:2]:
                         num = sp.get('num', 0)
                         name = _short_name(sp.get('name', ''))
-                        tags.append(f"{num}番{name}")
+                        tags.append(f"{num}番{name}" if assigned and num else name)
                     body_lines.append(f"  └末脚注目:{'/'.join(tags)}")
             except Exception:
                 pass
@@ -1479,7 +1491,7 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
                     for sp in _spots[:2]:
                         num = sp.get('num', 0)
                         name = _short_name(sp.get('name', ''))
-                        tags.append(f"{num}番{name}")
+                        tags.append(f"{num}番{name}" if assigned and num else name)
                     body_lines.append(f"  └該当:{'/'.join(tags)}")
             except Exception:
                 pass
@@ -1751,18 +1763,54 @@ def _dispatch_v8(dow, slot, race, stats, entries, sires, damsires,
 # v8: 15 slot 専用ビルダー (注目馬+数値根拠+行動指針 を必ず含む)
 # ═══════════════════════════════════════════════════════════════
 
-def _format_spotlight_line(sp, with_reasons=True, max_reasons=1):
-    """spotlight 1頭を1行で表示。圧縮版:理由は1個のみ表示"""
+def is_horse_number_assigned(conn, race_id):
+    """馬番が確定しているか (= 木曜の出馬投票完了済み)。
+
+    全出走馬で horse_number > 0 になっているかで判定。
+    月・火・水 段階では未確定で 0 の馬がいるため False を返す。
+    """
+    if not conn or not race_id:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) c, SUM(CASE WHEN horse_number > 0 THEN 1 ELSE 0 END) a "
+            "FROM results WHERE race_id=?",
+            (race_id,)
+        ).fetchone()
+        if not row or not row['c']:
+            return False
+        return row['c'] == row['a']
+    except Exception:
+        return False
+
+
+def _h(num, name, assigned):
+    """馬の表示ラベル。
+
+    assigned=True (馬番確定済) → "5番 サンプル"
+    assigned=False (月-水で馬番未確定) → "サンプル" のみ
+    """
+    if assigned and num and num > 0:
+        return f"{num}番 {name}"
+    return name or "?"
+
+
+def _format_spotlight_line(sp, with_reasons=True, max_reasons=1, assigned=True):
+    """spotlight 1頭を1行で表示。圧縮版:理由は1個のみ表示
+
+    assigned=False の場合は馬番を省略して馬名のみ表示。
+    """
     num = sp.get('num', 0)
     name = sp.get('name', '?')
     score = sp.get('score', 0)
+    label = _h(num, name, assigned)
     if with_reasons and sp.get('reasons'):
         rs = sp['reasons'][0] if sp['reasons'] else ''
         # 理由の括弧内文字列を 12 文字以内に
         if len(rs) > 14:
             rs = rs[:13] + '…'
-        return f"{num}番 {name}({score}・{rs})"
-    return f"{num}番 {name}(score{score})"
+        return f"{label}({score}・{rs})"
+    return f"{label}(score{score})"
 
 
 def _race_label_short(race):
@@ -2010,6 +2058,7 @@ def build_mon_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
+    assigned = is_horse_number_assigned(conn, race.get('race_id', ''))
     spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
 
     parts = [f"⭐ {when} {label} AI注目馬TOP3\n"]
@@ -2018,7 +2067,7 @@ def build_mon_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
     if spots:
         for i, sp in enumerate(spots, 1):
             mark = ['◎', '○', '▲'][i-1]
-            parts.append(f"{mark} {_format_spotlight_line(sp, max_reasons=2)}")
+            parts.append(f"{mark} {_format_spotlight_line(sp, max_reasons=2, assigned=assigned)}")
     else:
         parts.append("(出走馬データ取得中、明日朝以降に再配信)")
 
@@ -2071,6 +2120,7 @@ def build_tue_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
     grade = race.get('grade') or ''
     g = f"({grade})" if grade else ''
 
+    assigned = is_horse_number_assigned(conn, race.get('race_id', ''))
     parts = [f"🎯 {when}{race.get('race_name','')}{g} AI注目馬TOP3"]
     parts.append("(8軸スコア:血統×末脚×コース×状態 等)")
     parts.append("")
@@ -2078,7 +2128,7 @@ def build_tue_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
     if spots:
         for i, sp in enumerate(spots, 1):
             mark = ['◎', '○', '▲'][i-1]
-            parts.append(f"{mark} {_format_spotlight_line(sp)}")
+            parts.append(f"{mark} {_format_spotlight_line(sp, assigned=assigned)}")
     else:
         parts.append("(出走馬データ取得中)")
 
@@ -2096,6 +2146,7 @@ def build_tue_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
+    assigned = is_horse_number_assigned(conn, race.get('race_id', ''))
     spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=2)
     note_url = get_note_article_url(race)
 
@@ -2107,7 +2158,7 @@ def build_tue_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
         parts.append("・コース×血統TOP10 + AI 8軸スコア")
         parts.append("")
         if spots:
-            parts.append(f"◎本命候補:{_format_spotlight_line(spots[0])}")
+            parts.append(f"◎本命候補:{_format_spotlight_line(spots[0], assigned=assigned)}")
             parts.append("")
         parts.append(f"▶ {note_url}")
     else:
@@ -2117,7 +2168,7 @@ def build_tue_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
             parts.append("【現時点の AI 注目馬】")
             marks = ['◎', '○']
             for i, sp in enumerate(spots[:2]):
-                parts.append(f"{marks[i]} {_format_spotlight_line(sp)}")
+                parts.append(f"{marks[i]} {_format_spotlight_line(sp, assigned=assigned)}")
             parts.append("")
         parts.append("→ 木曜夜に最終予想、土曜朝に印付き完全予想配信🔔")
     parts.append('')
@@ -2137,6 +2188,7 @@ def build_wed_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
     venue = race.get('venue', '')
     surface = race.get('surface', '')
     distance = race.get('distance', 0)
+    assigned = is_horse_number_assigned(conn, race.get('race_id', ''))
 
     parts = [f"🏇 {when} {label} 騎手コース適性\n"]
 
@@ -2183,7 +2235,7 @@ def build_wed_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
             parts.append("")
             parts.append("【該当する出走馬】")
             for num, name, jk in matched[:3]:
-                parts.append(f"🎯{num}番 {name}(鞍上{jk})")
+                parts.append(f"🎯{_h(num, name, assigned)}(鞍上{jk})")
 
     parts.append("\n→ 木曜に出走馬確定、金曜に枠順抽選")
     parts.append('')
@@ -2204,6 +2256,7 @@ def build_wed_weekday(race, conn, today_d, hashtags_fn,
     venue = race.get('venue', '')
     surface = race.get('surface', '')
     distance = race.get('distance', 0)
+    assigned = is_horse_number_assigned(conn, race_id)
 
     workouts = []
     if conn and race_id:
@@ -2226,12 +2279,12 @@ def build_wed_weekday(race, conn, today_d, hashtags_fn,
             parts.append("【A評価の出走馬】")
             for w in a_horses[:4]:
                 txt = w['evaluation_text'][:20] if w['evaluation_text'] else ''
-                parts.append(f"🏅A {w['horse_number']}番 {w['horse_name']}({txt})")
+                parts.append(f"🏅A {_h(w['horse_number'], w['horse_name'], assigned)}({txt})")
         elif b_horses:
             parts.append("【B評価注目馬】")
             for w in b_horses[:3]:
                 txt = w['evaluation_text'][:20] if w['evaluation_text'] else ''
-                parts.append(f"◯B {w['horse_number']}番 {w['horse_name']}({txt})")
+                parts.append(f"◯B {_h(w['horse_number'], w['horse_name'], assigned)}({txt})")
         parts.append("\n→ A評価馬は調教師の自信表れ、複勝率10pt上振れ傾向")
         parts.append('')
         parts.append(hashtags_fn(race))
@@ -2274,7 +2327,7 @@ def build_wed_weekday(race, conn, today_d, hashtags_fn,
     fast_horses.sort(key=lambda x: -x['fastest'])
     if fast_horses:
         for h in fast_horses[:3]:
-            parts.append(f"⭐{h['num']}番 {h['name']}(直近5走で上り最速{h['fastest']}回)")
+            parts.append(f"⭐{_h(h['num'], h['name'], assigned)}(直近5走で上り最速{h['fastest']}回)")
         parts.append(f"\n→ 東京/新潟マイル外回りは末脚絶対値が勝敗を決める")
     else:
         # 出走馬データすら無い → コース傾向 fallback
@@ -2311,12 +2364,13 @@ def build_wed_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
+    assigned = is_horse_number_assigned(conn, race.get('race_id', ''))
 
     parts = [f"⚠️ {when} {label} 危険な人気馬警告\n"]
     dangerous = get_dangerous_favorites(entries, conn, race, max_horses=2)
     if dangerous:
         for d in dangerous:
-            parts.append(f"🚨 {d['num']}番 {d['name']}({d['pop']}人気想定だが…)")
+            parts.append(f"🚨 {_h(d['num'], d['name'], assigned)}({d['pop']}人気想定だが…)")
             parts.append(f"  → AI score {d['score']}と低評価")
             parts.append("")
         parts.append("【代わりに狙うべき馬】")
@@ -2325,7 +2379,7 @@ def build_wed_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
             num = sp.get('num', 0)
             name = sp.get('name', '?')
             pop = sp.get('pop', 0)
-            parts.append(f"⭐{num}番 {name}(想定{pop}人気・score{sp.get('score',0)})")
+            parts.append(f"⭐{_h(num, name, assigned)}(想定{pop}人気・score{sp.get('score',0)})")
     else:
         parts.append("人気と AI 評価は概ね一致、堅い決着の可能性")
 
@@ -2350,6 +2404,7 @@ def build_thu_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
     when = _phrase_when(race, today_d)
     grade = race.get('grade') or ''
     g = f"({grade})" if grade else ''
+    assigned = is_horse_number_assigned(conn, race.get('race_id', ''))
     parts = [f"🏆 {when}{race.get('race_name','')}{g} 最終8軸TOP4"]
     parts.append("")
     spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=4)
@@ -2357,7 +2412,7 @@ def build_thu_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
         marks = ['◎', '○', '▲', '△']
         for i, sp in enumerate(spots):
             mark = marks[i] if i < len(marks) else '・'
-            parts.append(f"{mark} {_format_spotlight_line(sp)}")
+            parts.append(f"{mark} {_format_spotlight_line(sp, assigned=assigned)}")
     else:
         parts.append("(出走馬データ取得中)")
 
@@ -2375,6 +2430,7 @@ def build_thu_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
+    assigned = is_horse_number_assigned(conn, race.get('race_id', ''))
     spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
     note_url = get_note_article_url(race)
 
@@ -2384,7 +2440,7 @@ def build_thu_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
         parts.append("【最終3頭(8軸スコア)】")
         marks = ['◎', '○', '▲']
         for i, sp in enumerate(spots[:3]):
-            parts.append(f"{marks[i]} {_format_spotlight_line(sp)}")
+            parts.append(f"{marks[i]} {_format_spotlight_line(sp, assigned=assigned)}")
         parts.append("")
     if note_url:
         parts.append("【詳細分析記事】")
@@ -2486,11 +2542,14 @@ def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
       1. 過去6年同レースの勝ち馬パターン (人気・血統・年齢)
       2. AI モデルが今コースで最重視する 3軸
       3. 出走馬の中でその3軸が満たされている馬
+
+    各データには「今週の該当出走馬」を紐付けて出す (CLAUDE.md 鉄則)。
     """
     if not race:
         return None
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
+    assigned = is_horse_number_assigned(conn, race.get('race_id', ''))
 
     parts = [f"🧠 {when} {label} AI独自パターン分析\n"]
 
@@ -2515,10 +2574,23 @@ def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
         ranked.sort(reverse=True)
         if ranked:
             parts.append(f"・{ranked[0][2]}が最多")
-        # 血統 (有意な比率のみ)
+        # 血統 (有意な比率のみ) + 今週の該当馬を紐付け
         if pattern['kingmambo_count'] > 0:
             k_pct = pattern['kingmambo_count'] / n * 100
-            parts.append(f"・キンマンボ系産駒 {k_pct:.0f}% (出走馬チェック必須)")
+            parts.append(f"・キンマンボ系産駒 {k_pct:.0f}%")
+            # 今週の該当出走馬
+            k_set = {'ルーラーシップ', 'キングカメハメハ', 'キズナ', 'ドゥラメンテ',
+                     'レイデオロ', 'エピファネイア', 'ロードカナロア'}
+            k_matched = []
+            for e in (entries or []):
+                sire_name = e.get('sire', '') or ''
+                if any(k in sire_name for k in k_set):
+                    k_matched.append((e.get('num') or e.get('horse_number', 0),
+                                      e.get('name', '?'), sire_name))
+            if k_matched:
+                # 1-2頭まで馬名を出す (CLAUDE.md 鉄則)
+                for num, name, sname in k_matched[:2]:
+                    parts.append(f"  └ 今週: {_h(num, name, assigned)}(父{sname})")
         # 平均上がり
         if pattern['avg_last3f']:
             parts.append(f"・勝ち馬の平均上り3F:{pattern['avg_last3f']:.1f}秒")
@@ -2531,7 +2603,7 @@ def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
         for sp in spots[:2]:
             num = sp.get('num', 0)
             name = sp.get('name', '?')
-            parts.append(f"⭐{num}番 {name}(score{sp.get('score',0)})")
+            parts.append(f"⭐{_h(num, name, assigned)}(score{sp.get('score',0)})")
         parts.append("")
 
     parts.append("→ 11時頃の枠順抽選後、12:30に評価更新🔔")
@@ -2552,12 +2624,14 @@ def build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
     when = _phrase_when(race, today_d)
     label = _race_label_short(race)
     race_id = race.get('race_id', '')
-    assigned = _is_post_position_assigned(conn, race_id)
+    waku_assigned = _is_post_position_assigned(conn, race_id)
+    # 馬番は木曜出走確定で揃うので、金曜時点では基本的に True
+    num_assigned = is_horse_number_assigned(conn, race_id)
     spots = get_ai_spotlight_top(conn, race, sires, damsires, entries, max_horses=3)
 
     grade = race.get('grade') or ''
     g = f"({grade})" if grade else ''
-    if assigned:
+    if waku_assigned:
         parts = [f"🎯 {when}{race.get('race_name','')}{g} 枠順後の注目馬"]
     else:
         parts = [f"🎯 {when}{race.get('race_name','')}{g} AI注目馬"]
@@ -2572,7 +2646,7 @@ def build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
             # 馬名 + score + 理由1個を1行に
             r1 = sp['reasons'][0] if sp.get('reasons') else ''
             if len(r1) > 14: r1 = r1[:13] + '…'
-            parts.append(f"{mark} {num}番 {name}({score}・{r1})")
+            parts.append(f"{mark} {_h(num, name, num_assigned)}({score}・{r1})")
     else:
         return None  # entries無いなら投稿しない(中身なし防止)
 
