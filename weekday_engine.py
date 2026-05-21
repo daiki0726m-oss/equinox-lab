@@ -1197,15 +1197,17 @@ def _matched_horses_line(entries, predicate, label='該当', max_n=2, assigned=N
     """entries から predicate(e) が True の馬を抽出し『該当:○番○○』形式で1行返す。
     マッチ無し or entries 空なら空文字。
 
-    assigned=None (デフォルト) なら entries から自動推定: 全ての出走馬に num が
-    付いていれば「馬番確定済」、欠落があれば「未確定」(=馬名のみ)。
+    assigned=None (デフォルト) なら entries から自動推定: 全ての出走馬に
+    frame (枠) が付いていれば「枠順抽選済 = 馬番確定」、欠落があれば「未確定」。
+    馬番(num)は枠順抽選前でも netkeiba の仮番が入る可能性があるため、
+    枠 (frame) の有無で判定する方が安全。
     明示的に True/False を渡すと優先される。
     """
     if not entries:
         return ''
-    # assigned 自動推定 (月-水で num が無い馬がいれば全体を「未確定」扱い)
+    # assigned 自動推定: 月-木で frame が未確定なら馬名のみ
     if assigned is None:
-        assigned = all((e.get('num') or 0) > 0 for e in entries)
+        assigned = all((e.get('frame') or 0) > 0 for e in entries)
     matched = [e for e in entries if predicate(e)]
     if not matched:
         return ''
@@ -1764,16 +1766,16 @@ def _dispatch_v8(dow, slot, race, stats, entries, sires, damsires,
 # ═══════════════════════════════════════════════════════════════
 
 def is_horse_number_assigned(conn, race_id):
-    """馬番が確定しているか (= 木曜の出馬投票完了済み)。
+    """馬番が確定しているか (= 金曜11時の枠順抽選完了済み)。
 
-    全出走馬で horse_number > 0 になっているかで判定。
-    月・火・水 段階では未確定で 0 の馬がいるため False を返す。
+    馬番は枠順抽選と同時に確定するため、post_position > 0 で判定。
+    月・火・水・木 段階では未確定。金曜11時以降・土・日 で True。
     """
     if not conn or not race_id:
         return False
     try:
         row = conn.execute(
-            "SELECT COUNT(*) c, SUM(CASE WHEN horse_number > 0 THEN 1 ELSE 0 END) a "
+            "SELECT COUNT(*) c, SUM(CASE WHEN post_position > 0 THEN 1 ELSE 0 END) a "
             "FROM results WHERE race_id=?",
             (race_id,)
         ).fetchone()
