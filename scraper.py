@@ -949,12 +949,16 @@ class NetkeibaScraper:
                 race_data.get("distance", 0), race_data.get("surface", ""),
                 race_data.get("direction", ""), race_data.get("weather", ""),
                 race_data.get("track_condition", ""),
-                len(race_data.get("results", [])),
+                len(race_data.get("results", []) or race_data.get("entries", [])),
                 race_data.get("start_time", "")
             ))
 
             # 各馬の結果保存
-            for r in race_data.get("results", []):
+            # 互換: scrape_race は "results" キー、scrape_shutuba は "entries" キー
+            # 過去のバグで未来レースで出走馬が保存されない事象があり、
+            # entries も results として処理するよう統一 (2026-05-23 修正)
+            horse_records = race_data.get("results", []) or race_data.get("entries", [])
+            for r in horse_records:
                 # 馬マスター
                 if r.get("horse_id"):
                     conn.execute("""
