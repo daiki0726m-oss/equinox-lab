@@ -69,6 +69,21 @@ jobs:
           echo "💰 ${DATE} の配当を収集..."
           python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集スキップ"
 
+      # 🛡 Pre-flight: races/出走馬/予測キャッシュ完整性チェック + auto-fix
+      # 5/23 事故 (export_predictions が「予測データなし」で空 JSON 出力) の再発防止
+      - name: Pre-flight check (data integrity)
+        run: |
+          DATE="${{ steps.date.outputs.date }}"
+          echo "🛡 Pre-flight check: $DATE"
+          python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || {
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 2 ]; then
+              echo "❌ Pre-flight 致命的問題が残っている (auto-fix失敗)"
+              # この workflow は collect なので、致命的でも JSON 更新は試みる
+              # (export 側で「予測なしならスキップ」される設計を維持)
+            fi
+          }
+
       - name: Export predictions JSON
         run: |
           DATE="${{ steps.date.outputs.date }}"

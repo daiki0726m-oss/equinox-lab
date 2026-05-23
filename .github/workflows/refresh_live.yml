@@ -105,6 +105,14 @@ jobs:
           echo "🧠 再予測実行..."
           python predict.py predict --date "$DATE" --force
 
+      # 🛡 Pre-flight: 当日データ完整性を確認、不足あれば auto-fix
+      - name: Pre-flight check (data integrity)
+        if: steps.check.outputs.should_run == 'true'
+        run: |
+          DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
+          echo "🛡 Pre-flight check: $DATE"
+          python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || echo "⚠️ Pre-flight 警告(続行)"
+
       - name: Export predictions to static JSON
         if: steps.check.outputs.should_run == 'true'
         run: |
