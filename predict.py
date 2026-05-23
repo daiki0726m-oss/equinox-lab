@@ -492,7 +492,20 @@ def cmd_predict(args):
         # 4-18人気で AI 予測勝率 > 市場想定確率(1/pop*0.6) のとき、その差に応じて加点。
         # popularity_map が全頭 0 (未確定) の場合はスキップ (現状ソートのまま)。
         # シミュレーション (5/9-10 各72R) では ◎1-3人気率 74%→65% / 4-9人気率 26%→35% 程度。
-        CONTRARIAN_STRENGTH = 1.0
+        #
+        # v10 (2026-05-24): ML 勝率が均一なレース(3歳G1等の学習データ不足)では
+        # Contrarian が過剰発火し、SI 最低クラスの最低人気馬が ◎ になる事故が発生
+        # (5/24 オークス ◎18人気ミツカネベネラ事件)。
+        # ML 勝率のレンジ(max - min)が小さい場合は Contrarian を弱める。
+        ml_range = max(p["pred_win"] for p in sorted_preds) - min(p["pred_win"] for p in sorted_preds)
+        if ml_range < 0.03:
+            # ML が全く識別できていない → Contrarian を完全停止し SI と前哨戦実績を優先
+            CONTRARIAN_STRENGTH = 0.0
+        elif ml_range < 0.05:
+            # 弱めの識別 → Contrarian を30%に弱める
+            CONTRARIAN_STRENGTH = 0.3
+        else:
+            CONTRARIAN_STRENGTH = 1.0
         if any(popularity_map.values()):
             def _final_sort_key(p):
                 win = p["pred_win"]
