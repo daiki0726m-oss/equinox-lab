@@ -472,12 +472,34 @@ def _fetch_predictions_from_pages(date_str):
 
 # ─── レース当日: メインレース予想 ───
 def cmd_predict(args):
-    """レース前の買い目公開ツイート（11R + 信頼度S/A）"""
+    """レース前の買い目公開ツイート（11R + 信頼度S/A）
+
+    🛡 時間ガード (2026-05-23 追加):
+    post_predict は朝の予想公開専用。GAS や workflow_dispatch で誤発火された場合、
+    レース終了後に「予想」が投稿される事故が発生した (5/23 16:33 JST)。
+    対象日のメインレース(11R)の発走時刻を過ぎている場合は投稿せず即座にスキップ。
+    """
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+    # ─── 🛡 時間ガード: レース後の post_predict は禁止 ───
+    # 同日のレース で start_time が「現在時刻 - 30分」より前なら「もう走った」とみなす。
+    # 11R より早い時刻のレースが1つでも既に始まっていれば、投稿はキャンセル。
+    # SKIP_PREDICT_GUARD=1 で意図的にバイパス可能(テスト用)
+    if not os.environ.get("SKIP_PREDICT_GUARD"):
+        now = now_jst()
+        if now.strftime("%Y%m%d") == date_str:
+            # 当日かつ「11時 JST 以降」なら問答無用でスキップ
+            # 朝の予想公開は 7:00-10:45 JST の窓に限定
+            if now.hour >= 11:
+                print(f"⚠️ 時間ガード発動: 現在 {now.strftime('%H:%M JST')} は 11時以降")
+                print(f"   post_predict は朝の予想公開専用(7:00-10:45 JST)。")
+                print(f"   レース終了後の予想投稿事故防止のためスキップします。")
+                print(f"   バイパスするには環境変数 SKIP_PREDICT_GUARD=1 を設定。")
+                return
 
     all_races = []
 
