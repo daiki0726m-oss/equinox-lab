@@ -119,3 +119,23 @@ JRA の出走スケジュール:
     WHERE race_id IN (SELECT race_id FROM races WHERE race_date='YYYY-MM-DD');
     ```
     続けて `python3 predict.py predict --date YYYYMMDD --force` で再予測 → DB 最新化
+13. **2026-05-23**: **fetch_weekend_races cron が月水金朝のみで土日朝に発火しない** → 当日朝 R1-R8 が DB に無く、結果反映が完全停止。**土日朝5時の cron 追加で恒久対策** (PR #92)
+14. **2026-05-23**: **scraper.py の致命バグ**: `scrape_shutuba` は `entries` キーで返すが `save_race_to_db` は `results` キーしか参照しない → 6ヶ月以上未来レースの出走馬が DB に保存されていなかった。`save_race_to_db` で両キーを受け付ける形に修正
+15. **2026-05-23 16:33**: **workflow_dispatch (GAS等外部)で post_predict 誤発火** → レース真っ最中に「予想」を6ツイート投稿。`cmd_predict` に時間ガード追加 (11時以降は問答無用でスキップ)。後に odds_flash 等にも展開
+16. **2026-05-23**: **should_bet_race の閾値 30% が post_calibrate v8 後の予測分布に追従せず** → 全レースで「混戦」判定で買い目 0点 / UI 推奨無し。閾値を 30%→23%, top_prob 10%→8% に緩和
+17. **2026-05-24**: **Contrarian 補正が ML 識別不能レースで暴走** → 3歳G1オークスで SI 最低クラスの18人気馬が ◎ に。記事印付け(◎10スターアニス SI=93)と完全乖離。ML 勝率レンジで Contrarian 強度を可変化 (レンジ<3% で停止、<5% で30%, それ以外 100%)
+18. **2026-05-24**: **データパイプライン全体に完整性チェックが無かった** → 各段階(fetch/collect/predict/export)の出力が変でも誰も検知せず X 投稿される。`scripts/preflight_check.py` を新設し、cron / workflow_dispatch 発火時に「races件数 / 出走馬件数 / 予測キャッシュ件数」を自動チェック + auto-fix する仕組みを整備
+
+## 🛡 投稿前の Pre-flight Check (2026-05-24 導入)
+
+各 X 投稿コマンド / 予測 cron / 結果反映 cron の前に以下を実行:
+```bash
+python3 scripts/preflight_check.py YYYYMMDD --auto-fix
+```
+
+これにより:
+- races テーブルにレースが揃っているか確認 (不足なら fetch 自動再実行)
+- 各レースに出走馬が登録されているか確認 (不足なら scrape_shutuba を再呼び出し)
+- 予測キャッシュが揃っているか確認 (不足なら predict 自動実行)
+
+返り値: 0=OK / 1=警告 / 2=致命的。GitHub Actions では `--auto-fix` でほぼ自動復旧。

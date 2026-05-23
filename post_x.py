@@ -3111,6 +3111,14 @@ def cmd_odds_flash(args):
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
+    # 🛡 時間ガード: odds_flash は朝のオッズ確定後 (9:00-10:30 JST) 専用
+    # 午後の誤発火は無意味 (post_predict が後で本投稿するため)
+    if not os.environ.get("SKIP_TIME_GUARD"):
+        now = now_jst()
+        if now.strftime("%Y%m%d") == date_str and (now.hour < 9 or now.hour >= 11):
+            print(f"⚠️ odds_flash 時間ガード: {now.strftime('%H:%M JST')} は対象外 (9:00-10:30 のみ)")
+            return
+
     with get_db() as conn:
         races = conn.execute("""
             SELECT ra.race_id, ra.race_name, ra.venue, ra.grade,
