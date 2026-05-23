@@ -66,13 +66,18 @@ class BettingStrategy:
         top_prob = max(p["pred_win"] for p in predictions)
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
 
-        # 最上位馬の勝率が10%未満 → 信頼度が低い
-        if top_prob < 0.10:
+        # 最上位馬の勝率が8%未満 → 信頼度が低い
+        # v10 (2026-05-23): 10% → 8% に緩和。post_calibrate v8 で
+        # ML 出力上限が抑えられ、トップ予測 10% 未満レースが激増したため。
+        if top_prob < 0.08:
             return False, f"予測確率が低い (最大{top_prob:.1%})"
 
-        # 上位3頭の合計勝率が30%未満 → 分散しすぎ
+        # 上位3頭の合計勝率が23%未満 → 分散しすぎ
+        # v10 (2026-05-23): 30% → 23% に緩和。5/23 R10-R12 で旧30% 閾値だと
+        # 9/9 レースが見送り判定となり買い目0点で UI に推奨が出ない事態になった。
+        # post_calibrate v8 後の現実的な予測分布に合わせた閾値。
         top3_sum = sum(p["pred_win"] for p in sorted_preds[:3])
-        if top3_sum < 0.30:
+        if top3_sum < 0.23:
             return False, f"上位3頭の合計勝率{top3_sum:.1%}で混戦"
 
         # 本命が堅すぎてオッズに旨味なし
