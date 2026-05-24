@@ -482,24 +482,44 @@ body {
 .result-badge.done { background: var(--green-dim); color: var(--green); }
 .result-badge.pending { background: rgba(255,255,255,0.06); color: var(--text-muted); }
 
-/* 推奨/見送りバッジ (2026-05-24) */
+/* 推奨/見送りバッジ — 意思決定の唯一の指標 (2026-05-24 v3)
+   旧 myomi / race_tendency / confidence バッジは全廃止 */
 .rec-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-weight: 700;
-  margin-left: 4px;
-  cursor: help;
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 14px;
+  font-weight: 800;
+  margin-left: 6px;
+  white-space: nowrap;
+  letter-spacing: 0.5px;
 }
 .rec-badge.rec-yes {
-  background: rgba(46, 204, 113, 0.18);
+  background: rgba(46, 204, 113, 0.22);
   color: #2ecc71;
-  border: 1px solid rgba(46, 204, 113, 0.4);
+  border: 1.5px solid rgba(46, 204, 113, 0.55);
 }
 .rec-badge.rec-no {
-  background: rgba(231, 76, 60, 0.12);
-  color: #e57373;
-  border: 1px solid rgba(231, 76, 60, 0.3);
+  background: rgba(160, 160, 160, 0.12);
+  color: #909090;
+  border: 1.5px solid rgba(160, 160, 160, 0.3);
+}
+@media (max-width: 600px) {
+  .rec-badge {
+    font-size: 12px;
+    padding: 4px 10px;
+  }
+}
+
+/* 推奨フィルター(タッチターゲット拡大) */
+.conf-filter-btn {
+  min-height: 36px;
+}
+@media (max-width: 600px) {
+  .conf-filter-btn {
+    min-height: 40px;
+    padding: 8px 14px !important;
+    font-size: 13px !important;
+  }
 }
 
 /* ─── Results Tab ─── */
@@ -808,13 +828,11 @@ body {
   <div class="summary-item"><div class="summary-value" id="sumROI">-</div><div class="summary-label">ROI</div></div>
 </div>
 
-<!-- Confidence Filter -->
+<!-- 推奨フィルター(2パターン) -->
 <div class="conf-filter" id="confFilter">
-  <button class="conf-filter-btn" onclick="setConfFilter('ALL')">全て</button>
-  <button class="conf-filter-btn" onclick="setConfFilter('S')">S</button>
-  <button class="conf-filter-btn" onclick="setConfFilter('A')">A以上</button>
-  <button class="conf-filter-btn" onclick="setConfFilter('B')">B以上</button>
-  <button class="conf-filter-btn" onclick="setConfFilter('C')">C以上</button>
+  <button class="conf-filter-btn active" onclick="setConfFilter('ALL')">全レース</button>
+  <button class="conf-filter-btn" onclick="setConfFilter('REC')">✅ 推奨のみ</button>
+  <button class="conf-filter-btn" onclick="setConfFilter('SKIP')">⏭️ 見送りのみ</button>
 </div>
 
 
@@ -853,9 +871,11 @@ function toggleBetsFilter() {
 }
 
 function setConfFilter(level) {
-  state.confFilter = state.confFilter === level ? 'ALL' : level;
+  state.confFilter = level;
+  const labels = { 'ALL': '全レース', 'REC': '✅', 'SKIP': '⏭️' };
   document.querySelectorAll('.conf-filter-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.textContent.startsWith(level === 'ALL' ? '全て' : level));
+    const expected = labels[level];
+    btn.classList.toggle('active', expected && btn.textContent.includes(expected));
   });
   if (state.allData) {
     // 開閉状態を記憶→再描画→復元
@@ -1169,14 +1189,12 @@ function renderRaceCards() {
     });
   }
 
-  // 信頼度フィルター
-  if (state.confFilter !== 'ALL') {
-    const ranks = ['S','A','B','C','D'];
-    const minIdx = ranks.indexOf(state.confFilter);
-    races = races.filter(race => {
-      const rIdx = ranks.indexOf(race.confidence || 'D');
-      return rIdx <= minIdx;
-    });
+  // 推奨フィルター (2パターン: REC / SKIP)
+  // 2026-05-24: 信頼度 S/A/B/C 階層フィルターから「推奨/見送り」の2択に統合
+  if (state.confFilter === 'REC') {
+    races = races.filter(race => race.should_bet);
+  } else if (state.confFilter === 'SKIP') {
+    races = races.filter(race => !race.should_bet);
   }
 
   if (races.length === 0) {
@@ -1209,27 +1227,26 @@ function createRaceCard(race) {
     }
   }
 
+  // v3 (2026-05-24): UIシンプル化 — myomi / race_tendency / confidence バッジを廃止し、
+  // 「✅ 推奨 / ⏭️ 見送り」の2パターンだけで意思決定可能に
   return `
     <div class="race-card" id="race-${race.race_id}">
       <div class="race-header" onclick="toggleRace('${race.race_id}')">
         <div class="race-left">
           <div class="race-num">${race.race_number}R</div>
           <div class="race-info">
-            <div class="race-name-line">${race.race_name || '未定'} ${badges} ${recBadge}</div>
+            <div class="race-name-line">${race.race_name || '未定'} ${badges}</div>
             <div class="race-meta">
               ${race.start_time ? `<span style="color:#f0c040;font-weight:600">🕐${race.start_time}</span>` : ''}
               <span>${race.surface || ''}</span>
               <span>${race.distance || 0}m</span>
               <span>${race.horse_count || 0}頭</span>
               <span>${race.track_condition || ''}</span>
-              ${race.race_tendency ? `<span style="color:var(--text-secondary)">│ ${race.race_tendency}</span>` : ''}
             </div>
           </div>
         </div>
         <div class="race-right">
-          ${race.myomi ? `<span class="myomi-badge ${race.myomi.includes('★★★') ? 'myomi-3' : race.myomi.includes('★★') ? 'myomi-2' : 'myomi-1'}">${race.myomi}</span>` : ''}
-          <span class="conf-badge ${confClass}">${confIcon}${confClass}</span>
-          <span class="result-badge ${race.has_results ? 'done' : 'pending'}">${race.has_results ? '確定' : '未確定'}</span>
+          ${recBadge}
           <span class="toggle-icon">▼</span>
         </div>
       </div>
