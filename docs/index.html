@@ -482,6 +482,26 @@ body {
 .result-badge.done { background: var(--green-dim); color: var(--green); }
 .result-badge.pending { background: rgba(255,255,255,0.06); color: var(--text-muted); }
 
+/* 推奨/見送りバッジ (2026-05-24) */
+.rec-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 700;
+  margin-left: 4px;
+  cursor: help;
+}
+.rec-badge.rec-yes {
+  background: rgba(46, 204, 113, 0.18);
+  color: #2ecc71;
+  border: 1px solid rgba(46, 204, 113, 0.4);
+}
+.rec-badge.rec-no {
+  background: rgba(231, 76, 60, 0.12);
+  color: #e57373;
+  border: 1px solid rgba(231, 76, 60, 0.3);
+}
+
 /* ─── Results Tab ─── */
 .results-section { padding: 12px; }
 .podium { margin-bottom: 16px; }
@@ -1177,13 +1197,25 @@ function createRaceCard(race) {
   let badges = '';
   if (hasResults) badges += `<span class="result-badge">✅ 確定</span>`;
 
+  // 推奨/見送りバッジ (2026-05-24)
+  // should_bet=true → 「✅ 推奨」、false → 「⏭️ 見送り推奨」
+  // 結果未確定レースのみ表示(確定後は意味がない)
+  let recBadge = '';
+  if (!hasResults) {
+    if (race.should_bet) {
+      recBadge = `<span class="rec-badge rec-yes" title="${race.bet_reason || ''}">✅ 推奨</span>`;
+    } else {
+      recBadge = `<span class="rec-badge rec-no" title="${race.bet_reason || '見送り推奨'}">⏭️ 見送り</span>`;
+    }
+  }
+
   return `
     <div class="race-card" id="race-${race.race_id}">
       <div class="race-header" onclick="toggleRace('${race.race_id}')">
         <div class="race-left">
           <div class="race-num">${race.race_number}R</div>
           <div class="race-info">
-            <div class="race-name-line">${race.race_name || '未定'} ${badges}</div>
+            <div class="race-name-line">${race.race_name || '未定'} ${badges} ${recBadge}</div>
             <div class="race-meta">
               ${race.start_time ? `<span style="color:#f0c040;font-weight:600">🕐${race.start_time}</span>` : ''}
               <span>${race.surface || ''}</span>
