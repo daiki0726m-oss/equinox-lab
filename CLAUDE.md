@@ -102,30 +102,54 @@ JRA の出走スケジュール:
 
 ## 🐛 過去のミス事例 (繰り返さない)
 
-1. **2026-05-12**: 「中身なし投稿」を放置 → 抜本的 v8 リデザイン (PR #40-44)
-2. **2026-05-13**: 「金曜朝=枠順発表」と誤定義 (実際は11時抽選) → 金朝AI独自パターン分析に変更
-3. **2026-05-13**: ヴィクトリアマイル 2023 ソングランが抜けた → verify_article.py 新設
-4. **2026-05-09**: combo_top3 temporal leakage で偽 importance → v6 で時系列累積化
-5. **2026-05-10**: 直近着順表記「[7-1-1]」を「連勝中」と誤読(競馬慣習は着度数) → 「7着→1着→1着」表記に統一
-6. **2026-05-16**: ML から popularity 完全削除 (v8) → バックテスト ROI -7pt 大幅悪化 → 当日中に revert (PR #67)。「市場の集合知を捨てる = モデル精度を意図的に落とす」を実証
-7. **2026-05-16**: 血統データが horses 全体の 66% で欠落 → 8軸スコアロジックが過小評価多発 (◎エンブロイダリー 桜花賞・秋華賞 G1 2勝の超強豪が「血統+0」で記事から漏れた) → `scripts/auto_pedigree.py` + cron で自動補完運用に
-8. **2026-05-16**: post_predict の印表記「◎{馬名}」だと馬番なしで fact_check ブロック → 「◎ {番}番 {馬名}」形式に統一 (PR #60)
-9. **2026-05-16**: 結果スレッドの重複検出が tweets[0] 先頭一致で誤判定 (hit_flash が京都1件投稿後、results の続編 3件が永遠に投稿不能) → tweets[1] (2件目) で判定する形に修正 (PR #69)
-10. **2026-05-16**: 信頼度 S < A の逆転現象 (S は1着率 27.8%、A は 35.3%) → 原因は AI 過信・少頭数バイアス・人気外馬過信・クラス分布偏り → WEIGHTS で pop_score 0.30 重視 + post-calibrate (12%超過を60%圧縮) で対処 (PR #64)
-11. **2026-05-16**: 血統補完作業中に `git checkout -- keiba.db` で補完分が消えた → DB 補完作業中は git pull/checkout 禁止のルールを徹底
-12. **2026-05-16**: **予測ロジック (血統/ML/補正) を変えても DB の predictions_cache が seal で古いまま** → 明日朝 cron で古いデタラメ予想 (◎17人気) が X 投稿される寸前。dry-run で発見。**「予測ロジック変更時は対象日の seal を NULL に戻して predict.py 再実行が必須」**:
-    ```sql
-    UPDATE predictions_cache SET posted_at = NULL
-    WHERE race_id IN (SELECT race_id FROM races WHERE race_date='YYYY-MM-DD');
-    ```
-    続けて `python3 predict.py predict --date YYYYMMDD --force` で再予測 → DB 最新化
-13. **2026-05-23**: **fetch_weekend_races cron が月水金朝のみで土日朝に発火しない** → 当日朝 R1-R8 が DB に無く、結果反映が完全停止。**土日朝5時の cron 追加で恒久対策** (PR #92)
-14. **2026-05-23**: **scraper.py の致命バグ**: `scrape_shutuba` は `entries` キーで返すが `save_race_to_db` は `results` キーしか参照しない → 6ヶ月以上未来レースの出走馬が DB に保存されていなかった。`save_race_to_db` で両キーを受け付ける形に修正
-15. **2026-05-23 16:33**: **workflow_dispatch (GAS等外部)で post_predict 誤発火** → レース真っ最中に「予想」を6ツイート投稿。`cmd_predict` に時間ガード追加 (11時以降は問答無用でスキップ)。後に odds_flash 等にも展開
-16. **2026-05-23**: **should_bet_race の閾値 30% が post_calibrate v8 後の予測分布に追従せず** → 全レースで「混戦」判定で買い目 0点 / UI 推奨無し。閾値を 30%→23%, top_prob 10%→8% に緩和
-17. **2026-05-24**: **Contrarian 補正が ML 識別不能レースで暴走** → 3歳G1オークスで SI 最低クラスの18人気馬が ◎ に。記事印付け(◎10スターアニス SI=93)と完全乖離。ML 勝率レンジで Contrarian 強度を可変化 (レンジ<3% で停止、<5% で30%, それ以外 100%)
-18. **2026-05-24**: **データパイプライン全体に完整性チェックが無かった** → 各段階(fetch/collect/predict/export)の出力が変でも誰も検知せず X 投稿される。`scripts/preflight_check.py` を新設し、cron / workflow_dispatch 発火時に「races件数 / 出走馬件数 / 予測キャッシュ件数」を自動チェック + auto-fix する仕組みを整備
-19. **2026-05-24**: **GitHub Actions の cache が git の DB を上書きする致命的バグ** → 朝 push した正しい予測(◎スターアニス)が cache 内の古い DB(◎エンネ)で上書きされ、JSON 出力で UI に間違った予測が反映。原因は各 workflow が `actions/checkout` の直後に `actions/cache restore` で keiba.db を **cache 版で強制上書き**する設計だったこと。**対策: 全 9 workflow の cache restore 直後に「git checkout HEAD -- keiba.db」step を追加して git を source of truth に強制復元**。これで git push した DB が確実に Actions の処理で使われる。
+### 🚨 教訓 TOP5 (これ守れば類似事故 90% 防げる)
+
+1. **予測ロジック変更時は seal を NULL に戻して再 predict** (#12, #17 関連)
+   ```sql
+   UPDATE predictions_cache SET posted_at = NULL
+   WHERE race_id IN (SELECT race_id FROM races WHERE race_date='YYYY-MM-DD');
+   ```
+2. **GitHub Actions では cache restore 直後に git の DB を強制復元** (#19)
+   ```yaml
+   - name: Force git DB (override stale cache)
+     run: git checkout HEAD -- keiba.db
+   ```
+3. **X 投稿コマンドには時間ガード必須**(post_predict / odds_flash etc, #15)
+4. **データパイプライン変更時は preflight_check.py で完整性確認** (#13, #14, #18)
+   ```bash
+   python3 scripts/preflight_check.py YYYYMMDD --auto-fix
+   ```
+5. **結果系投稿は「投稿対象レース全完走」が条件** (post_predict 時の seal を完走確認の trigger に)
+
+---
+
+### 📊 データパイプライン関連 (収集 / 同期 / cache)
+
+- **#11 (2026-05-16)**: 血統補完中に `git checkout -- keiba.db` で補完分消失 → **DB 書込中は git pull/checkout 禁止**
+- **#13 (2026-05-23)**: `fetch_weekend_races` cron が月水金朝のみで土日朝発火せず → R1-R8 欠落で結果反映停止 → **土日朝5時 cron 追加** (PR #92)
+- **#14 (2026-05-23)**: `scrape_shutuba` は `entries` キー、`save_race_to_db` は `results` キーで6ヶ月以上未来レース出走馬保存されず → **両キー受付に修正**
+- **#18 (2026-05-24)**: パイプライン全段階で完整性チェック無く変な出力が垂れ流し → **`scripts/preflight_check.py` 新設** (races件数 / 出走馬 / 予測キャッシュを auto-fix)
+- **#19 (2026-05-24)**: 各 workflow が `actions/checkout` 直後に `actions/cache restore` で keiba.db を **cache 版で強制上書き**。git push した正しい DB が反映されず古い予測 (◎エンネ) が UI に → **全 9 workflow に `git checkout HEAD -- keiba.db` step 追加**
+
+### 🤖 ML / 予測ロジック関連
+
+- **#4 (2026-05-09)**: `combo_top3` で temporal leakage の偽 importance → **v6 で時系列累積化**
+- **#6 (2026-05-16)**: ML から popularity 完全削除 → バックテスト ROI -7pt → **当日 revert** (PR #67)。教訓: 「市場の集合知を捨てるな」
+- **#10 (2026-05-16)**: 信頼度 S < A の逆転 (S:27.8% / A:35.3%) → AI 過信・少頭数バイアス・クラス偏り → **WEIGHTS で pop_score 0.30、post-calibrate 12%超過60%圧縮** (PR #64)
+- **#12 (2026-05-16)**: 予測ロジック変更しても DB の seal で古いまま → 明日朝 cron で古い予想 (◎17人気) 投稿寸前。dry-run で発見 → **「予測ロジック変更 = seal NULL + 再 predict 必須」**
+- **#16 (2026-05-23)**: `should_bet_race` の閾値 30% が post_calibrate v8 後の分布に追従せず買い目0点 → **閾値緩和** (30%→23%, top_prob 10%→8%)
+- **#17 (2026-05-24)**: Contrarian 補正が ML 識別不能レースで暴走、18人気馬が ◎ に → **ML 勝率レンジで強度可変化** (レンジ<3%停止、<5%で30%、それ以外100%)
+
+### 📝 記事 / X 投稿関連
+
+- **#1 (2026-05-12)**: 「中身なし投稿」放置 → **v8 抜本リデザイン** (PR #40-44)
+- **#2 (2026-05-13)**: 「金曜朝=枠順発表」と誤定義(実際は11時抽選) → **金朝はAI独自パターン分析に変更**
+- **#3 (2026-05-13)**: ヴィクトリアマイル 2023 ソングラン抜け → **`verify_article.py` 新設**(年度連続性チェック)
+- **#5 (2026-05-10)**: 「[7-1-1]」を「連勝中」と誤読(競馬慣習は着度数) → **「7着→1着→1着」表記に統一**
+- **#7 (2026-05-16)**: 血統データ 66%欠落で 8軸スコア過小評価 (◎エンブロイダリー漏れ) → **`scripts/auto_pedigree.py` + cron 自動補完**
+- **#8 (2026-05-16)**: post_predict の印表記「◎{馬名}」で馬番なし fact_check ブロック → **「◎ {番}番 {馬名}」形式統一** (PR #60)
+- **#9 (2026-05-16)**: 結果スレッドの重複検出 tweets[0] 先頭一致で誤判定 (続編永遠に投稿不能) → **tweets[1] (2件目) で判定** (PR #69)、その後 results は集計ツイート判定に変更 (PR #88)
+- **#15 (2026-05-23 16:33)**: workflow_dispatch (GAS 等外部)で post_predict 誤発火、レース真っ最中に予想投稿 → **`cmd_predict` に時間ガード追加** (11時以降スキップ)、後に odds_flash 等にも展開
 
 ## 🛡 投稿前の Pre-flight Check (2026-05-24 導入)
 
