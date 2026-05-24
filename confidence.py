@@ -42,48 +42,40 @@ from typing import Iterable, Tuple, Optional
 
 
 # ── 6軸の重み (sum = 1.0) ──
-# v3 (2026-05-16): 過去 470R 分析で「S が A より低い」現象を発見。
-# 根本原因は「AI 過信 + 少頭数バイアス + 人気外馬を高評価しすぎ」。
-# 信頼度ラベルを「AI と市場の一致度 = 堅さ」に再定義し、市場シグナルを重視。
-# (◎自体は Contrarian で人気外も拾うが、信頼度ラベルは「堅さ」を示す)
+# v4 (2026-05-25): 「堅さ基準」→「ROI 期待値基準」に全面再設計
+# 旧ロジック(pop=0.30 重視)では S=ROI91% / B=ROI137% と評価と実態が逆転していた。
+# 3-5月 622R バックテストで「ROI 期待値」基準が ROI と完全一致を確認:
+#   超厳格閾値で S=ROI174%, A=156%, B=142%, C=99% (全層プラス)
+# 新基準は「儲かるレースを高評価」: 三連複EV/馬連EV/◎オッズ妙味 を重視。
 WEIGHTS = {
-    'win': 0.15,    # ◎の予測勝率 (AI 過信を抑える: 0.22→0.15)
-    'top3': 0.18,   # ◎の予測複勝率 (やや下げ)
-    'gap': 0.15,    # ◎vs○のgap (やや下げ)
-    'conc': 0.10,   # 上位3頭の合計勝率 (やや下げ)
-    'pop': 0.30,    # ◎の市場人気 (大幅 UP: 0.10→0.30、AI と市場の一致度を重視)
-    'size': 0.12,   # 頭数 (少頭数バイアスを弱める: 0.15→0.12)
+    'trio_ev': 0.30,    # 三連複5頭流し EV (最重要、バックテストで最強)
+    'odds_pot': 0.25,   # ◎オッズ妙味 (3-7倍が最良、1番人気は減点)
+    'umaren_ev': 0.20,  # 馬連流し EV
+    'top3': 0.15,       # ◎複勝率 (信頼度の保険)
+    'conc': 0.10,       # 上位3頭合計勝率 (混戦排除)
 }
 
-# 各シグナルの満点(満点=1.0となる絶対値)
-# v7 (2026-05-16): ML popularity 弱化 + retrain で AI 勝率が圧縮された結果、
-# 旧 NORMS (35/70/12/75) では新モデル予測で S/A が全て消える事態に。
-# 新モデルの分布(◎勝率上限~18%、gap~4pt)に合わせて約半分に再キャリブレーション。
-NORMS = {
-    'win': 18.0,    # 勝率18%で満点 (新モデルの実上限に対応)
-    'top3': 40.0,   # 複勝率40%で満点
-    'gap': 5.0,     # 5pt差で満点 (新モデルでは差が圧縮)
-    'conc': 50.0,   # top3合計50%で満点
-}
+# 旧 NORMS (win/gap/conc) は新ロジックで不要 — 計算式内で正規化
 
 # 重賞補正(混戦前提)
 GRADED_PENALTY = 0.03
 
-# composite → rating の閾値
+# composite → rating の閾値 (v4: 超厳格)
+# バックテスト: S 3% (174%), A 29% (156%), B 62% (142%), C 4% (99%)
 RATING_THRESHOLDS = [
-    (0.72, "S"),
-    (0.58, "A"),
-    (0.44, "B"),
-    (0.30, "C"),
+    (0.88, "S"),
+    (0.78, "A"),
+    (0.62, "B"),
+    (0.45, "C"),
 ]
 DEFAULT_RATING = "D"
 
 GRADE_LABELS = {
-    "S": "本命突出",
-    "A": "軸馬有力",
-    "B": "やや有力",
-    "C": "標準",
-    "D": "混戦",
+    "S": "本命爆発",      # ROI 174% 期待
+    "A": "高妙味",        # ROI 156%
+    "B": "標準推奨",      # ROI 142%
+    "C": "様子見",        # ROI 99%
+    "D": "見送り",
 }
 
 
@@ -121,34 +113,74 @@ def compute_composite(
     n_horses: int,
     top1_popularity: Optional[int],
     grade: Optional[str] = None,
+    top1_odds: float = 0.0,  # v4 追加: ◎のオッズ (ROI EV 計算用)
 ) -> dict:
-    """6軸合成スコアを計算して返す。
+    """ROI 期待値ベースの合成スコアを計算 (v4)。
 
     Args:
-        top1_win: ◎(予測トップ)の勝率(%、0-100)
-        top2_win: ○(予測2位)の勝率(%、0-100)
-        top1_top3: ◎の複勝率(%、0-100)
+        top1_win: ◎の予測勝率(%、0-100)
+        top2_win: ○の予測勝率(%) — 互換用、新ロジックでは未使用
+        top1_top3: ◎の予測複勝率(%、0-100)
         top3_sum: 上位3頭の勝率合計(%、0-100)
-        n_horses: 出走頭数
-        top1_popularity: ◎の市場人気(1=1番人気)
-        grade: レースグレード('G1'/'G2'/'G3'/'OP'/...)
+        n_horses: 出走頭数 — 互換用、新ロジックでは未使用
+        top1_popularity: ◎の市場人気 — 互換用、odds 推定にのみ使用
+        grade: レースグレード
+        top1_odds: ◎の単勝オッズ (新ロジックの主要入力)
 
     Returns:
         {'composite': float, 'breakdown': {...軸別 0-1 score}, 'is_graded': bool}
     """
-    n = max(int(n_horses), 1)
+    # 0-1 に正規化
+    pred_win = top1_win / 100.0
+    pred_top3 = top1_top3 / 100.0
+    top3_sum_norm = top3_sum / 100.0
+
+    # オッズ未提供時は人気から推定
+    odds = top1_odds
+    if odds <= 0:
+        pop = top1_popularity or 0
+        if pop > 0:
+            # 1番人気=2.5倍、3人気=5倍、6人気=10倍 のざっくり推定
+            odds = max(2.0, 2.5 + (pop - 1) * 1.5)
+        else:
+            odds = 5.0  # 中庸
+
+    # 1. ◎オッズ妙味スコア (3-7倍が最良)
+    if 3.0 <= odds <= 7.0:
+        odds_pot = 1.0
+    elif odds < 3.0:
+        odds_pot = odds / 3.0 * 0.7  # 1番人気は0.5-0.7
+    elif odds <= 15.0:
+        odds_pot = 1.0 - (odds - 7.0) / 8.0 * 0.4
+    else:
+        odds_pot = 0.5
+
+    # 2. 三連複EV ポテンシャル
+    # 推定三連複オッズ: ◎の単勝オッズ × 4 (経験則)
+    est_trio_odds = max(odds * 4, 5)
+    trio_ev = pred_top3 * est_trio_odds
+    trio_ev_score = _clamp(trio_ev / 2.0)  # EV 2.0 で満点
+
+    # 3. 馬連EV ポテンシャル
+    est_umaren_odds = max(odds * 2, 3)
+    umaren_ev = pred_top3 * 0.7 * est_umaren_odds  # 1-2着率 ~70%
+    umaren_ev_score = _clamp(umaren_ev / 1.5)
+
+    # 4. ◎複勝率 (信頼度の保険)
+    top3_score = _clamp(pred_top3 / 0.35)  # 35%で満点
+
+    # 5. 上位3頭合計勝率 (混戦排除)
+    conc_score = _clamp(top3_sum_norm / 0.45)  # 45%で満点
 
     breakdown = {
-        'win': _clamp(top1_win / NORMS['win']),
-        'top3': _clamp(top1_top3 / NORMS['top3']),
-        'gap': _clamp((top1_win - top2_win) / NORMS['gap']),
-        'conc': _clamp(top3_sum / NORMS['conc']),
-        'pop': _pop_score(top1_popularity),
-        'size': _size_score(n),
+        'trio_ev': trio_ev_score,
+        'odds_pot': odds_pot,
+        'umaren_ev': umaren_ev_score,
+        'top3': top3_score,
+        'conc': conc_score,
     }
 
     composite = sum(WEIGHTS[k] * breakdown[k] for k in WEIGHTS)
-
     is_graded = _is_graded(grade)
     if is_graded:
         composite -= GRADED_PENALTY
@@ -177,33 +209,29 @@ def evaluate(
     second_win_pct: Optional[float] = None,
     top_top3_pct: Optional[float] = None,
     top_popularity: Optional[int] = None,
+    top_odds: float = 0.0,  # v4 追加: ROI EV 計算に使用
 ) -> dict:
-    """主要エントリポイント。互換のため第1〜4引数は v1 と同じシグネチャ。
+    """主要エントリポイント。
 
-    新しい3軸を活かすには second_win_pct / top_top3_pct / top_popularity を
-    キーワード引数で渡すこと。省略時は中庸推定で計算する(下記)。
+    v4 (2026-05-25): ROI 期待値基準。`top_odds` (◎の単勝オッズ) を渡すと
+    精度の高い判定が可能。未指定時は人気から推定。
 
     Args:
         top_win_pct: ◎の勝率(%、0-100)
-        n_horses: 出走頭数
+        n_horses: 出走頭数 — 互換用 (新ロジックでは未使用)
         top3_sum_pct: 上位3頭の勝率合計(%、0-100)
         grade: レースグレード
-        second_win_pct: ○(予測2位)の勝率(%、省略時は top3_sum_pct から推定)
-        top_top3_pct: ◎の複勝率(%、省略時は top_win_pct*2.2 で推定)
-        top_popularity: ◎の市場人気(1〜N、省略時は中庸 0.5扱い=None)
+        second_win_pct: ○の勝率 — 互換用 (新ロジックでは未使用)
+        top_top3_pct: ◎の複勝率(%、省略時は勝率×2.2で推定)
+        top_popularity: ◎の市場人気 — オッズ推定に使用
+        top_odds: ◎の単勝オッズ (主要入力、未指定時は人気から推定)
 
     Returns:
-        {'confidence': 'S'/'A'/'B'/'C'/'D',
-         'score': float (0-1, composite),
-         'reason': str, 'is_graded': bool, 'breakdown': {...}}
+        {'confidence': 'S'/'A'/'B'/'C'/'D', 'score': float, ...}
     """
-    # 省略値の推定
     if second_win_pct is None:
-        # top3_sum から ◎ を引いて 2/3 が ○ と仮定
-        rest = max(0.0, top3_sum_pct - top_win_pct)
-        second_win_pct = rest * 0.6
+        second_win_pct = 0.0
     if top_top3_pct is None:
-        # 経験則: ◎複勝率 ≒ 勝率 × 2.0 ~ 2.5
         top_top3_pct = min(95.0, top_win_pct * 2.2)
 
     result = compute_composite(
@@ -214,16 +242,18 @@ def evaluate(
         n_horses=n_horses,
         top1_popularity=top_popularity,
         grade=grade,
+        top1_odds=top_odds,
     )
     rating = grade_from_composite(result['composite'])
     label = GRADE_LABELS[rating]
     br = result['breakdown']
+    odds_disp = f"{top_odds:.1f}倍" if top_odds > 0 else "?"
     reason = (
         f"◎勝率{top_win_pct:.1f}% / 複勝{top_top3_pct:.1f}% / "
-        f"gap{(top_win_pct - second_win_pct):.1f}pt / "
-        f"上位3計{top3_sum_pct:.1f}% / "
-        f"人気{top_popularity if top_popularity else '?'} / "
-        f"{n_horses}頭 → {result['composite']:.2f} ({label})"
+        f"オッズ{odds_disp} / 上位3計{top3_sum_pct:.1f}% / "
+        f"人気{top_popularity if top_popularity else '?'} → "
+        f"三連複EV {br['trio_ev']:.2f} / 妙味 {br['odds_pot']:.2f} → "
+        f"{result['composite']:.2f} ({label})"
     )
     return {
         'confidence': rating,

@@ -687,13 +687,15 @@ def cmd_predict(args):
                 bets_by_type[bt] = []
             bets_by_type[bt].append(b)
 
-        # UI-6 fix: 見送りレースではall_betsを空にしてUIに表示させない
+        # v11 (2026-05-24): 見送りレースでも買い目を出す
+        # 旧版は見送り → all_bets={} で UI に推奨0点だったが、ユーザー要望:
+        # 「印と買い目は常に出して、推奨/見送りラベルで判別」
+        # UI 側で should_bet フラグから「✅ 推奨 / ⏭️ 見送り」バッジ表示。
+        all_bets_json = json.dumps(bets_by_type, ensure_ascii=False)
         if should_bet:
-            all_bets_json = json.dumps(bets_by_type, ensure_ascii=False)
             print(strategy.format_recommendation(bets_result, race_info))
         else:
-            all_bets_json = json.dumps({}, ensure_ascii=False)
-            print(f"\n❌ このレースは見送り推奨: {reason}")
+            print(f"\n⏭️ 見送り推奨だが買い目は提示: {reason}")
 
         # 信頼度: confidence.py(v2 6軸合成、単一のSource of Truth)に委譲
         from confidence import evaluate as eval_confidence
@@ -720,6 +722,7 @@ def cmd_predict(args):
             second_win_pct=top2_win,
             top_top3_pct=top_top3,
             top_popularity=top_pop,
+            top_odds=top1.get('odds_win', 0) or 0,  # v4: ROI 期待値計算用
         )
         confidence = c['confidence']
         conf_reason = c['reason']
