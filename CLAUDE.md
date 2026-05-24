@@ -125,6 +125,7 @@ JRA の出走スケジュール:
 16. **2026-05-23**: **should_bet_race の閾値 30% が post_calibrate v8 後の予測分布に追従せず** → 全レースで「混戦」判定で買い目 0点 / UI 推奨無し。閾値を 30%→23%, top_prob 10%→8% に緩和
 17. **2026-05-24**: **Contrarian 補正が ML 識別不能レースで暴走** → 3歳G1オークスで SI 最低クラスの18人気馬が ◎ に。記事印付け(◎10スターアニス SI=93)と完全乖離。ML 勝率レンジで Contrarian 強度を可変化 (レンジ<3% で停止、<5% で30%, それ以外 100%)
 18. **2026-05-24**: **データパイプライン全体に完整性チェックが無かった** → 各段階(fetch/collect/predict/export)の出力が変でも誰も検知せず X 投稿される。`scripts/preflight_check.py` を新設し、cron / workflow_dispatch 発火時に「races件数 / 出走馬件数 / 予測キャッシュ件数」を自動チェック + auto-fix する仕組みを整備
+19. **2026-05-24**: **GitHub Actions の cache が git の DB を上書きする致命的バグ** → 朝 push した正しい予測(◎スターアニス)が cache 内の古い DB(◎エンネ)で上書きされ、JSON 出力で UI に間違った予測が反映。原因は各 workflow が `actions/checkout` の直後に `actions/cache restore` で keiba.db を **cache 版で強制上書き**する設計だったこと。**対策: 全 9 workflow の cache restore 直後に「git checkout HEAD -- keiba.db」step を追加して git を source of truth に強制復元**。これで git push した DB が確実に Actions の処理で使われる。
 
 ## 🛡 投稿前の Pre-flight Check (2026-05-24 導入)
 

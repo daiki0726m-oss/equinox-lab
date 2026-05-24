@@ -130,6 +130,15 @@ jobs:
           restore-keys: |
             keiba-db-
 
+      # ── 🛡 git を source of truth に強制 ──
+      # 2026-05-24 オークス予測事故対応: cache が古いと git push 後の DB が反映されず、
+      # 朝の正しい予測 (◎スターアニス) が古い予測 (◎エンネ) で上書きされた。
+      # cache restore 後に git の DB を強制採用することで、git push 直後でも整合性確保。
+      - name: Force git DB (override stale cache)
+        run: |
+          git checkout HEAD -- keiba.db
+          echo "✅ keiba.db を git HEAD に復元 (stale cache を上書き)"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

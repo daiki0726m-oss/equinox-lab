@@ -45,6 +45,12 @@ jobs:
           restore-keys: |
             keiba-db-
 
+
+      # 🛡 git を source of truth に強制 (cache 古さの事故防止 - 2026-05-24)
+      - name: Force git DB (override stale cache)
+        run: |
+          git checkout HEAD -- keiba.db
+          echo "✅ keiba.db を git HEAD に復元"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
