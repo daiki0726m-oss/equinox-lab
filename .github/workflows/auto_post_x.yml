@@ -434,8 +434,8 @@ jobs:
           elif [ "$TYPE" = "post_predict" ]; then
             python post_x.py predict --date "$DATE"
           elif [ "$TYPE" = "results" ]; then
-            # 17:30 results は最終投稿なので半端 (確定1レースのみ) でも投稿許容
-            ALLOW_PARTIAL_RESULTS=1 python post_x.py results --date "$DATE"
+            # 投稿対象レース全部が完走するまで自動スキップ (ガードは post_x.py 側)
+            python post_x.py results --date "$DATE"
           elif [ "$TYPE" = "answer_check" ]; then
             python post_x.py answer_check --date "$DATE"
           elif [ "$TYPE" = "weekly_review" ]; then

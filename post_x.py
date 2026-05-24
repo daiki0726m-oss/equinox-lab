@@ -837,17 +837,41 @@ def cmd_results(args):
         print(f"❌ {date_str} の結果がまだ出ていません")
         return
 
-    # 🛡 確定レース数ガード (2026-05-24 追加):
-    # 「1場しか完走してない時に hit_flash が発火 → 1レースだけの中身薄い投稿」
-    # を防ぐ。3場開催の通常日では最低2場確定までスキップ。
-    # MIN_RACES_REQUIRED=1 を環境変数で許容 (土日 17:30 の最終 results では緩める)
-    min_required = int(os.environ.get("MIN_CONFIRMED_RACES", "2"))
-    is_final_results = os.environ.get("ALLOW_PARTIAL_RESULTS", "0") == "1"
-    if len(race_data) < min_required and not is_final_results:
-        print(f"⚠️ 確定レース {len(race_data)}件 < 最小要件 {min_required}件 → 投稿スキップ")
-        print(f"   (全場のメインレース確定までは半端な投稿を避けます)")
-        print(f"   バイパス: 環境変数 ALLOW_PARTIAL_RESULTS=1 を設定")
-        return
+    # 🛡 投稿済レース完走待ちガード (2026-05-24 修正版):
+    # 朝の post_predict で X 投稿したレース全部が完走確定するまで結果投稿をスキップ。
+    # 「投稿したレース」= predictions_cache.posted_at が NOT NULL のレース。
+    # これにより「投稿で約束したレース全部の結果が揃ってから報告」が物理保証される。
+    is_partial_ok = os.environ.get("ALLOW_PARTIAL_RESULTS", "0") == "1"
+    if not is_partial_ok:
+        with get_db() as conn:
+            posted_rows = conn.execute("""
+                SELECT pc.race_id, r.venue, r.race_number, r.race_name
+                FROM predictions_cache pc JOIN races r ON pc.race_id = r.race_id
+                WHERE (r.race_date = ? OR r.race_date = ?) AND pc.posted_at IS NOT NULL
+                ORDER BY r.race_id
+            """, (date_str, date_hyphen)).fetchall()
+            posted_race_ids = [dict(r) for r in posted_rows]
+
+            incomplete = []
+            for pr in posted_race_ids:
+                row = conn.execute(
+                    "SELECT COUNT(*) c, SUM(CASE WHEN finish_position > 0 THEN 1 ELSE 0 END) d "
+                    "FROM results WHERE race_id = ?",
+                    (pr['race_id'],)
+                ).fetchone()
+                total = row['c'] or 0
+                done = row['d'] or 0
+                # 除外/中止1頭まで許容 (全頭確定が原則)
+                if total == 0 or done < total - 1:
+                    incomplete.append((pr, total, done))
+
+        if posted_race_ids and incomplete:
+            print(f"⚠️ 投稿対象 {len(posted_race_ids)}レース中 {len(incomplete)}レース未完走 → 投稿スキップ")
+            for pr, total, done in incomplete[:5]:
+                print(f"   未完走: {pr['venue']}{pr['race_number']}R {pr['race_name'][:14]} ({done}/{total})")
+            print(f"   (投稿で予想した全レース確定後に一括報告する設計)")
+            print(f"   バイパス: 環境変数 ALLOW_PARTIAL_RESULTS=1 を設定")
+            return
 
     def medal(fin):
         return {1: '🏆', 2: '🥈', 3: '🥉'}.get(fin, '')
