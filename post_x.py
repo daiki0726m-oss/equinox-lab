@@ -837,6 +837,18 @@ def cmd_results(args):
         print(f"❌ {date_str} の結果がまだ出ていません")
         return
 
+    # 🛡 確定レース数ガード (2026-05-24 追加):
+    # 「1場しか完走してない時に hit_flash が発火 → 1レースだけの中身薄い投稿」
+    # を防ぐ。3場開催の通常日では最低2場確定までスキップ。
+    # MIN_RACES_REQUIRED=1 を環境変数で許容 (土日 17:30 の最終 results では緩める)
+    min_required = int(os.environ.get("MIN_CONFIRMED_RACES", "2"))
+    is_final_results = os.environ.get("ALLOW_PARTIAL_RESULTS", "0") == "1"
+    if len(race_data) < min_required and not is_final_results:
+        print(f"⚠️ 確定レース {len(race_data)}件 < 最小要件 {min_required}件 → 投稿スキップ")
+        print(f"   (全場のメインレース確定までは半端な投稿を避けます)")
+        print(f"   バイパス: 環境変数 ALLOW_PARTIAL_RESULTS=1 を設定")
+        return
+
     def medal(fin):
         return {1: '🏆', 2: '🥈', 3: '🥉'}.get(fin, '')
 
