@@ -524,8 +524,8 @@ def cmd_predict(args):
         print(f"❌ {date_str} の予測データがありません")
         return
 
-    # 投稿対象: 11R(必ず) + 推奨レース(should_bet=True, 11R以外、最大3件)
-    # 2026-05-24: UI 統一のため「信頼度S」基準 → 「推奨レース」基準に変更
+    # 投稿対象: 11R(必ず) + 信頼度Sのレース(11R以外、最大3件)
+    # 2026-05-24 v4: UI がアルファベット表示に戻ったので X 投稿基準も信頼度S に戻す
     target_races = []
     target_ids = set()
 
@@ -535,14 +535,14 @@ def cmd_predict(args):
             target_races.append(race)
             target_ids.add(race['race_id'])
 
-    # 推奨レース(should_bet=True, 11R以外、最大3件)
-    rec_count = 0
+    # 信頼度S レース(11R以外、最大3件)
+    s_count = 0
     for race in all_races:
-        if race['should_bet'] and race['race_id'] not in target_ids:
+        if race['confidence'] == 'S' and race['race_id'] not in target_ids:
             target_races.append(race)
             target_ids.add(race['race_id'])
-            rec_count += 1
-            if rec_count >= 3:
+            s_count += 1
+            if s_count >= 3:
                 break
 
     if not target_races:
@@ -551,11 +551,11 @@ def cmd_predict(args):
 
     print(f"🏇 {date_label} 投稿対象: {len(target_races)}レース")
     print(f"   (11R: {sum(1 for r in target_races if r['race_number']==11)}件 / "
-          f"推奨: {sum(1 for r in target_races if r['should_bet'] and r['race_number']!=11)}件)\n")
+          f"S: {sum(1 for r in target_races if r['confidence']=='S' and r['race_number']!=11)}件)\n")
 
     # ── ツイート1: サマリー ──
     main_races = [r for r in target_races if r['race_number'] == 11]
-    s_races = [r for r in target_races if r['should_bet'] and r['race_number'] != 11]
+    s_races = [r for r in target_races if r['confidence'] == 'S' and r['race_number'] != 11]
 
     t1 = f"🧠 AI競馬予想 {date_label}\n\n"
 
@@ -572,7 +572,7 @@ def cmd_predict(args):
             t1 += f"  ◎ {honmei.get('horse_number',0)}番 {honmei.get('horse_name','?')}\n"
 
     if s_races:
-        t1 += f"\n✅ AI推奨レース: {len(s_races)}件\n"
+        t1 += f"\n🔥 AI高信頼レース: {len(s_races)}件\n"
 
     t1 += f"\nAI印は🧵↓で事前公開\n"
     t1 += f"{data_credit(short=True)}\n"
@@ -597,13 +597,12 @@ def cmd_predict(args):
                     marks[mk] = sorted_p[i]
 
         grade = f" [{race['grade']}]" if race['grade'] else ""
-        # 2026-05-24: 「信頼度S/A」表記 → 「✅推奨 / ⏭️見送り」表記に統一(UI整合)
-        rec_emoji = "✅" if race['should_bet'] else "⏭️"
-        rec_label = "推奨" if race['should_bet'] else "見送り"
-        is_main = " (メイン)" if race['race_number'] == 11 else ""
+        # 信頼度アルファベット表記に戻す (2026-05-24 v4)
+        conf_emoji = "🔥" if race['confidence'] == 'S' else "⭐" if race['confidence'] == 'A' else "📊"
+        is_main = "メイン" if race['race_number'] == 11 else ""
 
-        t = f"{rec_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}\n"
-        t += f"AI判定: {rec_label}{is_main}\n\n"
+        t = f"{conf_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}\n"
+        t += f"信頼度{race['confidence']} {is_main}\n\n"
 
         # 印（全て表示)— 「{mark} {番号}番 {馬名}」形式で fact_check に確実に通す
         for mk in ['◎', '○', '▲', '△', '×', '注']:

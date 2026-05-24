@@ -255,15 +255,33 @@ body {
   display: flex; gap: 8px; margin-top: 2px;
 }
 .race-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* 信頼度バッジ — 唯一の意思決定指標 (2026-05-24 v4)
+   ◎が一目で「S/A/B/C/D」のどれかで階層が分かる */
 .conf-badge {
-  padding: 3px 10px; border-radius: var(--radius-pill);
-  font-size: 11px; font-weight: 700; color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 50%;
+  font-size: 16px;
+  font-weight: 900;
+  color: #fff;
+  letter-spacing: 0;
 }
-.conf-badge.S { background: var(--conf-s); }
+.conf-badge.S { background: var(--conf-s); box-shadow: 0 0 12px rgba(255,215,0,0.35); }
 .conf-badge.A { background: var(--conf-a); }
 .conf-badge.B { background: var(--conf-b); }
-.conf-badge.C { background: var(--conf-c); }
-.conf-badge.D { background: var(--conf-d); }
+.conf-badge.C { background: var(--conf-c); opacity: 0.65; }
+.conf-badge.D { background: var(--conf-d); opacity: 0.5; }
+@media (max-width: 600px) {
+  .conf-badge {
+    min-width: 36px;
+    height: 36px;
+    font-size: 17px;
+  }
+}
 .toggle-icon {
   font-size: 10px; color: var(--text-muted);
   transition: transform var(--transition);
@@ -828,11 +846,12 @@ body {
   <div class="summary-item"><div class="summary-value" id="sumROI">-</div><div class="summary-label">ROI</div></div>
 </div>
 
-<!-- 推奨フィルター(2パターン) -->
+<!-- 信頼度フィルター (アルファベット階層) -->
 <div class="conf-filter" id="confFilter">
-  <button class="conf-filter-btn active" onclick="setConfFilter('ALL')">全レース</button>
-  <button class="conf-filter-btn" onclick="setConfFilter('REC')">✅ 推奨のみ</button>
-  <button class="conf-filter-btn" onclick="setConfFilter('SKIP')">⏭️ 見送りのみ</button>
+  <button class="conf-filter-btn active" onclick="setConfFilter('ALL')">全て</button>
+  <button class="conf-filter-btn" onclick="setConfFilter('S')">S のみ</button>
+  <button class="conf-filter-btn" onclick="setConfFilter('A')">A 以上</button>
+  <button class="conf-filter-btn" onclick="setConfFilter('B')">B 以上</button>
 </div>
 
 
@@ -871,11 +890,10 @@ function toggleBetsFilter() {
 }
 
 function setConfFilter(level) {
-  state.confFilter = level;
-  const labels = { 'ALL': '全レース', 'REC': '✅', 'SKIP': '⏭️' };
+  state.confFilter = state.confFilter === level ? 'ALL' : level;
+  const labels = { 'ALL': '全て', 'S': 'S のみ', 'A': 'A 以上', 'B': 'B 以上' };
   document.querySelectorAll('.conf-filter-btn').forEach(btn => {
-    const expected = labels[level];
-    btn.classList.toggle('active', expected && btn.textContent.includes(expected));
+    btn.classList.toggle('active', btn.textContent === labels[state.confFilter]);
   });
   if (state.allData) {
     // 開閉状態を記憶→再描画→復元
@@ -1189,12 +1207,14 @@ function renderRaceCards() {
     });
   }
 
-  // 推奨フィルター (2パターン: REC / SKIP)
-  // 2026-05-24: 信頼度 S/A/B/C 階層フィルターから「推奨/見送り」の2択に統合
-  if (state.confFilter === 'REC') {
-    races = races.filter(race => race.should_bet);
-  } else if (state.confFilter === 'SKIP') {
-    races = races.filter(race => !race.should_bet);
+  // 信頼度フィルター (アルファベット階層) — 2026-05-24 v4
+  if (state.confFilter !== 'ALL') {
+    const ranks = ['S','A','B','C','D'];
+    const minIdx = ranks.indexOf(state.confFilter);
+    races = races.filter(race => {
+      const rIdx = ranks.indexOf(race.confidence || 'D');
+      return rIdx <= minIdx;
+    });
   }
 
   if (races.length === 0) {
@@ -1227,8 +1247,9 @@ function createRaceCard(race) {
     }
   }
 
-  // v3 (2026-05-24): UIシンプル化 — myomi / race_tendency / confidence バッジを廃止し、
-  // 「✅ 推奨 / ⏭️ 見送り」の2パターンだけで意思決定可能に
+  // v4 (2026-05-24): 信頼度アルファベット 1バッジに統合 — S/A/B/C/D で階層明示
+  // ユーザー指摘: 「✅推奨だけだとメイン全部同じに見える、アルファベットの方がわかりやすい」
+  // myomi / race_tendency / rec_badge は廃止、confidence のみで意思決定
   return `
     <div class="race-card" id="race-${race.race_id}">
       <div class="race-header" onclick="toggleRace('${race.race_id}')">
@@ -1246,7 +1267,7 @@ function createRaceCard(race) {
           </div>
         </div>
         <div class="race-right">
-          ${recBadge}
+          <span class="conf-badge ${confClass}" title="${race.bet_reason || ''}">${confClass}</span>
           <span class="toggle-icon">▼</span>
         </div>
       </div>
