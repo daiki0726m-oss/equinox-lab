@@ -123,8 +123,6 @@ jobs:
               print(f"  全結果: {total_results}件")
               print(f"  タイムあり: {with_time}件 ({with_time/total_results*100:.0f}%)")
           PYEOF
-        env:
-          INPUT_MONTHS: ${{ github.event.inputs.months }}
 
       - name: Save DB cache
         uses: actions/cache/save@v4
