@@ -348,7 +348,14 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                                             print(f"  既存ツイート: {t.text[:80]}...")
                                             return []
                 except Exception as api_err:
-                    print(f"  ℹ️ X API重複チェックスキップ: {api_err}")
+                    err_type = type(api_err).__name__
+                    detail = ""
+                    if hasattr(api_err, 'response') and api_err.response is not None:
+                        try:
+                            detail = f" | response: {api_err.response.text[:300]}"
+                        except Exception:
+                            pass
+                    print(f"  ℹ️ X API重複チェックスキップ [{err_type}]: {api_err}{detail}")
 
             # 投稿履歴を記録（古いエントリは削除: 7日超）
             history = {k: v for k, v in history.items()
@@ -400,7 +407,28 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                 parent_id = tid
                 print(f"  ✅ X投稿完了 (ID: {tid}, X:{wlen}文字)")
             except Exception as e:
-                print(f"  ❌ X投稿失敗: {e}")
+                # 詳細ロギング (2026-05-25): tweepy 例外から full response を抽出
+                # 旧: "X投稿失敗: 403 Forbidden" だけで原因不明だった
+                err_type = type(e).__name__
+                err_msg = str(e)
+                detail = ""
+                # tweepy.errors.HTTPException 系は response 属性を持つ
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        body = e.response.text[:500]
+                        detail = f" | response: {body}"
+                    except Exception:
+                        pass
+                # tweepy.errors.TweepyException の api_errors / api_codes も拾う
+                if hasattr(e, 'api_errors'):
+                    detail += f" | api_errors: {e.api_errors}"
+                if hasattr(e, 'api_codes'):
+                    detail += f" | api_codes: {e.api_codes}"
+                print(f"  ❌ X投稿失敗 [{err_type}]: {err_msg}{detail}")
+                # 403 の特殊ヒント
+                if "403" in err_msg or err_type == "Forbidden":
+                    print(f"     ヒント: X API tier 制限 / token 失効 / 重複コンテンツ / アカウント制限 のいずれか")
+                    print(f"     確認: https://developer.x.com/en/portal/dashboard")
                 break
 
     # Threads にも同時投稿（複数ツイートを1投稿に結合）
@@ -1022,14 +1050,16 @@ def _build_weekday_post(slot, today):
 def cmd_weekday(args):
     """平日昼: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）
 
-    🛡 時間ガード (2026-05-25 追加):
-    cmd_weekday は 昼 11:00-14:59 JST 専用。誤発火事故防止。
+    🛡 時間ガード (2026-05-25 追加 / 同日 +1h 拡大):
+    cmd_weekday は 11:00-15:59 JST 専用。GitHub Actions cron が
+    1-3h 遅延発火するケースは正常運転として許容するが、夕方以降は
+    昼コンテンツとして不適切なのでスキップ (5/25 は 17:03 発火 → 正しくスキップ)。
     SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
     """
     if not os.environ.get("SKIP_TIME_GUARD"):
         now = now_jst()
-        if not (11 <= now.hour <= 14):
-            print(f"⚠️ cmd_weekday 時間ガード: {now.strftime('%H:%M JST')} は対象外 (11:00-14:59 のみ)")
+        if not (11 <= now.hour <= 15):
+            print(f"⚠️ cmd_weekday 時間ガード: {now.strftime('%H:%M JST')} は対象外 (11:00-15:59 のみ)")
             print(f"   バイパスするには環境変数 SKIP_TIME_GUARD=1 を設定。")
             return
 
@@ -3275,15 +3305,17 @@ def cmd_odds_flash(args):
 def cmd_morning(args):
     """平日朝: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）
 
-    🛡 時間ガード (2026-05-25 追加):
-    cmd_morning は 朝 7:00-10:59 JST 専用。GAS や workflow_dispatch で誤発火された場合、
-    朝コンテンツが夜に投稿される事故防止のため、対象時間外は即スキップ。
+    🛡 時間ガード (2026-05-25 追加 / 同日 +1h 拡大):
+    cmd_morning は 朝 7:00-11:59 JST 専用。GitHub Actions cron が
+    1h+ 遅延発火することが頻発 (5/25 朝は 1h, 昼は 4.5h 遅延) するため、
+    7:30 予定の cron が 8:30-9:30 に発火するケースは正常運転として許容。
+    ただし 12時超え (= 大幅遅延) は朝コンテンツとして不適切なのでスキップ。
     SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
     """
     if not os.environ.get("SKIP_TIME_GUARD"):
         now = now_jst()
-        if not (7 <= now.hour <= 10):
-            print(f"⚠️ cmd_morning 時間ガード: {now.strftime('%H:%M JST')} は対象外 (7:00-10:59 のみ)")
+        if not (7 <= now.hour <= 11):
+            print(f"⚠️ cmd_morning 時間ガード: {now.strftime('%H:%M JST')} は対象外 (7:00-11:59 のみ)")
             print(f"   バイパスするには環境変数 SKIP_TIME_GUARD=1 を設定。")
             return
 
@@ -3317,14 +3349,15 @@ def cmd_morning(args):
 def cmd_evening(args):
     """平日夜: 今週末メインレースの総合プレビュー（曜日別テーマ・日付動的表現）
 
-    🛡 時間ガード (2026-05-25 追加):
-    cmd_evening は 夜 19:00-22:59 JST 専用。誤発火による朝/昼への漏れ込み事故防止。
+    🛡 時間ガード (2026-05-25 追加 / 同日 +1h 拡大):
+    cmd_evening は 19:00-23:59 JST 専用。GitHub Actions cron が
+    1-3h 遅延発火するケースは正常運転として許容。
     SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
     """
     if not os.environ.get("SKIP_TIME_GUARD"):
         now = now_jst()
-        if not (19 <= now.hour <= 22):
-            print(f"⚠️ cmd_evening 時間ガード: {now.strftime('%H:%M JST')} は対象外 (19:00-22:59 のみ)")
+        if not (19 <= now.hour <= 23):
+            print(f"⚠️ cmd_evening 時間ガード: {now.strftime('%H:%M JST')} は対象外 (19:00-23:59 のみ)")
             print(f"   バイパスするには環境変数 SKIP_TIME_GUARD=1 を設定。")
             return
 
