@@ -399,19 +399,6 @@ body {
   background: linear-gradient(90deg, var(--gold), var(--gold-light));
   transition: width 0.4s ease;
 }
-.horse-reasons {
-  grid-column: 1 / -1;
-  padding: 4px 0 0 60px;
-}
-.reason-tag {
-  display: inline-block;
-  font-size: 10px;
-  color: var(--text-secondary);
-  background: var(--bg-elevated);
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  margin: 2px 4px 2px 0;
-}
 .show-all-btn {
   display: block;
   width: 100%;
@@ -502,20 +489,6 @@ body {
 .roi-positive { color: var(--green); }
 .roi-negative { color: var(--red); }
 
-/* Myomi Badge */
-.myomi-badge {
-  display: inline-flex; align-items: center; gap: 2px;
-  padding: 2px 8px; border-radius: 10px;
-  font-size: 11px; font-weight: 700; white-space: nowrap;
-}
-.myomi-3 { background: linear-gradient(135deg, #f39c12, #e67e22); color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.3); animation: myomi-glow 2s ease-in-out infinite alternate; }
-.myomi-2 { background: linear-gradient(135deg, #3498db, #2980b9); color: #fff; }
-.myomi-1 { background: rgba(255,255,255,0.1); color: var(--text-secondary); border: 1px solid rgba(255,255,255,0.15); }
-@keyframes myomi-glow {
-  from { box-shadow: 0 0 4px rgba(243,156,18,0.3); }
-  to { box-shadow: 0 0 10px rgba(243,156,18,0.6); }
-}
-
 /* Results indicator */
 .result-badge {
   font-size: 10px; padding: 1px 6px; border-radius: 8px;
@@ -523,34 +496,6 @@ body {
 }
 .result-badge.done { background: var(--green-dim); color: var(--green); }
 .result-badge.pending { background: rgba(255,255,255,0.06); color: var(--text-muted); }
-
-/* 推奨/見送りバッジ — 意思決定の唯一の指標 (2026-05-24 v3)
-   旧 myomi / race_tendency / confidence バッジは全廃止 */
-.rec-badge {
-  font-size: 13px;
-  padding: 5px 12px;
-  border-radius: 14px;
-  font-weight: 800;
-  margin-left: 6px;
-  white-space: nowrap;
-  letter-spacing: 0.5px;
-}
-.rec-badge.rec-yes {
-  background: rgba(46, 204, 113, 0.22);
-  color: #2ecc71;
-  border: 1.5px solid rgba(46, 204, 113, 0.55);
-}
-.rec-badge.rec-no {
-  background: rgba(160, 160, 160, 0.12);
-  color: #909090;
-  border: 1.5px solid rgba(160, 160, 160, 0.3);
-}
-@media (max-width: 600px) {
-  .rec-badge {
-    font-size: 12px;
-    padding: 4px 10px;
-  }
-}
 
 /* 推奨フィルター(タッチターゲット拡大) */
 .conf-filter-btn {
@@ -752,28 +697,34 @@ body {
   .race-meta { font-size: 9px; gap: 5px; }
   .conf-badge { padding: 2px 8px; font-size: 10px; }
 
-  /* Horse list - スマホ最適化 v2 (2026-05-24) */
-  .horse-list { padding: 8px 10px; }
+  /* Horse list - スマホ最適化 v3 (2026-05-25)
+     v2 で stats 5項目 + cat-badges 6個が改行で縦長になる改悪 → 大幅圧縮:
+     - stats: 過去勝率/過去連対 を非表示 (デスクトップでは見える)
+     - cat-badges: 印馬のみ表示 + S/A グレードのみ
+     - min-height: 56→44 (Apple HIG 最小)
+     - padding 削減 */
+  .horse-list { padding: 6px 8px; }
   .horse-row {
-    grid-template-columns: 28px 30px 1fr auto;
-    gap: 8px;
-    padding: 10px 4px;
-    min-height: 56px;  /* タッチ + 視認性 */
+    grid-template-columns: 22px 28px 1fr auto;
+    gap: 6px;
+    padding: 6px 2px;
+    min-height: 44px;  /* タッチ最小 (Apple HIG) */
   }
   .horse-mark {
-    font-size: 18px;  /* 印を大きく目立たせる */
+    font-size: 17px;
     font-weight: 900;
   }
   .horse-number {
-    width: 30px; height: 30px;
+    width: 28px; height: 28px;
     font-size: 11px;
   }
   .horse-name { font-size: 13px; font-weight: 700; }
   .horse-jockey { font-size: 10px; }
   .horse-stats {
-    gap: 4px 6px;
-    flex-wrap: wrap;
-    margin-top: 4px;
+    gap: 6px;
+    flex-wrap: nowrap;     /* 改行禁止 = 1行強制 */
+    margin-top: 2px;
+    overflow: hidden;
   }
   .stat {
     font-size: 10px;
@@ -782,11 +733,23 @@ body {
     border-radius: 6px;
     white-space: nowrap;
   }
+  /* スマホ縦長対策: 過去勝率/過去連対 (4番目以降) は非表示 */
+  .horse-stats .stat:nth-child(n+4) { display: none; }
+  /* cat-badges: 無印馬は完全非表示、印馬も S/A グレードのみ */
+  .horse-row:not(.has-mark) .cat-badges { display: none; }
+  .horse-row .cat-badge:not(.rank-s):not(.rank-a) { display: none; }
+  .horse-row .cat-badges {
+    margin-left: 4px;
+    gap: 2px;
+    flex-wrap: nowrap;
+  }
+  .horse-row .cat-badge {
+    font-size: 9px;
+    padding: 1px 4px;
+  }
   .prob-value { font-size: 16px; }
   .prob-label { font-size: 9px; }
-  .rank-bar { width: 50px; height: 3px; }
-  .horse-reasons { padding: 4px 0 0 66px; }
-  .reason-tag { font-size: 9px; padding: 2px 6px; }
+  .rank-bar { width: 40px; height: 3px; }
   /* 印馬を強調(◎○▲△×注 が付いた馬は背景でハイライト) */
   .horse-row.has-mark {
     background: linear-gradient(90deg, rgba(240,192,64,0.05), transparent);
@@ -834,9 +797,6 @@ body {
   /* Confidence filter */
   .conf-filter { padding: 4px 10px; gap: 4px; }
   .conf-filter-btn { padding: 4px 10px; font-size: 10px; }
-
-  /* Myomi badges */
-  .myomi-badge { font-size: 10px; padding: 1px 6px; }
 }
 
 /* ─── Responsive: Small phone (〜380px) ─── */
@@ -848,13 +808,18 @@ body {
   .btn-predict { width: 100%; margin-top: 4px; }
   .summary-strip { grid-template-columns: repeat(2, 1fr); }
   .horse-row {
-    grid-template-columns: 18px 22px 1fr auto;
+    grid-template-columns: 20px 26px 1fr auto;
     gap: 4px;
   }
-  .horse-name { font-size: 11px; }
-  .prob-value { font-size: 12px; }
+  .horse-name { font-size: 12px; }
+  .horse-jockey { font-size: 9px; }
+  .prob-value { font-size: 14px; }
   .rank-bar { width: 32px; }
   .bet-chip { padding: 6px 10px; font-size: 11px; }
+  /* 極小画面では SI も非表示 → オッズ・人気 + AI複勝 の 2項目のみ */
+  .horse-stats .stat:nth-child(n+3) { display: none; }
+  /* cat-badges は印馬でも完全非表示 (スペース確保) */
+  .horse-row .cat-badges { display: none; }
 }
 </style>
 
@@ -963,7 +928,8 @@ const BET_COLORS = {
   'ワイド': 'var(--bet-wide)', '馬連': 'var(--bet-umaren)',
   '三連複': 'var(--bet-sanrenpuku)', '三連単': 'var(--bet-sanrentan)',
 };
-const CONF_ICONS = { S: '🔥', A: '★', B: '📊', C: '△', D: '—' };
+// CONF_ICONS removed 2026-05-25: confIcon は createRaceCard で未使用 (dead code)。
+// 信頼度はアルファベット (S/A/B/C/D) を conf-badge で直接表示する。
 
 // ─── 開いているレースカードを記憶→再描画→復元 ───
 // 券種/予算変更で renderAll() が走ると DOM が作り直されて .open クラスが消える。
@@ -1279,28 +1245,17 @@ function renderRaceCards() {
 
 function createRaceCard(race) {
   const confClass = race.confidence || 'C';
-  const confIcon = CONF_ICONS[confClass] || '';
   const hasResults = race.has_results;
   const isLocked = race.prediction_locked;
 
   let badges = '';
   if (hasResults) badges += `<span class="result-badge">✅ 確定</span>`;
 
-  // 推奨/見送りバッジ (2026-05-24)
-  // should_bet=true → 「✅ 推奨」、false → 「⏭️ 見送り推奨」
-  // 結果未確定レースのみ表示(確定後は意味がない)
-  let recBadge = '';
-  if (!hasResults) {
-    if (race.should_bet) {
-      recBadge = `<span class="rec-badge rec-yes" title="${race.bet_reason || ''}">✅ 推奨</span>`;
-    } else {
-      recBadge = `<span class="rec-badge rec-no" title="${race.bet_reason || '見送り推奨'}">⏭️ 見送り</span>`;
-    }
-  }
-
-  // v4 (2026-05-24): 信頼度アルファベット 1バッジに統合 — S/A/B/C/D で階層明示
-  // ユーザー指摘: 「✅推奨だけだとメイン全部同じに見える、アルファベットの方がわかりやすい」
-  // myomi / race_tendency / rec_badge は廃止、confidence のみで意思決定
+  // 意思決定 UI 設計 (2026-05-25):
+  //  - 信頼度アルファベット (S/A/B/C/D) を conf-badge で 1 バッジ表示
+  //  - should_bet は X 投稿選定で使用、UI では S/A 自体が「推奨ライン」を示すため非表示
+  //  - 旧 myomi / race_tendency / rec_badge は廃止済み
+  //  - 詳細根拠 (bet_reason / conf_reason) は conf-badge の title= でツールチップ提供
   return `
     <div class="race-card" id="race-${race.race_id}">
       <div class="race-header" onclick="toggleRace('${race.race_id}')">
@@ -1439,10 +1394,10 @@ function renderPredTab(race) {
   const bets = scaleBets((race.all_bets || {})[bt] || [], state.budget);
 
   let html = '<div class="horse-list">';
-  top3.forEach(h => { html += renderHorseRow(h, true); });
+  top3.forEach(h => { html += renderHorseRow(h); });
   if (rest.length > 0) {
     html += `<div id="rest-${race.race_id}" style="display:none;">`;
-    rest.forEach(h => { html += renderHorseRow(h, false); });
+    rest.forEach(h => { html += renderHorseRow(h); });
     html += '</div>';
     html += `<button class="show-all-btn" onclick="toggleRestHorses('${race.race_id}', this)">▼ 全${horses.length}頭を表示</button>`;
   }
@@ -1499,7 +1454,8 @@ function renderPredTab(race) {
   return html;
 }
 
-function renderHorseRow(h, showReasons) {
+function renderHorseRow(h) {
+  // showReasons param removed 2026-05-25: reason-tag CSS は廃止済 (dead code)
   const markClass = h.mark === '◎' ? 'mark-honmei' : h.mark === '○' ? 'mark-taikou' : h.mark === '▲' ? 'mark-tanana' : h.mark === '注' ? 'mark-chuui' : 'mark-renshita';
 
   // Rank bar width (normalize rank_score to 0-100%)
