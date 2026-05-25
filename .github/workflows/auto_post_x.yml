@@ -25,6 +25,7 @@ on:
           - post_predict
           - morning
           - evening
+          - diagnose
   # ─── cron フォールバック（GAS不発時のセーフティネット） ───
   schedule:
     # 平日朝7:30 JST (UTC 22:30前日) → 日-木のUTC22:30 = 月-金のJST7:30
@@ -446,6 +447,9 @@ jobs:
             python post_x.py morning
           elif [ "$TYPE" = "evening" ]; then
             python post_x.py evening
+          elif [ "$TYPE" = "diagnose" ]; then
+            # X API 診断モード — 書き込みせず、認証/rate limit/token を非破壊チェック
+            python3 scripts/x_diagnose.py || echo "(診断スクリプト終了コード ≠ 0)"
           fi
 
       # ── 静的予測サイト更新（GitHub Pages） ──
