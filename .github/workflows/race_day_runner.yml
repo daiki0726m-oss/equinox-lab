@@ -123,6 +123,9 @@ jobs:
             python refresh_odds.py --date "$DATE" || echo "⚠️ refresh_odds エラー(継続)"
             python collect_payouts.py --date "$DATE" || echo "⚠️ payouts なし"
 
+            # 🛡 Pre-flight check (#18 教訓: races/runners/predictions 完整性)
+            python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || echo "⚠️ Pre-flight 警告(継続)"
+
             # race_id 同期
             python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')" || true
 

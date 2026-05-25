@@ -73,6 +73,12 @@ jobs:
           DATE="${{ inputs.date }}"
           python predict.py collect --date "$DATE" || true
 
+      # 🛡 Pre-flight check: races/runners/predictions 完整性確認 (#18 教訓)
+      - name: Pre-flight check
+        run: |
+          DATE="${{ inputs.date }}"
+          python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || echo "⚠️ Pre-flight 警告(続行)"
+
       - name: Run prediction
         run: |
           DATE="${{ inputs.date }}"

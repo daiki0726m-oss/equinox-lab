@@ -207,11 +207,19 @@ def x_weighted_len(text):
 
 
 def _post_history_paths():
-    """投稿履歴ファイルパス(優先順)"""
+    """投稿履歴ファイルパス(優先順)
+
+    設計 (2026-05-25 明文化):
+    - docs/data/.post_history.json: git tracked (source of truth, CI が commit)
+    - .post_history.json (root): .gitignore 対象 (local 作業用バックアップ)
+
+    両方に書き込むのは、新規 clone 直後など docs/data/ が無い環境での
+    フォールバック動作のため。読み込みは docs/data/ 優先で converge する。
+    """
     repo_root = os.path.dirname(__file__)
     return [
-        os.path.join(repo_root, "docs", "data", ".post_history.json"),
-        os.path.join(repo_root, ".post_history.json"),
+        os.path.join(repo_root, "docs", "data", ".post_history.json"),  # primary
+        os.path.join(repo_root, ".post_history.json"),                   # local fallback
     ]
 
 
@@ -228,7 +236,8 @@ def _load_post_history():
 
 
 def _save_post_history(history):
-    """投稿履歴を保存(docs/data/ 配下 + ローカル fallback)"""
+    """投稿履歴を保存。docs/data/ を primary (git source of truth)、
+    ローカル fallback (.post_history.json) も同期書込で常に最新化。"""
     paths = _post_history_paths()
     primary = paths[0]
     try:
@@ -315,27 +324,29 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                             # 結果ツイート (📊 印別着順 系) はスレッド先頭が常に
                             # 「📊 N/M AI予想 印別着順 + 📍京都11R...」で同じになる問題があった。
                             # → 京都だけ投稿した hit_flash と、全 3R+集計 を投稿する results が
-                            #    tweets[0] / tweets[1] 一致で重複と誤判定されていた。
-                            # 修正 v2: results 投稿は集計ツイート (「📊 X/Y 集計」を含む) を
-                            # 持つので、これで判定すれば hit_flash と確実に差別化できる。
-                            # 集計ツイートがあればそれを、無ければ tweets[1] を使用。
+                            #    tweets[0] / tweets[1] 一致で重複と誤判定されていた (PR #88 で修正)。
+                            # v3 (2026-05-25): 集計ツイートが見つからない場合の tweets[1] フォールバックを
+                            # 削除。tweets[1] は別レース構成で同じ内容になり得るため、旧バグ復活リスクあり。
+                            # → 集計ツイート未検出時は API 重複チェック自体をスキップし、
+                            #   local history dict (race:{id} キー) のみで重複判定する。
                             check_tweet = None
                             for t in tweets:
                                 if "集計" in t and ("◎の戦績" in t or "印馬の" in t):
                                     check_tweet = t
                                     break
                             if check_tweet is None:
-                                check_tweet = tweets[1] if len(tweets) >= 2 else tweets[0]
-                            first_chunk = check_tweet[:80].strip()
-                            if len(first_chunk) < 30:
-                                # 極端に短い tweet は判定不能 → スキップしない
+                                # 集計ツイートなし = X API 重複チェック対象外。
+                                # 通常の morning/weekday/evening 投稿等はこちらに該当。
+                                # local history-based dedup (content_key / race:{id}) が継続して効く。
                                 pass
                             else:
-                                for t in recent.data:
-                                    if first_chunk in t.text:
-                                        print(f"⚠️ 重複検出（X API）: 同じ内容が既に投稿済み → スキップ")
-                                        print(f"  既存ツイート: {t.text[:80]}...")
-                                        return []
+                                first_chunk = check_tweet[:80].strip()
+                                if len(first_chunk) >= 30:
+                                    for t in recent.data:
+                                        if first_chunk in t.text:
+                                            print(f"⚠️ 重複検出（X API）: 同じ内容が既に投稿済み → スキップ")
+                                            print(f"  既存ツイート: {t.text[:80]}...")
+                                            return []
                 except Exception as api_err:
                     print(f"  ℹ️ X API重複チェックスキップ: {api_err}")
 

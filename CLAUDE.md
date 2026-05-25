@@ -93,11 +93,11 @@ JRA の出走スケジュール:
 
 - DB の write は必ず `git checkout -- keiba.db` で取り消し可能 (= **DB に補完作業中は git checkout NG。書き込み完了まで pull/checkout 禁止**)
 - features.py と fast_train.py の `get_feature_columns()` は**完全一致**
-- post_history.json はチェックインしない(git tracked だが手動触らない)
+- 投稿履歴: `docs/data/.post_history.json` が git tracked / source of truth。ローカルの `.post_history.json` は .gitignore 対象のフォールバックバックアップ
 - weekly_retrain が走ると models/*.pkl が更新される(自動デプロイ)
 - ML 特徴量を変えたら **必ず retrain が必要** (古い models/*.pkl は新 features で predict できずエラー)
-- confidence.py の NORMS は ML 分布に依存 → モデル変更時に再キャリブが必要
-- 結果スレッド投稿の重複検出は tweets[1] (2件目) で判定 (tweets[0] は常に「📊 印別着順」で同じ)
+- confidence.py は **v4 で ROI 期待値ベース** に再設計 (2026-05-25)。trio_ev/odds_pot/umaren_ev/top3/conc の 5軸。旧 NORMS は廃止
+- 結果スレッド投稿の重複検出は **「集計ツイート」(`集計` + `◎の戦績`/`印馬の` を含む)** で判定 (PR #88)。tweets[0] は固定 header / tweets[1] は別レース構成で誤判定リスクあり、フォールバックは廃止 (2026-05-25)
 - 血統データは horses テーブル全体で 60%+ 欠落しがち → `scripts/auto_pedigree.py` (cron で自動補完) を整備済
 
 ## 🐛 過去のミス事例 (繰り返さない)
@@ -126,7 +126,7 @@ JRA の出走スケジュール:
 ### 📊 データパイプライン関連 (収集 / 同期 / cache)
 
 - **#11 (2026-05-16)**: 血統補完中に `git checkout -- keiba.db` で補完分消失 → **DB 書込中は git pull/checkout 禁止**
-- **#13 (2026-05-23)**: `fetch_weekend_races` cron が月水金朝のみで土日朝発火せず → R1-R8 欠落で結果反映停止 → **土日朝5時 cron 追加** (PR #92)
+- **#13 (2026-05-23)**: `fetch_weekend_races` cron が月水金朝のみで土日朝発火せず → R1-R8 欠落で結果反映停止 → **土日朝7時(UTC 22時)発火 cron に統合** (PR #92)
 - **#14 (2026-05-23)**: `scrape_shutuba` は `entries` キー、`save_race_to_db` は `results` キーで6ヶ月以上未来レース出走馬保存されず → **両キー受付に修正**
 - **#18 (2026-05-24)**: パイプライン全段階で完整性チェック無く変な出力が垂れ流し → **`scripts/preflight_check.py` 新設** (races件数 / 出走馬 / 予測キャッシュを auto-fix)
 - **#19 (2026-05-24)**: 各 workflow が `actions/checkout` 直後に `actions/cache restore` で keiba.db を **cache 版で強制上書き**。git push した正しい DB が反映されず古い予測 (◎エンネ) が UI に → **全 9 workflow に `git checkout HEAD -- keiba.db` step 追加**
@@ -139,7 +139,8 @@ JRA の出走スケジュール:
 - **#12 (2026-05-16)**: 予測ロジック変更しても DB の seal で古いまま → 明日朝 cron で古い予想 (◎17人気) 投稿寸前。dry-run で発見 → **「予測ロジック変更 = seal NULL + 再 predict 必須」**
 - **#16 (2026-05-23)**: `should_bet_race` の閾値 30% が post_calibrate v8 後の分布に追従せず買い目0点 → **閾値緩和** (30%→23%, top_prob 10%→8%)
 - **#17 (2026-05-24)**: Contrarian 補正が ML 識別不能レースで暴走、18人気馬が ◎ に → **ML 勝率レンジで強度可変化** (レンジ<3%停止、<5%で30%、それ以外100%)
-- **#20 (2026-05-24)**: **印 × 注 が「機能不全」(単独 ROI 50-69%)** → 3-5月 7,000R バックテストで判明: 旧 × 注 ロジックは単独 ROI が市場標準を下回りノイズ印化。**穴馬スコア(SI/人気 + コース適性 + 血統 + 穴予兆 + 騎手)を新設して × 注 のみ置換**: 単独単勝ROI ×50%→95% / 注69%→136%、 **◎軸三連複ROI 130%→174%** に劇的改善。◎○▲△ は現状ロジック維持(◎軸三連複の構造強度を保つため)。
+- **#20 (2026-05-24)**: **旧 印 × 注 が「機能不全」(単独 ROI 50-69%)** → 3-5月 7,000R バックテストで判明、旧 × 注 ロジックは単独 ROI が市場標準を下回りノイズ印化していた。**穴馬スコア(SI/人気 + コース適性 + 血統 + 穴予兆 + 騎手)を新設して × 注 のみ置換** (改修済み、現在は機能良好): 単独単勝ROI ×50%→95% / 注69%→136%、 **◎軸三連複ROI 130%→174%** に劇的改善。◎○▲△ は現状ロジック維持(◎軸三連複の構造強度を保つため)。
+- **#21 (2026-05-25)**: v4 信頼度 (ROI 期待値ベース) 投入後の整合性監査で **致命的不整合 5件 + 警告 7件** を発見。修正済み: (1) `evaluate_from_horses()` に `odds_key` 追加 / (2) `generate_note.py` 非 cached path を v4 化 / (3) `app.py` ダッシュボードを v4 化 / (4) `cmd_predict` を `should_bet=1 AND confidence in (S,A)` 化 / (5) `cmd_morning`/`cmd_weekday`/`cmd_evening` に時間ガード追加 / (6) tweets[1] フォールバック削除 (旧バグ復活リスク) / (7) preflight_check を manual_predict/race_day_runner にも組込 / (8) seed_historical.yml cache key を run_number に統一。**教訓: 大規模ロジック変更時は呼び出し元全箇所を grep して影響範囲を網羅すること**。
 
 ### 📝 記事 / X 投稿関連
 

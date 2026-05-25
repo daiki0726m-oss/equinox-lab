@@ -22,7 +22,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: keiba.db
-          key: keiba-db-${{ github.run_id }}
+          key: keiba-db-${{ github.run_number }}
           restore-keys: |
             keiba-db-
 
@@ -113,7 +113,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: keiba.db
-          key: keiba-db-${{ github.run_id }}
+          key: keiba-db-${{ github.run_number }}
 
       - name: Export updated predictions
         run: |
