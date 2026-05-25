@@ -6,6 +6,10 @@ on:
     - cron: '0 18 * * 0'
   workflow_dispatch:
     inputs:
+      year:
+        description: '収集する年 (例: 2021)'
+        required: false
+        default: ''
       months:
         description: '収集する月(カンマ区切り、例: 1,2,3,4)'
         required: false
@@ -14,7 +18,7 @@ on:
 jobs:
   seed:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 350   # 1年分(~3500R × 1秒) = 60分目安、余裕みて 350分
     steps:
       - uses: actions/checkout@v4
 
@@ -43,7 +47,10 @@ jobs:
       - name: Initialize DB
         run: python -c "from database import init_db; init_db()"
 
-      - name: Collect 2026 historical data
+      - name: Collect historical data
+        env:
+          INPUT_YEAR: ${{ github.event.inputs.year }}
+          INPUT_MONTHS: ${{ github.event.inputs.months }}
         run: |
           python3 << 'PYEOF'
           from scraper import NetkeibaScraper
@@ -52,24 +59,34 @@ jobs:
 
           s = NetkeibaScraper()
 
+          # 収集対象年を決定 (省略時は今年)
+          input_year = os.environ.get("INPUT_YEAR", "").strip()
+          if input_year:
+              year = int(input_year)
+          else:
+              from datetime import datetime
+              year = datetime.now().year
+
           # 収集対象月を決定
           input_months = os.environ.get("INPUT_MONTHS", "").strip()
           if input_months:
               months = [int(m.strip()) for m in input_months.split(",") if m.strip()]
           else:
-              # デフォルト: 2026年の1月〜現在月
+              # 過去年: 1-12月全部 / 今年: 1月〜現在月
               from datetime import datetime
-              current_month = datetime.now().month
-              months = list(range(1, current_month + 1))
+              if year < datetime.now().year:
+                  months = list(range(1, 13))
+              else:
+                  months = list(range(1, datetime.now().month + 1))
 
-          print(f"📅 収集対象: 2026年 {months} 月")
+          print(f"📅 収集対象: {year}年 {months} 月")
 
           for month in months:
               print(f"\n{'='*50}")
-              print(f"🏇 2026年{month}月 収集開始")
+              print(f"🏇 {year}年{month}月 収集開始")
               print(f"{'='*50}")
 
-              race_ids = s.get_race_list(2026, month)
+              race_ids = s.get_race_list(year, month)
               collected = 0
               skipped = 0
 
@@ -126,5 +143,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/data/ keiba.db 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "📦 Seed historical data $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+          git diff --cached --quiet || git commit -m "📦 Seed historical data ${{ github.event.inputs.year || '今年' }} $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
           git push || true
