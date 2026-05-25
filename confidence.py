@@ -1,41 +1,62 @@
-"""信頼度判定モジュール (v2: 6軸合成スコア)
+"""信頼度判定モジュール (v4: ROI 期待値ベース)
 
 予測結果から S/A/B/C/D の信頼度ラベルを返す共通ロジック。
-predict.py / generate_note.py / 将来の他モジュールから利用される
+predict.py / generate_note.py / app.py / 将来の他モジュールから利用される
 single source of truth。
 
-## 設計思想 (v2 — 旧 grade-bifurcated logic を破棄)
+## 設計思想 (v4 — 「堅さ」基準を捨てて「儲かる度」基準に)
 
-「信頼度 = AI が ◎(本命)を当てる(複勝圏内に入る)確信度」と定義。
-6軸の独立シグナルを 0-1 にnormalize し、重み付き合計で 0-1 の
-composite score を算出 → 5段階に bucket 化する。
+旧 v2/v3 では「信頼度 = ◎の堅さ」と定義していたが、3-5月 622R バックテストで
+評価と実態が逆転していた:
+  - 旧 S (1番人気軸 / 堅実) → ROI 91% (損失)
+  - 旧 B (中堅人気で配当妙味) → ROI 137% (利益)
 
-旧 v1 では「重賞=緩い閾値、平場=厳しい閾値」と grade で二分していた
-ため、G1 の薄い予測(◎勝率15%)が S、平場の濃い予測(◎勝率36%)が A
-という直感に反する反転が起きていた。v2 では絶対値ベースの統一スコアに。
+原因: WEIGHTS で pop_score 0.30 が最重要 = 「◎が1番人気のレース = S」
+判定。S レース三連複平均配当 1,934円 vs B レース 5,736円 (3倍差) と
+「当たりやすさ」と「儲かりやすさ」が乖離していた。
 
-## 6軸シグナル
+v4 では「信頼度 = ROI 期待値」と再定義し、勝率より配当ポテンシャルを優先。
+
+## 5軸シグナル (v4)
 
 | 軸 | 重み | 説明 | 満点条件 |
 |---|---|---|---|
-| win_score | 0.22 | ◎の予測勝率(%) | 35%以上 |
-| top3_score | 0.20 | ◎の予測複勝率(%) | 70%以上 |
-| gap_score | 0.18 | ◎vs○の勝率gap(%) | 12pt以上 |
-| conc_score | 0.15 | 上位3頭の勝率合計(%) | 75%以上 |
-| pop_score | 0.10 | ◎の人気(市場との一致) | 1人気=1.0 |
-| size_score | 0.15 | 頭数(少ないほど有利) | 8頭以下 |
+| trio_ev | 0.30 | 三連複 5頭流し EV | pred_top3 × est_trio_odds ≥ 2.0 |
+| odds_pot | 0.25 | ◎オッズ妙味 | 3-7倍 (1番人気は減点) |
+| umaren_ev | 0.20 | 馬連流し EV | pred_top3 × 0.7 × est_umaren_odds ≥ 1.5 |
+| top3 | 0.15 | ◎複勝率 (信頼度の保険) | 35%以上 |
+| conc | 0.10 | 上位3頭合計勝率 (混戦排除) | 45%以上 |
 
 重賞(G1/G2/G3)は混戦が前提なので合計から **-0.03** の補正。
 
-## ラベル化 (composite 0-1)
+## ラベル化 (composite 0-1) — 超厳格 v4 閾値
 
-| composite | rating | 意味 |
+| composite | rating | 期待 ROI |
 |---|---|---|
-| >= 0.72 | S | ◎複勝圏入り highly likely (推定70%+) |
-| >= 0.58 | A | ◎複勝圏入り likely (50-70%) |
-| >= 0.44 | B | ◎複勝圏入り decent (30-50%) |
-| >= 0.30 | C | ◎複勝圏入り uncertain (15-30%) |
-| < 0.30  | D | 全シグナル弱 — 見送り推奨 |
+| >= 0.88 | S | 174% (本命爆発) |
+| >= 0.78 | A | 156% (高妙味) |
+| >= 0.62 | B | 142% (標準推奨) |
+| >= 0.45 | C |  99% (様子見) |
+| < 0.45  | D |     - (見送り) |
+
+5/1-5/24 backtest (112R 結果あり) で ROI が S→A→B→C 単調減少を確認。
+
+## v4 使い方
+
+```python
+from confidence import evaluate, evaluate_from_horses
+
+# 単一値で評価
+r = evaluate(top_win_pct=15, top3_sum_pct=35, n_horses=14,
+             top_top3_pct=33, top_popularity=2, top_odds=4.5)
+# r['confidence'] == 'S', r['score'] == 0.97
+
+# 馬リストで評価 (DB cache / ML 出力など)
+r = evaluate_from_horses(horses, grade='G1',
+                         win_key='pred_win_pct',     # フィールド名指定可
+                         top3_key='pred_top3_pct',
+                         odds_key='odds_win')        # v4 で追加
+```
 """
 
 from typing import Iterable, Tuple, Optional
@@ -270,15 +291,21 @@ def evaluate_from_horses(
     win_key: str = "pred_win_pct",
     top3_key: str = "pred_top3_pct",
     pop_key: str = "popularity",
+    odds_key: str = "odds_win",
 ) -> dict:
     """horses(辞書のリスト)から自動的に top1/top2/top3 を計算して評価する。
+
+    v4 (2026-05-25): `odds_key` を追加。top1 の単勝オッズを抽出して
+    `evaluate()` の `top_odds` に渡すことで ROI 期待値ベースの正確な評価が可能。
+    未指定または欠落時は人気からオッズを推定するフォールバックで動作。
 
     Args:
         horses: 各馬の予測dict。win_key/top3_key/pop_key を持つ前提
         grade: レースグレード
-        win_key: 勝率フィールド名
-        top3_key: 複勝率フィールド名
+        win_key: 勝率フィールド名 (例: "pred_win_pct", "pred_win")
+        top3_key: 複勝率フィールド名 (例: "pred_top3_pct", "pred_top3")
         pop_key: 市場人気フィールド名
+        odds_key: 単勝オッズフィールド名 (v4 で追加)
     """
     horses_list = list(horses) if horses else []
     if not horses_list:
@@ -303,6 +330,8 @@ def evaluate_from_horses(
     except (TypeError, ValueError):
         pop = 0
 
+    top1_odds = float(top1.get(odds_key, 0) or 0)
+
     return evaluate(
         top_win_pct=top1_win,
         n_horses=len(horses_list),
@@ -311,6 +340,7 @@ def evaluate_from_horses(
         second_win_pct=top2_win,
         top_top3_pct=top1_top3,
         top_popularity=pop if pop > 0 else None,
+        top_odds=top1_odds,
     )
 
 

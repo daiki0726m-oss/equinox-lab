@@ -104,9 +104,16 @@ def get_race_predictions(date_str, model, strategy):
                 myomi = ""  # 後で上書き
 
                 # 信頼度: confidence.py(共通モジュール)に委譲
+                # v4 (2026-05-25): top3_key と odds_key も明示指定し、
+                # ROI 期待値ベースで正しく評価されるようにする
                 from confidence import evaluate_from_horses
-                c = evaluate_from_horses(horses, grade=race_info.get('grade'),
-                                         win_key='pred_win')
+                c = evaluate_from_horses(
+                    horses,
+                    grade=race_info.get('grade'),
+                    win_key='pred_win',
+                    top3_key='pred_top3',
+                    odds_key='odds_win',
+                )
                 confidence = c['confidence']
 
                 # レース傾向
@@ -306,19 +313,18 @@ def get_race_predictions(date_str, model, strategy):
                         if ev > max_ev:
                             max_ev = ev
 
-            # 信頼度（◎のpred_winベース）
-            honmei_h = next((h for h in sorted_horses if h.get('mark') == '◎'), None)
-            honmei_win = honmei_h['pred_win'] if honmei_h else 0
-            if honmei_win >= 50:
-                confidence = "S"
-            elif honmei_win >= 35:
-                confidence = "A"
-            elif honmei_win >= 22:
-                confidence = "B"
-            elif honmei_win >= 12:
-                confidence = "C"
-            else:
-                confidence = "D"
+            # 信頼度: confidence.py(共通モジュール)に委譲
+            # v4 (2026-05-25): 旧 hard-coded 閾値(50/35/22/12%)を撤廃。
+            # ROI 期待値ベース v4 ロジック (predict.py / cached path と同基準) に統一。
+            from confidence import evaluate_from_horses
+            c = evaluate_from_horses(
+                horses,
+                grade=race_info.get('grade'),
+                win_key='pred_win',
+                top3_key='pred_top3',
+                odds_key='odds_win',
+            )
+            confidence = c['confidence']
 
             # 妙味（EVベース）
             if max_ev >= 5.0:

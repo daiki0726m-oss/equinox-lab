@@ -447,6 +447,7 @@ def _fetch_predictions_from_pages(date_str):
                     })
 
                 # DB行と同じキー名のdictを作成
+                # v4 (2026-05-25): should_bet も伝播して投稿対象選定で利用
                 race_dict = {
                     'race_id': race.get('race_id', ''),
                     'race_name': race.get('race_name', ''),
@@ -458,8 +459,9 @@ def _fetch_predictions_from_pages(date_str):
                     'race_number': race.get('race_number', 0),
                     'start_time': race.get('start_time', ''),
                     'predictions_json': json.dumps(preds_list, ensure_ascii=False),
-                    'all_bets_json': '{}',
+                    'all_bets_json': json.dumps(race.get('all_bets', {}), ensure_ascii=False),
                     'confidence': race.get('confidence', 'C'),
+                    'should_bet': 1 if race.get('should_bet') else 0,
                 }
                 result.append(race_dict)
 
@@ -524,8 +526,9 @@ def cmd_predict(args):
         print(f"❌ {date_str} の予測データがありません")
         return
 
-    # 投稿対象: 11R(必ず) + 信頼度Sのレース(11R以外、最大3件)
-    # 2026-05-24 v4: UI がアルファベット表示に戻ったので X 投稿基準も信頼度S に戻す
+    # 投稿対象: 11R(必ず) + 推奨レース(should_bet=1 かつ 信頼度S/A)(11R以外、最大3件)
+    # 2026-05-25 v4.1: betting.py 12%/30% 厳格化を投稿選定にも反映。
+    # should_bet=1 のみだと S/A/B 混在 → 信頼度 S/A も併せて高品質に絞る。
     target_races = []
     target_ids = set()
 
@@ -535,14 +538,19 @@ def cmd_predict(args):
             target_races.append(race)
             target_ids.add(race['race_id'])
 
-    # 信頼度S レース(11R以外、最大3件)
-    s_count = 0
+    # 推奨レース (should_bet=1 かつ 信頼度 S/A): 11R以外、最大3件
+    rec_count = 0
     for race in all_races:
-        if race['confidence'] == 'S' and race['race_id'] not in target_ids:
+        is_recommended = (
+            race['race_id'] not in target_ids
+            and race.get('should_bet') == 1
+            and race['confidence'] in ('S', 'A')
+        )
+        if is_recommended:
             target_races.append(race)
             target_ids.add(race['race_id'])
-            s_count += 1
-            if s_count >= 3:
+            rec_count += 1
+            if rec_count >= 3:
                 break
 
     if not target_races:
@@ -551,11 +559,11 @@ def cmd_predict(args):
 
     print(f"🏇 {date_label} 投稿対象: {len(target_races)}レース")
     print(f"   (11R: {sum(1 for r in target_races if r['race_number']==11)}件 / "
-          f"S: {sum(1 for r in target_races if r['confidence']=='S' and r['race_number']!=11)}件)\n")
+          f"推奨: {sum(1 for r in target_races if r.get('should_bet')==1 and r['confidence'] in ('S','A') and r['race_number']!=11)}件)\n")
 
     # ── ツイート1: サマリー ──
     main_races = [r for r in target_races if r['race_number'] == 11]
-    s_races = [r for r in target_races if r['confidence'] == 'S' and r['race_number'] != 11]
+    s_races = [r for r in target_races if r.get('should_bet') == 1 and r['confidence'] in ('S', 'A') and r['race_number'] != 11]
 
     t1 = f"🧠 AI競馬予想 {date_label}\n\n"
 
@@ -1001,7 +1009,19 @@ def _build_weekday_post(slot, today):
 
 
 def cmd_weekday(args):
-    """平日昼: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）"""
+    """平日昼: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）
+
+    🛡 時間ガード (2026-05-25 追加):
+    cmd_weekday は 昼 11:00-14:59 JST 専用。誤発火事故防止。
+    SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
+    """
+    if not os.environ.get("SKIP_TIME_GUARD"):
+        now = now_jst()
+        if not (11 <= now.hour <= 14):
+            print(f"⚠️ cmd_weekday 時間ガード: {now.strftime('%H:%M JST')} は対象外 (11:00-14:59 のみ)")
+            print(f"   バイパスするには環境変数 SKIP_TIME_GUARD=1 を設定。")
+            return
+
     fetch_weekend_races()
     today = now_jst()
     dow = today.weekday()
@@ -3242,7 +3262,20 @@ def cmd_odds_flash(args):
 
 # ─── 朝ツイート（平日7:30） ───
 def cmd_morning(args):
-    """平日朝: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）"""
+    """平日朝: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）
+
+    🛡 時間ガード (2026-05-25 追加):
+    cmd_morning は 朝 7:00-10:59 JST 専用。GAS や workflow_dispatch で誤発火された場合、
+    朝コンテンツが夜に投稿される事故防止のため、対象時間外は即スキップ。
+    SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
+    """
+    if not os.environ.get("SKIP_TIME_GUARD"):
+        now = now_jst()
+        if not (7 <= now.hour <= 10):
+            print(f"⚠️ cmd_morning 時間ガード: {now.strftime('%H:%M JST')} は対象外 (7:00-10:59 のみ)")
+            print(f"   バイパスするには環境変数 SKIP_TIME_GUARD=1 を設定。")
+            return
+
     fetch_weekend_races()
     today = now_jst()
     dow = today.weekday()
@@ -3271,7 +3304,19 @@ def cmd_morning(args):
 
 # ─── 夜ツイート（平日20:00） ───
 def cmd_evening(args):
-    """平日夜: 今週末メインレースの総合プレビュー（曜日別テーマ・日付動的表現）"""
+    """平日夜: 今週末メインレースの総合プレビュー（曜日別テーマ・日付動的表現）
+
+    🛡 時間ガード (2026-05-25 追加):
+    cmd_evening は 夜 19:00-22:59 JST 専用。誤発火による朝/昼への漏れ込み事故防止。
+    SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
+    """
+    if not os.environ.get("SKIP_TIME_GUARD"):
+        now = now_jst()
+        if not (19 <= now.hour <= 22):
+            print(f"⚠️ cmd_evening 時間ガード: {now.strftime('%H:%M JST')} は対象外 (19:00-22:59 のみ)")
+            print(f"   バイパスするには環境変数 SKIP_TIME_GUARD=1 を設定。")
+            return
+
     fetch_weekend_races()
     today = now_jst()
     dow = today.weekday()
