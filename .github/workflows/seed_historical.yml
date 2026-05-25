@@ -141,5 +141,28 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/data/ keiba.db 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "📦 Seed historical data ${{ github.event.inputs.year || '今年' }} $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-          git push || true
+          if git diff --cached --quiet; then
+            echo "📭 変更なし"
+            exit 0
+          fi
+          git commit -m "📦 Seed historical data ${{ github.event.inputs.year || '今年' }} $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+          # 並行 workflow で main が進んでいる可能性があるため rebase + retry
+          # (2026-05-25 修正: 旧 'git push || true' は rejected で 3h 分の作業が消える事故あり)
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git pull --rebase --autostash origin main; then
+              if git push origin HEAD:main; then
+                echo "🚀 deployed (try $i)"
+                exit 0
+              fi
+            else
+              echo "⚠️ rebase 失敗 (try $i) → keiba.db を ours で解決"
+              git checkout --ours keiba.db 2>/dev/null || true
+              git add keiba.db 2>/dev/null || true
+              git rebase --continue 2>/dev/null || git rebase --abort
+            fi
+            echo "⚠️ push 失敗 → retry ($i/5)"
+            sleep $((i * 10))
+          done
+          echo "❌ push 5回失敗、作業は cache に残る (次回 restore で復元)"
+          exit 1
