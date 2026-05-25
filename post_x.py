@@ -2967,16 +2967,35 @@ def fact_check_tweet(tweet_text):
         # 5行未満なら情報量不足の可能性
         issues.append(f"⚠️ 本文の行数が少ない({len(body_lines)}行)、内容希薄の可能性")
 
+    # 既存 regex チェック結果
     if issues:
-        print("🔍 ファクトチェック結果:")
+        print("🔍 ファクトチェック結果 (regex):")
         for issue in issues:
             print(f"  {issue}")
         if critical:
             print("  🚫 致命的な問題があるため投稿をブロックします")
-        return not critical
-    else:
+            return False
+
+    # 🆕 DB クロスファクトチェック (2026-05-25 追加)
+    # 「過去6年」と書いて 2022/2023 がない、DB に存在しない馬名等を検出
+    try:
+        from tweet_fact_check import db_fact_check
+        passed_db, db_issues = db_fact_check(tweet_text)
+        if db_issues:
+            print("🔍 ファクトチェック結果 (DB クロス):")
+            for issue in db_issues:
+                print(f"  {issue}")
+        if not passed_db:
+            print("  🚫 DB 整合性エラーで投稿ブロック")
+            return False
+    except ImportError:
+        print("  ℹ️ tweet_fact_check 未導入 (skip)")
+    except Exception as e:
+        print(f"  ℹ️ DB ファクトチェック skip (エラー): {e}")
+
+    if not issues:
         print("✅ ファクトチェック通過")
-        return True
+    return True
 
 
 # ─── 的中速報ポスト ───
