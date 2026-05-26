@@ -33,6 +33,7 @@ from post_sections import (
     sec_entry_pedigree_match,
     sec_eight_axis_top,
     sec_top3_with_reasons,
+    sec_attention_top,
 )
 
 
@@ -52,6 +53,53 @@ def _race_label(race: dict) -> str:
     name = race.get("race_name", "")
     grade = _short_grade(race.get("grade"))
     return f"{name}{grade}".strip()
+
+
+def _is_post_position_drawn(race: dict, today: Optional[datetime] = None) -> bool:
+    """枠順抽選 (金11時 JST) が済んでいるかを判定。
+
+    JRA の出走スケジュール:
+    - 月: 特別登録
+    - 木: 出走馬確定 + 斤量
+    - 金 11:00: 枠順抽選 → 馬番確定
+    - 土・日: レース当日
+
+    馬番表示は枠順抽選後のみ。
+    """
+    today = today or datetime.now()
+    race_date_str = race.get("race_date", "")
+    try:
+        if "-" in race_date_str:
+            race_d = datetime.strptime(race_date_str[:10], "%Y-%m-%d").date()
+        else:
+            race_d = datetime.strptime(race_date_str[:8], "%Y%m%d").date()
+    except (ValueError, TypeError):
+        return False  # 日付不明なら安全側 (馬番出さない)
+
+    today_d = today.date()
+    # 過去/当日: 確定済
+    if race_d <= today_d:
+        return True
+    days_until = (race_d - today_d).days
+    if days_until >= 3:
+        return False  # 月-水: 抽選前
+    # 金曜 (1日前): 11時 以降のみ
+    if today.weekday() == 4 and today.hour >= 11:
+        return True
+    if days_until == 0:
+        return True
+    return False
+
+
+def _horse_label(horse: dict, race: dict, today: Optional[datetime] = None) -> str:
+    """馬ラベル: 抽選前は馬名のみ、後は「N番 馬名」"""
+    name = horse.get("horse_name", "?")
+    hn = horse.get("horse_number")
+    if not hn or hn == 0:
+        return name
+    if _is_post_position_drawn(race, today):
+        return f"{hn}番 {name}"
+    return name
 
 
 def _day_phrase(race: dict, today: Optional[datetime] = None) -> str:
@@ -94,31 +142,42 @@ def _hashtags(race: dict) -> str:
     return " ".join(tags)
 
 
-# X 文字数予算 (220-260 目安、上限 280)
-CHAR_BUDGET = 260
+# X 文字数予算 (上限 X 280、内部目標 270 程度)
+CHAR_BUDGET = 275
 
 
 def _fit_to_budget(header: str, sections: list, cta: str, hashtags: str,
                     budget: int = CHAR_BUDGET) -> str:
-    """セクションを順に削って予算内に収める。
+    """セクションを優先度順に削って予算内に収める。
 
-    優先度: header / hashtags / cta は必須、sections は末尾から削る。
+    削除優先順位 (高→低):
+    1. ※ で始まる「出典/補足」行 — 最初に削る (情報として補助)
+    2. セクション末尾の通常行 — 馬データ等
+    3. セクション全体 — 最終手段
+
+    header / hashtags / cta は必須 (削らない)。
     """
-    while sections:
-        body = "\n\n".join(sections)
-        tweet = f"{header}\n\n{body}\n\n{cta}\n{hashtags}"
-        if _x_len(tweet) <= budget:
-            return tweet
-        # 末尾セクションから 1行ずつ削る
+    def _assemble():
+        body = "\n\n".join(s for s in sections if s)
+        return f"{header}\n\n{body}\n\n{cta}\n{hashtags}"
+
+    # Phase 1: ※ で始まる行を削って試す
+    if _x_len(_assemble()) > budget:
+        new_sections = []
+        for s in sections:
+            kept = [l for l in s.split("\n") if not l.startswith("※")]
+            new_sections.append("\n".join(kept))
+        sections = new_sections
+
+    # Phase 2: 末尾セクションから 1行ずつ削る
+    while sections and _x_len(_assemble()) > budget:
         last = sections[-1].split("\n")
         if len(last) <= 2:
-            # ヘッダ行+1行しか無い → セクションごと削る
             sections.pop()
         else:
-            # 末尾の1行を削る
             sections[-1] = "\n".join(last[:-1])
-    # セクション全削除でも超過 → header + cta + hashtags のみ
-    return f"{header}\n\n{cta}\n{hashtags}"
+
+    return _assemble()
 
 
 # ─────────────────────────────────────────────────────────
@@ -445,11 +504,12 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
 
     header = f"🏋️ {day} {label}\n追い切り評価"
 
-    # Section 1: 追い切り A/B 評価馬
+    # Section 1: 追い切り A/B 評価馬 (馬番ガード適用)
     t1, lines1, n1 = sec_workout_focus(conn, race_id, top=4)
     samples["workout"] = n1
     if lines1 and n1 > 0:
-        sections.append(_make_section("【A/B 評価馬】", lines1[:4]))
+        cleaned = _strip_horse_number_from_lines(lines1, race)
+        sections.append(_make_section(t1, cleaned[:6]))
 
     cta = "→ 今夜は危険な1人気を配信🔔"
 
@@ -475,13 +535,14 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
 
     header = f"📋 {day} {label}\n出走確定+血統マッチ"
 
-    # Section 1: 出走馬×血統 (このコース複勝35%超)
+    # Section 1: 出走馬×血統 (このコース複勝35%超、馬番ガード適用)
     t1, lines1, n1 = sec_entry_pedigree_match(
         conn, race_id, venue, surface, distance, top=4, years=6
     )
     samples["entry_pedigree"] = n1
     if lines1 and n1 > 0:
-        sections.append(_make_section("【血統がコースに合う出走馬】", lines1[:4]))
+        cleaned = _strip_horse_number_from_lines(lines1, race)
+        sections.append(_make_section("【血統がコースに合う出走馬】", cleaned[:4]))
 
     # Section 2: コース全体の種牡馬TOP (補助)
     t2, lines2, n2 = sec_sire_course_cross(
@@ -498,11 +559,27 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
     return tweet, {"sections_used": ["entry_pedigree", "sires"], "samples": samples, "char_count": _x_len(tweet)}
 
 
+def _strip_horse_number_from_lines(lines: list, race: dict) -> list:
+    """sec_* の output 行から「N番」を抽選前なら除去。
+
+    horse_label 共通ヘルパーが理想だが、既存 sec_* が文字列を返すので
+    後処理として regex で削る。
+    """
+    if _is_post_position_drawn(race):
+        return lines  # 抽選後はそのまま
+    import re as _re
+    cleaned = []
+    for l in lines:
+        # 「{番号}番 {馬名}」を「{馬名}」に置換
+        cleaned.append(_re.sub(r"\d{1,2}番\s+", "", l))
+    return cleaned
+
+
 # ─────────────────────────────────────────────────────────
-# 木昼: 8軸最終TOP4
+# 木昼: AI注目TOP3 (注目順位、印なし、客観データ)
 # ─────────────────────────────────────────────────────────
 def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
-    """木昼: 8軸スコア最終TOP4"""
+    """木昼: AI注目TOP3 (AI勝率/SI/血統 の客観データ付)"""
     samples = {}
     sections = []
 
@@ -510,26 +587,27 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     day = _day_phrase(race)
     race_id = race.get("race_id", "")
 
-    header = f"🎯 {day} {label}\n8軸スコア 最終TOP4"
+    header = f"🎯 {day} {label}\nAI注目TOP3"
 
-    # Section 1: 8軸TOP4
-    t1, lines1, n1 = sec_eight_axis_top(conn, race_id, top=4)
-    samples["axis"] = n1
+    # Section 1: 注目TOP3 (印なし、ランキング表記)
+    t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
+    samples["attention"] = n1
     if lines1 and n1 > 0:
-        sections.append(_make_section("【8軸スコア】", lines1[:4]))
+        cleaned = _strip_horse_number_from_lines(lines1, race)
+        sections.append(_make_section(t1, cleaned[:5]))  # 5行 = 注目馬3 + 出典2
 
-    cta = "→ 今夜AI最終3頭+note告知🔔"
+    cta = "→ 今夜AI最終予想+note告知🔔"
 
     hashtags = _hashtags(race)
     tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["axis"], "samples": samples, "char_count": _x_len(tweet)}
+    return tweet, {"sections_used": ["attention"], "samples": samples, "char_count": _x_len(tweet)}
 
 
 # ─────────────────────────────────────────────────────────
-# 木夜: 最終3頭+note告知
+# 木夜: AI最終予想 注目TOP3 + note告知
 # ─────────────────────────────────────────────────────────
 def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
-    """木夜: ◎○▲ + 各馬の決定的理由 + note告知"""
+    """木夜: AI最終予想 (注目馬3頭、印は土曜朝に持ち越し)"""
     samples = {}
     sections = []
 
@@ -537,26 +615,27 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
     day = _day_phrase(race)
     race_id = race.get("race_id", "")
 
-    header = f"🌟 {day} {label}\nAI最終予想 ◎○▲"
+    header = f"🌟 {day} {label}\nAI最終予想 注目馬3頭"
 
-    # Section 1: ◎○▲ + 理由
-    t1, lines1, n1 = sec_top3_with_reasons(conn, race_id)
-    samples["top3"] = n1
+    # Section 1: 注目TOP3 (印なし、客観データ)
+    t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
+    samples["attention"] = n1
     if lines1 and n1 > 0:
-        sections.append(_make_section("【AI印 ◎○▲】", lines1[:3]))
+        cleaned = _strip_horse_number_from_lines(lines1, race)
+        sections.append(_make_section(t1, cleaned[:5]))
 
-    cta = "→ 明朝に最終確定+買い目🔔\n→ note記事公開予定📝"
+    cta = "→ 土朝に印 (◎○▲) と買い目を発表🔔\n→ note記事も公開予定📝"
 
     hashtags = _hashtags(race)
     tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
+    return tweet, {"sections_used": ["attention"], "samples": samples, "char_count": _x_len(tweet)}
 
 
 # ─────────────────────────────────────────────────────────
-# 金昼: 注目馬3頭+根拠
+# 金昼: 注目馬TOP3+根拠 (印なし)
 # ─────────────────────────────────────────────────────────
 def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
-    """金昼: 注目馬3頭+根拠のみ (買い目は出さない、teaser)"""
+    """金昼: 注目馬3頭 + 客観データ"""
     samples = {}
     sections = []
 
@@ -564,26 +643,27 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     day = _day_phrase(race)
     race_id = race.get("race_id", "")
 
-    header = f"🎯 {day} {label}\n注目馬 3頭"
+    header = f"🎯 {day} {label}\nAI注目馬 3頭"
 
-    # Section 1: 注目馬3頭 + 各馬の根拠 (買い目組合せは出さない)
-    t1, lines1, n1 = sec_top3_with_reasons(conn, race_id)
-    samples["top3"] = n1
+    # Section 1: 注目TOP3 (馬番は金曜午前なら抽選前で出さない、午後なら出す)
+    t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
+    samples["attention"] = n1
     if lines1 and n1 > 0:
-        sections.append(_make_section("【AIが注目する3頭】", lines1[:3]))
+        cleaned = _strip_horse_number_from_lines(lines1, race)
+        sections.append(_make_section(t1, cleaned[:5]))
 
-    cta = "→ 明朝に印別買い目を配信🔔"
+    cta = "→ 土朝に印 (◎○▲) と買い目🔔"
 
     hashtags = _hashtags(race)
     tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
+    return tweet, {"sections_used": ["attention"], "samples": samples, "char_count": _x_len(tweet)}
 
 
 # ─────────────────────────────────────────────────────────
-# 金夜: 翌朝配信告知
+# 金夜: 翌朝配信告知 (最有力1頭の匂わせ)
 # ─────────────────────────────────────────────────────────
 def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
-    """金夜: 翌朝配信告知 (ティーザー、◎だけ匂わせ)"""
+    """金夜: 翌朝配信告知 (最有力候補1頭の匂わせ)"""
     samples = {}
     sections = []
 
@@ -593,14 +673,18 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
 
     header = f"🔔 {day} {label}\n明朝AI予想 配信予定"
 
-    # Section 1: ◎だけ匂わせ (フルリストは出さない)
-    t1, lines1, n1 = sec_top3_with_reasons(conn, race_id)
-    samples["top3"] = n1
+    # Section 1: 最有力 (TOP1 のみ)
+    t1, lines1, n1 = sec_attention_top(conn, race_id, top=1, include_marks=False)
+    samples["attention"] = n1
     if lines1 and n1 > 0:
-        # ◎の行だけ出して、○▲は隠す
-        honmei_line = next((l for l in lines1 if l.startswith("◎")), None)
-        if honmei_line:
-            sections.append(f"【◎】 {honmei_line[1:].strip()}")
+        cleaned = _strip_horse_number_from_lines(lines1, race)
+        # 1️⃣ で始まる行を探し、ランク絵文字を regex で剥がす
+        import re as _re
+        first = next((l for l in cleaned if l.startswith("1️⃣")), None)
+        if first:
+            # 1️⃣ (U+0031 U+FE0F U+20E3) + 空白 を確実に除去
+            stripped = _re.sub(r"^[1-4]️?⃣\s*", "", first).strip()
+            sections.append(f"【最有力候補】\n{stripped}")
 
     sections.append("【配信予定】\n🌅 朝7時 — 印別最終予想\n🎯 朝10時 — 確定買い目")
 
@@ -608,7 +692,7 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
 
     hashtags = _hashtags(race)
     tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
+    return tweet, {"sections_used": ["attention"], "samples": samples, "char_count": _x_len(tweet)}
 
 
 # ─────────────────────────────────────────────────────────

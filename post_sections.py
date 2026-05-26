@@ -820,7 +820,7 @@ def sec_age_pattern(
 
 
 # ─────────────────────────────────────────────────────────
-# sec_workout_focus (水昼: 追い切り情報)
+# sec_workout_focus (水昼: 追い切り情報) — v2 改修
 # ─────────────────────────────────────────────────────────
 def sec_workout_focus(
     conn,
@@ -829,11 +829,25 @@ def sec_workout_focus(
 ) -> Tuple[str, List[str], int]:
     """同レースの追い切り評価が高い馬 (A/B grade) を抽出。
 
+    出典: netkeiba 追い切り評価 (専門編集部による総合的な動き評価)。
+    タイムだけでなく、馬の気配・コーナリング・反応速度等を加味した
+    5段階の編集部評価 (A=非常に良い 〜 C=並)。
+
+    v2 追加: 過去6年の A評価馬の実複勝率を併記して、評価の信頼性を
+    数値で示す。
+
     例:
-        🏇17番 シンサンマンサル A (好気配)
-        🏇05番 ダノンデサイル A (力強い)
+        🥇ドリームコア A (気配抜群)
+        🥇ラフターラインズ A (文句なし)
+        ※追い切り評価 A: 過去6年で複勝率 38% (n=420)
+        ※出典: netkeiba 追い切り評価
     """
     cur = conn.cursor()
+    # 該当レース情報を取得 (race_date)
+    cur.execute("SELECT race_date FROM races WHERE race_id = ?", (race_id,))
+    rd_row = cur.fetchone()
+    race_date = rd_row[0] if rd_row else None
+
     cur.execute(
         """
         SELECT w.horse_number, h.horse_name, w.evaluation_grade, w.evaluation_text
@@ -850,15 +864,49 @@ def sec_workout_focus(
     )
     rows = cur.fetchall()
     n = len(rows)
-    title = "【追い切り 高評価馬】"
+    title = "【追い切り評価 (netkeiba 編集部)】"
     if n == 0:
         return (title, ["追い切り評価データなし"], 0)
+
+    # 馬リスト (馬番は呼び出し側で _horse_label を使うべきだが、
+    # 互換のため horse_number + name を返す)
     lines = []
     for hn, name, grade, text in rows:
         emoji = "🥇" if grade == "A" else "🥈"
-        text_short = (text or "").strip()[:6]
-        lines.append(f"{emoji}{hn}番 {name} ({grade}/{text_short})")
-    return (title, lines, n)
+        text_short = (text or "").strip()[:8]
+        # 馬番は呼出側で剥がせる形 (構造化)
+        lines.append({"emoji": emoji, "hn": hn, "name": name, "grade": grade, "text": text_short})
+
+    # A評価馬の過去6年複勝率を計算 (信頼性メトリック)
+    cur.execute(
+        """
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+        FROM workouts w
+        JOIN results res ON w.race_id = res.race_id AND w.horse_id = res.horse_id
+        WHERE w.evaluation_grade = 'A'
+          AND res.finish_position > 0
+        """
+    )
+    a_stat = cur.fetchone()
+    a_top3_pct = None
+    a_n = 0
+    if a_stat and a_stat[0]:
+        a_n, a_top3 = a_stat
+        if a_n >= 30:
+            a_top3_pct = 100 * a_top3 / a_n
+
+    # 統計コンテキスト (行頭、trim されにくい位置に)
+    str_lines = []
+    if a_top3_pct is not None:
+        str_lines.append(f"※過去6年のA評価馬の複勝率 {a_top3_pct:.0f}% (n={a_n})")
+
+    # 馬リスト
+    for l in lines:
+        str_lines.append(f"{l['emoji']}{l['hn']}番 {l['name']} {l['grade']}({l['text']})")
+
+    return (title, str_lines, n)
 
 
 # ─────────────────────────────────────────────────────────
@@ -948,30 +996,37 @@ def sec_entry_pedigree_match(
     if not matches:
         return (title, ["該当馬なし"], 0)
 
-    lines = []
+    # 出典 + 客観値を行頭に
+    lines = ["※父産駒の当コース複勝率 (過去6年)"]
     for pct, hn, name, sire, runs, top3 in matches[:top]:
-        sire_short = sire.split("(")[0][:8]  # "(米)" 等を削る
-        lines.append(f"🩸{hn}番 {name} ({sire_short} {pct:.0f}%/{top3}/{runs})")
+        sire_short = sire.split("(")[0][:10]  # "(米)" 等を削る、長め確保
+        lines.append(f"🩸{hn}番 {name} — 父{sire_short}産駒 {pct:.0f}%複勝 ({top3}/{runs}件)")
     return (title, lines, len(matches))
 
 
 # ─────────────────────────────────────────────────────────
-# sec_eight_axis_top (木昼: 8軸最終TOP4)
+# sec_attention_top (木昼/木夜/金昼: 注目馬 + 客観データ) — v2
 # ─────────────────────────────────────────────────────────
-def sec_eight_axis_top(
+def sec_attention_top(
     conn,
     race_id: str,
-    top: int = 4,
+    top: int = 3,
+    include_marks: bool = False,
 ) -> Tuple[str, List[str], int]:
-    """8軸スコア合計 (cat_* + si_avg) 上位を抽出。
+    """注目馬 + 客観データ (AI予測勝率 / SI / 直近成績 / 父産駒のコース実績)。
 
-    predictions_cache の各馬の cat_ability / cat_pedigree / cat_jockey /
-    cat_track / cat_record / cat_weather / si_avg / pred_win_pct を加重合計
-    して8軸スコアを算出。
+    各馬で表示するデータ:
+    - AI予測勝率 (LightGBM 出力、過去レース結果から学習)
+    - SI: Speed Index 過去レース平均 (netkeiba 算出のスピード指数)
+    - 直近5走の3着内率
+    - 父産駒の当該コース複勝率 (DB 集計)
+
+    include_marks=False: 「1️⃣ 2️⃣ 3️⃣」表記 (注目馬として)
+    include_marks=True: 「◎ ○ ▲」表記 (確定買い目)
 
     例:
-        🌟17番 シャインローズ 軸87 (能82 血75 騎88)
-        🌟05番 タスティエーラ 軸82 (能85 血71)
+        1️⃣ スターアニス (SI93、AI勝率18% / 父エピファネイア 当コース40%)
+        2️⃣ ドリームコア (SI85、AI勝率14% / 直近5走3着内80%)
     """
     cur = conn.cursor()
     cur.execute(
@@ -979,46 +1034,103 @@ def sec_eight_axis_top(
         (race_id,),
     )
     row = cur.fetchone()
+    title = "【AI注目馬】"
     if not row:
-        return ("【8軸最終TOP4】", ["予測キャッシュなし"], 0)
+        return (title, ["予測キャッシュなし"], 0)
     import json as _json
     try:
         horses_list = _json.loads(row[0])
     except Exception:
-        return ("【8軸最終TOP4】", ["予測データ読み込み失敗"], 0)
+        return (title, ["予測データ読み込み失敗"], 0)
     if not horses_list:
-        return ("【8軸最終TOP4】", ["馬データなし"], 0)
+        return (title, ["馬データなし"], 0)
 
-    # 8軸スコア = (cat_ability + cat_pedigree + cat_jockey + cat_track + cat_record + cat_weather) / 6
-    #         + si_avg/100 * weight
-    def axis_score(h):
-        cats = [
-            h.get("cat_ability", 0) or 0,
-            h.get("cat_pedigree", 0) or 0,
-            h.get("cat_jockey", 0) or 0,
-            h.get("cat_track", 0) or 0,
-            h.get("cat_record", 0) or 0,
-        ]
-        si = h.get("si_avg", 0) or 0
-        # 平均 (0-100 想定)
-        cat_avg = sum(cats) / len([c for c in cats if c > 0]) if any(cats) else 0
-        return cat_avg * 0.6 + si * 0.4
+    # レース条件 (種牡馬照合用)
+    cur.execute(
+        "SELECT venue, surface, distance FROM races WHERE race_id = ?",
+        (race_id,),
+    )
+    race_row = cur.fetchone()
+    venue = race_row[0] if race_row else ""
+    surface = race_row[1] if race_row else ""
+    distance = race_row[2] if race_row else 0
 
-    scored = sorted(
-        [(axis_score(h), h) for h in horses_list],
-        key=lambda x: -x[0],
+    # AI予測勝率順に並べる
+    sorted_h = sorted(
+        horses_list, key=lambda x: -(x.get("pred_win_pct", 0) or 0)
     )[:top]
 
-    title = "【8軸最終TOP4】"
+    rank_marks = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+    legacy_marks = ["◎", "○", "▲", "△"]
+
     lines = []
-    for score, h in scored:
-        hn = h.get("horse_number", 0)
-        name = h.get("horse_name", "?")[:8]
-        nou = h.get("cat_ability", 0) or 0
-        ket = h.get("cat_pedigree", 0) or 0
-        kis = h.get("cat_jockey", 0) or 0
-        lines.append(f"🌟{hn}番 {name} 軸{score:.0f} (能{nou:.0f}/血{ket:.0f}/騎{kis:.0f})")
-    return (title, lines, len(scored))
+    for i, h in enumerate(sorted_h):
+        name = h.get("horse_name", "?")
+        hn = h.get("horse_number") or 0
+        pred_win = h.get("pred_win_pct", 0) or 0
+        si = h.get("si_avg", 0) or 0
+        top3_rate = h.get("top3_rate", 0) or 0  # 直近10R 複勝率
+        mark = legacy_marks[i] if include_marks else rank_marks[i]
+
+        # 客観データ 2 つに厳選 (文字数節約のため):
+        # - AI勝率は必須 (最重要)
+        # - 第二指標: 父産駒のコース実績 > SI > 直近複勝率 の優先順
+        facts = []
+        facts.append(f"AI勝率{pred_win:.0f}%")
+
+        # 第二指標を選定
+        cur.execute(
+            "SELECT sire FROM horses WHERE horse_name = ? LIMIT 1", (name,)
+        )
+        sire_row = cur.fetchone()
+        second_fact = None
+        if sire_row and sire_row[0] and venue and distance:
+            sire = sire_row[0]
+            cur.execute(
+                """
+                SELECT COUNT(*) runs, SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) top3
+                FROM races r
+                JOIN results res ON r.race_id = res.race_id
+                JOIN horses h2 ON res.horse_id = h2.horse_id
+                WHERE r.surface = ? AND r.distance = ? AND r.venue = ?
+                  AND r.race_date >= ?
+                  AND h2.sire = ?
+                  AND res.finish_position > 0
+                """,
+                (surface, distance, venue, f"{datetime.now().year - 6}-01-01", sire),
+            )
+            ss = cur.fetchone()
+            if ss and ss[0] and ss[0] >= 4:
+                runs, top3 = ss
+                pct = 100 * top3 / runs
+                if pct >= 30:  # 30% 以上のみ意味あり
+                    sire_short = sire.split("(")[0][:7]
+                    second_fact = f"父{sire_short}産駒{pct:.0f}%"
+
+        if not second_fact and si > 0:
+            second_fact = f"SI{si:.0f}"
+        elif not second_fact and top3_rate >= 50:
+            second_fact = f"直近複勝{top3_rate:.0f}%"
+
+        if second_fact:
+            facts.append(second_fact)
+
+        lines.append({"mark": mark, "hn": hn, "name": name, "facts": facts})
+
+    # 文字列化 (出典は行頭に置いて trim されにくくする)
+    str_lines = ["※AI勝率=LightGBM予測 / SI=過去レース勝率指数"]
+    for l in lines:
+        label = f"{l['hn']}番 {l['name']}" if l['hn'] else l['name']
+        facts_str = " / ".join(l['facts'])
+        str_lines.append(f"{l['mark']} {label} ({facts_str})")
+
+    return (title if not include_marks else "【AI最終予想 ◎○▲】", str_lines, len(lines))
+
+
+# 互換: 旧名 sec_eight_axis_top を別名で残す (deprecated)
+def sec_eight_axis_top(conn, race_id, top=4):
+    """[非推奨] sec_attention_top を使用してください (より客観的データ)"""
+    return sec_attention_top(conn, race_id, top=min(top, 3), include_marks=False)
 
 
 # ─────────────────────────────────────────────────────────
