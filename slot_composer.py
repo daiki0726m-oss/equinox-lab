@@ -64,8 +64,16 @@ def _is_post_position_drawn(race: dict, today: Optional[datetime] = None) -> boo
     - 金 11:00: 枠順抽選 → 馬番確定
     - 土・日: レース当日
 
-    馬番表示は枠順抽選後のみ。
+    抽選日 = レース日の最初の前金曜:
+    - 土曜レース (weekday=5) → 抽選は前日 (金曜)
+    - 日曜レース (weekday=6) → 抽選は前々日 (金曜)
+    - 平日レース → 簡略化のため当日 11時以降で True
+
+    今日 > 抽選日: True
+    今日 < 抽選日: False
+    今日 = 抽選日: 11時以降のみ True
     """
+    from datetime import timedelta as _td
     today = today or datetime.now()
     race_date_str = race.get("race_date", "")
     try:
@@ -74,21 +82,29 @@ def _is_post_position_drawn(race: dict, today: Optional[datetime] = None) -> boo
         else:
             race_d = datetime.strptime(race_date_str[:8], "%Y%m%d").date()
     except (ValueError, TypeError):
-        return False  # 日付不明なら安全側 (馬番出さない)
+        return False
 
     today_d = today.date()
     # 過去/当日: 確定済
     if race_d <= today_d:
         return True
-    days_until = (race_d - today_d).days
-    if days_until >= 3:
-        return False  # 月-水: 抽選前
-    # 金曜 (1日前): 11時 以降のみ
-    if today.weekday() == 4 and today.hour >= 11:
+
+    # 抽選日を計算 (レース日の前金曜)
+    wd = race_d.weekday()  # 0=月 ... 5=土 6=日
+    if wd == 5:  # 土曜レース: 前日金曜が抽選日
+        draw_date = race_d - _td(days=1)
+    elif wd == 6:  # 日曜レース: 前々日金曜が抽選日
+        draw_date = race_d - _td(days=2)
+    else:
+        # 平日レース (祝日等の特殊): レース当日11時以降のみ
+        draw_date = race_d
+
+    if today_d > draw_date:
         return True
-    if days_until == 0:
-        return True
-    return False
+    if today_d < draw_date:
+        return False
+    # 抽選日当日 — 11時以降のみ True
+    return today.hour >= 11
 
 
 def _horse_label(horse: dict, race: dict, today: Optional[datetime] = None) -> str:
