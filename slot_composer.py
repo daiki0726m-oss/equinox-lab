@@ -321,20 +321,34 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
 
     t3, lines3, n3 = sec_outlier_year(conn, race_name, years=6)
     samples["outliers"] = n3
-    if lines3 and n3 > 0:
-        outlier_line = next((l for l in lines3 if l.startswith("🚨")), None)
+    if lines3 and n3 > 0 and n3 >= 3:
+        # 「N年で5番人気以下勝利: X回」から堅め/荒れ型を判定
         rate_line = next((l for l in lines3 if "5番人気以下勝利" in l), None)
-        if outlier_line:
-            # "🚨2024 ダノンデサイル(9人気/46.6倍)" → "2024ダノンデサイル(9人気)"
-            short = _re.sub(r"\(\d+人気/[\d.]+倍\)", "", outlier_line.lstrip("🚨")).strip()
-            pop_m = _re.search(r"\((\d+)人気/", outlier_line)
-            pop_str = f"({pop_m.group(1)}人気)" if pop_m else ""
-            ctx = ""
-            if rate_line:
-                m = _re.search(r"過去(\d+)年で5番人気以下勝利:\s*(\d+)回", rate_line)
-                if m:
-                    ctx = f" ※過去{m.group(1)}年で{m.group(2)}回"
-            extras.append(f"波乱: 🚨{short}{pop_str}{ctx}")
+        outlier_line = next((l for l in lines3 if l.startswith("🚨")), None)
+        upset_cnt = 0
+        if rate_line:
+            m = _re.search(r"5番人気以下勝利:\s*(\d+)回", rate_line)
+            if m: upset_cnt = int(m.group(1))
+
+        upset_rate = upset_cnt / n3 if n3 > 0 else 0
+        if upset_rate <= 0.25:  # 25%以下 = 堅め基調
+            normal_cnt = n3 - upset_cnt
+            # 例外馬を併記 (なら 2024のみ大波乱 を強調)
+            if upset_cnt >= 1 and outlier_line:
+                pop_m = _re.search(r"\((\d+)人気", outlier_line)
+                year_m = _re.match(r"🚨(\d{4})", outlier_line)
+                if pop_m and year_m:
+                    extras.append(
+                        f"傾向: 堅め (4人気以内が{normal_cnt}/{n3}勝) ※例外{year_m.group(1)}({pop_m.group(1)}人気)"
+                    )
+                else:
+                    extras.append(f"傾向: 堅め基調 (5番人気以下勝利は{upset_cnt}/{n3}のみ)")
+            else:
+                extras.append(f"傾向: 完全堅め (5番人気以下勝利ゼロ)")
+        elif upset_rate >= 0.5:  # 50%以上 = 荒れ型
+            extras.append(f"傾向: 荒れ型 ({upset_cnt}/{n3}が5番人気以下勝利) → 1人気軸は危険")
+        else:
+            extras.append(f"傾向: 中庸 (5番人気以下勝利{upset_cnt}/{n3})")
 
     # extras を別々 sections として append (Phase 2 で 1個ずつ trim 可能)
     # 優先順: 枠順 > 波乱 (枠順は当週の予測に直結、波乱は文脈情報)
