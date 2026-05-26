@@ -154,6 +154,7 @@ JRA の出走スケジュール:
 - **#15 (2026-05-23 16:33)**: workflow_dispatch (GAS 等外部)で post_predict 誤発火、レース真っ最中に予想投稿 → **`cmd_predict` に時間ガード追加** (11時以降スキップ)、後に odds_flash 等にも展開
 - **#22 (2026-05-25)**: GitHub Actions cron が**1-4.5時間遅延発火**することが頻発 (5/25 朝 cron 7:30→8:32 = 1h遅、昼 cron 12:30→17:03 = 4.5h遅)。狭い時間ガード (例: 11:00-14:59) だと正常な遅延発火まで skip してしまう → **時間ガードを各 slot +1h 拡大** (cmd_morning 7-11 / cmd_weekday 11-15 / cmd_evening 19-23)。ただし 4.5h 遅延級は依然 skip (誤投稿事故防止優先)。教訓: 「cron は ベストエフォート、時間ガード窓は cron 遅延分も含めて設計」。
 - **#23 (2026-05-25)**: X API `403 Forbidden` 発生 (5/25 朝 cmd_morning)。`get_users_tweets` (read) と `create_tweet` (write) が両方 403 = 一過性ではなく認証層/app tier の問題と推測。post_x.py の error logging が貧弱で原因切り分け不能だった → **詳細ロギング強化**: `e.response.text` / `e.api_errors` / `e.api_codes` を抽出して原因 (token 失効 / tier 制限 / 重複 / アカウント制限) のヒントを出力。Threads は同時刻に成功 = X 側固有の問題。**確認手順: https://developer.x.com/en/portal/dashboard で tier と直近 errors を確認**。
+- **#24 (2026-05-26)**: 目黒記念2026 記事で「1番人気が3勝/4」と本文と矛盾した数字を書いた (実際は1人気は2勝、過去4年は1人気2勝+2人気1勝+4人気1勝)。**毎回同じパターンのミス (馬番抽選前表示、「印」確定前使用、内部メッセージ垂れ流し、数値矛盾) を指摘されて直す悪循環** → 「学習する機能はないのか」とユーザー指摘。**システム化** で対処: `scripts/verify_article.py` に `check_numeric_claim_consistency()` 新設。「N番人気がX勝」クレームを本文中の年度別人気列挙と自動カウント照合、不一致なら🚫ブロック。同様パターン (馬番抽選前、印確定前) も将来 verify_article.py に追加すべき。**教訓: 人間の検算 → 機械的検算へ。「気をつける」では再発するので、コードレベルで違反を不可能にする**。
 
 ## 🛡 投稿前の Pre-flight Check (2026-05-24 導入)
 

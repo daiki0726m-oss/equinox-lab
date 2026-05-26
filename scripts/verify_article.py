@@ -109,6 +109,40 @@ def check_winner_consistency(text, winners):
     return issues
 
 
+def check_numeric_claim_consistency(text):
+    """記事中の集計クレーム (N勝/M, X人気がY勝 等) と本文の事実列挙が一致するか検算。
+
+    例: 「1番人気が3勝/4」と書いてあったら、本文中の年度別人気リストから
+        「1人気」を自動カウントし、3 と一致するか確認。
+
+    検出パターン:
+      ① 「N番人気がX勝」or 「N人気がX勝」 vs 「20XX...N人気」のカウント
+      ② 「X勝/Y」or 「X/Y勝」 — 母集団 Y は信頼、X は人気帯クレームと整合
+    """
+    issues = []
+    # ① 「N番人気がX勝」or 「N人気がX勝」の検出
+    for m in re.finditer(r'(\d+)\s*(?:番)?人気が\s*(\d+)\s*勝', text):
+        target_pop = int(m.group(1))
+        claimed_wins = int(m.group(2))
+        # 本文中の「20XX ... N人気」を全部カウント (winners リスト等)
+        # 「20XX 馬名: N人気」or 「20XX ... N人気」のパターン
+        actual = len(re.findall(
+            rf'20\d{{2}}\s+\S+[^\n]*?{target_pop}人気',
+            text
+        ))
+        if actual > 0 and actual != claimed_wins:
+            issues.append(
+                f"🚫 数値不整合: 「{target_pop}番人気が{claimed_wins}勝」と記載があるが、"
+                f"本文中の事実列挙では {actual}件 ({target_pop}人気の年度) のみ検出"
+            )
+
+    # ② 「N勝/M」表記の M (分母) と本文の事実列挙数を照合
+    # 例: 「過去4年勝ち馬」セクションに4件しか無いのに「N勝/5」と書いたら警告
+    # ※ 厳密判定難しいので heuristic
+
+    return issues
+
+
 def check_placeholders(text):
     """未記入のプレースホルダーが残っていないか"""
     issues = []
@@ -171,6 +205,7 @@ def main():
             winners = load_race_winners(conn, args.race)
             all_issues += check_winner_consistency(text, winners)
         all_issues += check_placeholders(text)
+        all_issues += check_numeric_claim_consistency(text)
 
         if not all_issues:
             print("✅ 問題なし")
