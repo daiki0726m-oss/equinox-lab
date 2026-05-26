@@ -217,6 +217,7 @@ def build_morning_post(race: dict, conn) -> Tuple[str, dict]:
     venue = race.get("venue", "")
     surface = race.get("surface", "")
     distance = race.get("distance", 0)
+    race_id = race.get("race_id", "")
     grade = race.get("grade")
     race_name = race.get("race_name", "")
 
@@ -241,8 +242,7 @@ def build_morning_post(race: dict, conn) -> Tuple[str, dict]:
 
     # Section 3: 種牡馬 TOP2 → 1行に圧縮
     t3, lines3, n3 = sec_sire_course_cross(
-        conn, venue, surface, distance, top=2, years=6
-    )
+        conn, venue, surface, distance, top=2, years=6, race_id=race_id)
     samples["sires"] = n3
     if lines3 and n3 > 0:
         compact = " / ".join(l.replace("🥇", "").replace("🥈", "").strip() for l in lines3[:2])
@@ -271,14 +271,14 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     venue = race.get("venue", "")
     surface = race.get("surface", "")
     distance = race.get("distance", 0)
+    race_id = race.get("race_id", "")
     race_name = race.get("race_name", "")
 
     header = f"🔍 {day} {label}"
 
     # Section 1: 種牡馬 TOP3 (各行短縮)
     t1, lines1, n1 = sec_sire_course_cross(
-        conn, venue, surface, distance, top=3, years=6
-    )
+        conn, venue, surface, distance, top=3, years=6, race_id=race_id)
     samples["sires"] = n1
     if lines1 and n1 > 0:
         sections.append(_make_section(f"【{venue}{surface}{distance}m 種牡馬TOP3】", lines1[:3]))
@@ -361,11 +361,12 @@ def build_tue_evening_post(race: dict, conn) -> Tuple[str, dict]:
     label = _race_label(race)
     day = _day_phrase(race)
     race_name = race.get("race_name", "")
+    race_id = race.get("race_id", "")
 
     header = f"📊 {day} {label}\n勝ち馬の傾向"
 
     # Section 1: 前走パターン
-    t1, lines1, n1 = sec_prev_race_pattern(conn, race_name, years=6)
+    t1, lines1, n1 = sec_prev_race_pattern(conn, race_name, years=6, race_id=race_id)
     samples["prev_race"] = n1
     if lines1 and n1 > 0:
         # 集計部分のみ抜粋 (個別 detail は冗長なので2件まで)
@@ -405,13 +406,13 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
     venue = race.get("venue", "")
     surface = race.get("surface", "")
     distance = race.get("distance", 0)
+    race_id = race.get("race_id", "")
 
     header = f"🏇 {day} {label}\n騎手×コースの傾向"
 
     # Section 1: 騎手TOP
     t1, lines1, n1 = sec_jockey_recent_form(
-        conn, venue, surface, distance, top=4, years=3
-    )
+        conn, venue, surface, distance, top=4, years=3, race_id=race_id)
     samples["jockey"] = n1
     if lines1 and n1 > 0:
         sections.append(_make_section("【コース好相性騎手】", lines1[:4]))
@@ -487,6 +488,7 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     venue = race.get("venue", "")
     surface = race.get("surface", "")
     distance = race.get("distance", 0)
+    race_id = race.get("race_id", "")
 
     header = f"🔮 {day} {label}\nAI独自パターン分析"
 
@@ -500,8 +502,7 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
 
     # Section 2: 種牡馬 TOP (補助)
     t2, lines2, n2 = sec_sire_course_cross(
-        conn, venue, surface, distance, top=3, years=6
-    )
+        conn, venue, surface, distance, top=3, years=6, race_id=race_id)
     samples["sires"] = n2
     if lines2 and n2 > 0:
         sections.append(_make_section("【総合 種牡馬 複勝率】", lines2[:3]))
@@ -582,8 +583,7 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
 
     # Section 2: コース全体の種牡馬TOP (補助)
     t2, lines2, n2 = sec_sire_course_cross(
-        conn, venue, surface, distance, top=2, years=6
-    )
+        conn, venue, surface, distance, top=2, years=6, race_id=race_id)
     samples["sires"] = n2
     if lines2 and n2 > 0:
         sections.append(_make_section("【総合 種牡馬TOP】", lines2[:2]))
@@ -636,7 +636,7 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         sections.append(_make_section(t1, cleaned[:5]))
     else:
         # 予測キャッシュ未生成 → 種牡馬TOP で補完
-        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=3, years=6)
+        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=3, years=6, race_id=race_id)
         sections.append("【AI予測は木曜夕方の出走確定後に生成】")
         if lines_alt and n_alt > 0:
             sections.append(_make_section("【先行: 当コース 種牡馬TOP3】", lines_alt[:3]))
@@ -673,7 +673,7 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
         sections.append(_make_section(t1, cleaned[:5]))
     else:
         sections.append("【AI予測は木曜夕方の出走確定後に生成】")
-        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=2, years=6)
+        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=2, years=6, race_id=race_id)
         if lines_alt and n_alt > 0:
             sections.append(_make_section("【先行: 当コース 種牡馬TOP】", lines_alt[:2]))
 

@@ -21,6 +21,58 @@ from typing import Tuple, List, Optional
 from datetime import datetime
 
 
+def _get_entries(conn, race_id: str) -> list:
+    """出走馬リスト取得 (predictions_cache 優先、なければ results から)。
+
+    Returns:
+        [{"horse_id", "horse_name", "horse_number", "sire", "jockey_name"}, ...]
+        空リストなら「未確定」と扱う。
+    """
+    if not race_id:
+        return []
+    cur = conn.cursor()
+    # ① predictions_cache から (確実)
+    cur.execute("SELECT predictions_json FROM predictions_cache WHERE race_id=?", (race_id,))
+    row = cur.fetchone()
+    if row and row[0]:
+        try:
+            import json as _json
+            preds = _json.loads(row[0])
+            if preds:
+                # sire を horses テーブルから補完
+                entries = []
+                for p in preds:
+                    name = p.get("horse_name", "")
+                    cur.execute("SELECT horse_id, sire FROM horses WHERE horse_name = ? LIMIT 1", (name,))
+                    h = cur.fetchone()
+                    entries.append({
+                        "horse_id": h[0] if h else None,
+                        "horse_name": name,
+                        "horse_number": p.get("horse_number") or 0,
+                        "sire": h[1] if h else None,
+                        "jockey_name": p.get("jockey_name", ""),
+                    })
+                return entries
+        except Exception:
+            pass
+
+    # ② results から (finish_position=0 の出走予定エントリ)
+    cur.execute("""
+        SELECT res.horse_id, h.horse_name, res.horse_number, h.sire, j.jockey_name
+        FROM results res
+        JOIN horses h ON res.horse_id = h.horse_id
+        LEFT JOIN jockeys j ON res.jockey_id = j.jockey_id
+        WHERE res.race_id = ?
+        ORDER BY res.horse_number
+    """, (race_id,))
+    rows = cur.fetchall()
+    return [
+        {"horse_id": r[0], "horse_name": r[1], "horse_number": r[2],
+         "sire": r[3], "jockey_name": r[4]}
+        for r in rows
+    ]
+
+
 def _sample_note(sample_n: int, expected_n: int) -> str:
     """サンプル充足の注記文字列"""
     if sample_n == 0:
@@ -160,6 +212,7 @@ def sec_sire_course_cross(
     top: int = 3,
     years: int = 6,
     min_runs: int = 4,
+    race_id: str = None,
 ) -> Tuple[str, List[str], int]:
     """指定コースで過去N年複勝率の高い種牡馬TOPを返す。
 
@@ -197,12 +250,30 @@ def sec_sire_course_cross(
     if n == 0:
         return (title, [f"{min_runs}走以上の種牡馬なし"], 0)
 
+    # 出走馬リスト (race_id 指定時のみ) — 該当馬抽出用
+    entries = _get_entries(conn, race_id) if race_id else []
+    entries_by_sire = {}  # sire (前方一致用 prefix) → [horse names...]
+    for e in entries:
+        s = (e.get("sire") or "").split("(")[0].strip()
+        if s:
+            entries_by_sire.setdefault(s, []).append(e)
+
     medals = ["🥇", "🥈", "🥉"]
     lines = []
     for i, (sire, runs, top3) in enumerate(rows):
         pct = 100 * top3 / runs
         m = medals[i] if i < len(medals) else "🏅"
-        lines.append(f"{m}{sire} {pct:.0f}% ({top3}/{runs})")
+        sire_clean = sire.split("(")[0].strip()
+        # 該当出走馬を抽出
+        matched = entries_by_sire.get(sire_clean, [])
+        match_str = ""
+        if entries:  # 出走馬データあり = 該当を表示
+            if matched:
+                names = [e["horse_name"] for e in matched[:2]]
+                match_str = f" → 該当: {' '.join(names)}"
+            else:
+                match_str = " → 該当馬なし"
+        lines.append(f"{m}{sire} {pct:.0f}% ({top3}/{runs}){match_str}")
     return (title, lines, n)
 
 
@@ -213,6 +284,7 @@ def sec_prev_race_pattern(
     conn,
     race_name: str,
     years: int = 6,
+    race_id: str = None,
 ) -> Tuple[str, List[str], int]:
     """同レースの勝ち馬の「前走レース」を集計。
 
@@ -269,7 +341,6 @@ def sec_prev_race_pattern(
         return (title, ["前走データ取得失敗"], 0)
 
     lines = []
-    # 前走別集計 (頻度順) — 「N勝/M」だけでなく「含意」を併記
     sorted_prev = sorted(prev_counts.items(), key=lambda x: -x[1])
     top_prev_name, top_prev_cnt = sorted_prev[0]
     coverage_pct = 100 * top_prev_cnt / n
@@ -282,13 +353,37 @@ def sec_prev_race_pattern(
         other = n - top_prev_cnt
         lines.append(f"  → 他ローテ計 {other}頭のみ ({100-coverage_pct:.0f}%)")
     else:
-        # 上位2-3 ローテを並列表示
         for prev_name, cnt in sorted_prev[:3]:
             lines.append(f"🏆{prev_name}: {cnt}勝/{n}")
 
-    # 個別 detail (上から2件のみ)
-    if details:
-        lines.extend([f"  ({d})" for d in details[:2]])
+    # 出走馬の中で「top_prev_name 経由」の馬を特定
+    if race_id:
+        entries = _get_entries(conn, race_id)
+        if entries:
+            matched_horses = []
+            for e in entries:
+                hid = e.get("horse_id")
+                if not hid:
+                    continue
+                # 各出走馬の前走レース名を取得
+                cur.execute(
+                    """
+                    SELECT r2.race_name FROM results res2
+                    JOIN races r2 ON res2.race_id = r2.race_id
+                    WHERE res2.horse_id = ? AND r2.race_date < (
+                      SELECT race_date FROM races WHERE race_id = ?
+                    )
+                    ORDER BY r2.race_date DESC LIMIT 1
+                    """,
+                    (hid, race_id),
+                )
+                prev_row = cur.fetchone()
+                if prev_row and prev_row[0] == top_prev_name:
+                    matched_horses.append(e["horse_name"])
+            if matched_horses:
+                lines.append(f"  → 該当出走馬: {' '.join(matched_horses[:3])}")
+            else:
+                lines.append(f"  → 該当出走馬なし ({top_prev_name}組ゼロ)")
 
     # 行動指針
     if coverage_pct >= 75:
@@ -436,8 +531,9 @@ def sec_jockey_recent_form(
     surface: str,
     distance: int,
     top: int = 3,
-    years: int = 3,  # 騎手は直近 3年で十分
+    years: int = 3,
     min_runs: int = 5,
+    race_id: str = None,
 ) -> Tuple[str, List[str], int]:
     """指定コースで好成績の騎手TOPを返す。
 
@@ -475,10 +571,28 @@ def sec_jockey_recent_form(
     if n == 0:
         return (title, [f"{min_runs}走以上の騎手なし"], 0)
 
+    # 出走馬の騎手リスト (race_id 指定時)
+    entries = _get_entries(conn, race_id) if race_id else []
+    entry_jockeys = set()
+    for e in entries:
+        jn = e.get("jockey_name") or ""
+        if jn:
+            # 騎手名は短縮形 (例: "ルメール" / "C.デムーロ") なので前方一致系
+            entry_jockeys.add(jn.strip())
+
     lines = []
     for jockey, runs, top3 in rows:
         pct = 100 * top3 / runs
-        lines.append(f"🏆{jockey} {pct:.0f}% ({top3}/{runs})")
+        match_str = ""
+        if entries:
+            # jockey 名と出走馬騎手名の部分一致 (姓のみ照合)
+            jockey_short = jockey.replace(" ", "").strip()
+            matched = any(
+                jockey_short[:3] in ej or ej[:3] in jockey_short
+                for ej in entry_jockeys
+            )
+            match_str = " ★今回騎乗" if matched else ""
+        lines.append(f"🏆{jockey} {pct:.0f}% ({top3}/{runs}){match_str}")
     return (title, lines, n)
 
 
