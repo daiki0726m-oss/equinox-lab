@@ -34,6 +34,7 @@ from post_sections import (
     sec_eight_axis_top,
     sec_top3_with_reasons,
     sec_attention_top,
+    sec_handpicked_top,
 )
 
 
@@ -653,13 +654,13 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         cleaned = _strip_horse_number_from_lines(lines1, race)
         sections.append(_make_section(t1, cleaned[:6]))
     else:
-        # 追い切り未公開 (水曜時点で未発表のケース) → コース傾向で補完
-        t_alt, lines_alt, n_alt = sec_pace_decisive(conn, venue, surface, distance, years=6)
-        if lines_alt and n_alt >= 10:
-            sections.append("【追い切り情報は木曜以降に公開予定】")
-            sections.append(_make_section("【代替: コース末脚傾向】", lines_alt[:2]))
-        else:
-            sections.append("【追い切り情報は木曜公開予定】\nコース分析は今夜の配信で深掘り")
+        # 追い切り未公開 → 出走馬×コース統計の handpicked TOP3 で実質情報を出す
+        t_alt, lines_alt, n_alt = sec_handpicked_top(
+            conn, race_id, venue, surface, distance, top=3, years=6
+        )
+        if lines_alt and n_alt > 0:
+            cleaned = _strip_horse_number_from_lines(lines_alt, race)
+            sections.append(_make_section(t_alt, cleaned[:4]))
 
     cta = "→ 今夜は危険な1人気を配信🔔"
 
@@ -745,7 +746,7 @@ def _strip_horse_number_from_lines(lines: list, race: dict) -> list:
 # 木昼: AI注目TOP3 (注目順位、印なし、客観データ)
 # ─────────────────────────────────────────────────────────
 def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
-    """木昼: AI注目TOP3 (AI勝率/SI/血統 の客観データ付)"""
+    """木昼: 注目TOP3 (AI予測あれば優先、なくても出走馬×統計で生成)"""
     samples = {}
     sections = []
 
@@ -756,48 +757,35 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🎯 {day} {label}\nAI注目TOP3"
+    header = f"🎯 {day} {label}\n注目馬TOP3"
 
-    # Section 1: 注目TOP3 (印なし、ランキング表記)
+    # AI 予測があれば優先、なければ出走馬×統計で抽出
     t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
-    samples["attention"] = n1
     if lines1 and n1 > 0 and any(l.startswith(("1️⃣", "2️⃣", "3️⃣")) for l in lines1):
         cleaned = _strip_horse_number_from_lines(lines1, race)
         sections.append(_make_section(t1, cleaned[:5]))
+        samples["source"] = "attention"
     else:
-        # 予測キャッシュ未生成 → 出走馬の血統マッチで補完
-        sections.append("【AI予測は木曜夕方の出走確定後に生成】")
-        # 該当馬付き種牡馬を表示 (該当なし非表示)
-        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=3, years=6, race_id=race_id)
-        if lines_alt and n_alt > 0:
-            filtered = [l for l in lines_alt if "該当馬なし" not in l]
-            if filtered:
-                import re as _re
-                cleaned = []
-                for l in filtered[:2]:
-                    m = _re.match(r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", l)
-                    if m:
-                        medal, sire, pct, horses = m.groups()
-                        names = horses.strip().split()
-                        horses_disp = names[0] if len(names) == 1 else f"{names[0]}他{len(names)-1}頭"
-                        cleaned.append(f"{medal}{sire}産駒({pct}) → {horses_disp}")
-                    else:
-                        cleaned.append(l)
-                if cleaned:
-                    sections.append(_make_section("【先行: コース実績ある血統の該当馬】", cleaned))
+        t2, lines2, n2 = sec_handpicked_top(
+            conn, race_id, venue, surface, distance, top=3, years=6
+        )
+        if lines2 and n2 > 0:
+            cleaned = _strip_horse_number_from_lines(lines2, race)
+            sections.append(_make_section(t2, cleaned[:4]))
+        samples["source"] = "handpicked"
 
     cta = "→ 今夜AI最終予想+note告知🔔"
 
     hashtags = _hashtags(race)
     tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["attention"], "samples": samples, "char_count": _x_len(tweet)}
+    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
 
 
 # ─────────────────────────────────────────────────────────
 # 木夜: AI最終予想 注目TOP3 + note告知
 # ─────────────────────────────────────────────────────────
 def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
-    """木夜: AI最終予想 (注目馬3頭、印は土曜朝に持ち越し)"""
+    """木夜: 最終予想 注目馬3頭 + note告知"""
     samples = {}
     sections = []
 
@@ -808,46 +796,34 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🌟 {day} {label}\nAI最終予想 注目馬3頭"
+    header = f"🌟 {day} {label}\n最終予想 注目馬3頭"
 
-    # Section 1: 注目TOP3 (印なし、客観データ)
     t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
-    samples["attention"] = n1
     if lines1 and n1 > 0 and any(l.startswith(("1️⃣", "2️⃣", "3️⃣")) for l in lines1):
         cleaned = _strip_horse_number_from_lines(lines1, race)
         sections.append(_make_section(t1, cleaned[:5]))
+        samples["source"] = "attention"
     else:
-        sections.append("【AI予測は木曜夕方の出走確定後に生成】")
-        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=3, years=6, race_id=race_id)
-        if lines_alt and n_alt > 0:
-            filtered = [l for l in lines_alt if "該当馬なし" not in l]
-            if filtered:
-                import re as _re
-                cleaned = []
-                for l in filtered[:2]:
-                    m = _re.match(r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", l)
-                    if m:
-                        medal, sire, pct, horses = m.groups()
-                        names = horses.strip().split()
-                        horses_disp = names[0] if len(names) == 1 else f"{names[0]}他{len(names)-1}頭"
-                        cleaned.append(f"{medal}{sire}産駒({pct}) → {horses_disp}")
-                    else:
-                        cleaned.append(l)
-                if cleaned:
-                    sections.append(_make_section("【先行: コース実績ある血統の該当馬】", cleaned))
+        t2, lines2, n2 = sec_handpicked_top(
+            conn, race_id, venue, surface, distance, top=3, years=6
+        )
+        if lines2 and n2 > 0:
+            cleaned = _strip_horse_number_from_lines(lines2, race)
+            sections.append(_make_section(t2, cleaned[:4]))
+        samples["source"] = "handpicked"
 
-    cta = "→ 土朝に注目馬3頭+買い目を発表🔔\n→ note記事も公開予定📝"
+    cta = "→ 土朝に印 (◎○▲) と買い目を発表🔔\n→ note記事も公開予定📝"
 
     hashtags = _hashtags(race)
     tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["attention"], "samples": samples, "char_count": _x_len(tweet)}
+    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
 
 
 # ─────────────────────────────────────────────────────────
 # 金昼: 注目馬TOP3+根拠 (印なし)
 # ─────────────────────────────────────────────────────────
 def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
-    """金昼: 注目馬3頭 + 客観データ"""
+    """金昼: 注目馬3頭 (AI予測あれば優先、なくても出走予定馬から手抜き無く生成)"""
     samples = {}
     sections = []
 
@@ -858,26 +834,37 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🎯 {day} {label}\nAI注目馬 3頭"
+    header = f"🎯 {day} {label}\n注目馬TOP3"
 
+    # 1) AI予測キャッシュがあれば優先
     t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
-    samples["attention"] = n1
     if lines1 and n1 > 0 and any(l.startswith(("1️⃣", "2️⃣", "3️⃣")) for l in lines1):
         cleaned = _strip_horse_number_from_lines(lines1, race)
         sections.append(_make_section(t1, cleaned[:5]))
+        samples["source"] = "attention"
     else:
-        sections.append("【AI予測キャッシュ未生成】\n金曜は枠順抽選後 (11時) 配信を待つ")
-        t_alt, lines_alt, n_alt = sec_pattern_discovery(
-            conn, venue, surface, distance, years=6, target_top3_pct=55.0
+        # 2) 無ければ出走予定馬 × コース統計でTOP3抽出 (内部メッセージ無し)
+        t2, lines2, n2 = sec_handpicked_top(
+            conn, race_id, venue, surface, distance, top=3, years=6
         )
-        if lines_alt and n_alt > 0:
-            sections.append(_make_section("【先行: 当コース好相性パターン】", lines_alt[:2]))
+        if lines2 and n2 > 0:
+            cleaned = _strip_horse_number_from_lines(lines2, race)
+            sections.append(_make_section(t2, cleaned[:4]))
+        samples["source"] = "handpicked"
 
-    cta = "→ 土朝に注目馬+買い目🔔"
+    # 補助: パターン発掘
+    t3, lines3, n3 = sec_pattern_discovery(
+        conn, venue, surface, distance, years=6, target_top3_pct=55.0,
+        race_id=race_id,
+    )
+    if lines3 and n3 > 0:
+        sections.append(_make_section("【コース好相性パターン】", lines3[:2]))
+
+    cta = "→ 土朝に印 (◎○▲) と買い目🔔"
 
     hashtags = _hashtags(race)
     tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["attention"], "samples": samples, "char_count": _x_len(tweet)}
+    return tweet, {"sections_used": ["attention/handpicked", "pattern"], "samples": samples, "char_count": _x_len(tweet)}
 
 
 # ─────────────────────────────────────────────────────────
@@ -887,25 +874,39 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
     """金夜: 翌朝配信告知 (最有力候補1頭の匂わせ)"""
     samples = {}
     sections = []
+    import re as _re
 
     label = _race_label(race)
     day = _day_phrase(race)
+    venue = race.get("venue", "")
+    surface = race.get("surface", "")
+    distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
     header = f"🔔 {day} {label}\n明朝AI予想 配信予定"
 
-    # Section 1: 最有力 (TOP1 のみ)
+    # 最有力 (TOP1 のみ) — AI 予測あれば優先、なければ handpicked
     t1, lines1, n1 = sec_attention_top(conn, race_id, top=1, include_marks=False)
-    samples["attention"] = n1
+    top_line = None
     if lines1 and n1 > 0:
         cleaned = _strip_horse_number_from_lines(lines1, race)
-        # 1️⃣ で始まる行を探し、ランク絵文字を regex で剥がす
-        import re as _re
         first = next((l for l in cleaned if l.startswith("1️⃣")), None)
         if first:
-            # 1️⃣ (U+0031 U+FE0F U+20E3) + 空白 を確実に除去
-            stripped = _re.sub(r"^[1-4]️?⃣\s*", "", first).strip()
-            sections.append(f"【最有力候補】\n{stripped}")
+            top_line = _re.sub(r"^[1-4]️?⃣\s*", "", first).strip()
+
+    if not top_line:
+        # handpicked にフォールバック
+        t2, lines2, n2 = sec_handpicked_top(
+            conn, race_id, venue, surface, distance, top=1, years=6
+        )
+        if lines2 and n2 > 0:
+            cleaned = _strip_horse_number_from_lines(lines2, race)
+            first = next((l for l in cleaned if l.startswith("1️⃣")), None)
+            if first:
+                top_line = _re.sub(r"^[1-4]️?⃣\s*", "", first).strip()
+
+    if top_line:
+        sections.append(f"【最有力候補】\n{top_line}")
 
     sections.append("【配信予定】\n🌅 朝7時 — 印別最終予想\n🎯 朝10時 — 確定買い目")
 
@@ -913,7 +914,7 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
 
     hashtags = _hashtags(race)
     tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["attention"], "samples": samples, "char_count": _x_len(tweet)}
+    return tweet, {"sections_used": ["top1"], "samples": samples, "char_count": _x_len(tweet)}
 
 
 # ─────────────────────────────────────────────────────────

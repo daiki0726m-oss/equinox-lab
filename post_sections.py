@@ -1263,6 +1263,109 @@ def sec_entry_pedigree_match(
 # ─────────────────────────────────────────────────────────
 # sec_attention_top (木昼/木夜/金昼: 注目馬 + 客観データ) — v2
 # ─────────────────────────────────────────────────────────
+def sec_handpicked_top(
+    conn,
+    race_id: str,
+    venue: str,
+    surface: str,
+    distance: int,
+    top: int = 3,
+    years: int = 6,
+) -> Tuple[str, List[str], int]:
+    """出走予定馬から「コース適性スコア」で TOP3 を抽出。
+
+    AI 予測キャッシュ無しでも動く。各馬を以下で点数化:
+    - 父産駒の当コース複勝率 (過去6年、4走以上)
+    - 鞍上の当コース複勝率 (過去3年、5走以上)
+
+    例:
+        1️⃣ フォルテアンジェロ (父フィエールマン50% / 鞍上ルメール74%)
+        2️⃣ コンジェスタス (父コントレイル50%)
+    """
+    cur = conn.cursor()
+    entries = _get_entries(conn, race_id)
+    if not entries:
+        return ("【AI注目TOP3】", [], 0)
+
+    from_date_sire = f"{datetime.now().year - years}-01-01"
+    from_date_jockey = f"{datetime.now().year - 3}-01-01"
+
+    scored = []
+    for e in entries:
+        sire_raw = (e.get("sire") or "").split("(")[0].strip()
+        jockey = (e.get("jockey_name") or "").strip()
+        name = e.get("horse_name", "")
+        hn = e.get("horse_number") or 0
+        if not name:
+            continue
+
+        # 父産駒のコース複勝率
+        sire_pct = 0.0
+        sire_n = 0
+        if sire_raw:
+            cur.execute(
+                """
+                SELECT COUNT(*) runs, SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) top3
+                FROM races r JOIN results res ON r.race_id=res.race_id
+                JOIN horses h ON res.horse_id=h.horse_id
+                WHERE r.surface=? AND r.distance=? AND r.venue=? AND r.race_date >= ?
+                  AND h.sire = ? AND res.finish_position > 0
+                """,
+                (surface, distance, venue, from_date_sire, sire_raw),
+            )
+            row = cur.fetchone()
+            if row and row[0] and row[0] >= 4:
+                sire_n = row[0]
+                sire_pct = 100 * row[1] / row[0]
+
+        # 鞍上のコース複勝率 (騎手名の完全一致 + 短縮 fallback)
+        jockey_pct = 0.0
+        jockey_n = 0
+        if jockey:
+            cur.execute(
+                """
+                SELECT COUNT(*) runs, SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) top3
+                FROM races r JOIN results res ON r.race_id=res.race_id
+                JOIN jockeys j ON res.jockey_id=j.jockey_id
+                WHERE r.surface=? AND r.distance=? AND r.venue=? AND r.race_date >= ?
+                  AND j.jockey_name LIKE ? AND res.finish_position > 0
+                """,
+                (surface, distance, venue, from_date_jockey, f"%{jockey[:3]}%"),
+            )
+            row = cur.fetchone()
+            if row and row[0] and row[0] >= 5:
+                jockey_n = row[0]
+                jockey_pct = 100 * row[1] / row[0]
+
+        # スコア = 父産駒複勝率 * 1.0 + 鞍上複勝率 * 0.5
+        score = sire_pct * 1.0 + jockey_pct * 0.5
+        if score > 0:
+            scored.append({
+                "name": name, "hn": hn, "score": score,
+                "sire": sire_raw, "sire_pct": sire_pct, "sire_n": sire_n,
+                "jockey": jockey, "jockey_pct": jockey_pct, "jockey_n": jockey_n,
+            })
+
+    scored.sort(key=lambda x: -x["score"])
+    title = "【コース適性TOP3】 (父産駒+鞍上のコース複勝率)"
+    if not scored:
+        return (title, ["該当馬データ不足"], 0)
+
+    medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+    lines = []
+    for i, h in enumerate(scored[:top]):
+        facts = []
+        if h["sire_pct"] >= 30:
+            sire_short = h["sire"][:8]
+            facts.append(f"父{sire_short}{h['sire_pct']:.0f}%")
+        if h["jockey_pct"] >= 30:
+            facts.append(f"鞍上{h['jockey']}{h['jockey_pct']:.0f}%")
+        facts_str = " / ".join(facts) if facts else f"スコア{h['score']:.0f}"
+        # 馬番表示は呼出側で処理 (_strip_horse_number_from_lines)
+        lines.append(f"{medals[i]} {h['hn']}番 {h['name']} ({facts_str})")
+    return (title, lines, len(scored))
+
+
 def sec_attention_top(
     conn,
     race_id: str,
