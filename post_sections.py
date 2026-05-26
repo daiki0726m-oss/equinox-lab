@@ -613,10 +613,9 @@ def sec_dangerous_favorites(
     if not flop_horses:
         return (title, lines, n)
 
-    # 各飛び馬の特徴を抽出 (前走着順, 種牡馬, 馬齢)
+    # 飛び馬の特徴 (前走着順, 種牡馬) を抽出
     flop_features = []
     for race_date, name, hid, pos, sire in flop_horses:
-        # 前走着順
         cur.execute(
             "SELECT res2.finish_position FROM results res2 JOIN races r2 ON res2.race_id=r2.race_id "
             "WHERE res2.horse_id=? AND r2.race_date<? AND res2.finish_position>0 "
@@ -624,105 +623,83 @@ def sec_dangerous_favorites(
             (hid, race_date),
         )
         prev_row = cur.fetchone()
-        prev_pos = prev_row[0] if prev_row else None
-        # 馬齢
-        cur.execute("SELECT birth_year FROM horses WHERE horse_id=?", (hid,))
-        b = cur.fetchone()
-        age = None
-        if b and b[0]:
-            try:
-                age = int(race_date[:4]) - b[0] + 1
-            except Exception:
-                pass
         flop_features.append({
             "date": race_date, "name": name, "hid": hid, "pos": pos,
-            "sire": sire, "prev_pos": prev_pos, "age": age,
+            "sire": sire, "prev_pos": prev_row[0] if prev_row else None,
         })
 
-    # 「飛ばなかった1人気」の同じ特徴を集計 (比較用ベースライン)
+    # 全 1人気の母集団ベースラインを取得
     cur.execute(
         f"""
-        SELECT res.horse_id, r.race_date, h2.sire, h2.birth_year
+        SELECT res.horse_id, r.race_date, res.finish_position, h2.sire
         FROM races r
         JOIN results res ON r.race_id = res.race_id AND res.popularity = 1
         JOIN horses h2 ON res.horse_id = h2.horse_id
-        WHERE {base_where} AND res.finish_position BETWEEN 1 AND 4
+        WHERE {base_where}
         """,
         params,
     )
-    success_pop1 = cur.fetchall()
-    success_prev = []
-    success_ages = []
-    for hid, race_date, sire, birth_year in success_pop1:
+    all_records = []
+    for hid, race_date, pos, sire in cur.fetchall():
         cur.execute(
             "SELECT res2.finish_position FROM results res2 JOIN races r2 ON res2.race_id=r2.race_id "
             "WHERE res2.horse_id=? AND r2.race_date<? AND res2.finish_position>0 "
             "ORDER BY r2.race_date DESC LIMIT 1",
             (hid, race_date),
         )
-        p = cur.fetchone()
-        if p:
-            success_prev.append(p[0])
-        if birth_year:
-            try:
-                success_ages.append(int(race_date[:4]) - birth_year + 1)
-            except Exception:
-                pass
+        prev_row = cur.fetchone()
+        all_records.append({
+            "pos": pos, "sire": sire,
+            "prev_pos": prev_row[0] if prev_row else None,
+            "flopped": pos >= 5,
+        })
 
-    # 共通点を抽出 (多軸)
+    # 母集団との比較で「特異な飛び率」のバケットを発見 (因果ではなく相関)
+    # 重要: N=2件の共通点は意味なし。母集団との比率差で判断する。
     insights = []
+    overall_flop_rate = flop_pct / 100  # 全体飛び率
 
-    # ① 前走着順の傾向
-    flop_prev = [f["prev_pos"] for f in flop_features if f["prev_pos"] is not None]
-    if len(flop_prev) >= 2:
-        # 1-a: 全員同じ前走着順 (偏り顕著)
-        unique_prev = set(flop_prev)
-        if len(unique_prev) == 1:
-            only_pos = list(unique_prev)[0]
-            if only_pos <= 2:
-                insights.append(f"※意外 — 飛び馬は全員前走{only_pos}着 (好走後の失速)")
-            elif only_pos >= 6:
-                insights.append(f"※飛び馬は全員前走{only_pos}着以下 (実績不安)")
-        # 1-b: 走った馬との平均差で判定
-        elif success_prev:
-            avg_flop = sum(flop_prev) / len(flop_prev)
-            avg_success = sum(success_prev) / len(success_prev)
-            diff = avg_flop - avg_success
-            if diff >= 1.5:
+    def _bucket_prev(p):
+        if p is None: return None
+        if p == 1: return "前走1着"
+        if p <= 3: return "前走2-3着"
+        if p <= 9: return "前走4-9着"
+        return "前走10着+"
+
+    from collections import defaultdict
+    bucket_stats = defaultdict(lambda: {"total": 0, "flop": 0})
+    for r in all_records:
+        b = _bucket_prev(r["prev_pos"])
+        if b:
+            bucket_stats[b]["total"] += 1
+            if r["flopped"]:
+                bucket_stats[b]["flop"] += 1
+
+    # 飛び率が全体+15pt以上 のバケットを「特異点」として提示 (サンプル 3件以上)
+    for bucket, stat in bucket_stats.items():
+        if stat["total"] >= 3:
+            bucket_rate = stat["flop"] / stat["total"]
+            diff_pt = (bucket_rate - overall_flop_rate) * 100
+            if diff_pt >= 15:
                 insights.append(
-                    f"※前走平均が悪い: 飛び馬{avg_flop:.1f}着 vs 走った馬{avg_success:.1f}着"
-                )
-            elif diff <= -1.5:
-                insights.append(
-                    f"※意外 — 飛び馬は前走好走({avg_flop:.1f}着)も飛んだ"
+                    f"※【{bucket}】の1人気は飛び率{int(bucket_rate*100)}% "
+                    f"(全体{int(overall_flop_rate*100)}%より+{int(diff_pt)}pt)"
                 )
 
-    # ② 種牡馬の偏り: 飛び馬の sire が特定系統に集中していないか
-    if len(flop_features) >= 2:
-        flop_sires = [f["sire"] for f in flop_features if f["sire"]]
-        from collections import Counter
-        sire_counts = Counter(flop_sires)
-        most = sire_counts.most_common(1)
-        if most and most[0][1] >= 2:
-            sire, cnt = most[0]
-            sire_short = sire.split("(")[0][:8]
-            insights.append(f"※父{sire_short}産駒が{cnt}/{len(flop_features)}件で集中")
+    # 特異点が見つからない場合は誠実に「ランダム波乱」と明示
+    if not insights and flop > 0 and n >= 5:
+        insights.append("※飛び馬の特徴に偏りなし — 単発の波乱、共通点見出せず")
 
-    # ③ 共通点 (insight) を先に出す — 学び価値が高いので trim 優先で残す
+    # 共通点 (insight) を先に出す
     for ins in insights:
         lines.append(ins)
 
-    # ④ アクション指針 (共通点があれば具体的に、無ければ汎用)
-    if insights:
-        if any("前走平均" in ins or "前走" in ins for ins in insights):
-            lines.append("→ 今年の1人気の前走着順を要チェック")
-        elif any("父" in ins for ins in insights):
-            lines.append("→ 1人気が該当系統なら割り引き")
-    elif len(flop_features) >= 2:
-        # 共通点見つからない = 再現性低いランダム波乱
-        lines.append("※2件とも別要因 — 単発の波乱、再現性低い")
+    # アクション指針
+    if any("飛び率" in ins for ins in insights):
+        # どのバケットが危険か insight で示されている → 該当バケットを警戒
+        lines.append("→ 該当する1人気は割り引き判断を")
 
-    # ⑤ 直近の事例 (最大2件) は末尾に — budget 超過時に最初に trim される
+    # 直近の事例 (末尾、budget 超過時に最初に trim)
     for f in flop_features[:2]:
         year = f["date"][:4]
         prev_info = f"※前走{f['prev_pos']}着" if f["prev_pos"] else ""
