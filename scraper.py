@@ -877,6 +877,7 @@ class NetkeibaScraper:
             return race_data
 
         rows = table.find_all("tr")[1:]
+        entry_idx = 0  # 月曜時点の仮馬番 (1-based)
         for row in rows:
             cols = row.find_all("td")
             if len(cols) < 8:
@@ -884,13 +885,27 @@ class NetkeibaScraper:
 
             entry = {"race_id": race_id}
             try:
-                entry["post_position"] = int(cols[0].get_text(strip=True) or 0)
-                entry["horse_number"] = int(cols[1].get_text(strip=True) or 0)
-                if entry["horse_number"] == 0:
-                    continue  # 馬番0は不正データ
+                # 枠順 (post_position): 抽選前は "--" / "-" → 0 として扱う
+                post_text = cols[0].get_text(strip=True)
+                entry["post_position"] = int(post_text) if post_text.isdigit() else 0
 
+                # 馬番 (horse_number): 抽選前 (空 or "--") → 仮の連番を振る
+                # UNIQUE(race_id, horse_number) 制約のため重複0を許容できない。
+                # 枠順抽選後に scraper が走り直して正式な馬番に置換される設計。
+                num_text = cols[1].get_text(strip=True)
+                if num_text.isdigit():
+                    entry["horse_number"] = int(num_text)
+                else:
+                    entry_idx += 1
+                    entry["horse_number"] = entry_idx  # 仮: 登録順の連番 (1, 2, 3, ...)
+                    entry["_provisional_number"] = True  # マーク (DBには入れない)
+
+                # 馬名 td (cols[3] = 馬名)
                 horse_tag = cols[3].find("a") if len(cols) > 3 else None
                 entry["horse_name"] = cols[3].get_text(strip=True) if len(cols) > 3 else ""
+                # 馬名空なら entry 不正 → skip
+                if not entry["horse_name"]:
+                    continue
                 entry["horse_id"] = ""
                 if horse_tag and horse_tag.get("href"):
                     h_match = re.search(r"/horse/(\w+)", horse_tag["href"])

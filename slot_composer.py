@@ -365,18 +365,17 @@ def build_tue_evening_post(race: dict, conn) -> Tuple[str, dict]:
 
     header = f"📊 {day} {label}\n勝ち馬の傾向"
 
-    # Section 1: 前走パターン
+    # Section 1: 前走パターン (新フォーマット = 🎯 + 該当出走馬 を含む)
     t1, lines1, n1 = sec_prev_race_pattern(conn, race_name, years=6, race_id=race_id)
     samples["prev_race"] = n1
     if lines1 and n1 > 0:
-        # 集計部分のみ抜粋 (個別 detail は冗長なので2件まで)
-        agg_lines = [l for l in lines1 if l.startswith("🏆")]
-        detail_lines = [l for l in lines1 if not l.startswith("🏆") and not l.startswith("---")]
-        block = agg_lines[:4]
-        if detail_lines:
-            block.append("---")
-            block.extend(detail_lines[:2])
-        sections.append(_make_section("【勝ち馬の前走】", block))
+        # 出走馬詳細 detail (「20XX 馬名 ← レース」形式) は冗長なのでカット
+        # ただし「→ 該当出走馬」は超重要なので保持
+        keep_lines = [
+            l for l in lines1
+            if not (l[:4].isdigit() and "←" in l)
+        ]
+        sections.append(_make_section("【勝ち馬の前走】", keep_lines[:6]))
 
     # Section 2: ローテーション
     t2, lines2, n2 = sec_rotation_pattern(conn, race_name, years=6)
