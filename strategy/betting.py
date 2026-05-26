@@ -115,8 +115,8 @@ class BettingStrategy:
 
         return True, "OK"
 
-    def _honor_bets(self, sorted_preds, enabled, budget, predictions=None):
-        """印通り保証買い目を生成 — v2 (2026-05-24 改修)
+    def _honor_bets(self, sorted_preds, enabled, budget, predictions=None, line_amount=None):
+        """印通り保証買い目を生成 — v3 (2026-05-27 confidence-aware)
 
         3-5月 7000R バックテストで判明した「最強の買い方」を主力化:
           - ◎軸三連複 5頭流し (10点) ROI 174%
@@ -132,13 +132,15 @@ class BettingStrategy:
           predictions から mark=○▲△×注 の馬を取得して使用。
           predictions が無い場合は sorted_preds[1:6] で代替。
 
-        各 100円固定。budget 1000円なら 10点まで投入。
+        v3 (2026-05-27): confidence-aware weighting
+          line_amount を指定可能 (S=150円 / A=120円 / B=100円 等)。
+          指定が無ければ MIN_BET (100円) を使用。
         """
         bets = []
         if len(sorted_preds) < 1:
             return bets, 0
 
-        amt = self.MIN_BET
+        amt = line_amount or self.MIN_BET
         spent = 0
         signatures = set()
 
@@ -222,9 +224,30 @@ class BettingStrategy:
 
         return bets, spent
 
-    def generate_bets(self, predictions, bankroll=None, bet_types=None):
-        """予測結果から推奨馬券を生成（回収率重視版 + honor bets）"""
-        budget = bankroll or self.MAX_BET_PER_RACE
+    # v3 (2026-05-27): confidence 別 bet 額ウェイト
+    # S/A はマイナス層 (#26 単日支配バイアス問題) でも相対的にマシ。
+    # 「線数」(=信頼に応じた合計投資額) と「線単価」(=確信度に応じた1点額) の両方をスケール:
+    #   - budget スケール: 高信頼ほど合計投資額を増やして of  カバー率拡大
+    #   - line_amount スケール: 高信頼ほど 1点 200円 にして payout を大きく
+    # C/D は should_bet=False で既に遮断済。
+    CONFIDENCE_MULTIPLIER = {
+        'S': 2.0,  # 高信頼 → budget 2000円 / 1点 200円
+        'A': 1.5,  # 上位   → budget 1500円 / 1点 100円 (端数切り捨て)
+        'B': 1.0,  # 標準   → budget 1000円 / 1点 100円
+        'C': 0.0,  # 念のため (実運用では should_bet=False で遮断)
+        'D': 0.0,
+    }
+
+    def generate_bets(self, predictions, bankroll=None, bet_types=None, confidence=None):
+        """予測結果から推奨馬券を生成（回収率重視版 + honor bets + confidence-aware）"""
+        # confidence ウェイトで budget と line_amount をスケール
+        mult = self.CONFIDENCE_MULTIPLIER.get(confidence, 1.0) if confidence else 1.0
+        if mult == 0.0:
+            # C/D 等 (理論上 should_bet=False で遮断されてるはず)
+            return {"bets": [], "total_amount": 0, "race_info": {}, "skipped": True}
+        budget = int((bankroll or self.MAX_BET_PER_RACE) * mult)
+        # line_amount: mult を 100円単位に丸める (S=200, A/B=100)
+        line_amount = max(self.MIN_BET, int(self.MIN_BET * mult / 100) * 100)
         enabled = set(bet_types) if bet_types else set(self.ALL_BET_TYPES)
 
         # 勝率順でソート
@@ -236,7 +259,10 @@ class BettingStrategy:
         #   - 馬連 ◎-相手5頭 流し (5点) ROI 207%
         #   - ワイド ◎-相手5頭 流し (5点) ROI 150%
         # 旧 honor (◎単勝・◎複勝) は ROI 90%前後で実質マイナスのため廃止。
-        honor_list, honor_spent = self._honor_bets(sorted_preds, enabled, budget, predictions=predictions)
+        # v3 (2026-05-27): line_amount を confidence で重み付け
+        honor_list, honor_spent = self._honor_bets(sorted_preds, enabled, budget,
+                                                    predictions=predictions,
+                                                    line_amount=line_amount)
         bets = list(honor_list)
         total_amount = honor_spent
         # honor で既に bet した signature を以後の EV bets で重複させない

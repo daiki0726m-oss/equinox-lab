@@ -738,7 +738,8 @@ def cmd_predict(args):
         should_bet, reason = strategy.should_bet_race(predictions, confidence=confidence)
 
         # 買い目生成 (常に実行 — EV・妙味計算のため。should_bet=0 でも UI は買い目表示)
-        bets_result = strategy.generate_bets(predictions)
+        # v3 (2026-05-27): confidence-aware bet weighting (S=1.5x, A=1.2x, B=1.0x)
+        bets_result = strategy.generate_bets(predictions, confidence=confidence)
         bets_by_type = {}
         for b in bets_result.get('bets', []):
             bt = b.get('type', '単勝')
