@@ -156,6 +156,10 @@ JRA の出走スケジュール:
 - **#23 (2026-05-25)**: X API `403 Forbidden` 発生 (5/25 朝 cmd_morning)。`get_users_tweets` (read) と `create_tweet` (write) が両方 403 = 一過性ではなく認証層/app tier の問題と推測。post_x.py の error logging が貧弱で原因切り分け不能だった → **詳細ロギング強化**: `e.response.text` / `e.api_errors` / `e.api_codes` を抽出して原因 (token 失効 / tier 制限 / 重複 / アカウント制限) のヒントを出力。Threads は同時刻に成功 = X 側固有の問題。**確認手順: https://developer.x.com/en/portal/dashboard で tier と直近 errors を確認**。
 - **#24 (2026-05-26)**: 目黒記念2026 記事で「1番人気が3勝/4」と本文と矛盾した数字を書いた (実際は1人気は2勝、過去4年は1人気2勝+2人気1勝+4人気1勝)。**毎回同じパターンのミス (馬番抽選前表示、「印」確定前使用、内部メッセージ垂れ流し、数値矛盾) を指摘されて直す悪循環** → 「学習する機能はないのか」とユーザー指摘。**システム化** で対処: `scripts/verify_article.py` に `check_numeric_claim_consistency()` 新設。「N番人気がX勝」クレームを本文中の年度別人気列挙と自動カウント照合、不一致なら🚫ブロック。同様パターン (馬番抽選前、印確定前) も将来 verify_article.py に追加すべき。**教訓: 人間の検算 → 機械的検算へ。「気をつける」では再発するので、コードレベルで違反を不可能にする**。
 
+### 💰 戦略 / ROI 最大化
+
+- **#25 (2026-05-26) — W1 ROI最大化施策**: 7層 MECE 監査の結果、現状コードは confidence=C/D でも `should_bet=1` で投資されており、5/9-5/25 backtest で C 三連複◎軸 ROI 46%、D 31% (損失層) と確認。Δ ROI = +22.3pt 改善余地。**対策**: (1) `strategy/betting.py:should_bet_race` に `confidence` パラメータを追加して C/D は明示的に return False、(2) ◎オッズ妙味バンド検査 (2.0倍未満は配当妙味なし / 15倍超は◎信頼度低い大穴) を追加、(3) `predict.py:cmd_predict` で confidence 計算後に should_bet を再評価 (旧 path では confidence 不明状態で先に should_bet 判定していたため C/D も bet=1 のままだった)。バックテスト: 全体 ROI 69.1% → S+A のみ ROI 91.4% (Δ+22.3pt)。**教訓: confidence は予測の補助指標でなく投資判断の主軸。「分かるレースだけ買う」がROIの本質。出走馬血統データの完全 backfill (5/31 ダービー20頭 + 目黒16頭) も同時実施**。
+
 ## 🛡 投稿前の Pre-flight Check (2026-05-24 導入)
 
 各 X 投稿コマンド / 予測 cron / 結果反映 cron の前に以下を実行:
