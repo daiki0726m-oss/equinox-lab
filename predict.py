@@ -673,31 +673,9 @@ def cmd_predict(args):
                 VALUES (?, ?, '{}', 'C', 0, datetime('now'))
             """, (race_id, cache_json))
 
-        # 馬券推奨
-        should_bet, reason = strategy.should_bet_race(predictions)
-        confidence = 'C'
-
-        # 常にgenerate_betsを実行（EV・妙味計算のため）
-        bets_result = strategy.generate_bets(predictions)
-        # 券種別にグループ化
-        bets_by_type = {}
-        for b in bets_result.get('bets', []):
-            bt = b.get('type', '単勝')
-            if bt not in bets_by_type:
-                bets_by_type[bt] = []
-            bets_by_type[bt].append(b)
-
-        # v11 (2026-05-24): 見送りレースでも買い目を出す
-        # 旧版は見送り → all_bets={} で UI に推奨0点だったが、ユーザー要望:
-        # 「印と買い目は常に出して、推奨/見送りラベルで判別」
-        # UI 側で should_bet フラグから「✅ 推奨 / ⏭️ 見送り」バッジ表示。
-        all_bets_json = json.dumps(bets_by_type, ensure_ascii=False)
-        if should_bet:
-            print(strategy.format_recommendation(bets_result, race_info))
-        else:
-            print(f"\n⏭️ 見送り推奨だが買い目は提示: {reason}")
-
         # 信頼度: confidence.py(v2 6軸合成、単一のSource of Truth)に委譲
+        # v13 (2026-05-26): confidence を bet 判定の前に確定 (旧 path は confidence 知らずに
+        # should_bet 判定 → C/D も bet=1 のまま、というバグの根本修正)
         from confidence import evaluate as eval_confidence
         n_horses = len(sorted_preds) if sorted_preds else 1
         top1 = sorted_preds[0] if sorted_preds else {}
@@ -754,9 +732,26 @@ def cmd_predict(args):
             confidence = grades[min(len(grades) - 1, grades.index(confidence) + 1)]
             conf_reason = f"{conf_reason} / 不信騎手{top_jt:+d}"
 
-        # 🆕 v12 (2026-05-26): confidence 確定後に should_bet を再評価
-        # C/D は backtest ROI 75-80% の損失層なので明示的に should_bet=0 にする
+        # 🆕 v13 (2026-05-26): confidence-aware should_bet 判定 (旧 v12 の二重評価を一本化)
+        # confidence が確定した時点で 1 回だけ should_bet 判定する。
+        # C/D は backtest ROI 75-80% の損失層なので明示的に should_bet=0。
         should_bet, reason = strategy.should_bet_race(predictions, confidence=confidence)
+
+        # 買い目生成 (常に実行 — EV・妙味計算のため。should_bet=0 でも UI は買い目表示)
+        bets_result = strategy.generate_bets(predictions)
+        bets_by_type = {}
+        for b in bets_result.get('bets', []):
+            bt = b.get('type', '単勝')
+            if bt not in bets_by_type:
+                bets_by_type[bt] = []
+            bets_by_type[bt].append(b)
+
+        # v11 (2026-05-24): 見送りレースでも買い目を出す (UI 側で推奨/見送りバッジ判別)
+        all_bets_json = json.dumps(bets_by_type, ensure_ascii=False)
+        if should_bet:
+            print(strategy.format_recommendation(bets_result, race_info))
+        else:
+            print(f"\n⏭️ 見送り推奨だが買い目は提示: {reason}")
 
         # キャッシュ更新（買い目・confidence・conf_reason・should_bet・bet_reason）
         with get_db() as conn:
