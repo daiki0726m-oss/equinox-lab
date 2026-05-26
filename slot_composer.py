@@ -158,8 +158,8 @@ def _hashtags(race: dict) -> str:
     return " ".join(tags)
 
 
-# X 文字数予算 (上限 X 280、内部目標 270 程度)
-CHAR_BUDGET = 275
+# X 文字数予算 (X 上限 280 ぴったりまで使い切り)
+CHAR_BUDGET = 280
 
 
 def _fit_to_budget(header: str, sections: list, cta: str, hashtags: str,
@@ -167,21 +167,29 @@ def _fit_to_budget(header: str, sections: list, cta: str, hashtags: str,
     """セクションを優先度順に削って予算内に収める。
 
     削除優先順位 (高→低):
-    1. ※ で始まる「出典/補足」行 — 最初に削る (情報として補助)
+    1. **凡例的な出典行のみ** 削除 (「※AI勝率=LightGBM予測」「※netkeiba 追い切り評価より」等)
+       → 実質的な洞察 (「※飛んだ馬の前走平均」「※過去6年のA評価馬の複勝率」) は残す
     2. セクション末尾の通常行 — 馬データ等
     3. セクション全体 — 最終手段
 
     header / hashtags / cta は必須 (削らない)。
     """
+    # 「凡例的な出典行」だけを特定 (=と「より」を含む解説文)
+    legend_keywords = ("※AI勝率=", "※SI=", "※netkeiba 追い切り評価より",
+                       "※父産駒の当コース複勝率")
+
     def _assemble():
         body = "\n\n".join(s for s in sections if s)
         return f"{header}\n\n{body}\n\n{cta}\n{hashtags}"
 
-    # Phase 1: ※ で始まる行を削って試す
+    # Phase 1: 凡例的な出典行のみ削除 (洞察 ※ は残す)
     if _x_len(_assemble()) > budget:
         new_sections = []
         for s in sections:
-            kept = [l for l in s.split("\n") if not l.startswith("※")]
+            kept = [
+                l for l in s.split("\n")
+                if not any(l.startswith(k) for k in legend_keywords)
+            ]
             new_sections.append("\n".join(kept))
         sections = new_sections
 
@@ -315,22 +323,23 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
 
     header = f"🌙 {day} {label}"
 
-    # Section 1: 末脚 (2行: 複勝率 + 結論)
+    # Section 1: 末脚 (1行に圧縮: 複勝率のみ)
     t1, lines1, n1 = sec_pace_decisive(conn, venue, surface, distance, years=6)
     samples["pace"] = n1
     if lines1 and n1 >= 10:
-        relevant = [l for l in lines1 if "複勝率" in l or "→" in l]
-        sections.append(_make_section("【末脚分析】", relevant[:2]))
+        # 「💨上り最速馬 複勝率 80%」だけ抽出
+        complot_line = next((l for l in lines1 if "複勝率" in l), None)
+        if complot_line:
+            sections.append(f"【末脚】 {complot_line}")
 
-    # Section 2: 1人気の信頼性 (3行 + 直近1事例)
+    # Section 2: 1人気の信頼性 (飛び率 + 事例×2 + 共通点 + 指針) — メイン
     t2, lines2, n2 = sec_dangerous_favorites(
         conn, venue, surface, distance, grade=grade, years=6
     )
     samples["danger"] = n2
     if lines2 and n2 >= 3:
-        # 飛び率 + 結論 + 直近1事例
-        block = lines2[:3]
-        sections.append(_make_section("【1人気の信頼性】", block))
+        # 6-7行まで取る
+        sections.append(_make_section("【1人気の信頼性】", lines2[:7]))
 
     cta = "→ 火朝に血統深掘り🔔"
 
@@ -440,13 +449,13 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
 
     header = f"⚠️ {day} {label}\n危険な人気馬の予兆"
 
-    # Section 1: 1人気の信頼性
+    # Section 1: 1人気の信頼性 (飛び率 + 事例 + 共通点 + 指針)
     t1, lines1, n1 = sec_dangerous_favorites(
         conn, venue, surface, distance, grade=grade, years=6
     )
     samples["danger"] = n1
     if lines1 and n1 >= 3:
-        sections.append(_make_section("【1人気の信頼性】", lines1[:4]))
+        sections.append(_make_section("【1人気の信頼性】", lines1[:6]))
 
     # Section 2: 異常年
     t2, lines2, n2 = sec_outlier_year(conn, race_name, years=6)

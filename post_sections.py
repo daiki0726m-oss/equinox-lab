@@ -269,13 +269,31 @@ def sec_prev_race_pattern(
         return (title, ["前走データ取得失敗"], 0)
 
     lines = []
-    # 前走別集計 (頻度順)
-    for prev_name, cnt in sorted(prev_counts.items(), key=lambda x: -x[1]):
-        lines.append(f"🏆{prev_name}: {cnt}勝/{n}")
-    # 個別 detail (上から3件のみ)
+    # 前走別集計 (頻度順) — 「N勝/M」だけでなく「含意」を併記
+    sorted_prev = sorted(prev_counts.items(), key=lambda x: -x[1])
+    top_prev_name, top_prev_cnt = sorted_prev[0]
+    coverage_pct = 100 * top_prev_cnt / n
+
+    if coverage_pct == 100:
+        lines.append(f"🎯 過去{n}年全勝ち馬が【{top_prev_name}】経由")
+        lines.append(f"  → 他ローテで勝った馬: 0頭")
+    elif coverage_pct >= 75:
+        lines.append(f"🎯 {top_prev_name}経由 が {top_prev_cnt}/{n}勝 ({coverage_pct:.0f}%)")
+        other = n - top_prev_cnt
+        lines.append(f"  → 他ローテ計 {other}頭のみ ({100-coverage_pct:.0f}%)")
+    else:
+        # 上位2-3 ローテを並列表示
+        for prev_name, cnt in sorted_prev[:3]:
+            lines.append(f"🏆{prev_name}: {cnt}勝/{n}")
+
+    # 個別 detail (上から2件のみ)
     if details:
-        lines.append("---")
-        lines.extend(details[:3])
+        lines.extend([f"  ({d})" for d in details[:2]])
+
+    # 行動指針
+    if coverage_pct >= 75:
+        lines.append(f"→ 今年も {top_prev_name}経由馬を軸候補に")
+
     return (title, lines, n)
 
 
@@ -578,23 +596,138 @@ def sec_dangerous_favorites(
     else:
         lines.append("→ 1人気は信頼度高")
 
-    # 直近の事例 (5着以下になった1人気の馬)
+    # 飛んだ1人気馬の前走着順 + 種牡馬 を抽出して「共通点」を分析
     cur.execute(
         f"""
-        SELECT r.race_date, h.horse_name, res.finish_position
+        SELECT r.race_date, h.horse_name, h.horse_id, res.finish_position, h.sire
         FROM races r
         JOIN results res ON r.race_id = res.race_id AND res.popularity = 1
         JOIN horses h ON res.horse_id = h.horse_id
         WHERE {base_where} AND res.finish_position >= 5
         ORDER BY r.race_date DESC
-        LIMIT 2
         """,
         params,
     )
-    examples = cur.fetchall()
-    for race_date, name, pos in examples:
-        year = race_date[:4]
-        lines.append(f"🚨{year} {name}(1人気→{pos}着)")
+    flop_horses = cur.fetchall()
+
+    if not flop_horses:
+        return (title, lines, n)
+
+    # 各飛び馬の特徴を抽出 (前走着順, 種牡馬, 馬齢)
+    flop_features = []
+    for race_date, name, hid, pos, sire in flop_horses:
+        # 前走着順
+        cur.execute(
+            "SELECT res2.finish_position FROM results res2 JOIN races r2 ON res2.race_id=r2.race_id "
+            "WHERE res2.horse_id=? AND r2.race_date<? AND res2.finish_position>0 "
+            "ORDER BY r2.race_date DESC LIMIT 1",
+            (hid, race_date),
+        )
+        prev_row = cur.fetchone()
+        prev_pos = prev_row[0] if prev_row else None
+        # 馬齢
+        cur.execute("SELECT birth_year FROM horses WHERE horse_id=?", (hid,))
+        b = cur.fetchone()
+        age = None
+        if b and b[0]:
+            try:
+                age = int(race_date[:4]) - b[0] + 1
+            except Exception:
+                pass
+        flop_features.append({
+            "date": race_date, "name": name, "hid": hid, "pos": pos,
+            "sire": sire, "prev_pos": prev_pos, "age": age,
+        })
+
+    # 「飛ばなかった1人気」の同じ特徴を集計 (比較用ベースライン)
+    cur.execute(
+        f"""
+        SELECT res.horse_id, r.race_date, h2.sire, h2.birth_year
+        FROM races r
+        JOIN results res ON r.race_id = res.race_id AND res.popularity = 1
+        JOIN horses h2 ON res.horse_id = h2.horse_id
+        WHERE {base_where} AND res.finish_position BETWEEN 1 AND 4
+        """,
+        params,
+    )
+    success_pop1 = cur.fetchall()
+    success_prev = []
+    success_ages = []
+    for hid, race_date, sire, birth_year in success_pop1:
+        cur.execute(
+            "SELECT res2.finish_position FROM results res2 JOIN races r2 ON res2.race_id=r2.race_id "
+            "WHERE res2.horse_id=? AND r2.race_date<? AND res2.finish_position>0 "
+            "ORDER BY r2.race_date DESC LIMIT 1",
+            (hid, race_date),
+        )
+        p = cur.fetchone()
+        if p:
+            success_prev.append(p[0])
+        if birth_year:
+            try:
+                success_ages.append(int(race_date[:4]) - birth_year + 1)
+            except Exception:
+                pass
+
+    # 共通点を抽出 (多軸)
+    insights = []
+
+    # ① 前走着順の傾向
+    flop_prev = [f["prev_pos"] for f in flop_features if f["prev_pos"] is not None]
+    if len(flop_prev) >= 2:
+        # 1-a: 全員同じ前走着順 (偏り顕著)
+        unique_prev = set(flop_prev)
+        if len(unique_prev) == 1:
+            only_pos = list(unique_prev)[0]
+            if only_pos <= 2:
+                insights.append(f"※意外 — 飛び馬は全員前走{only_pos}着 (好走後の失速)")
+            elif only_pos >= 6:
+                insights.append(f"※飛び馬は全員前走{only_pos}着以下 (実績不安)")
+        # 1-b: 走った馬との平均差で判定
+        elif success_prev:
+            avg_flop = sum(flop_prev) / len(flop_prev)
+            avg_success = sum(success_prev) / len(success_prev)
+            diff = avg_flop - avg_success
+            if diff >= 1.5:
+                insights.append(
+                    f"※前走平均が悪い: 飛び馬{avg_flop:.1f}着 vs 走った馬{avg_success:.1f}着"
+                )
+            elif diff <= -1.5:
+                insights.append(
+                    f"※意外 — 飛び馬は前走好走({avg_flop:.1f}着)も飛んだ"
+                )
+
+    # ② 種牡馬の偏り: 飛び馬の sire が特定系統に集中していないか
+    if len(flop_features) >= 2:
+        flop_sires = [f["sire"] for f in flop_features if f["sire"]]
+        from collections import Counter
+        sire_counts = Counter(flop_sires)
+        most = sire_counts.most_common(1)
+        if most and most[0][1] >= 2:
+            sire, cnt = most[0]
+            sire_short = sire.split("(")[0][:8]
+            insights.append(f"※父{sire_short}産駒が{cnt}/{len(flop_features)}件で集中")
+
+    # ③ 共通点 (insight) を先に出す — 学び価値が高いので trim 優先で残す
+    for ins in insights:
+        lines.append(ins)
+
+    # ④ アクション指針 (共通点があれば具体的に、無ければ汎用)
+    if insights:
+        if any("前走平均" in ins or "前走" in ins for ins in insights):
+            lines.append("→ 今年の1人気の前走着順を要チェック")
+        elif any("父" in ins for ins in insights):
+            lines.append("→ 1人気が該当系統なら割り引き")
+    elif len(flop_features) >= 2:
+        # 共通点見つからない = 再現性低いランダム波乱
+        lines.append("※2件とも別要因 — 単発の波乱、再現性低い")
+
+    # ⑤ 直近の事例 (最大2件) は末尾に — budget 超過時に最初に trim される
+    for f in flop_features[:2]:
+        year = f["date"][:4]
+        prev_info = f"※前走{f['prev_pos']}着" if f["prev_pos"] else ""
+        lines.append(f"🚨{year} {f['name']}({f['pos']}着) {prev_info}".rstrip())
+
     return (title, lines, n)
 
 
@@ -742,17 +875,32 @@ def sec_rotation_pattern(
     if not intervals:
         return (title, ["前走日付取得失敗"], 0)
 
-    # 中N週別に集計
+    # 中N週別に集計 — 「N勝/M」だけでなく「含意」を併記
     counts = {}
     for label, _, _ in intervals:
         counts[label] = counts.get(label, 0) + 1
+
+    sorted_counts = sorted(counts.items(), key=lambda x: -x[1])
+    top_label, top_cnt = sorted_counts[0]
+    coverage_pct = 100 * top_cnt / n
+
     lines = []
-    for label, cnt in sorted(counts.items(), key=lambda x: -x[1]):
-        lines.append(f"🏆{label}: {cnt}勝/{n}")
-    # ヒント
-    if counts:
-        top_label = max(counts, key=counts.get)
-        lines.append(f"→ {top_label} が最頻パターン")
+    if coverage_pct == 100:
+        lines.append(f"🎯 過去{n}年全勝ち馬が【{top_label}】")
+        lines.append(f"  → 他間隔の勝ち馬: 0頭")
+        lines.append(f"→ {top_label} 以外のローテは不利")
+    elif coverage_pct >= 75:
+        lines.append(f"🎯 {top_label} が {top_cnt}/{n}勝 ({coverage_pct:.0f}%)")
+        # その他のローテも併記
+        others = [f"{l}{c}" for l, c in sorted_counts[1:]]
+        if others:
+            lines.append(f"  他: {' / '.join(others)}")
+        lines.append(f"→ {top_label} 軸が王道")
+    else:
+        # 上位3つを並列表示
+        for label, cnt in sorted_counts[:3]:
+            lines.append(f"🏆{label}: {cnt}勝/{n}")
+
     return (title, lines, n)
 
 
