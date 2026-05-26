@@ -156,8 +156,10 @@ jobs:
                 exit 0
               fi
             else
-              echo "⚠️ rebase 失敗 (try $i) → keiba.db を ours で解決"
-              git checkout --ours keiba.db 2>/dev/null || true
+              # rebase 中の --ours = remote (= backfill前の古いDB) を採用してしまう
+              # 自分の scrape したデータを残したいので --theirs を使う
+              echo "⚠️ rebase 失敗 (try $i) → keiba.db を theirs (自分の scrape結果) で解決"
+              git checkout --theirs keiba.db 2>/dev/null || true
               git add keiba.db 2>/dev/null || true
               git rebase --continue 2>/dev/null || git rebase --abort
             fi

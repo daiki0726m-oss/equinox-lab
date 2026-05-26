@@ -42,19 +42,31 @@ def strip_html(text):
 
 
 def check_year_continuity(text):
-    """年度の連続性チェック。記事に出てくる年度のリストから欠落を検出。"""
+    """年度の連続性チェック。記事に出てくる年度のリストから欠落を検出。
+
+    例外: 欠落年度について「YYYY 年は DB 欠落 / 対象外 / 未登録」等の
+         注釈が記事中にあれば許容する (誠実なサンプル不足明示)。
+    """
     issues = []
-    # 「歴代勝ち馬」「過去X年」セクション周辺で 20XX 年を探す
-    # 範囲: 連続する 6年程度の年度が出ていれば「全部出すべき」と判断
     years = sorted({int(y) for y in re.findall(r'\b(20[12]\d)\b', text) if 2018 <= int(y) <= 2025})
     if len(years) >= 3:
-        # 連続範囲か?
         ymin, ymax = years[0], years[-1]
         expected = set(range(ymin, ymax + 1))
         actual = set(years)
         missing = expected - actual
-        if missing:
-            issues.append(f"❌ 年度抜け検出: {sorted(missing)} が言及されていない (記事範囲 {ymin}-{ymax} 中)")
+        # 注釈で許容された欠落を除外
+        truly_missing = []
+        for yr in sorted(missing):
+            patterns = [
+                rf'{yr}[^\n]{{0,30}}(?:DB欠落|データ欠落|対象外|未登録|未収集)',
+                rf'(?:DB欠落|データ欠落|対象外|未登録|未収集)[^\n]{{0,30}}{yr}',
+                rf'{yr}.{{0,20}}(?:除く|含まない)',
+                rf'(?:除く|含まない).{{0,20}}{yr}',
+            ]
+            if not any(re.search(p, text) for p in patterns):
+                truly_missing.append(yr)
+        if truly_missing:
+            issues.append(f"❌ 年度抜け検出: {truly_missing} が言及されていない (記事範囲 {ymin}-{ymax} 中)")
     return issues
 
 
