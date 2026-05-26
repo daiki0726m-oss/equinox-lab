@@ -77,14 +77,26 @@ def _get_known_grade_races() -> Set[str]:
 
 
 def _is_horse_in_db(conn, name: str) -> bool:
-    """horse_name が horses テーブルに存在するか (完全/部分一致)"""
+    """horse_name または sire/damsire が DB に存在するか (完全/部分一致)。
+
+    2026-05-26 拡張: 種牡馬 (horses.sire) や母父 (horses.damsire) も
+    投稿テンプレに正当に出るので、これらも照合対象に追加。
+    """
     cur = conn.cursor()
-    # 完全一致
-    cur.execute("SELECT 1 FROM horses WHERE horse_name = ? LIMIT 1", (name,))
+    # 完全一致 (馬名 / 種牡馬 / 母父)
+    cur.execute(
+        "SELECT 1 FROM horses "
+        "WHERE horse_name = ? OR sire = ? OR damsire = ? LIMIT 1",
+        (name, name, name),
+    )
     if cur.fetchone():
         return True
-    # 部分一致 (海外馬の英字付き等を救済)
-    cur.execute("SELECT 1 FROM horses WHERE horse_name LIKE ? LIMIT 1", (f"%{name}%",))
+    # 部分一致 (海外馬の英字付き "エピファネイアEpiphaneia(米)" 等を救済)
+    cur.execute(
+        "SELECT 1 FROM horses "
+        "WHERE horse_name LIKE ? OR sire LIKE ? OR damsire LIKE ? LIMIT 1",
+        (f"%{name}%", f"%{name}%", f"%{name}%"),
+    )
     return bool(cur.fetchone())
 
 
