@@ -51,7 +51,7 @@ class BettingStrategy:
         amount = min(amount, self.MAX_BET_PER_RACE)
         return int(amount)
 
-    def should_bet_race(self, predictions):
+    def should_bet_race(self, predictions, confidence=None):
         """
         レース見送り判定（厳格版）
 
@@ -62,6 +62,12 @@ class BettingStrategy:
         """
         if not predictions:
             return False, "予測データなし"
+
+        # ❌ v12 (2026-05-26 ROI最大化): 信頼度 C/D は明示的に見送り
+        # 5/9-5/24 backtest: C 三連複 ROI 75% / 馬連 45% / ワイド 80%
+        # confidence が明示できる場合は暗黙的判定でなく明示的にスキップ
+        if confidence in ("C", "D"):
+            return False, f"信頼度{confidence}は損失層 (backtest ROI 75-80%)"
 
         top_prob = max(p["pred_win"] for p in predictions)
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
@@ -84,8 +90,18 @@ class BettingStrategy:
 
         # 本命が堅すぎてオッズに旨味なし
         top_horse = sorted_preds[0]
-        if top_prob > 0.6 and top_horse.get("odds_win", 1) < 1.5:
+        top_odds = top_horse.get("odds_win", 1) or 1
+        if top_prob > 0.6 and top_odds < 1.5:
             return False, "本命が堅すぎてオッズに旨味なし"
+
+        # 🆕 v12 (ROI最大化施策): ◎の単勝オッズ妙味バンド外は見送り
+        # confidence v4 で odds_pot は評価軸だが、should_bet にも明示的に反映:
+        # 2.0倍未満 = 配当低すぎてROI出ない、15倍超 = ◎自体が信頼度低い大穴
+        if top_odds > 0:
+            if top_odds < 2.0:
+                return False, f"◎オッズ{top_odds:.1f}倍は配当妙味なし"
+            if top_odds > 15.0:
+                return False, f"◎オッズ{top_odds:.1f}倍は◎信頼度が低すぎ"
 
         # 最大EVチェック（オッズがある場合）
         max_ev = 0

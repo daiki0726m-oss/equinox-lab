@@ -754,6 +754,10 @@ def cmd_predict(args):
             confidence = grades[min(len(grades) - 1, grades.index(confidence) + 1)]
             conf_reason = f"{conf_reason} / 不信騎手{top_jt:+d}"
 
+        # 🆕 v12 (2026-05-26): confidence 確定後に should_bet を再評価
+        # C/D は backtest ROI 75-80% の損失層なので明示的に should_bet=0 にする
+        should_bet, reason = strategy.should_bet_race(predictions, confidence=confidence)
+
         # キャッシュ更新（買い目・confidence・conf_reason・should_bet・bet_reason）
         with get_db() as conn:
             conn.execute("""
