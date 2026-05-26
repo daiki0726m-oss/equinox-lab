@@ -101,6 +101,24 @@ def compute_race_volatility(race_info: dict) -> dict:
     else:
         conf_adjust = 0
 
+    # ── race_class 補正 (2026-05-27) ───────────────
+    # 5/9-5/25 backtest の cross-tab (race_class × confidence × 三連複◎軸 ROI):
+    #   未勝利・新馬: S=39% / A=38% / B=55% / C=64% / D=77% ← 全層 loss layer + 逆転現象
+    #   1勝クラス:    A=189% / B=24% / C=38% ← 期待通り A 高 ROI
+    #   2勝クラス:    A=234% ← 小サンプル
+    #   OP/特別:     S=154% / B=182% ← 機能してる
+    #
+    # 未勝利・新馬は ML が unknown horse をうまく学習できておらず、confidence の予測力
+    # が逆転している (高 confidence ほど ROI 低い)。1勝以上では機能してるので
+    # confidence 軸そのものは正しい。
+    #
+    # → 未勝利・新馬は -2 段 (S→B, A→C) で過大投資を防ぐ。
+    #    実質的に未勝利戦の bet weighting (S=200円/A=150円) を発動しない設計。
+    name = race_info.get("race_name", "") or ""
+    if "未勝利" in name or "新馬" in name:
+        conf_adjust += -2
+        factors.append("未勝利/新馬(-2)")
+
     return {"score": score, "factors": factors, "conf_adjust": conf_adjust}
 
 
