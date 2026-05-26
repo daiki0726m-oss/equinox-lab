@@ -1027,18 +1027,25 @@ def _build_weekday_post(slot, today):
                 race_row = get_todays_race(conn, slot=slot_idx)
                 if race_row:
                     race = dict(race_row) if hasattr(race_row, 'keys') else race_row
-                    # build_slot_post に必要なキーを保証
                     if isinstance(race, dict) and race.get("race_name"):
-                        tweet, meta = build_slot_post(slot, race, conn)
-                        # ファクトチェック
-                        passed, issues = db_fact_check(tweet)
-                        if passed:
-                            print(f"✅ slot_composer 採用 (x_len={meta['char_count']}, sections={meta['sections_used']})")
-                            return tweet, race.get("race_id")
+                        tweets, meta = build_slot_post(slot, race, conn)
+                        # tweets は list[str]。1要素なら通常投稿、複数ならスレッド投稿。
+                        # ファクトチェックは全 tweet で実行 (1つでも失敗で全体ブロック)
+                        all_passed = True
+                        for tw in (tweets if isinstance(tweets, list) else [tweets]):
+                            passed, issues = db_fact_check(tw)
+                            if not passed:
+                                all_passed = False
+                                print(f"⚠️ ファクトチェック失敗:")
+                                for i in issues:
+                                    print(f"   {i}")
+                                break
+                        if all_passed:
+                            n_tweets = len(tweets) if isinstance(tweets, list) else 1
+                            print(f"✅ slot_composer 採用 (x_len={meta['char_count']}, tweets={n_tweets}, sections={meta['sections_used']})")
+                            return tweets, race.get("race_id")
                         else:
                             print(f"⚠️ slot_composer 出力が fact_check ブロック → 旧パスへ")
-                            for i in issues:
-                                print(f"   {i}")
         except Exception as e:
             print(f"⚠️ slot_composer エラー (旧パスへフォールバック): {e}")
             import traceback

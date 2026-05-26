@@ -160,6 +160,59 @@ def _hashtags(race: dict) -> str:
 
 # X 文字数予算 (X 上限 280 ぴったりまで使い切り)
 CHAR_BUDGET = 280
+MAX_THREAD_TWEETS = 3  # スレッドの最大ツイート数
+
+
+def _split_to_thread(header: str, sections: list, cta: str, hashtags: str,
+                      budget: int = CHAR_BUDGET,
+                      max_tweets: int = MAX_THREAD_TWEETS) -> list:
+    """セクションをスレッド (複数 tweet) に分割する。
+
+    戦略:
+    - 1 tweet に全 sections 入れば単一 tweet
+    - 入らなければ「1 section = 1 tweet」で分割
+    - 1 section 内が大きすぎる場合は section の末尾行を trim
+
+    Tweet 1: header + section1 + (続く🧵 or cta)
+    Tweet 2+: 🧵 (i/N) + section_i + (続く🧵 or cta+hashtags)
+    最終 tweet のみ hashtags が付く。
+    """
+    sections = [s for s in sections if s]
+    if not sections:
+        return [f"{header}\n\n{cta}\n{hashtags}"]
+
+    # 1 tweet に全部入るか試算
+    full_body = "\n\n".join(sections)
+    full_tweet = f"{header}\n\n{full_body}\n\n{cta}\n{hashtags}"
+    if _x_len(full_tweet) <= budget:
+        return [full_tweet]
+
+    # 1 section = 1 tweet で分割
+    sections = sections[:max_tweets]  # max を超える section は捨てる
+    total = len(sections)
+    tweets = []
+    for i, section in enumerate(sections):
+        is_last = (i == total - 1)
+        # ヘッダ
+        if i == 0:
+            tw_header = header
+        else:
+            tw_header = f"🧵 ({i+1}/{total})"
+        # フッタ
+        tw_cta = cta if is_last else "→ 続く🧵"
+        tw_tags = f"\n{hashtags}" if is_last else ""
+
+        # tweet 組み立て (section 内が大きすぎる場合は末尾 trim)
+        section_lines = section.split("\n")
+        while True:
+            body = "\n".join(section_lines)
+            tw = f"{tw_header}\n\n{body}\n\n{tw_cta}{tw_tags}"
+            if _x_len(tw) <= budget or len(section_lines) <= 1:
+                break
+            section_lines = section_lines[:-1]
+        tweets.append(tw)
+
+    return tweets
 
 
 def _fit_to_budget(header: str, sections: list, cta: str, hashtags: str,
@@ -258,10 +311,10 @@ def build_morning_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 火朝に前走パターン🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
-    char_count = _x_len(tweet)
-    return tweet, {"sections_used": ["historical", "pop_trust", "sires"], "samples": samples, "char_count": char_count}
+    char_count = sum(_x_len(t) for t in tweets)
+    return tweets, {"sections_used": ["historical", "pop_trust", "sires"], "samples": samples, "char_count": char_count}
 
 
 # ─────────────────────────────────────────────────────────
@@ -363,10 +416,10 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 今夜AI注目要素🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
-    char_count = _x_len(tweet)
-    return tweet, {"sections_used": ["sires", "post_pos", "outliers"], "samples": samples, "char_count": char_count}
+    char_count = sum(_x_len(t) for t in tweets)
+    return tweets, {"sections_used": ["sires", "post_pos", "outliers"], "samples": samples, "char_count": char_count}
 
 
 # ─────────────────────────────────────────────────────────
@@ -425,10 +478,10 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 火朝に血統深掘り🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
-    char_count = _x_len(tweet)
-    return tweet, {"sections_used": ["pace", "danger"], "samples": samples, "char_count": char_count}
+    char_count = sum(_x_len(t) for t in tweets)
+    return tweets, {"sections_used": ["pace", "danger"], "samples": samples, "char_count": char_count}
 
 
 # ─────────────────────────────────────────────────────────
@@ -467,10 +520,10 @@ def build_tue_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 木朝に出走確定+血統を配信🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
-    char_count = _x_len(tweet)
-    return tweet, {"sections_used": ["prev_race", "rotation"], "samples": samples, "char_count": char_count}
+    char_count = sum(_x_len(t) for t in tweets)
+    return tweets, {"sections_used": ["prev_race", "rotation"], "samples": samples, "char_count": char_count}
 
 
 # ─────────────────────────────────────────────────────────
@@ -506,10 +559,10 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 今夜は危険な1人気を配信🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
-    char_count = _x_len(tweet)
-    return tweet, {"sections_used": ["jockey", "pace"], "samples": samples, "char_count": char_count}
+    char_count = sum(_x_len(t) for t in tweets)
+    return tweets, {"sections_used": ["jockey", "pace"], "samples": samples, "char_count": char_count}
 
 
 # ─────────────────────────────────────────────────────────
@@ -568,10 +621,10 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 木朝に出走確定+血統を配信🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
-    char_count = _x_len(tweet)
-    return tweet, {"sections_used": ["danger", "outliers"], "samples": samples, "char_count": char_count}
+    char_count = sum(_x_len(t) for t in tweets)
+    return tweets, {"sections_used": ["danger", "outliers"], "samples": samples, "char_count": char_count}
 
 
 # ─────────────────────────────────────────────────────────
@@ -624,10 +677,10 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 今夜は翌朝の確定予想告知🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
-    char_count = _x_len(tweet)
-    return tweet, {"sections_used": ["patterns", "sires"], "samples": samples, "char_count": char_count}
+    char_count = sum(_x_len(t) for t in tweets)
+    return tweets, {"sections_used": ["patterns", "sires"], "samples": samples, "char_count": char_count}
 
 
 # ─────────────────────────────────────────────────────────
@@ -665,8 +718,8 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 今夜は危険な1人気を配信🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["workout"], "samples": samples, "char_count": _x_len(tweet)}
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
+    return tweets, {"sections_used": ["workout"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
 
 # ─────────────────────────────────────────────────────────
@@ -722,8 +775,8 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 今夜AI最終TOP4🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["entry_pedigree", "sires"], "samples": samples, "char_count": _x_len(tweet)}
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
+    return tweets, {"sections_used": ["entry_pedigree", "sires"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
 
 def _strip_horse_number_from_lines(lines: list, race: dict) -> list:
@@ -759,7 +812,7 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
 
     header = f"🎯 {day} {label}\n注目馬TOP3"
 
-    # AI 予測があれば優先、なければ出走馬×統計で抽出
+    # Section 1: TOP3
     t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
     if lines1 and n1 > 0 and any(l.startswith(("1️⃣", "2️⃣", "3️⃣")) for l in lines1):
         cleaned = _strip_horse_number_from_lines(lines1, race)
@@ -774,11 +827,19 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
             sections.append(_make_section(t2, cleaned[:4]))
         samples["source"] = "handpicked"
 
+    # Section 2: 補助 — 過去6年で「コース好相性パターン」
+    t_pat, lines_pat, n_pat = sec_pattern_discovery(
+        conn, venue, surface, distance, years=6, target_top3_pct=55.0,
+        race_id=race_id,
+    )
+    if lines_pat and n_pat > 0:
+        sections.append(_make_section("【コース好相性パターン】 過去6年", lines_pat[:3]))
+
     cta = "→ 今夜AI最終予想+note告知🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
+    return tweets, {"sections_used": ["top3", "pattern"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
 
 # ─────────────────────────────────────────────────────────
@@ -815,8 +876,8 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 土朝に印 (◎○▲) と買い目を発表🔔\n→ note記事も公開予定📝"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
+    return tweets, {"sections_used": ["top3"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
 
 # ─────────────────────────────────────────────────────────
@@ -863,8 +924,8 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ 土朝に印 (◎○▲) と買い目🔔"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["attention/handpicked", "pattern"], "samples": samples, "char_count": _x_len(tweet)}
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
+    return tweets, {"sections_used": ["attention/handpicked", "pattern"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
 
 # ─────────────────────────────────────────────────────────
@@ -913,8 +974,8 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "→ お楽しみに🔥"
 
     hashtags = _hashtags(race)
-    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
-    return tweet, {"sections_used": ["top1"], "samples": samples, "char_count": _x_len(tweet)}
+    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
+    return tweets, {"sections_used": ["top1"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
 
 # ─────────────────────────────────────────────────────────

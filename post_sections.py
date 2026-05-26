@@ -1347,22 +1347,23 @@ def sec_handpicked_top(
             })
 
     scored.sort(key=lambda x: -x["score"])
-    title = "【コース適性TOP3】 (父産駒+鞍上のコース複勝率)"
+    # タイトルで「東京芝2400m 過去6年の複勝率」と明示
+    title = f"【コース適性TOP】{venue}{surface}{distance}m 過去{years}年・複勝率"
     if not scored:
         return (title, ["該当馬データ不足"], 0)
 
     medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
     lines = []
     for i, h in enumerate(scored[:top]):
-        facts = []
+        # 主軸: 父産駒の複勝率 (分母付き)。鞍上は副次的に。
+        parts = []
         if h["sire_pct"] >= 30:
             sire_short = h["sire"][:8]
-            facts.append(f"父{sire_short}{h['sire_pct']:.0f}%")
+            parts.append(f"父{sire_short}{h['sire_pct']:.0f}%({h['sire_n']}走)")
         if h["jockey_pct"] >= 30:
-            facts.append(f"鞍上{h['jockey']}{h['jockey_pct']:.0f}%")
-        facts_str = " / ".join(facts) if facts else f"スコア{h['score']:.0f}"
-        # 馬番表示は呼出側で処理 (_strip_horse_number_from_lines)
-        lines.append(f"{medals[i]} {h['hn']}番 {h['name']} ({facts_str})")
+            parts.append(f"{h['jockey']}{h['jockey_pct']:.0f}%")
+        facts_str = " / ".join(parts) if parts else f"スコア{h['score']:.0f}"
+        lines.append(f"{medals[i]} {h['hn']}番 {h['name']}: {facts_str}")
     return (title, lines, len(scored))
 
 
