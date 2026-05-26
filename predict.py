@@ -441,12 +441,14 @@ def cmd_predict(args):
             hns = [p["horse_number"] for p in predictions]
             ana_feats = fetch_horse_history(race_id, hns)
             for p in predictions:
-                feat = ana_feats.get(p["horse_number"], {})
-                ana = compute_anasanee_score(feat, p.get("jockey_name", ""))
+                feat = ana_feats.get(p["horse_number"], {}) or {}
+                # 2026-05-27: jockey_name=None で NoneType crash → 二重ガード
+                jk_name = p.get("jockey_name") or ""
+                ana = compute_anasanee_score(feat, jk_name)
                 p["anasanee_score"] = ana["score"]
                 p["anasanee_reasons"] = ana["reasons"]
                 p["jockey_trust"] = compute_jockey_trust(
-                    p.get("jockey_name", ""), p.get("popularity", 0) or 0
+                    jk_name, p.get("popularity", 0) or 0
                 )
             race_volatility = compute_race_volatility(race_info)
         except Exception as e:

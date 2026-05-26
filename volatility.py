@@ -230,10 +230,14 @@ def compute_anasanee_score(feat: dict, jockey_name: str = "") -> dict:
     """個別馬の穴予兆スコアを計算。
 
     feat: fetch_horse_history の返り値の1要素
-    jockey_name: 今回騎手名
+    jockey_name: 今回騎手名 (None も受容)
 
     返り値: {score: int, reasons: list[str]}
     """
+    # 2026-05-27: 5/31 ダービー dry-run で発見した NoneType bug 対処
+    # jockey_name=None で呼ばれると `key in None` で TypeError
+    jockey_name = jockey_name or ""
+    feat = feat or {}
     score = 0
     reasons = []
 
