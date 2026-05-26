@@ -1004,20 +1004,52 @@ def cmd_results(args):
 def _build_weekday_post(slot, today):
     """slot='morning'|'weekday'|'evening' のツイートを生成。
 
-    weekday_engine.py に委譲し、course_stats / 騎手フィルタなど post_x の
-    既存ヘルパーを差し込む。
+    2026-05-26: 新 slot_composer (220-260字フル活用版) を優先試行。
+    失敗時は旧 weekday_engine (universal_fallback含む) にフォールバック。
+
+    USE_OLD_COMPOSER=1 で新 composer を無効化し旧パス強制 (緊急時用)。
 
     Returns:
         (tweet_str, race_id) のタプル。生成失敗時は (None, None)。
         race_id は post_thread に渡して同レース連発を防ぐ。
     """
+    today_d = today.date() if hasattr(today, 'date') else today
+
+    # ─── 新パス: slot_composer ───
+    if not os.environ.get("USE_OLD_COMPOSER"):
+        try:
+            from slot_composer import build_slot_post
+            from tweet_fact_check import db_fact_check
+
+            with get_db() as conn:
+                # 今日の曜日 × slot に応じた重賞 race を取得
+                slot_idx = {"morning": 0, "weekday": 1, "evening": 2}.get(slot, 0)
+                race_row = get_todays_race(conn, slot=slot_idx)
+                if race_row:
+                    race = dict(race_row) if hasattr(race_row, 'keys') else race_row
+                    # build_slot_post に必要なキーを保証
+                    if isinstance(race, dict) and race.get("race_name"):
+                        tweet, meta = build_slot_post(slot, race, conn)
+                        # ファクトチェック
+                        passed, issues = db_fact_check(tweet)
+                        if passed:
+                            print(f"✅ slot_composer 採用 (x_len={meta['char_count']}, sections={meta['sections_used']})")
+                            return tweet, race.get("race_id")
+                        else:
+                            print(f"⚠️ slot_composer 出力が fact_check ブロック → 旧パスへ")
+                            for i in issues:
+                                print(f"   {i}")
+        except Exception as e:
+            print(f"⚠️ slot_composer エラー (旧パスへフォールバック): {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ─── 旧パス: weekday_engine (fallback) ───
     try:
         from weekday_engine import build_post_for_slot
     except Exception as e:
         print(f"⚠️ weekday_engine インポート失敗: {e}")
         return None, None
-
-    today_d = today.date() if hasattr(today, 'date') else today
 
     try:
         from course_stats import get_course_stats
