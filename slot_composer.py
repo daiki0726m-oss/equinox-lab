@@ -119,7 +119,7 @@ def _horse_label(horse: dict, race: dict, today: Optional[datetime] = None) -> s
 
 
 def _day_phrase(race: dict, today: Optional[datetime] = None) -> str:
-    """5/31(日) のような日付フレーズ"""
+    """5/31(日) のような日付フレーズ (短縮版)"""
     today = today or datetime.now()
     race_date_str = race.get("race_date", "")
     try:
@@ -133,12 +133,11 @@ def _day_phrase(race: dict, today: Optional[datetime] = None) -> str:
     diff_days = (d.date() - today.date()).days
     when = ""
     if diff_days == 0:
-        when = "今日"
+        when = "本日"
     elif diff_days == 1:
         when = "明日"
-    elif diff_days < 7:
-        when = "今週末"
-    return f"{when}{d.month}/{d.day}({weekday})"
+    # "今週末" は冗長なので削除 (5/31(日) のみで十分)
+    return f"{when}{d.month}/{d.day}({weekday})" if when else f"{d.month}/{d.day}({weekday})"
 
 
 def _make_section(title: str, lines: list) -> str:
@@ -193,12 +192,14 @@ def _fit_to_budget(header: str, sections: list, cta: str, hashtags: str,
             new_sections.append("\n".join(kept))
         sections = new_sections
 
-    # Phase 2: 末尾セクションから 1行ずつ削る
+    # Phase 2: 末尾セクションから 1行ずつ削る (title 無し section も 1 行ずつ削減)
     while sections and _x_len(_assemble()) > budget:
         last = sections[-1].split("\n")
-        if len(last) <= 2:
+        if len(last) == 1:
+            # 1行のみ → section ごと削除
             sections.pop()
         else:
+            # 末尾の1行を削る (タイトル + 1行のみになっても content として保持)
             sections[-1] = "\n".join(last[:-1])
 
     return _assemble()
@@ -275,27 +276,70 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     race_name = race.get("race_name", "")
 
     header = f"🔍 {day} {label}"
+    import re as _re
 
-    # Section 1: 種牡馬 TOP3 (各行短縮)
+    # Section 1: 鉄板系統の該当馬 (該当馬なし非表示、複数馬は「他N頭」に圧縮)
     t1, lines1, n1 = sec_sire_course_cross(
         conn, venue, surface, distance, top=3, years=6, race_id=race_id)
     samples["sires"] = n1
     if lines1 and n1 > 0:
-        sections.append(_make_section(f"【{venue}{surface}{distance}m 種牡馬TOP3】", lines1[:3]))
+        filtered = [l for l in lines1 if "該当馬なし" not in l]
+        cleaned = []
+        for l in filtered:
+            # "🥈フィエールマン 50% (4/8) → 該当: ○○ ××" → "🥈フィエールマン産駒 → ○○他1頭"
+            m = _re.match(r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", l)
+            if m:
+                medal, sire, pct, horses_str = m.groups()
+                names = horses_str.strip().split()
+                if len(names) == 1:
+                    horses_display = names[0]
+                else:
+                    horses_display = f"{names[0]}他{len(names)-1}頭"
+                cleaned.append(f"{medal}{sire}産駒 → {horses_display}")
+            else:
+                cleaned.append(l)
+        if cleaned:
+            # タイトル最小限化
+            sections.append(_make_section(
+                "【血統】複勝50%超 (過去6年)",
+                cleaned[:2]
+            ))
 
-    # Section 2: 枠順 (ベスト+ワーストの2行のみ)
+    # Section 2 + 3 統合: 枠順 + 波乱年 を 1行ずつコンパクトに
+    extras = []
+
     t2, lines2, n2 = sec_post_position_bias(conn, venue, surface, distance, years=6)
     samples["post_pos"] = n2
-    if lines2 and n2 > 0:
-        sections.append(_make_section("【枠順】", lines2[:2]))
+    if lines2 and len(lines2) >= 2:
+        best_m = _re.search(r"⭐(\d+)枠 複勝率 ([\d.]+)%", lines2[0])
+        worst_m = _re.search(r"⚠️(\d+)枠 複勝率 ([\d.]+)%", lines2[1])
+        if best_m and worst_m:
+            bw, bp = best_m.groups()
+            ww, wp = worst_m.groups()
+            diff_pt = float(bp) - float(wp)
+            extras.append(f"枠順: ⭐{bw}枠{bp}% / ⚠️{ww}枠{wp}% ({diff_pt:.0f}pt差)")
 
-    # Section 3: 異常年 (1行のみ)
     t3, lines3, n3 = sec_outlier_year(conn, race_name, years=6)
     samples["outliers"] = n3
     if lines3 and n3 > 0:
         outlier_line = next((l for l in lines3 if l.startswith("🚨")), None)
+        rate_line = next((l for l in lines3 if "5番人気以下勝利" in l), None)
         if outlier_line:
-            sections.append(f"【波乱】 {outlier_line}")
+            # "🚨2024 ダノンデサイル(9人気/46.6倍)" → "2024ダノンデサイル(9人気)"
+            short = _re.sub(r"\(\d+人気/[\d.]+倍\)", "", outlier_line.lstrip("🚨")).strip()
+            pop_m = _re.search(r"\((\d+)人気/", outlier_line)
+            pop_str = f"({pop_m.group(1)}人気)" if pop_m else ""
+            ctx = ""
+            if rate_line:
+                m = _re.search(r"過去(\d+)年で5番人気以下勝利:\s*(\d+)回", rate_line)
+                if m:
+                    ctx = f" ※過去{m.group(1)}年で{m.group(2)}回"
+            extras.append(f"波乱: 🚨{short}{pop_str}{ctx}")
+
+    # extras を別々 sections として append (Phase 2 で 1個ずつ trim 可能)
+    # 優先順: 枠順 > 波乱 (枠順は当週の予測に直結、波乱は文脈情報)
+    for e in extras:
+        sections.append(e)
 
     cta = "→ 今夜AI注目要素🔔"
 
