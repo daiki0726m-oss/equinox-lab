@@ -106,6 +106,24 @@ Use this skeleton for the markdown output:
 |---|---|---|---|---|---|
 | S | ... | ... |
 
+### race_class × confidence クロス集計 (CRITICAL — 2026-05-27 教訓 #28)
+
+**confidence 軸 単独の ROI に意味があるか必ず race_class で分割確認**:
+
+| race_class | S | A | B | C | D |
+|---|---|---|---|---|---|
+| 未勝利・新馬 | ... |
+| 1勝クラス | ... |
+| 2勝クラス | ... |
+| OP/特別 | ... |
+
+5/9-5/25 で発見:
+- 未勝利・新馬では confidence 完全逆転 (S=39% / D=77%) ← ML が unknown horse を学習できてない
+- 1勝以上では confidence 軸が機能 (A=189%)
+
+→ confidence × race_class のクロスを見ずに「S が高 ROI」と断ずるのは不正確。
+   race_class 単位で confidence の有効性は変わる。
+
 ### 統計的有意性
 <差分pt + 母集団との比較>
 
