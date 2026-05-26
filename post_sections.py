@@ -832,6 +832,7 @@ def sec_pattern_discovery(
     years: int = 6,
     min_runs: int = 5,
     target_top3_pct: float = 60.0,
+    race_id: str = None,
 ) -> Tuple[str, List[str], int]:
     """指定コースで「複勝率 target_top3_pct% 超」の好相性パターンを発掘。
 
@@ -888,10 +889,27 @@ def sec_pattern_discovery(
             0,
         )
 
+    # 出走馬の血統 × 枠順 でクロスマッチ (race_id 指定時)
+    entries_by_sire = {}
+    if race_id:
+        entries = _get_entries(conn, race_id)
+        for e in entries:
+            s = (e.get("sire") or "").split("(")[0].strip()
+            if s:
+                entries_by_sire.setdefault(s, []).append(e)
+
     lines = []
     for sire, band, runs, top3 in rows:
         pct = 100 * top3 / runs
-        lines.append(f"🔮 {sire}×{band} 複勝{pct:.0f}% ({top3}/{runs})")
+        sire_clean = sire.split("(")[0].strip()
+        match_str = ""
+        if entries_by_sire and sire_clean in entries_by_sire:
+            names = [e["horse_name"] for e in entries_by_sire[sire_clean]]
+            if len(names) <= 2:
+                match_str = f" → 該当: {' '.join(names)}"
+            else:
+                match_str = f" → 該当: {names[0]}他{len(names)-1}頭"
+        lines.append(f"🔮 {sire}×{band} 複勝{pct:.0f}% ({top3}/{runs}){match_str}")
     return (title, lines, n)
 
 

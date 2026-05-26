@@ -192,15 +192,19 @@ def _fit_to_budget(header: str, sections: list, cta: str, hashtags: str,
             new_sections.append("\n".join(kept))
         sections = new_sections
 
-    # Phase 2: 末尾セクションから 1行ずつ削る (title 無し section も 1 行ずつ削減)
+    # Phase 2: 末尾セクションから 1行ずつ削る
+    # ※ 「タイトル【...】」のみ残る空 section は意味なしなので最終削除
     while sections and _x_len(_assemble()) > budget:
         last = sections[-1].split("\n")
         if len(last) == 1:
             # 1行のみ → section ごと削除
             sections.pop()
         else:
-            # 末尾の1行を削る (タイトル + 1行のみになっても content として保持)
+            # 末尾の1行を削る
             sections[-1] = "\n".join(last[:-1])
+            # title だけ (「【...】」で始まる単独行) になったら section ごと削除
+            if sections and "\n" not in sections[-1] and sections[-1].startswith("【"):
+                sections.pop()
 
     return _assemble()
 
@@ -380,24 +384,42 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
     grade = race.get("grade")
 
     header = f"🌙 {day} {label}"
+    import re as _re
 
-    # Section 1: 末脚 (1行に圧縮: 複勝率のみ)
+    # Section 1: 末脚 (1行 + 含意)
     t1, lines1, n1 = sec_pace_decisive(conn, venue, surface, distance, years=6)
     samples["pace"] = n1
     if lines1 and n1 >= 10:
-        # 「💨上がり最速馬 複勝率 80%」だけ抽出
         complot_line = next((l for l in lines1 if "複勝率" in l), None)
         if complot_line:
-            sections.append(f"【末脚】 {complot_line}")
+            pct_m = _re.search(r"複勝率\s*(\d+)%", complot_line)
+            if pct_m and int(pct_m.group(1)) >= 70:
+                sections.append(f"{complot_line.strip()}\n→ 上がり順位がほぼ着順に直結")
+            else:
+                sections.append(complot_line)
 
-    # Section 2: 1人気の信頼性 (飛び率 + 事例×2 + 共通点 + 指針) — メイン
+    # Section 2: 1人気の信頼性 — 飛び率 + 含意 (堅め/危険 判定付き)
     t2, lines2, n2 = sec_dangerous_favorites(
         conn, venue, surface, distance, grade=grade, years=6
     )
     samples["danger"] = n2
     if lines2 and n2 >= 3:
-        # 6-7行まで取る
-        sections.append(_make_section("【1人気の信頼性】", lines2[:7]))
+        # 飛び率を抽出して堅め/危険を判定
+        flop_line = next((l for l in lines2 if "飛んだ" in l), None)
+        if flop_line:
+            flop_m = _re.search(r"(\d+)%\s*\((\d+)/(\d+)\)", flop_line)
+            if flop_m:
+                flop_pct = int(flop_m.group(1))
+                flop_cnt = int(flop_m.group(2))
+                total_n = int(flop_m.group(3))
+                hit_pct = 100 - flop_pct  # 4着以内に来た割合
+                if flop_pct <= 20:
+                    insight = f"✅複勝圏 {hit_pct}% ({total_n-flop_cnt}/{total_n}) → 1人気は信頼可"
+                elif flop_pct <= 30:
+                    insight = f"⚠️5着以下 {flop_pct}% ({flop_cnt}/{total_n}) → 1人気の質を見極めること"
+                else:
+                    insight = f"🚨5着以下 {flop_pct}% ({flop_cnt}/{total_n}) → 1人気軸は危険、相手探し"
+                sections.append(f"【1人気の信頼性】\n{insight}")
 
     cta = "→ 火朝に血統深掘り🔔"
 
@@ -505,15 +527,34 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
     grade = race.get("grade")
     race_name = race.get("race_name", "")
 
-    header = f"⚠️ {day} {label}\n危険な人気馬の予兆"
+    header = f"⚠️ {day} {label}\n人気馬の落とし穴"
+    import re as _re
 
-    # Section 1: 1人気の信頼性 (飛び率 + 事例 + 共通点 + 指針)
+    # Section 1: 1人気 + 2-3人気 で 5着以下になった事例 (具体的馬名で警鐘)
     t1, lines1, n1 = sec_dangerous_favorites(
         conn, venue, surface, distance, grade=grade, years=6
     )
     samples["danger"] = n1
     if lines1 and n1 >= 3:
-        sections.append(_make_section("【1人気の信頼性】", lines1[:6]))
+        # 飛び率 + 例外事例 + 結論
+        flop_line = next((l for l in lines1 if "飛んだ" in l), None)
+        examples = [l for l in lines1 if l.startswith("🚨")][:2]
+        block = []
+        if flop_line:
+            block.append(flop_line)
+        # 含意 (堅め or 警戒)
+        if flop_line:
+            m = _re.search(r"(\d+)%\s*\((\d+)/(\d+)\)", flop_line)
+            if m:
+                pct = int(m.group(1))
+                if pct <= 20:
+                    block.append(f"→ 1人気は基本信頼可、例外時のみ警戒")
+                elif pct <= 30:
+                    block.append(f"→ 1人気は飛び事例の特徴に注意")
+                else:
+                    block.append(f"→ 1人気軸は危険、相手探し優先")
+        block.extend(examples)
+        sections.append(_make_section("【1人気の信頼性 (過去6年)】", block))
 
     # Section 2: 異常年
     t2, lines2, n2 = sec_outlier_year(conn, race_name, years=6)
@@ -549,20 +590,35 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
 
     header = f"🔮 {day} {label}\nAI独自パターン分析"
 
-    # Section 1: パターン発掘
+    # Section 1: パターン発掘 + 該当出走馬
     t1, lines1, n1 = sec_pattern_discovery(
-        conn, venue, surface, distance, years=6, target_top3_pct=55.0
+        conn, venue, surface, distance, years=6, target_top3_pct=55.0,
+        race_id=race_id,
     )
     samples["patterns"] = n1
     if lines1 and n1 > 0:
         sections.append(_make_section("【AIが発掘した好相性パターン】", lines1[:3]))
 
-    # Section 2: 種牡馬 TOP (補助)
+    # Section 2: 種牡馬 TOP (補助、該当馬付きのみ — 圧縮)
     t2, lines2, n2 = sec_sire_course_cross(
         conn, venue, surface, distance, top=3, years=6, race_id=race_id)
     samples["sires"] = n2
     if lines2 and n2 > 0:
-        sections.append(_make_section("【総合 種牡馬 複勝率】", lines2[:3]))
+        filtered = [l for l in lines2 if "該当馬なし" not in l]
+        if filtered:
+            import re as _re
+            cleaned = []
+            for l in filtered[:2]:
+                m = _re.match(r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", l)
+                if m:
+                    medal, sire, pct, horses = m.groups()
+                    names = horses.strip().split()
+                    horses_disp = names[0] if len(names) == 1 else f"{names[0]}他{len(names)-1}頭"
+                    cleaned.append(f"{medal}{sire}産駒({pct}) → {horses_disp}")
+                else:
+                    cleaned.append(l)
+            if cleaned:
+                sections.append(_make_section("【コース実績ある血統の該当馬】", cleaned))
 
     cta = "→ 今夜は翌朝の確定予想告知🔔"
 
@@ -627,23 +683,40 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"📋 {day} {label}\n出走確定+血統マッチ"
+    header = f"📋 {day} {label}\n出走馬×コース適性"
 
-    # Section 1: 出走馬×血統 (このコース複勝35%超、馬番ガード適用)
+    # Section 1: 出走馬の血統がコース複勝35%超 (該当馬のみ)
     t1, lines1, n1 = sec_entry_pedigree_match(
         conn, race_id, venue, surface, distance, top=4, years=6
     )
     samples["entry_pedigree"] = n1
     if lines1 and n1 > 0:
         cleaned = _strip_horse_number_from_lines(lines1, race)
-        sections.append(_make_section("【血統がコースに合う出走馬】", cleaned[:4]))
+        sections.append(_make_section(
+            "【コース複勝35%超 の血統に該当】",
+            cleaned[:4]
+        ))
 
-    # Section 2: コース全体の種牡馬TOP (補助)
+    # Section 2: 補助 — 種牡馬TOP の該当馬 (該当馬なし非表示)
     t2, lines2, n2 = sec_sire_course_cross(
-        conn, venue, surface, distance, top=2, years=6, race_id=race_id)
+        conn, venue, surface, distance, top=3, years=6, race_id=race_id)
     samples["sires"] = n2
     if lines2 and n2 > 0:
-        sections.append(_make_section("【総合 種牡馬TOP】", lines2[:2]))
+        filtered = [l for l in lines2 if "該当馬なし" not in l]
+        if filtered:
+            import re as _re
+            cleaned = []
+            for l in filtered[:2]:
+                m = _re.match(r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", l)
+                if m:
+                    medal, sire, pct, horses = m.groups()
+                    names = horses.strip().split()
+                    horses_disp = names[0] if len(names) == 1 else f"{names[0]}他{len(names)-1}頭"
+                    cleaned.append(f"{medal}{sire}産駒({pct}) → {horses_disp}")
+                else:
+                    cleaned.append(l)
+            if cleaned:
+                sections.append(_make_section("【コース実績ある種牡馬の該当馬】", cleaned))
 
     cta = "→ 今夜AI最終TOP4🔔"
 
@@ -692,11 +765,26 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         cleaned = _strip_horse_number_from_lines(lines1, race)
         sections.append(_make_section(t1, cleaned[:5]))
     else:
-        # 予測キャッシュ未生成 → 種牡馬TOP で補完
-        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=3, years=6, race_id=race_id)
+        # 予測キャッシュ未生成 → 出走馬の血統マッチで補完
         sections.append("【AI予測は木曜夕方の出走確定後に生成】")
+        # 該当馬付き種牡馬を表示 (該当なし非表示)
+        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=3, years=6, race_id=race_id)
         if lines_alt and n_alt > 0:
-            sections.append(_make_section("【先行: 当コース 種牡馬TOP3】", lines_alt[:3]))
+            filtered = [l for l in lines_alt if "該当馬なし" not in l]
+            if filtered:
+                import re as _re
+                cleaned = []
+                for l in filtered[:2]:
+                    m = _re.match(r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", l)
+                    if m:
+                        medal, sire, pct, horses = m.groups()
+                        names = horses.strip().split()
+                        horses_disp = names[0] if len(names) == 1 else f"{names[0]}他{len(names)-1}頭"
+                        cleaned.append(f"{medal}{sire}産駒({pct}) → {horses_disp}")
+                    else:
+                        cleaned.append(l)
+                if cleaned:
+                    sections.append(_make_section("【先行: コース実績ある血統の該当馬】", cleaned))
 
     cta = "→ 今夜AI最終予想+note告知🔔"
 
@@ -730,9 +818,23 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
         sections.append(_make_section(t1, cleaned[:5]))
     else:
         sections.append("【AI予測は木曜夕方の出走確定後に生成】")
-        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=2, years=6, race_id=race_id)
+        t_alt, lines_alt, n_alt = sec_sire_course_cross(conn, venue, surface, distance, top=3, years=6, race_id=race_id)
         if lines_alt and n_alt > 0:
-            sections.append(_make_section("【先行: 当コース 種牡馬TOP】", lines_alt[:2]))
+            filtered = [l for l in lines_alt if "該当馬なし" not in l]
+            if filtered:
+                import re as _re
+                cleaned = []
+                for l in filtered[:2]:
+                    m = _re.match(r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", l)
+                    if m:
+                        medal, sire, pct, horses = m.groups()
+                        names = horses.strip().split()
+                        horses_disp = names[0] if len(names) == 1 else f"{names[0]}他{len(names)-1}頭"
+                        cleaned.append(f"{medal}{sire}産駒({pct}) → {horses_disp}")
+                    else:
+                        cleaned.append(l)
+                if cleaned:
+                    sections.append(_make_section("【先行: コース実績ある血統の該当馬】", cleaned))
 
     cta = "→ 土朝に注目馬3頭+買い目を発表🔔\n→ note記事も公開予定📝"
 
