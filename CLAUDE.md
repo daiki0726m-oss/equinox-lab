@@ -159,6 +159,7 @@ JRA の出走スケジュール:
 ### 💰 戦略 / ROI 最大化
 
 - **#25 (2026-05-26) — W1 ROI最大化施策**: 7層 MECE 監査の結果、現状コードは confidence=C/D でも `should_bet=1` で投資されており、5/9-5/25 backtest で C 三連複◎軸 ROI 46%、D 31% (損失層) と確認。Δ ROI = +22.3pt 改善余地。**対策**: (1) `strategy/betting.py:should_bet_race` に `confidence` パラメータを追加して C/D は明示的に return False、(2) ◎オッズ妙味バンド検査 (2.0倍未満は配当妙味なし / 15倍超は◎信頼度低い大穴) を追加、(3) `predict.py:cmd_predict` で confidence 計算後に should_bet を再評価 (旧 path では confidence 不明状態で先に should_bet 判定していたため C/D も bet=1 のままだった)。バックテスト: 全体 ROI 69.1% → S+A のみ ROI 91.4% (Δ+22.3pt)。**教訓: confidence は予測の補助指標でなく投資判断の主軸。「分かるレースだけ買う」がROIの本質。出走馬血統データの完全 backfill (5/31 ダービー20頭 + 目黒16頭) も同時実施**。
+- **#26 (2026-05-26) — 単日支配バイアス発見**: #25 の検証中に発見。**5/9-5/25 の S+A 馬連 ROI 151% は、5/9 単日 (ROI 339%) の lucky day に支配されていた**。5/9 除外で ROI 80% に転落 (損失層)。三連複も 91% → 65%、ワイドも 93% → 67% と同様。「短期間 backtest の絶対値 ROI は信用できない」という普遍的教訓。対策: race-data-analyst skill に **「単日支配チェック」を必須化** — 単日 spend > 20% / 除外時 ROI ±20pt 以上ぶれたら警告フラグ。2021 backfill 完了後にサンプル拡大して再評価必要。**教訓: ROI 報告には必ず日別 spend/return の表を添付。「優位性 +22pt」と書くなら「単日除外で +X pt」も併記**。
 
 ## 🛡 投稿前の Pre-flight Check (2026-05-24 導入)
 
