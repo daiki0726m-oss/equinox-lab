@@ -1001,19 +1001,53 @@ def cmd_results(args):
 
 # ─── 平日コンテンツ ───
 
+def _resolve_slot_name(base_slot, today):
+    """曜日別の slot_composer 用 slot 名を解決。
+
+    base_slot = 'morning' / 'weekday' / 'evening' に対して、
+    曜日に応じた専用 builder があれば優先 (tue_evening, wed_*, thu_*, fri_*)。
+
+    マッピング:
+    - 月(0): morning, weekday, evening (汎用)
+    - 火(1): morning, weekday, tue_evening (前走パターン特化)
+    - 水(2): wed_morning, wed_weekday (追い切り), wed_evening (危険な人気馬)
+    - 木(3): thu_morning, thu_weekday (注目TOP3), thu_evening (最終予想)
+    - 金(4): fri_morning (パターン発掘), fri_weekday (注目馬), fri_evening (告知)
+    """
+    dow = today.weekday() if hasattr(today, 'weekday') else 0
+    table = {
+        # (dow, base_slot) → 専用 slot 名
+        (1, "evening"): "tue_evening",
+        (2, "morning"): "wed_morning",
+        (2, "weekday"): "wed_weekday",
+        (2, "evening"): "wed_evening",
+        (3, "morning"): "thu_morning",
+        (3, "weekday"): "thu_weekday",
+        (3, "evening"): "thu_evening",
+        (4, "morning"): "fri_morning",
+        (4, "weekday"): "fri_weekday",
+        (4, "evening"): "fri_evening",
+    }
+    return table.get((dow, base_slot), base_slot)
+
+
 def _build_weekday_post(slot, today):
     """slot='morning'|'weekday'|'evening' のツイートを生成。
 
-    2026-05-26: 新 slot_composer (220-260字フル活用版) を優先試行。
-    失敗時は旧 weekday_engine (universal_fallback含む) にフォールバック。
-
-    USE_OLD_COMPOSER=1 で新 composer を無効化し旧パス強制 (緊急時用)。
+    2026-05-26: 新 slot_composer (X スレッド対応、最大3 tweet) を優先試行。
+    曜日別の専用 builder (tue_evening, wed_*, thu_*, fri_*) があれば自動的に切替。
+    失敗時は旧 weekday_engine にフォールバック。
 
     Returns:
-        (tweet_str, race_id) のタプル。生成失敗時は (None, None)。
-        race_id は post_thread に渡して同レース連発を防ぐ。
+        (tweet_or_tweets, race_id) のタプル。tweet_or_tweets は str または list[str]。
+        post_tweet() は list なら自動的に thread 投稿する。
     """
     today_d = today.date() if hasattr(today, 'date') else today
+
+    # 曜日別の slot 名に解決
+    resolved_slot = _resolve_slot_name(slot, today)
+    if resolved_slot != slot:
+        print(f"📅 曜日別 slot: {slot} → {resolved_slot}")
 
     # ─── 新パス: slot_composer ───
     if not os.environ.get("USE_OLD_COMPOSER"):
@@ -1022,13 +1056,13 @@ def _build_weekday_post(slot, today):
             from tweet_fact_check import db_fact_check
 
             with get_db() as conn:
-                # 今日の曜日 × slot に応じた重賞 race を取得
+                # base slot から race を取得 (resolved_slot は build_slot_post 側で使う)
                 slot_idx = {"morning": 0, "weekday": 1, "evening": 2}.get(slot, 0)
                 race_row = get_todays_race(conn, slot=slot_idx)
                 if race_row:
                     race = dict(race_row) if hasattr(race_row, 'keys') else race_row
                     if isinstance(race, dict) and race.get("race_name"):
-                        tweets, meta = build_slot_post(slot, race, conn)
+                        tweets, meta = build_slot_post(resolved_slot, race, conn)
                         # tweets は list[str]。1要素なら通常投稿、複数ならスレッド投稿。
                         # ファクトチェックは全 tweet で実行 (1つでも失敗で全体ブロック)
                         all_passed = True
