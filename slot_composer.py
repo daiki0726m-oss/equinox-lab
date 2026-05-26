@@ -29,6 +29,10 @@ from post_sections import (
     sec_dangerous_favorites,
     sec_pattern_discovery,
     sec_rotation_pattern,
+    sec_workout_focus,
+    sec_entry_pedigree_match,
+    sec_eight_axis_top,
+    sec_top3_with_reasons,
 )
 
 
@@ -428,16 +432,204 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
 
 
 # ─────────────────────────────────────────────────────────
+# 水昼: 追い切り情報
+# ─────────────────────────────────────────────────────────
+def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
+    """水昼: 追い切り高評価馬リスト"""
+    samples = {}
+    sections = []
+
+    label = _race_label(race)
+    day = _day_phrase(race)
+    race_id = race.get("race_id", "")
+
+    header = f"🏋️ {day} {label}\n追い切り評価"
+
+    # Section 1: 追い切り A/B 評価馬
+    t1, lines1, n1 = sec_workout_focus(conn, race_id, top=4)
+    samples["workout"] = n1
+    if lines1 and n1 > 0:
+        sections.append(_make_section("【A/B 評価馬】", lines1[:4]))
+
+    cta = "→ 今夜は危険な1人気を配信🔔"
+
+    hashtags = _hashtags(race)
+    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    return tweet, {"sections_used": ["workout"], "samples": samples, "char_count": _x_len(tweet)}
+
+
+# ─────────────────────────────────────────────────────────
+# 木朝: 出走確定+血統
+# ─────────────────────────────────────────────────────────
+def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
+    """木朝: 出走確定後、血統がコースに合う馬を抽出"""
+    samples = {}
+    sections = []
+
+    label = _race_label(race)
+    day = _day_phrase(race)
+    venue = race.get("venue", "")
+    surface = race.get("surface", "")
+    distance = race.get("distance", 0)
+    race_id = race.get("race_id", "")
+
+    header = f"📋 {day} {label}\n出走確定+血統マッチ"
+
+    # Section 1: 出走馬×血統 (このコース複勝35%超)
+    t1, lines1, n1 = sec_entry_pedigree_match(
+        conn, race_id, venue, surface, distance, top=4, years=6
+    )
+    samples["entry_pedigree"] = n1
+    if lines1 and n1 > 0:
+        sections.append(_make_section("【血統がコースに合う出走馬】", lines1[:4]))
+
+    # Section 2: コース全体の種牡馬TOP (補助)
+    t2, lines2, n2 = sec_sire_course_cross(
+        conn, venue, surface, distance, top=2, years=6
+    )
+    samples["sires"] = n2
+    if lines2 and n2 > 0:
+        sections.append(_make_section("【総合 種牡馬TOP】", lines2[:2]))
+
+    cta = "→ 今夜AI最終TOP4🔔"
+
+    hashtags = _hashtags(race)
+    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    return tweet, {"sections_used": ["entry_pedigree", "sires"], "samples": samples, "char_count": _x_len(tweet)}
+
+
+# ─────────────────────────────────────────────────────────
+# 木昼: 8軸最終TOP4
+# ─────────────────────────────────────────────────────────
+def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
+    """木昼: 8軸スコア最終TOP4"""
+    samples = {}
+    sections = []
+
+    label = _race_label(race)
+    day = _day_phrase(race)
+    race_id = race.get("race_id", "")
+
+    header = f"🎯 {day} {label}\n8軸スコア 最終TOP4"
+
+    # Section 1: 8軸TOP4
+    t1, lines1, n1 = sec_eight_axis_top(conn, race_id, top=4)
+    samples["axis"] = n1
+    if lines1 and n1 > 0:
+        sections.append(_make_section("【8軸スコア】", lines1[:4]))
+
+    cta = "→ 今夜AI最終3頭+note告知🔔"
+
+    hashtags = _hashtags(race)
+    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    return tweet, {"sections_used": ["axis"], "samples": samples, "char_count": _x_len(tweet)}
+
+
+# ─────────────────────────────────────────────────────────
+# 木夜: 最終3頭+note告知
+# ─────────────────────────────────────────────────────────
+def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
+    """木夜: ◎○▲ + 各馬の決定的理由 + note告知"""
+    samples = {}
+    sections = []
+
+    label = _race_label(race)
+    day = _day_phrase(race)
+    race_id = race.get("race_id", "")
+
+    header = f"🌟 {day} {label}\nAI最終予想 ◎○▲"
+
+    # Section 1: ◎○▲ + 理由
+    t1, lines1, n1 = sec_top3_with_reasons(conn, race_id)
+    samples["top3"] = n1
+    if lines1 and n1 > 0:
+        sections.append(_make_section("【AI印 ◎○▲】", lines1[:3]))
+
+    cta = "→ 明朝に最終確定+買い目🔔\n→ note記事公開予定📝"
+
+    hashtags = _hashtags(race)
+    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
+
+
+# ─────────────────────────────────────────────────────────
+# 金昼: 注目馬3頭+根拠
+# ─────────────────────────────────────────────────────────
+def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
+    """金昼: 注目馬3頭+根拠のみ (買い目は出さない、teaser)"""
+    samples = {}
+    sections = []
+
+    label = _race_label(race)
+    day = _day_phrase(race)
+    race_id = race.get("race_id", "")
+
+    header = f"🎯 {day} {label}\n注目馬 3頭"
+
+    # Section 1: 注目馬3頭 + 各馬の根拠 (買い目組合せは出さない)
+    t1, lines1, n1 = sec_top3_with_reasons(conn, race_id)
+    samples["top3"] = n1
+    if lines1 and n1 > 0:
+        sections.append(_make_section("【AIが注目する3頭】", lines1[:3]))
+
+    cta = "→ 明朝に印別買い目を配信🔔"
+
+    hashtags = _hashtags(race)
+    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
+
+
+# ─────────────────────────────────────────────────────────
+# 金夜: 翌朝配信告知
+# ─────────────────────────────────────────────────────────
+def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
+    """金夜: 翌朝配信告知 (ティーザー、◎だけ匂わせ)"""
+    samples = {}
+    sections = []
+
+    label = _race_label(race)
+    day = _day_phrase(race)
+    race_id = race.get("race_id", "")
+
+    header = f"🔔 {day} {label}\n明朝AI予想 配信予定"
+
+    # Section 1: ◎だけ匂わせ (フルリストは出さない)
+    t1, lines1, n1 = sec_top3_with_reasons(conn, race_id)
+    samples["top3"] = n1
+    if lines1 and n1 > 0:
+        # ◎の行だけ出して、○▲は隠す
+        honmei_line = next((l for l in lines1 if l.startswith("◎")), None)
+        if honmei_line:
+            sections.append(f"【◎】 {honmei_line[1:].strip()}")
+
+    sections.append("【配信予定】\n🌅 朝7時 — 印別最終予想\n🎯 朝10時 — 確定買い目")
+
+    cta = "→ お楽しみに🔥"
+
+    hashtags = _hashtags(race)
+    tweet = _fit_to_budget(header, [s for s in sections if s], cta, hashtags)
+    return tweet, {"sections_used": ["top3"], "samples": samples, "char_count": _x_len(tweet)}
+
+
+# ─────────────────────────────────────────────────────────
 # Dispatcher
 # ─────────────────────────────────────────────────────────
 SLOT_BUILDERS = {
+    # 出走馬未確定時の slot (月-水 朝昼夜) — 歴代データ主体
     "morning": build_morning_post,           # 月朝 (全曜日朝の汎用)
     "weekday": build_weekday_post,           # 月昼 (全曜日昼)
     "evening": build_evening_post,           # 月夜 (全曜日夜)
     "tue_evening": build_tue_evening_post,   # 火夜 (前走パターン特化)
     "wed_morning": build_wed_morning_post,   # 水朝 (騎手特化)
+    "wed_weekday": build_wed_weekday_post,   # 水昼 (追い切り)
     "wed_evening": build_wed_evening_post,   # 水夜 (危険な人気馬)
+    # 出走馬確定後の slot (木以降) — predictions_cache 連動
+    "thu_morning": build_thu_morning_post,   # 木朝 (出走確定+血統)
+    "thu_weekday": build_thu_weekday_post,   # 木昼 (8軸TOP4)
+    "thu_evening": build_thu_evening_post,   # 木夜 (◎○▲+note告知)
     "fri_morning": build_fri_morning_post,   # 金朝 (AI独自パターン)
+    "fri_weekday": build_fri_weekday_post,   # 金昼 (注目3頭+根拠)
+    "fri_evening": build_fri_evening_post,   # 金夜 (翌朝配信告知)
 }
 
 

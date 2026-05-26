@@ -817,3 +817,254 @@ def sec_age_pattern(
         lines.append(f"🐴{age}歳 複勝率 {pct:.0f}% ({top3}/{runs})")
         total_n += runs
     return (title, lines, total_n)
+
+
+# ─────────────────────────────────────────────────────────
+# sec_workout_focus (水昼: 追い切り情報)
+# ─────────────────────────────────────────────────────────
+def sec_workout_focus(
+    conn,
+    race_id: str,
+    top: int = 4,
+) -> Tuple[str, List[str], int]:
+    """同レースの追い切り評価が高い馬 (A/B grade) を抽出。
+
+    例:
+        🏇17番 シンサンマンサル A (好気配)
+        🏇05番 ダノンデサイル A (力強い)
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT w.horse_number, h.horse_name, w.evaluation_grade, w.evaluation_text
+        FROM workouts w
+        JOIN horses h ON w.horse_id = h.horse_id
+        WHERE w.race_id = ?
+          AND w.evaluation_grade IN ('A', 'B')
+        ORDER BY
+          CASE w.evaluation_grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END,
+          w.horse_number
+        LIMIT ?
+        """,
+        (race_id, top),
+    )
+    rows = cur.fetchall()
+    n = len(rows)
+    title = "【追い切り 高評価馬】"
+    if n == 0:
+        return (title, ["追い切り評価データなし"], 0)
+    lines = []
+    for hn, name, grade, text in rows:
+        emoji = "🥇" if grade == "A" else "🥈"
+        text_short = (text or "").strip()[:6]
+        lines.append(f"{emoji}{hn}番 {name} ({grade}/{text_short})")
+    return (title, lines, n)
+
+
+# ─────────────────────────────────────────────────────────
+# sec_entry_pedigree_match (木朝: 出走馬の血統×コース実績)
+# ─────────────────────────────────────────────────────────
+def sec_entry_pedigree_match(
+    conn,
+    race_id: str,
+    venue: str,
+    surface: str,
+    distance: int,
+    top: int = 4,
+    years: int = 6,
+    min_runs: int = 3,
+) -> Tuple[str, List[str], int]:
+    """出走馬のうち、種牡馬がこのコースで複勝率高い馬を抽出。
+
+    predictions_cache から出走馬を取り、各馬の sire を horses テーブルで lookup、
+    その sire が venue/surface/distance で過去6年複勝何%か計算。
+
+    例:
+        🩸17番 シャインローズ (フィエールマン産駒 50%)
+        🩸03番 ロイヤルクラウン (コントレイル産駒 50%)
+    """
+    cur = conn.cursor()
+    # 出走馬リスト (predictions_cache 経由)
+    cur.execute(
+        "SELECT predictions_json FROM predictions_cache WHERE race_id = ?",
+        (race_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return ("【出走馬×血統】", ["出走馬データなし(予測キャッシュ無し)"], 0)
+    import json as _json
+    try:
+        horses_list = _json.loads(row[0])
+    except Exception:
+        return ("【出走馬×血統】", ["出走馬データ読み込み失敗"], 0)
+
+    if not horses_list:
+        return ("【出走馬×血統】", ["出走馬なし"], 0)
+
+    from_date = f"{datetime.now().year - years}-01-01"
+
+    # 出走馬の horse_number → name → sire を引いて、種牡馬の複勝率を計算
+    matches = []
+    for h in horses_list:
+        hn = h.get("horse_number")
+        name = h.get("horse_name", "")
+        if not name:
+            continue
+        cur.execute(
+            "SELECT sire FROM horses WHERE horse_name = ? LIMIT 1",
+            (name,),
+        )
+        sire_row = cur.fetchone()
+        if not sire_row or not sire_row[0]:
+            continue
+        sire = sire_row[0]
+        # この種牡馬がこのコースで何回走って複勝何%か
+        cur.execute(
+            """
+            SELECT COUNT(*) AS runs,
+                   SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            FROM races r
+            JOIN results res ON r.race_id = res.race_id
+            JOIN horses h2 ON res.horse_id = h2.horse_id
+            WHERE r.surface = ? AND r.distance = ? AND r.venue = ?
+              AND r.race_date >= ?
+              AND res.finish_position > 0
+              AND h2.sire = ?
+            """,
+            (surface, distance, venue, from_date, sire),
+        )
+        stat = cur.fetchone()
+        if not stat or not stat[0]:
+            continue
+        runs, top3 = stat
+        if runs < min_runs:
+            continue
+        pct = 100 * top3 / runs
+        if pct >= 35:  # 複勝率 35% 以上のみ
+            matches.append((pct, hn, name, sire, runs, top3))
+
+    matches.sort(reverse=True)
+    title = f"【出走馬×血統 (このコース複勝率35%超)】"
+    if not matches:
+        return (title, ["該当馬なし"], 0)
+
+    lines = []
+    for pct, hn, name, sire, runs, top3 in matches[:top]:
+        sire_short = sire.split("(")[0][:8]  # "(米)" 等を削る
+        lines.append(f"🩸{hn}番 {name} ({sire_short} {pct:.0f}%/{top3}/{runs})")
+    return (title, lines, len(matches))
+
+
+# ─────────────────────────────────────────────────────────
+# sec_eight_axis_top (木昼: 8軸最終TOP4)
+# ─────────────────────────────────────────────────────────
+def sec_eight_axis_top(
+    conn,
+    race_id: str,
+    top: int = 4,
+) -> Tuple[str, List[str], int]:
+    """8軸スコア合計 (cat_* + si_avg) 上位を抽出。
+
+    predictions_cache の各馬の cat_ability / cat_pedigree / cat_jockey /
+    cat_track / cat_record / cat_weather / si_avg / pred_win_pct を加重合計
+    して8軸スコアを算出。
+
+    例:
+        🌟17番 シャインローズ 軸87 (能82 血75 騎88)
+        🌟05番 タスティエーラ 軸82 (能85 血71)
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT predictions_json FROM predictions_cache WHERE race_id = ?",
+        (race_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return ("【8軸最終TOP4】", ["予測キャッシュなし"], 0)
+    import json as _json
+    try:
+        horses_list = _json.loads(row[0])
+    except Exception:
+        return ("【8軸最終TOP4】", ["予測データ読み込み失敗"], 0)
+    if not horses_list:
+        return ("【8軸最終TOP4】", ["馬データなし"], 0)
+
+    # 8軸スコア = (cat_ability + cat_pedigree + cat_jockey + cat_track + cat_record + cat_weather) / 6
+    #         + si_avg/100 * weight
+    def axis_score(h):
+        cats = [
+            h.get("cat_ability", 0) or 0,
+            h.get("cat_pedigree", 0) or 0,
+            h.get("cat_jockey", 0) or 0,
+            h.get("cat_track", 0) or 0,
+            h.get("cat_record", 0) or 0,
+        ]
+        si = h.get("si_avg", 0) or 0
+        # 平均 (0-100 想定)
+        cat_avg = sum(cats) / len([c for c in cats if c > 0]) if any(cats) else 0
+        return cat_avg * 0.6 + si * 0.4
+
+    scored = sorted(
+        [(axis_score(h), h) for h in horses_list],
+        key=lambda x: -x[0],
+    )[:top]
+
+    title = "【8軸最終TOP4】"
+    lines = []
+    for score, h in scored:
+        hn = h.get("horse_number", 0)
+        name = h.get("horse_name", "?")[:8]
+        nou = h.get("cat_ability", 0) or 0
+        ket = h.get("cat_pedigree", 0) or 0
+        kis = h.get("cat_jockey", 0) or 0
+        lines.append(f"🌟{hn}番 {name} 軸{score:.0f} (能{nou:.0f}/血{ket:.0f}/騎{kis:.0f})")
+    return (title, lines, len(scored))
+
+
+# ─────────────────────────────────────────────────────────
+# sec_top3_with_reasons (木夜/金昼: ◎○▲ と決定的理由)
+# ─────────────────────────────────────────────────────────
+def sec_top3_with_reasons(
+    conn,
+    race_id: str,
+) -> Tuple[str, List[str], int]:
+    """予測キャッシュから ◎○▲ と各馬の reasons を抽出。
+
+    例:
+        ◎17番 シャインローズ — 勝率トップで信頼度高
+        ○05番 タスティエーラ — 直近複勝80%で堅実
+        ▲03番 ロイヤルクラウン — 末脚最速で末脚決着型
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT predictions_json FROM predictions_cache WHERE race_id = ?",
+        (race_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return ("【AI印 ◎○▲】", ["予測キャッシュなし"], 0)
+    import json as _json
+    try:
+        horses_list = _json.loads(row[0])
+    except Exception:
+        return ("【AI印 ◎○▲】", ["予測データ読み込み失敗"], 0)
+    if not horses_list:
+        return ("【AI印 ◎○▲】", ["馬データなし"], 0)
+
+    # ◎○▲ の馬を取得
+    title = "【AI印 ◎○▲】"
+    lines = []
+    for mk in ["◎", "○", "▲"]:
+        h = next((x for x in horses_list if x.get("mark") == mk), None)
+        if not h:
+            continue
+        hn = h.get("horse_number", 0)
+        name = h.get("horse_name", "?")[:9]
+        reasons = h.get("reasons", []) or []
+        reason = reasons[0] if reasons else "AI印馬"
+        # 文字数節約
+        reason_short = reason[:14]
+        lines.append(f"{mk}{hn}番 {name} — {reason_short}")
+    if not lines:
+        return (title, ["印馬未確定"], 0)
+    return (title, lines, len(lines))
