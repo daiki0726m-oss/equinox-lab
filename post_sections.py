@@ -417,8 +417,8 @@ def sec_pace_decisive(
     win_pct = 100 * wins / n
     top3_pct = 100 * top3 / n
     lines = [
-        f"💨上り最速馬 勝率 {win_pct:.0f}% ({wins}/{n})",
-        f"💨上り最速馬 複勝率 {top3_pct:.0f}% ({top3}/{n})",
+        f"💨上がり最速馬 勝率 {win_pct:.0f}% ({wins}/{n})",
+        f"💨上がり最速馬 複勝率 {top3_pct:.0f}% ({top3}/{n})",
     ]
     if top3_pct >= 60:
         lines.append("→ 末脚決着型コース、上り注目")
@@ -613,7 +613,7 @@ def sec_dangerous_favorites(
     if not flop_horses:
         return (title, lines, n)
 
-    # 飛び馬の特徴 (前走着順, 種牡馬) を抽出
+    # 飛んだ1人気の特徴 (前走着順, 種牡馬) を抽出
     flop_features = []
     for race_date, name, hid, pos, sire in flop_horses:
         cur.execute(
@@ -654,7 +654,7 @@ def sec_dangerous_favorites(
             "flopped": pos >= 5,
         })
 
-    # 母集団との比較で「特異な飛び率」のバケットを発見 (因果ではなく相関)
+    # 母集団との比較で「特異な凡走パターン」を発見 (因果ではなく相関)
     # 重要: N=2件の共通点は意味なし。母集団との比率差で判断する。
     insights = []
     overall_flop_rate = flop_pct / 100  # 全体飛び率
@@ -675,29 +675,28 @@ def sec_dangerous_favorites(
             if r["flopped"]:
                 bucket_stats[b]["flop"] += 1
 
-    # 飛び率が全体+15pt以上 のバケットを「特異点」として提示 (サンプル 3件以上)
+    # 全体+15pt以上 凡走率が高い前走パターンを「警戒区分」として提示 (サンプル 3件以上)
     for bucket, stat in bucket_stats.items():
         if stat["total"] >= 3:
             bucket_rate = stat["flop"] / stat["total"]
             diff_pt = (bucket_rate - overall_flop_rate) * 100
             if diff_pt >= 15:
                 insights.append(
-                    f"※【{bucket}】の1人気は飛び率{int(bucket_rate*100)}% "
+                    f"※【{bucket}】の1人気は凡走率{int(bucket_rate*100)}% "
                     f"(全体{int(overall_flop_rate*100)}%より+{int(diff_pt)}pt)"
                 )
 
-    # 特異点が見つからない場合は誠実に「ランダム波乱」と明示
+    # 特異な傾向が見つからない場合は誠実に明示
     if not insights and flop > 0 and n >= 5:
-        insights.append("※飛び馬の特徴に偏りなし — 単発の波乱、共通点見出せず")
+        insights.append("※飛んだ事例に共通の傾向なし — 個別要因の凡走、再現性低い")
 
     # 共通点 (insight) を先に出す
     for ins in insights:
         lines.append(ins)
 
     # アクション指針
-    if any("飛び率" in ins for ins in insights):
-        # どのバケットが危険か insight で示されている → 該当バケットを警戒
-        lines.append("→ 該当する1人気は割り引き判断を")
+    if any("凡走率" in ins for ins in insights):
+        lines.append("→ 該当する前走パターンの1人気は割引判断を")
 
     # 直近の事例 (末尾、budget 超過時に最初に trim)
     for f in flop_features[:2]:
