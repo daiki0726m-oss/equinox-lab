@@ -30,6 +30,46 @@ class BettingStrategy:
     # 全券種を有効化
     ALL_BET_TYPES = ["単勝", "複勝", "ワイド", "馬連", "三連複", "三連単"]
 
+    # ── Phase α (2026-05-27): Whitelist specialization ──
+    # 6 年 walk-forward 検証で「全 6 年 ROI ≥ 100%」を維持できた segment は
+    # 存在しなかったが、5/6 年以上で安定して 100%+ の 2 segments のみ実用化:
+    #   1. 単勝 × confidence=S × 2勝クラス × 中距離 (avg ROI 117.5%)
+    #   2. 単勝 × 函館 × ダート (avg ROI 106.5%)
+    # WHITELIST_MODE=True で「これ以外の race は全 skip」する specialization 戦略。
+    #
+    # Format: (segment_name, predicate(race_info, confidence) → bool, allowed_bet_types)
+    WHITELIST_SEGMENTS = [
+        (
+            "S/2勝/中距離 単勝",
+            lambda ri, conf: (
+                conf == "S"
+                and "2勝" in (ri.get("race_name", "") or "")
+                and 1800 <= (ri.get("distance", 0) or 0) <= 2199
+            ),
+            ["単勝"],
+        ),
+        (
+            "函館/ダート 単勝",
+            lambda ri, conf: (
+                (ri.get("venue", "") or "") == "函館"
+                and (ri.get("surface", "") or "") == "ダート"
+            ),
+            ["単勝"],
+        ),
+    ]
+
+    def get_whitelist_match(self, race_info, confidence):
+        """Whitelist segments のうち該当するものを返す (なければ None)。"""
+        if not race_info:
+            return None
+        for seg_name, pred, bet_types in self.WHITELIST_SEGMENTS:
+            try:
+                if pred(race_info, confidence):
+                    return (seg_name, bet_types)
+            except Exception:
+                continue
+        return None
+
     def kelly_criterion(self, prob, odds):
         """ケリー基準で最適賭け比率を計算"""
         if prob <= 0 or odds <= 1:
@@ -51,7 +91,7 @@ class BettingStrategy:
         amount = min(amount, self.MAX_BET_PER_RACE)
         return int(amount)
 
-    def should_bet_race(self, predictions, confidence=None, race_info=None):
+    def should_bet_race(self, predictions, confidence=None, race_info=None, strict_whitelist=False):
         """
         レース見送り判定（厳格版）
 
@@ -60,9 +100,21 @@ class BettingStrategy:
         - 最大勝率が低すぎる
         - 本命が堅すぎてオッズに妙味なし
         - 1勝戦×妙味中間オッズ (2.5-3.9倍) は loss layer (2026-05-27 #30)
+
+        strict_whitelist=True の場合: WHITELIST_SEGMENTS に該当しない race を全 skip。
+            walk-forward で 100%+ 確認できた niche segments のみで投資する specialization 戦略。
         """
         if not predictions:
             return False, "予測データなし"
+
+        # Phase α (2026-05-27): Whitelist specialization mode
+        # 6 年 walk-forward で 5/6 年以上 100%+ の 2 segments だけ通過させる
+        if strict_whitelist:
+            match = self.get_whitelist_match(race_info, confidence)
+            if not match:
+                return False, "Whitelist 該当なし (specialization mode)"
+            # match した場合は他の判定を skip して直接 OK
+            return True, f"Whitelist hit: {match[0]}"
 
         # ❌ v12 (2026-05-26 ROI最大化): 信頼度 C/D は明示的に見送り
         # 5/9-5/24 backtest: C 三連複 ROI 75% / 馬連 45% / ワイド 80%
@@ -161,12 +213,17 @@ class BettingStrategy:
                 return
             if spent + amt > budget:
                 return
+            # Phase α: honor_bets も EV >= MIN_EV を強制 (100% 超え戦略)
+            # 旧 honor は EV 制限なしで購入していたが、estimated EV < MIN_EV は実質損失層
+            ev_estimated = prob * odds
+            if ev_estimated < self.MIN_EV:
+                return
             signatures.add(sig)
             spent += amt
             bets.append({
                 "type": t, "detail": detail, "horse_numbers": hns,
                 "amount": amt, "odds": round(odds, 1),
-                "ev": round(prob * odds, 2), "prob": round(prob, 3),
+                "ev": round(ev_estimated, 2), "prob": round(prob, 3),
                 "horse_name": name, "honor": True,
             })
 
@@ -248,8 +305,23 @@ class BettingStrategy:
         'D': 0.0,
     }
 
-    def generate_bets(self, predictions, bankroll=None, bet_types=None, confidence=None):
-        """予測結果から推奨馬券を生成（回収率重視版 + honor bets + confidence-aware）"""
+    def generate_bets(self, predictions, bankroll=None, bet_types=None, confidence=None,
+                      race_info=None, strict_whitelist=False):
+        """予測結果から推奨馬券を生成（回収率重視版 + honor bets + confidence-aware）
+
+        strict_whitelist=True: WHITELIST_SEGMENTS に該当する場合のみ、許可された
+            bet_types のみを生成 (specialization mode)。
+        """
+        # Phase α: whitelist specialization mode
+        if strict_whitelist:
+            match = self.get_whitelist_match(race_info, confidence)
+            if not match:
+                return {"bets": [], "total_amount": 0, "race_info": {}, "skipped": True,
+                        "skip_reason": "Whitelist 該当なし"}
+            seg_name, allowed_types = match
+            bet_types = allowed_types  # whitelist で指定された券種のみ
+            print(f"  🎯 Whitelist hit: {seg_name} (bet_types={allowed_types})")
+
         # confidence ウェイトで budget と line_amount をスケール
         mult = self.CONFIDENCE_MULTIPLIER.get(confidence, 1.0) if confidence else 1.0
         if mult == 0.0:
@@ -282,11 +354,11 @@ class BettingStrategy:
         top_horses = [p for p in sorted_preds if p["pred_top3"] >= 0.08][:4]
 
         # ── 1. 単勝（EVがプラスの馬）──
+        # Phase α: EV >= MIN_EV (1.2) で厳格化 (2026-05-27 Phase α)
         if "単勝" in enabled:
             for p in sorted_preds:
                 ev = p["pred_win"] * p["odds_win"]
-                # EV >= 1.0 かつ オッズ >= 2.0 かつ 勝率 >= 8%
-                if ev >= 1.0 and p["odds_win"] >= 2.0 and p["pred_win"] >= 0.08:
+                if ev >= self.MIN_EV and p["odds_win"] >= 2.0 and p["pred_win"] >= 0.08:
                     amount = self.calculate_bet_amount(p["pred_win"], p["odds_win"], budget)
                     if amount > 0 and total_amount + amount <= budget:
                         bets.append({
@@ -302,12 +374,12 @@ class BettingStrategy:
                         total_amount += amount
 
         # ── 2. 複勝（安定的に回収率を上げる柱）──
+        # Phase α: 複勝は MIN_EV を緩めて 1.1 (control率高いので)
         if "複勝" in enabled:
             for p in sorted_preds:
                 odds_place = p.get("odds_place", 1.5)
                 ev = p["pred_top3"] * odds_place
-                # 複勝率 >= 12% かつ EV >= 1.0
-                if ev >= 1.0 and p["pred_top3"] >= 0.12:
+                if ev >= 1.1 and p["pred_top3"] >= 0.12:
                     amount = self.calculate_bet_amount(
                         p["pred_top3"], odds_place, budget - total_amount
                     )
@@ -336,7 +408,8 @@ class BettingStrategy:
                     (h1.get("odds_win", 5) + h2.get("odds_win", 5)) * 0.3, 1.5
                 )
                 ev = wide_prob * wide_odds
-                if ev >= 0.8:
+                # Phase α: ワイド MIN_EV 厳格化 0.8 → 1.2
+                if ev >= self.MIN_EV:
                     amount = self.calculate_bet_amount(wide_prob, wide_odds, budget - total_amount)
                     if amount > 0 and total_amount + amount <= budget:
                         bets.append({
@@ -360,7 +433,8 @@ class BettingStrategy:
                                h2["pred_win"] * t3_1) * 0.6
                 umaren_odds = max(h1.get("odds_win", 5) * h2.get("odds_win", 5) * 0.4, 3.0)
                 ev = umaren_prob * umaren_odds
-                if ev >= 0.5:
+                # Phase α: 馬連 MIN_EV 厳格化 0.5 → 1.2
+                if ev >= self.MIN_EV:
                     amount = self.calculate_bet_amount(umaren_prob, umaren_odds, budget - total_amount)
                     if amount > 0 and total_amount + amount <= budget:
                         bets.append({
@@ -394,7 +468,8 @@ class BettingStrategy:
                         5.0
                     )
                     ev = trio_prob * trio_odds
-                    if ev >= 0.8:
+                    # Phase α: 三連複 MIN_EV 厳格化 0.8 → 1.2
+                    if ev >= self.MIN_EV:
                         amount = min(self.MIN_BET, budget - total_amount)
                         if amount >= self.MIN_BET and total_amount + amount <= budget:
                             bets.append({
@@ -433,7 +508,8 @@ class BettingStrategy:
                             30.0
                         )
                         ev = prob * odds
-                        if ev >= 0.3:
+                        # Phase α: 三連単 MIN_EV 厳格化 0.3 → 1.2
+                        if ev >= self.MIN_EV:
                             sanrentan_bets.append({
                                 "type": "三連単",
                                 "detail": f"{h1['horse_number']}→{h2['horse_number']}→{h3['horse_number']}",

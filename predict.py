@@ -335,6 +335,91 @@ def cmd_predict(args):
                 pred_df['pred_win_norm'] = pred_df['pred_win_norm'] / total_win
             print(f"  💪 追い切り補正: {len(workout_map)}頭分 (A:+10% / C:-7%)")
 
+        # ── 馬体重変化補正 (Phase α #31: 2026-05-27) ──
+        # 競馬専門家の経験則: 馬体重 ±6kg 以上 は調子変動の signal、ML model に
+        # 入っていないので post-prediction 補正。
+        #   ±2 以内: 1.00 (理想)
+        #   ±3〜5:  0.97 (やや変動)
+        #   ±6〜9:  0.90 (大幅変動、警戒)
+        #   ±10+:   0.80 (異常変動、危険)
+        # この補正は post-ML なので「絶対能力」ではなく「当日コンディション」を反映
+        weight_change_map = {}
+        for r in results:
+            hn = r.get("horse_number") if hasattr(r, 'get') else r["horse_number"]
+            wc = r.get("weight_change") if hasattr(r, 'get') else r["weight_change"]
+            if hn and wc is not None and wc != 0:
+                weight_change_map[int(hn)] = wc
+
+        def wc_factor(wc):
+            if wc is None: return 1.0
+            absw = abs(wc)
+            if absw <= 2: return 1.00
+            if absw <= 5: return 0.97
+            if absw <= 9: return 0.90
+            return 0.80
+
+        if weight_change_map:
+            adjusted = 0
+            for idx in pred_df.index:
+                hn = int(pred_df.at[idx, 'horse_number'])
+                wc = weight_change_map.get(hn)
+                if wc is not None:
+                    factor = wc_factor(wc)
+                    if factor != 1.0:
+                        pred_df.at[idx, 'pred_win_norm'] *= factor
+                        pred_df.at[idx, 'pred_top3_norm'] *= factor
+                        adjusted += 1
+            total_win = pred_df['pred_win_norm'].sum()
+            if total_win > 0:
+                pred_df['pred_win_norm'] = pred_df['pred_win_norm'] / total_win
+            if adjusted > 0:
+                print(f"  ⚖️ 馬体重変化補正: {adjusted}頭 (±6kg+ -10%, ±10kg+ -20%)")
+
+        # ── 馬場バイアス補正 (Phase α #32, Track 1 完成版: 2026-05-27) ──
+        # 同日 R9+ で同 venue の R1-R8 結果から馬場バイアス (内伸び/外伸び) を推定。
+        # 検出された場合は post-prediction で枠順別に補正。
+        race_number_now = race_info.get("race_number") or 0
+        venue_now = race_info.get("venue") or ""
+        race_date_now = race_info.get("race_date") or ""
+        if race_number_now >= 9 and venue_now and race_date_now:
+            try:
+                from scripts.track_bias_detector import detect_track_bias
+                with get_db() as bconn:
+                    bias = detect_track_bias(bconn, race_date_now, venue_now)
+                if bias and bias.get("confidence") != "low":
+                    fb = bias.get("frame_bias")
+                    if fb in ("inside", "outside"):
+                        # post_position による補正
+                        pp_map = {}
+                        for r in results:
+                            hn = r.get("horse_number") if hasattr(r, 'get') else r["horse_number"]
+                            pp = r.get("post_position") if hasattr(r, 'get') else r["post_position"]
+                            if hn and pp:
+                                pp_map[int(hn)] = int(pp)
+                        adj_count = 0
+                        for idx in pred_df.index:
+                            hn = int(pred_df.at[idx, 'horse_number'])
+                            pp = pp_map.get(hn, 0)
+                            factor = 1.0
+                            if fb == "inside":
+                                if pp <= 3: factor = 1.08
+                                elif pp >= 6: factor = 0.92
+                            elif fb == "outside":
+                                if pp >= 6: factor = 1.08
+                                elif pp <= 3: factor = 0.92
+                            if factor != 1.0:
+                                pred_df.at[idx, 'pred_win_norm'] *= factor
+                                pred_df.at[idx, 'pred_top3_norm'] *= factor
+                                adj_count += 1
+                        total_win = pred_df['pred_win_norm'].sum()
+                        if total_win > 0:
+                            pred_df['pred_win_norm'] = pred_df['pred_win_norm'] / total_win
+                        if adj_count > 0:
+                            print(f"  🏁 馬場バイアス補正: {fb} bias, {adj_count}頭調整 (内 {bias['details']['inside_rate']*100:.0f}% / 外 {bias['details']['outside_rate']*100:.0f}%)")
+            except Exception as e:
+                # 静かに skip (バイアス検出は best-effort)
+                pass
+
         # 予測結果表示
         print(f"\n📊 予測結果: {race_info.get('race_name', '')} "
               f"({race_info['venue']} {race_info['race_number']}R "
@@ -738,11 +823,20 @@ def cmd_predict(args):
         # confidence が確定した時点で 1 回だけ should_bet 判定する。
         # C/D は backtest ROI 75-80% の損失層なので明示的に should_bet=0。
         # 🆕 v14 (2026-05-27 #30): race_info を渡して 1勝×2.5-3.9倍 帯遮断
-        should_bet, reason = strategy.should_bet_race(predictions, confidence=confidence, race_info=race_info)
+        # 🆕 v15 (Phase α): USE_WHITELIST=1 で specialization mode (walk-forward 確認の 2 segments のみ)
+        use_whitelist = os.environ.get("USE_WHITELIST", "") == "1"
+        should_bet, reason = strategy.should_bet_race(
+            predictions, confidence=confidence, race_info=race_info,
+            strict_whitelist=use_whitelist
+        )
 
         # 買い目生成 (常に実行 — EV・妙味計算のため。should_bet=0 でも UI は買い目表示)
         # v3 (2026-05-27): confidence-aware bet weighting (S=1.5x, A=1.2x, B=1.0x)
-        bets_result = strategy.generate_bets(predictions, confidence=confidence)
+        # Phase α: whitelist mode で specialization
+        bets_result = strategy.generate_bets(
+            predictions, confidence=confidence,
+            race_info=race_info, strict_whitelist=use_whitelist
+        )
         bets_by_type = {}
         for b in bets_result.get('bets', []):
             bt = b.get('type', '単勝')
