@@ -23,7 +23,10 @@ class BettingStrategy:
     """
 
     MAX_BET_PER_RACE = 1000  # 1レースの上限(円)
-    MIN_EV = 1.2             # 最低期待値
+    MIN_EV = 0.8             # 最低期待値 (2026-05-27: 1.2 → 0.8 entertainment モード)
+                             # 旧 1.2 は 100% 超 ROI 投資ガチ運用向け。0.8 は「夢とロマン」
+                             # スタンスで買い目多めに提示する設定。X 投稿には買い目 detail
+                             # は出ないので、内部のみ影響 (entertainment 寄りに調整)。
     MIN_BET = 100            # 最低賭け金(円)
     KELLY_FRACTION = 0.5     # ハーフケリー（旧0.25→攻めに変更）
 
@@ -148,12 +151,12 @@ class BettingStrategy:
             return False, "本命が堅すぎてオッズに旨味なし"
 
         # 🆕 v12 (ROI最大化施策): ◎の単勝オッズ妙味バンド外は見送り
-        # confidence v4 で odds_pot は評価軸だが、should_bet にも明示的に反映:
-        # 2.0倍未満 = 配当低すぎてROI出ない、15倍超 = ◎自体が信頼度低い大穴
+        # 2026-05-27 entertainment モード: 上限 15.0倍 → 30.0倍 に拡大
+        # (大穴◎ race も「面白いレース」として推奨対象に。投稿対象 race が増える)
         if top_odds > 0:
             if top_odds < 2.0:
                 return False, f"◎オッズ{top_odds:.1f}倍は配当妙味なし"
-            if top_odds > 15.0:
+            if top_odds > 30.0:
                 return False, f"◎オッズ{top_odds:.1f}倍は◎信頼度が低すぎ"
 
         # 🆕 v13 (2026-05-27 #30): 1勝戦の妙味中間オッズ帯は loss layer
@@ -213,11 +216,10 @@ class BettingStrategy:
                 return
             if spent + amt > budget:
                 return
-            # Phase α: honor_bets も EV >= MIN_EV を強制 (100% 超え戦略)
-            # 旧 honor は EV 制限なしで購入していたが、estimated EV < MIN_EV は実質損失層
+            # 2026-05-27 entertainment モード: honor_bets は EV 制限なしで全買い目生成
+            # 「印通り 馬連 5点流し / 三連複 10点流し」の完全提示を維持する
+            # (Phase α では EV>=MIN_EV を強制していたが、夢ロマン路線では妙味少ない印買い目も提示)
             ev_estimated = prob * odds
-            if ev_estimated < self.MIN_EV:
-                return
             signatures.add(sig)
             spent += amt
             bets.append({
@@ -374,12 +376,12 @@ class BettingStrategy:
                         total_amount += amount
 
         # ── 2. 複勝（安定的に回収率を上げる柱）──
-        # Phase α: 複勝は MIN_EV を緩めて 1.1 (control率高いので)
+        # 2026-05-27: entertainment モード MIN_EV=0.8 で統一
         if "複勝" in enabled:
             for p in sorted_preds:
                 odds_place = p.get("odds_place", 1.5)
                 ev = p["pred_top3"] * odds_place
-                if ev >= 1.1 and p["pred_top3"] >= 0.12:
+                if ev >= self.MIN_EV and p["pred_top3"] >= 0.12:
                     amount = self.calculate_bet_amount(
                         p["pred_top3"], odds_place, budget - total_amount
                     )
