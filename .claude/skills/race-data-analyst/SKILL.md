@@ -56,6 +56,31 @@ Before quoting a number in a report, check:
 
 If sample falls short, **don't write the claim**. Instead, write what you'd need ("もう X 戦サンプルが必要") and recommend backfill.
 
+### 3.5 単日支配チェック (CRITICAL — 2026-05-26 教訓 #25)
+
+**「期間 ROI = 単日の lucky day に支配されていないか」を必ず検査する。**
+
+集計期間が短い (≦ 4週間) と、1日の極端な配当が全体平均を歪める。例:
+
+- 5/9-5/25 (17日間) の S+A 馬連 ROI = 151% (n=155点) ← 立派に見える
+- が、5/9 単日除外で → 80% (n=145点) ← 損失層
+- → 5/9 の単日 ROI = 339% (lucky day)
+
+これを検出せず「151% の優位性」を打ち出すと、**サンプル偏り > 真の優位性** と勘違いして実装してしまう。
+
+検査手順:
+1. 期間内の日別 ROI を集計 → `python3 -c "..." | sort by ROI`
+2. 単日が全 spend の >20% を占めるならフラグ
+3. 単日除外時の ROI が全体平均から ±20pt 以上ぶれるなら「単日支配」と判定
+4. 結論には「ただし○月X日の単日寄与が大きい (除外時ROI = Y%)」を必ず併記
+
+**ROI 報告には日別 spend/return の表を添付すること**。これを怠ると、ユーザーが「優位性ある!」と勘違いして bet ロジックを書き換え、後で「あれ、実際は損するな」となる。
+
+サンプルが小さい場合は **n と単日寄与の二軸で警告** する:
+- n < 30 → 「サンプル不足、傾向と呼ばない」
+- 単日寄与 > 25% → 「単日支配、その日を除外した値も併記」
+- 両方 → 「(参考値)」のラベルで報告
+
 ### 4. Report format
 
 Use this skeleton for the markdown output:
@@ -80,6 +105,24 @@ Use this skeleton for the markdown output:
 | Rating | n | 馬連 | ワイド | 三連複 | 三連単 |
 |---|---|---|---|---|---|
 | S | ... | ... |
+
+### race_class × confidence クロス集計 (CRITICAL — 2026-05-27 教訓 #28)
+
+**confidence 軸 単独の ROI に意味があるか必ず race_class で分割確認**:
+
+| race_class | S | A | B | C | D |
+|---|---|---|---|---|---|
+| 未勝利・新馬 | ... |
+| 1勝クラス | ... |
+| 2勝クラス | ... |
+| OP/特別 | ... |
+
+5/9-5/25 で発見:
+- 未勝利・新馬では confidence 完全逆転 (S=39% / D=77%) ← ML が unknown horse を学習できてない
+- 1勝以上では confidence 軸が機能 (A=189%)
+
+→ confidence × race_class のクロスを見ずに「S が高 ROI」と断ずるのは不正確。
+   race_class 単位で confidence の有効性は変わる。
 
 ### 統計的有意性
 <差分pt + 母集団との比較>

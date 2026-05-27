@@ -101,6 +101,49 @@ def compute_race_volatility(race_info: dict) -> dict:
     else:
         conf_adjust = 0
 
+    # ── race_class 補正 (2026-05-27) ───────────────
+    # 5/9-5/25 backtest の cross-tab (race_class × confidence × 三連複◎軸 ROI):
+    #   未勝利・新馬: S=39% / A=38% / B=55% / C=64% / D=77% ← 全層 loss layer + 逆転現象
+    #   1勝クラス:    A=189% / B=24% / C=38% ← 期待通り A 高 ROI
+    #   2勝クラス:    A=234% ← 小サンプル
+    #   OP/特別:     S=154% / B=182% ← 機能してる
+    #
+    # 未勝利・新馬は ML が unknown horse をうまく学習できておらず、confidence の予測力
+    # が逆転している (高 confidence ほど ROI 低い)。1勝以上では機能してるので
+    # confidence 軸そのものは正しい。
+    #
+    # → 未勝利・新馬は -2 段 (S→B, A→C) で過大投資を防ぐ。
+    #    実質的に未勝利戦の bet weighting (S=200円/A=150円) を発動しない設計。
+    name = race_info.get("race_name", "") or ""
+    if "未勝利" in name or "新馬" in name:
+        conf_adjust += -2
+        factors.append("未勝利/新馬(-2)")
+
+    # ── 1勝クラス × loss layer 補正 (2026-05-27 #30) ───────────────
+    # 2025 historical backtest 分析結果 (1勝×A の 128 races, ROI 24.9%):
+    #   ダート: 15.5% (n=77) / 芝: 39.0% (n=51) ← ダートが loss 主犯
+    #   阪神: 5.2% / 中京: 11.9% / 札幌: 0% / 福島: 15.7% (地方場で低 ROI)
+    #   短距離 (~1400m): 11.4% (n=26) ← 短距離も loss
+    # 1勝戦は ML model の精度がクラスで急に落ちる傾向あり (馬の素性データが少ない)
+    # → 「1勝 × 上記条件」のうち 1 つでも該当すれば -1、2 つ以上で -2 補正
+    # 注意: 上位クラス (2勝以上、OP/特別、G1-G3) は ML が機能するので適用しない
+    if "1勝" in name:
+        loss_signals = 0
+        loss_factors = []
+        if surf == "ダート":
+            loss_signals += 1
+            loss_factors.append("ダート")
+        if venue in ("阪神", "中京", "札幌"):
+            loss_signals += 1
+            loss_factors.append(f"{venue}場")
+        if dist > 0 and dist <= 1400:
+            loss_signals += 1
+            loss_factors.append("短距離")
+        if loss_signals > 0:
+            penalty = -min(loss_signals, 2)  # 最大 -2 でキャップ
+            conf_adjust += penalty
+            factors.append(f"1勝×{'+'.join(loss_factors)}({penalty})")
+
     return {"score": score, "factors": factors, "conf_adjust": conf_adjust}
 
 
@@ -230,10 +273,14 @@ def compute_anasanee_score(feat: dict, jockey_name: str = "") -> dict:
     """個別馬の穴予兆スコアを計算。
 
     feat: fetch_horse_history の返り値の1要素
-    jockey_name: 今回騎手名
+    jockey_name: 今回騎手名 (None も受容)
 
     返り値: {score: int, reasons: list[str]}
     """
+    # 2026-05-27: 5/31 ダービー dry-run で発見した NoneType bug 対処
+    # jockey_name=None で呼ばれると `key in None` で TypeError
+    jockey_name = jockey_name or ""
+    feat = feat or {}
     score = 0
     reasons = []
 

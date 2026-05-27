@@ -1,0 +1,359 @@
+{
+  "train_period": {
+    "from": "2018-01-01",
+    "to": "2024-12-31"
+  },
+  "verify_period": {
+    "from": "2025-01-01",
+    "to": "2025-12-31"
+  },
+  "n_horses_rated": 30664,
+  "top50_horses": [
+    {
+      "horse_id": "2019103753",
+      "rating": 1653.0
+    },
+    {
+      "horse_id": "2018100382",
+      "rating": 1641.9
+    },
+    {
+      "horse_id": "2016104618",
+      "rating": 1637.4
+    },
+    {
+      "horse_id": "2019104462",
+      "rating": 1634.8
+    },
+    {
+      "horse_id": "2019105283",
+      "rating": 1629.8
+    },
+    {
+      "horse_id": "2018103559",
+      "rating": 1629.1
+    },
+    {
+      "horse_id": "2018110007",
+      "rating": 1625.7
+    },
+    {
+      "horse_id": "2019100213",
+      "rating": 1622.7
+    },
+    {
+      "horse_id": "2018105233",
+      "rating": 1622.2
+    },
+    {
+      "horse_id": "2019105346",
+      "rating": 1620.6
+    },
+    {
+      "horse_id": "2019106526",
+      "rating": 1620.4
+    },
+    {
+      "horse_id": "2018110015",
+      "rating": 1620.2
+    },
+    {
+      "horse_id": "2015104364",
+      "rating": 1619.0
+    },
+    {
+      "horse_id": "2017103290",
+      "rating": 1618.5
+    },
+    {
+      "horse_id": "2016104532",
+      "rating": 1614.6
+    },
+    {
+      "horse_id": "2017102170",
+      "rating": 1612.8
+    },
+    {
+      "horse_id": "2018105081",
+      "rating": 1612.7
+    },
+    {
+      "horse_id": "2018104942",
+      "rating": 1611.2
+    },
+    {
+      "horse_id": "2018100274",
+      "rating": 1609.9
+    },
+    {
+      "horse_id": "2018104332",
+      "rating": 1609.6
+    },
+    {
+      "horse_id": "2016105537",
+      "rating": 1608.5
+    },
+    {
+      "horse_id": "2019105219",
+      "rating": 1608.3
+    },
+    {
+      "horse_id": "2019105394",
+      "rating": 1607.1
+    },
+    {
+      "horse_id": "2017101835",
+      "rating": 1605.6
+    },
+    {
+      "horse_id": "2017105582",
+      "rating": 1604.7
+    },
+    {
+      "horse_id": "2018104750",
+      "rating": 1603.5
+    },
+    {
+      "horse_id": "2017104936",
+      "rating": 1603.5
+    },
+    {
+      "horse_id": "2017100720",
+      "rating": 1603.3
+    },
+    {
+      "horse_id": "2018105355",
+      "rating": 1603.0
+    },
+    {
+      "horse_id": "2018105008",
+      "rating": 1602.4
+    },
+    {
+      "horse_id": "2016100752",
+      "rating": 1601.4
+    },
+    {
+      "horse_id": "2017105563",
+      "rating": 1601.4
+    },
+    {
+      "horse_id": "2019104740",
+      "rating": 1600.9
+    },
+    {
+      "horse_id": "2018104225",
+      "rating": 1600.7
+    },
+    {
+      "horse_id": "2018105431",
+      "rating": 1600.5
+    },
+    {
+      "horse_id": "2017101719",
+      "rating": 1599.8
+    },
+    {
+      "horse_id": "2017101010",
+      "rating": 1599.1
+    },
+    {
+      "horse_id": "2017106404",
+      "rating": 1598.1
+    },
+    {
+      "horse_id": "2016102175",
+      "rating": 1598.0
+    },
+    {
+      "horse_id": "2017110144",
+      "rating": 1597.5
+    },
+    {
+      "horse_id": "2018106545",
+      "rating": 1597.5
+    },
+    {
+      "horse_id": "2017106387",
+      "rating": 1597.3
+    },
+    {
+      "horse_id": "2019105859",
+      "rating": 1596.4
+    },
+    {
+      "horse_id": "2018101343",
+      "rating": 1596.3
+    },
+    {
+      "horse_id": "2018104646",
+      "rating": 1596.2
+    },
+    {
+      "horse_id": "2016103338",
+      "rating": 1596.1
+    },
+    {
+      "horse_id": "2018104797",
+      "rating": 1595.6
+    },
+    {
+      "horse_id": "2019102238",
+      "rating": 1595.0
+    },
+    {
+      "horse_id": "2019104853",
+      "rating": 1594.2
+    },
+    {
+      "horse_id": "2019100792",
+      "rating": 1594.1
+    }
+  ],
+  "rating_history_monthly": [
+    {
+      "month": "2023-01",
+      "n_horses_rated": 21104,
+      "max_rating": 1615.624075295386,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-02",
+      "n_horses_rated": 21595,
+      "max_rating": 1615.624075295386,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-03",
+      "n_horses_rated": 21894,
+      "max_rating": 1615.624075295386,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-04",
+      "n_horses_rated": 22141,
+      "max_rating": 1614.5834478886052,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-05",
+      "n_horses_rated": 22362,
+      "max_rating": 1617.3408832653156,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-06",
+      "n_horses_rated": 22475,
+      "max_rating": 1625.0429532731662,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-07",
+      "n_horses_rated": 22817,
+      "max_rating": 1625.0429532731662,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-08",
+      "n_horses_rated": 23293,
+      "max_rating": 1625.0429532731662,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-09",
+      "n_horses_rated": 23727,
+      "max_rating": 1625.0429532731662,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-10",
+      "n_horses_rated": 24193,
+      "max_rating": 1625.0429532731662,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-11",
+      "n_horses_rated": 24863,
+      "max_rating": 1629.5586530584892,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2023-12",
+      "n_horses_rated": 25347,
+      "max_rating": 1625.8777258757254,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-01",
+      "n_horses_rated": 25893,
+      "max_rating": 1629.1338679728226,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-02",
+      "n_horses_rated": 26414,
+      "max_rating": 1630.6315827519154,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-03",
+      "n_horses_rated": 26736,
+      "max_rating": 1633.7936926931802,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-04",
+      "n_horses_rated": 26826,
+      "max_rating": 1633.7936926931802,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-05",
+      "n_horses_rated": 27108,
+      "max_rating": 1633.7936926931802,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-06",
+      "n_horses_rated": 27258,
+      "max_rating": 1633.7936926931802,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-07",
+      "n_horses_rated": 27424,
+      "max_rating": 1637.3533051781947,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-08",
+      "n_horses_rated": 27927,
+      "max_rating": 1637.3533051781947,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-09",
+      "n_horses_rated": 28052,
+      "max_rating": 1637.3533051781947,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-10",
+      "n_horses_rated": 28803,
+      "max_rating": 1642.2031052618981,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-11",
+      "n_horses_rated": 29521,
+      "max_rating": 1642.2031052618981,
+      "min_rating": 1324.834693481946
+    },
+    {
+      "month": "2024-12",
+      "n_horses_rated": 30148,
+      "max_rating": 1642.2031052618981,
+      "min_rating": 1324.834693481946
+    }
+  ]
+}

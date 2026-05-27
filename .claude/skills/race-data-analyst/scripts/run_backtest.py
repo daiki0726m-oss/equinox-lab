@@ -48,6 +48,8 @@ def main():
 
     # 信頼度 bucket 別の集計
     buckets = defaultdict(lambda: defaultdict(lambda: {"spend": 0, "return": 0, "hits": 0, "races": 0}))
+    # 日別の集計 (S+A 合算で「単日支配バイアス」の検出に使う)
+    daily_sa = defaultdict(lambda: defaultdict(lambda: {"spend": 0, "return": 0}))
     rating_count = defaultdict(int)
     resulted = 0
 
@@ -80,15 +82,19 @@ def main():
         top1 = top6[0]
         others = [h for h in top6[1:6] if h]
 
+        is_sa = conf in ("S", "A")
+
         # 馬連流し (5点)
         bk = buckets[conf]["馬連流し(5点)"]
         bk["races"] += 1
         for o in others:
             bk["spend"] += 100
+            if is_sa: daily_sa[race_date]["馬連流し(5点)"]["spend"] += 100
             if {top1, o} == {win_h, p2_h}:
                 key = "-".join(sorted(str(x) for x in [top1, o]))
                 amt = payouts["馬連"].get(key, 0)
                 bk["return"] += amt
+                if is_sa: daily_sa[race_date]["馬連流し(5点)"]["return"] += amt
                 if amt > 0: bk["hits"] += 1
 
         # ワイド流し (5点)
@@ -96,10 +102,12 @@ def main():
         bk["races"] += 1
         for o in others:
             bk["spend"] += 100
+            if is_sa: daily_sa[race_date]["ワイド流し(5点)"]["spend"] += 100
             if top1 in top3_set and o in top3_set:
                 key = "-".join(sorted(str(x) for x in [top1, o]))
                 amt = payouts["ワイド"].get(key, 0)
                 bk["return"] += amt
+                if is_sa: daily_sa[race_date]["ワイド流し(5点)"]["return"] += amt
                 if amt > 0: bk["hits"] += 1
 
         # 三連複 ◎軸 (10点)
@@ -107,11 +115,29 @@ def main():
         bk["races"] += 1
         for a, b in combinations(others, 2):
             bk["spend"] += 100
+            if is_sa: daily_sa[race_date]["三連複◎軸(10点)"]["spend"] += 100
             if {top1, a, b} == top3_set:
                 key = "-".join(sorted(str(x) for x in [top1, a, b]))
                 amt = payouts["三連複"].get(key, 0)
                 bk["return"] += amt
+                if is_sa: daily_sa[race_date]["三連複◎軸(10点)"]["return"] += amt
                 if amt > 0: bk["hits"] += 1
+
+        # 三連複 フォーメーション ◎-○▲-△×注 (2×3=6点) — 1着候補=◎ / 2着候補=印2-3位 / 3着候補=印4-6位
+        # 三連複は順序問わずなので、組合せが既に異なる5頭の集合になる前提で6点
+        bk = buckets[conf]["三連複フォーメーション(6点)"]
+        bk["races"] += 1
+        if len(others) >= 5:
+            front = others[:2]  # ○▲
+            back = others[2:5]  # △×注
+            for a in front:
+                for b in back:
+                    bk["spend"] += 100
+                    if {top1, a, b} == top3_set:
+                        key = "-".join(sorted(str(x) for x in [top1, a, b]))
+                        amt = payouts["三連複"].get(key, 0)
+                        bk["return"] += amt
+                        if amt > 0: bk["hits"] += 1
 
     # ROI 計算
     report = {
@@ -145,6 +171,40 @@ def main():
         bt: {**d, "roi_pct": round(100*d["return"]/d["spend"], 1) if d["spend"] else 0}
         for bt, d in total.items()
     }
+
+    # 🆕 単日支配バイアス検出 (S+A 限定、各券種ごと)
+    # 各日 spend が全体 spend の >20% なら警告
+    # 単日除外後 ROI が全体 ±20pt 以上ぶれたら「単日支配」と判定
+    report["single_day_dominance_check"] = {}
+    for bt in ["馬連流し(5点)", "ワイド流し(5点)", "三連複◎軸(10点)", "三連複フォーメーション(6点)"]:
+        tot_s = sum(d[bt]["spend"] for d in daily_sa.values())
+        tot_r = sum(d[bt]["return"] for d in daily_sa.values())
+        if tot_s == 0:
+            continue
+        baseline_roi = tot_r * 100 / tot_s
+        per_day = []
+        for date in sorted(daily_sa.keys()):
+            s, r = daily_sa[date][bt]["spend"], daily_sa[date][bt]["return"]
+            if s == 0: continue
+            spend_share = s * 100 / tot_s
+            day_roi = r * 100 / s
+            ex_roi = (tot_r - r) * 100 / (tot_s - s) if tot_s - s > 0 else 0
+            flag = "⚠️ 単日支配" if (spend_share > 20 and abs(ex_roi - baseline_roi) > 20) else ""
+            per_day.append({
+                "date": date,
+                "spend": s,
+                "return": r,
+                "spend_share_pct": round(spend_share, 1),
+                "day_roi_pct": round(day_roi, 1),
+                "excluded_roi_pct": round(ex_roi, 1),
+                "delta_pt": round(ex_roi - baseline_roi, 1),
+                "flag": flag,
+            })
+        report["single_day_dominance_check"][bt] = {
+            "baseline_roi_pct": round(baseline_roi, 1),
+            "per_day": per_day,
+            "warning": any(d["flag"] for d in per_day),
+        }
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
     conn.close()

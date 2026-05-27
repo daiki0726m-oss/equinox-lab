@@ -2915,6 +2915,24 @@ def generate_note_promo():
 
 
 # ─── ファクトチェック ───
+def fact_check_tweet_or_thread(tweet_or_thread):
+    """tweet (str) または thread (list[str]) を受け取り、全要素を fact_check する。
+
+    5/26 の slot_composer 導入で `_build_weekday_post` が list を返すようになったが、
+    cmd_morning/evening は string 前提で `fact_check_tweet(tweet)` を呼んでいた結果、
+    5/27 朝の morning cron が TypeError で失敗。
+    この helper で str/list 両方を統一的に処理する。
+    """
+    items = tweet_or_thread if isinstance(tweet_or_thread, list) else [tweet_or_thread]
+    for t in items:
+        if not isinstance(t, str):
+            print(f"⚠️ fact_check: 予期しない型 {type(t).__name__} → スキップ")
+            return False
+        if not fact_check_tweet(t):
+            return False
+    return True
+
+
 def fact_check_tweet(tweet_text):
     """ツイートの数値データをDBと照合して検証する。
     数値が含まれるツイートの場合、DBからデータを再取得して一致を確認。
@@ -3422,7 +3440,8 @@ def cmd_morning(args):
         print("⚠️ 投稿コンテンツを生成できませんでした（レース未登録 or データ不足）→ 投稿スキップ")
         return
 
-    if not fact_check_tweet(tweet):
+    # 5/27 fix: thread (list[str]) も受け取れるよう helper を使う
+    if not fact_check_tweet_or_thread(tweet):
         print("🚫 ファクトチェック不合格のため投稿を中止します")
         return
 
@@ -3464,7 +3483,8 @@ def cmd_evening(args):
         print("⚠️ 投稿コンテンツを生成できませんでした → 投稿スキップ")
         return
 
-    if not fact_check_tweet(tweet):
+    # 5/27 fix: thread (list[str]) も受け取れるよう helper を使う
+    if not fact_check_tweet_or_thread(tweet):
         print("🚫 ファクトチェック不合格のため投稿を中止します")
         return
 

@@ -1,0 +1,474 @@
+{
+  "generated_at": "2026-05-27T06:42:31.711928",
+  "period": {
+    "from": "2026-03-04",
+    "to": "2026-05-27"
+  },
+  "weekly": {
+    "2026-05-04": {
+      "by_tier": {
+        "S": {
+          "馬連": {
+            "spend": 2000,
+            "return": 2250,
+            "hits": 2,
+            "races": 4,
+            "roi_pct": 112.5
+          },
+          "ワイド": {
+            "spend": 2000,
+            "return": 2020,
+            "hits": 3,
+            "races": 4,
+            "roi_pct": 101.0
+          },
+          "三連複": {
+            "spend": 4000,
+            "return": 6160,
+            "hits": 1,
+            "races": 4,
+            "roi_pct": 154.0
+          }
+        },
+        "A": {
+          "馬連": {
+            "spend": 7000,
+            "return": 19710,
+            "hits": 7,
+            "races": 14,
+            "roi_pct": 281.6
+          },
+          "ワイド": {
+            "spend": 7000,
+            "return": 9700,
+            "hits": 15,
+            "races": 14,
+            "roi_pct": 138.6
+          },
+          "三連複": {
+            "spend": 14000,
+            "return": 18280,
+            "hits": 5,
+            "races": 14,
+            "roi_pct": 130.6
+          }
+        },
+        "B": {
+          "馬連": {
+            "spend": 10500,
+            "return": 9060,
+            "hits": 4,
+            "races": 21,
+            "roi_pct": 86.3
+          },
+          "ワイド": {
+            "spend": 10500,
+            "return": 12020,
+            "hits": 18,
+            "races": 21,
+            "roi_pct": 114.5
+          },
+          "三連複": {
+            "spend": 21000,
+            "return": 25950,
+            "hits": 5,
+            "races": 21,
+            "roi_pct": 123.6
+          }
+        },
+        "C": {
+          "馬連": {
+            "spend": 12000,
+            "return": 9580,
+            "hits": 4,
+            "races": 24,
+            "roi_pct": 79.8
+          },
+          "ワイド": {
+            "spend": 12000,
+            "return": 6570,
+            "hits": 10,
+            "races": 24,
+            "roi_pct": 54.8
+          },
+          "三連複": {
+            "spend": 24000,
+            "return": 11500,
+            "hits": 3,
+            "races": 24,
+            "roi_pct": 47.9
+          }
+        },
+        "D": {
+          "馬連": {
+            "spend": 4500,
+            "return": 1630,
+            "hits": 1,
+            "races": 9,
+            "roi_pct": 36.2
+          },
+          "ワイド": {
+            "spend": 4500,
+            "return": 2550,
+            "hits": 4,
+            "races": 9,
+            "roi_pct": 56.7
+          },
+          "三連複": {
+            "spend": 9000,
+            "return": 3830,
+            "hits": 1,
+            "races": 9,
+            "roi_pct": 42.6
+          }
+        }
+      },
+      "overall": {
+        "馬連": {
+          "spend": 36000,
+          "return": 42230,
+          "hits": 18,
+          "roi_pct": 117.3
+        },
+        "ワイド": {
+          "spend": 36000,
+          "return": 32860,
+          "hits": 50,
+          "roi_pct": 91.3
+        },
+        "三連複": {
+          "spend": 72000,
+          "return": 65720,
+          "hits": 15,
+          "roi_pct": 91.3
+        }
+      }
+    },
+    "2026-05-11": {
+      "by_tier": {
+        "S": {
+          "馬連": {
+            "spend": 1500,
+            "return": 1480,
+            "hits": 1,
+            "races": 3,
+            "roi_pct": 98.7
+          },
+          "ワイド": {
+            "spend": 1500,
+            "return": 890,
+            "hits": 3,
+            "races": 3,
+            "roi_pct": 59.3
+          },
+          "三連複": {
+            "spend": 3000,
+            "return": 1560,
+            "hits": 1,
+            "races": 3,
+            "roi_pct": 52.0
+          }
+        },
+        "A": {
+          "馬連": {
+            "spend": 4500,
+            "return": 2200,
+            "hits": 3,
+            "races": 9,
+            "roi_pct": 48.9
+          },
+          "ワイド": {
+            "spend": 4500,
+            "return": 1870,
+            "hits": 8,
+            "races": 9,
+            "roi_pct": 41.6
+          },
+          "三連複": {
+            "spend": 9000,
+            "return": 2010,
+            "hits": 3,
+            "races": 9,
+            "roi_pct": 22.3
+          }
+        },
+        "B": {
+          "馬連": {
+            "spend": 4000,
+            "return": 4550,
+            "hits": 3,
+            "races": 8,
+            "roi_pct": 113.8
+          },
+          "ワイド": {
+            "spend": 4000,
+            "return": 4080,
+            "hits": 9,
+            "races": 8,
+            "roi_pct": 102.0
+          },
+          "三連複": {
+            "spend": 8000,
+            "return": 9400,
+            "hits": 2,
+            "races": 8,
+            "roi_pct": 117.5
+          }
+        },
+        "C": {
+          "馬連": {
+            "spend": 8000,
+            "return": 5730,
+            "hits": 7,
+            "races": 16,
+            "roi_pct": 71.6
+          },
+          "ワイド": {
+            "spend": 8000,
+            "return": 6510,
+            "hits": 11,
+            "races": 16,
+            "roi_pct": 81.4
+          },
+          "三連複": {
+            "spend": 16000,
+            "return": 4450,
+            "hits": 1,
+            "races": 16,
+            "roi_pct": 27.8
+          }
+        }
+      },
+      "overall": {
+        "馬連": {
+          "spend": 18000,
+          "return": 13960,
+          "hits": 14,
+          "roi_pct": 77.6
+        },
+        "ワイド": {
+          "spend": 18000,
+          "return": 13350,
+          "hits": 31,
+          "roi_pct": 74.2
+        },
+        "三連複": {
+          "spend": 36000,
+          "return": 17420,
+          "hits": 7,
+          "roi_pct": 48.4
+        }
+      }
+    },
+    "2026-05-18": {
+      "by_tier": {
+        "S": {
+          "馬連": {
+            "spend": 1000,
+            "return": 230,
+            "hits": 1,
+            "races": 2,
+            "roi_pct": 23.0
+          },
+          "ワイド": {
+            "spend": 1000,
+            "return": 650,
+            "hits": 2,
+            "races": 2,
+            "roi_pct": 65.0
+          },
+          "三連複": {
+            "spend": 2000,
+            "return": 0,
+            "hits": 0,
+            "races": 2,
+            "roi_pct": 0.0
+          }
+        },
+        "A": {
+          "馬連": {
+            "spend": 4000,
+            "return": 4330,
+            "hits": 4,
+            "races": 8,
+            "roi_pct": 108.2
+          },
+          "ワイド": {
+            "spend": 4000,
+            "return": 3550,
+            "hits": 9,
+            "races": 8,
+            "roi_pct": 88.8
+          },
+          "三連複": {
+            "spend": 8000,
+            "return": 8550,
+            "hits": 3,
+            "races": 8,
+            "roi_pct": 106.9
+          }
+        },
+        "B": {
+          "馬連": {
+            "spend": 8500,
+            "return": 6210,
+            "hits": 7,
+            "races": 17,
+            "roi_pct": 73.1
+          },
+          "ワイド": {
+            "spend": 8500,
+            "return": 5390,
+            "hits": 15,
+            "races": 17,
+            "roi_pct": 63.4
+          },
+          "三連複": {
+            "spend": 17000,
+            "return": 2630,
+            "hits": 2,
+            "races": 17,
+            "roi_pct": 15.5
+          }
+        },
+        "C": {
+          "馬連": {
+            "spend": 3000,
+            "return": 2860,
+            "hits": 2,
+            "races": 6,
+            "roi_pct": 95.3
+          },
+          "ワイド": {
+            "spend": 3000,
+            "return": 2740,
+            "hits": 5,
+            "races": 6,
+            "roi_pct": 91.3
+          },
+          "三連複": {
+            "spend": 6000,
+            "return": 5240,
+            "hits": 2,
+            "races": 6,
+            "roi_pct": 87.3
+          }
+        },
+        "D": {
+          "馬連": {
+            "spend": 1500,
+            "return": 0,
+            "hits": 0,
+            "races": 3,
+            "roi_pct": 0.0
+          },
+          "ワイド": {
+            "spend": 1500,
+            "return": 640,
+            "hits": 1,
+            "races": 3,
+            "roi_pct": 42.7
+          },
+          "三連複": {
+            "spend": 3000,
+            "return": 0,
+            "hits": 0,
+            "races": 3,
+            "roi_pct": 0.0
+          }
+        }
+      },
+      "overall": {
+        "馬連": {
+          "spend": 18000,
+          "return": 13630,
+          "hits": 14,
+          "roi_pct": 75.7
+        },
+        "ワイド": {
+          "spend": 18000,
+          "return": 12970,
+          "hits": 32,
+          "roi_pct": 72.1
+        },
+        "三連複": {
+          "spend": 36000,
+          "return": 16420,
+          "hits": 7,
+          "roi_pct": 45.6
+        }
+      }
+    }
+  },
+  "rolling_4w": {
+    "2026-05-04": {
+      "馬連": {
+        "spend": 36000,
+        "return": 42230,
+        "roi_pct": 117.3,
+        "window_weeks": 1
+      },
+      "ワイド": {
+        "spend": 36000,
+        "return": 32860,
+        "roi_pct": 91.3,
+        "window_weeks": 1
+      },
+      "三連複": {
+        "spend": 72000,
+        "return": 65720,
+        "roi_pct": 91.3,
+        "window_weeks": 1
+      }
+    },
+    "2026-05-11": {
+      "馬連": {
+        "spend": 54000,
+        "return": 56190,
+        "roi_pct": 104.1,
+        "window_weeks": 2
+      },
+      "ワイド": {
+        "spend": 54000,
+        "return": 46210,
+        "roi_pct": 85.6,
+        "window_weeks": 2
+      },
+      "三連複": {
+        "spend": 108000,
+        "return": 83140,
+        "roi_pct": 77.0,
+        "window_weeks": 2
+      }
+    },
+    "2026-05-18": {
+      "馬連": {
+        "spend": 72000,
+        "return": 69820,
+        "roi_pct": 97.0,
+        "window_weeks": 3
+      },
+      "ワイド": {
+        "spend": 72000,
+        "return": 59180,
+        "roi_pct": 82.2,
+        "window_weeks": 3
+      },
+      "三連複": {
+        "spend": 144000,
+        "return": 99560,
+        "roi_pct": 69.1,
+        "window_weeks": 3
+      }
+    }
+  },
+  "anomalies": [
+    {
+      "week": "2026-05-11",
+      "tier": "S+A",
+      "bet_type": "三連複",
+      "roi_pct": 29.8,
+      "flag": "🔻 異常低 ROI"
+    }
+  ]
+}
