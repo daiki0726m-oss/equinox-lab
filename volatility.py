@@ -119,6 +119,31 @@ def compute_race_volatility(race_info: dict) -> dict:
         conf_adjust += -2
         factors.append("未勝利/新馬(-2)")
 
+    # ── 1勝クラス × loss layer 補正 (2026-05-27 #30) ───────────────
+    # 2025 historical backtest 分析結果 (1勝×A の 128 races, ROI 24.9%):
+    #   ダート: 15.5% (n=77) / 芝: 39.0% (n=51) ← ダートが loss 主犯
+    #   阪神: 5.2% / 中京: 11.9% / 札幌: 0% / 福島: 15.7% (地方場で低 ROI)
+    #   短距離 (~1400m): 11.4% (n=26) ← 短距離も loss
+    # 1勝戦は ML model の精度がクラスで急に落ちる傾向あり (馬の素性データが少ない)
+    # → 「1勝 × 上記条件」のうち 1 つでも該当すれば -1、2 つ以上で -2 補正
+    # 注意: 上位クラス (2勝以上、OP/特別、G1-G3) は ML が機能するので適用しない
+    if "1勝" in name:
+        loss_signals = 0
+        loss_factors = []
+        if surf == "ダート":
+            loss_signals += 1
+            loss_factors.append("ダート")
+        if venue in ("阪神", "中京", "札幌"):
+            loss_signals += 1
+            loss_factors.append(f"{venue}場")
+        if dist > 0 and dist <= 1400:
+            loss_signals += 1
+            loss_factors.append("短距離")
+        if loss_signals > 0:
+            penalty = -min(loss_signals, 2)  # 最大 -2 でキャップ
+            conf_adjust += penalty
+            factors.append(f"1勝×{'+'.join(loss_factors)}({penalty})")
+
     return {"score": score, "factors": factors, "conf_adjust": conf_adjust}
 
 

@@ -51,7 +51,7 @@ class BettingStrategy:
         amount = min(amount, self.MAX_BET_PER_RACE)
         return int(amount)
 
-    def should_bet_race(self, predictions, confidence=None):
+    def should_bet_race(self, predictions, confidence=None, race_info=None):
         """
         レース見送り判定（厳格版）
 
@@ -59,6 +59,7 @@ class BettingStrategy:
         - 上位馬が見当たらない（予測が拡散）
         - 最大勝率が低すぎる
         - 本命が堅すぎてオッズに妙味なし
+        - 1勝戦×妙味中間オッズ (2.5-3.9倍) は loss layer (2026-05-27 #30)
         """
         if not predictions:
             return False, "予測データなし"
@@ -102,6 +103,15 @@ class BettingStrategy:
                 return False, f"◎オッズ{top_odds:.1f}倍は配当妙味なし"
             if top_odds > 15.0:
                 return False, f"◎オッズ{top_odds:.1f}倍は◎信頼度が低すぎ"
+
+        # 🆕 v13 (2026-05-27 #30): 1勝戦の妙味中間オッズ帯は loss layer
+        # analyze_a_tier_loss.py の結果: 1勝×A の ◎ オッズ別 ROI:
+        #   1.x-2.4倍: 28.3% (n=102) / 2.5-3.9倍: 11.5% (n=26) ← 最底
+        # 「やや本命だが堅くもない」中間帯が ROI 最悪。1勝戦で 2.5-3.9倍は見送り。
+        race_name = (race_info or {}).get("race_name", "") if race_info else ""
+        if race_name and "1勝" in race_name:
+            if 2.5 <= top_odds < 4.0:
+                return False, f"1勝戦×◎オッズ{top_odds:.1f}倍は妙味中間帯 (loss layer 11.5%)"
 
         # 最大EVチェック（オッズがある場合）
         max_ev = 0

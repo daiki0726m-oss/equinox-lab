@@ -737,7 +737,8 @@ def cmd_predict(args):
         # 🆕 v13 (2026-05-26): confidence-aware should_bet 判定 (旧 v12 の二重評価を一本化)
         # confidence が確定した時点で 1 回だけ should_bet 判定する。
         # C/D は backtest ROI 75-80% の損失層なので明示的に should_bet=0。
-        should_bet, reason = strategy.should_bet_race(predictions, confidence=confidence)
+        # 🆕 v14 (2026-05-27 #30): race_info を渡して 1勝×2.5-3.9倍 帯遮断
+        should_bet, reason = strategy.should_bet_race(predictions, confidence=confidence, race_info=race_info)
 
         # 買い目生成 (常に実行 — EV・妙味計算のため。should_bet=0 でも UI は買い目表示)
         # v3 (2026-05-27): confidence-aware bet weighting (S=1.5x, A=1.2x, B=1.0x)
