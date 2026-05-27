@@ -1,0 +1,93 @@
+# 投稿 SLO (Service Level Objective) 定義
+# 「いつ何が起こるべきか」を明示的にコード化
+#
+# このファイルが「投稿は確実に実行される」を保証する基準。
+# - check_posting_health.py がこれを読んで現状確認
+# - posting_watchdog.yml が cron 失敗時に自動 fallback
+# - docs/data/posting_health.json に健全性結果を記録
+#
+# 編集ルール: time は JST、deadline は時間ガード end の 30 分前
+
+slots:
+  # ─────────── 平日 (月-金) ───────────
+  morning:
+    description: "平日朝の投稿 (週末ラインナップ・血統・最終確定 等)"
+    cron: "30 22 * * 0-4"   # UTC, = 07:30 JST 月-金
+    expected_jst: "07:30"
+    time_guard_jst: [7, 11]  # 7:00-11:59 内に投稿可能
+    watchdog_deadline_jst: "11:00"  # この時刻までに success なければ fallback
+    fallback_mode: "morning"
+    days: [0, 1, 2, 3, 4]  # 月火水木金 (Python weekday: Mon=0)
+
+  weekday:
+    description: "平日昼の投稿 (コース傾向・追い切り・危険な人気馬 等)"
+    cron: "30 3 * * 1-5"
+    expected_jst: "12:30"
+    time_guard_jst: [11, 15]
+    watchdog_deadline_jst: "15:00"
+    fallback_mode: "weekday"
+    days: [0, 1, 2, 3, 4]
+
+  evening:
+    description: "平日夜の投稿 (最終3頭・翌朝告知 等)"
+    cron: "0 11 * * 1-5"
+    expected_jst: "20:00"
+    time_guard_jst: [19, 23]
+    watchdog_deadline_jst: "23:00"
+    fallback_mode: "evening"
+    days: [0, 1, 2, 3, 4]
+
+  # ─────────── 土日 ───────────
+  weekend_morning_predict:
+    description: "土日朝の予測実行 (X 投稿は post_predict が担当)"
+    cron: "0 22 * * 5,6"     # = 07:00 JST 土日
+    expected_jst: "07:00"
+    time_guard_jst: [6, 9]
+    watchdog_deadline_jst: "08:30"
+    fallback_mode: "auto"     # cron に応じて type を内部判定
+    days: [5, 6]              # 土日
+
+  odds_flash:
+    description: "土日朝 9:30 オッズフラッシュ"
+    cron: "30 0 * * 6,0"
+    expected_jst: "09:30"
+    time_guard_jst: [9, 10]  # 9:00-10:30
+    watchdog_deadline_jst: "10:15"
+    fallback_mode: "odds_flash"
+    days: [5, 6]
+
+  post_predict:
+    description: "土日朝 10:15 予測投稿 (◎○▲ 印 配信)"
+    cron: "15 1 * * 6,0"
+    expected_jst: "10:15"
+    time_guard_jst: [10, 10]  # 10:00-10:59 内 (cmd_predict 時間ガード)
+    watchdog_deadline_jst: "10:50"
+    fallback_mode: "predict"
+    days: [5, 6]
+
+  hit_flash:
+    description: "土日 15:30 中間結果速報"
+    cron: "30 6 * * 6,0"
+    expected_jst: "15:30"
+    time_guard_jst: [15, 17]
+    watchdog_deadline_jst: "16:30"
+    fallback_mode: "hit_flash"
+    days: [5, 6]
+
+  results:
+    description: "土日 17:30 結果スレッド投稿"
+    cron: "30 8 * * 6,0"
+    expected_jst: "17:30"
+    time_guard_jst: [17, 19]
+    watchdog_deadline_jst: "18:30"
+    fallback_mode: "results"
+    days: [5, 6]
+
+# ─────────── 監視設定 ───────────
+monitor:
+  # workflow_dispatch で何分前以内の success を「最近成功」とみなすか
+  recent_success_window_minutes: 240  # 4h (=cron 遅延最大値)
+  # 同一 slot を何度まで再 trigger するか
+  max_retries_per_day: 2
+  # 失敗時に SLO 違反として記録するかしないか
+  record_violations: true
