@@ -1,0 +1,113 @@
+name: 🛡 Posting SLO Watchdog
+
+# 投稿 SLO 保証 — config/posting_slo.yml の rule を強制する
+#
+# 毎 30 分 cron で走り、各 slot の health を check。
+# 期待時刻〜deadline の間で success が無ければ workflow_dispatch で
+# auto_post_x.yml を自動 trigger。
+#
+# これにより GitHub Actions cron の 1-4.5h 遅延に依存せず、
+# 「投稿は確実に実行される」を構造的に保証する。
+#
+# 設計: CLAUDE.md #22 (cron 遅延)・#33 (TypeError) の事故を踏まえた
+# 「ユーザーが気づくまで動かない」状態の構造的解消。
+
+on:
+  schedule:
+    # 30 分おき (重要時間帯のみ走る方が GHA 消費少ないが、シンプル優先)
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write   # workflow_dispatch trigger に必要
+  contents: write  # health.json commit に必要
+
+jobs:
+  check-and-recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pyyaml
+        run: pip install pyyaml
+
+      - name: 🔍 投稿ヘルスチェック
+        id: health
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # missing slots を JSON で取得 (exit code 1 なら未投稿あり)
+          python3 scripts/check_posting_health.py
+          echo ""
+          echo "=== missing slots JSON ==="
+          python3 scripts/check_posting_health.py --json-only > /tmp/missing.json || true
+          cat /tmp/missing.json
+          MISSING_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/missing.json'))))")
+          echo "missing_count=$MISSING_COUNT" >> "$GITHUB_OUTPUT"
+          echo "missing_slots<<EOF" >> "$GITHUB_OUTPUT"
+          cat /tmp/missing.json >> "$GITHUB_OUTPUT"
+          echo "" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: 🚨 未投稿 slot を自動 trigger
+        if: steps.health.outputs.missing_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "📋 ${{ steps.health.outputs.missing_count }} 件の未投稿 slot を trigger します"
+          echo '${{ steps.health.outputs.missing_slots }}' | python3 -c "
+          import json, sys, subprocess, time
+          slots = json.load(sys.stdin)
+          for s in slots:
+              mode = s['fallback_mode']
+              print(f'🔄 Triggering mode={mode} ({s[\"slot\"]})...')
+              result = subprocess.run(
+                  ['gh', 'workflow', 'run', 'auto_post_x.yml',
+                   '--ref', 'main', '-f', f'mode={mode}'],
+                  capture_output=True, text=True
+              )
+              if result.returncode == 0:
+                  print(f'  ✅ triggered')
+              else:
+                  print(f'  ❌ failed: {result.stderr[:200]}')
+              time.sleep(3)  # rate limit 配慮
+          "
+
+      - name: 📝 health.json を commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/posting_health.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no health change to commit"
+          else
+            git commit -m "watchdog: health update $(TZ=Asia/Tokyo date '+%H:%M JST')"
+            for i in 1 2 3; do
+              git pull --rebase --autostash origin main || true
+              if git push origin HEAD:main; then echo "✅ pushed (try $i)"; break; fi
+              echo "⚠️ push retry $i"; sleep 5
+            done
+          fi
+
+      - name: 📊 Summary
+        if: always()
+        run: |
+          echo "## 🛡 Posting Watchdog Result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Missing slots: ${{ steps.health.outputs.missing_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/missing.json >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "(no data)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
