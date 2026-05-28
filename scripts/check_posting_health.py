@@ -110,14 +110,18 @@ def find_recent_success(runs, mode, expected_dt, window_minutes=240):
     return None
 
 
-def find_recent_run_any(runs, mode_keywords, expected_dt, window_minutes=240):
-    """mode と関連するキーワードを含む success run を探す (より広範囲)
+def find_recent_run_any(runs, mode_keywords, expected_dt, window_minutes=240,
+                         all_slot_expected_dts=None):
+    """mode と関連するキーワードを含む success run を探す。
 
-    schedule event: cron 遅延 ±360min (6h) まで許容
-    workflow_dispatch: title が mode 一致 + window_minutes 内
+    BUG FIX (2026-05-28): cron success が「最近接 slot」にのみ割り当てられるよう改修。
+    旧版は ±6h 内のすべての cron run をこの slot のものと誤認識していた
+    (例: morning cron 08:44 が weekday 12:30 の cron success と誤認識)。
+
+    schedule event: 期待時刻に最も近接した slot にのみ割り当てる (exclusive)
+    workflow_dispatch: title が mode 完全一致 + window_minutes 内
     """
     threshold = expected_dt - timedelta(minutes=30)
-    # schedule は最大 6h 遅延考慮、workflow_dispatch は ±window
     schedule_window = timedelta(minutes=max(window_minutes, 360))
     dispatch_window = timedelta(minutes=window_minutes)
 
@@ -132,18 +136,24 @@ def find_recent_run_any(runs, mode_keywords, expected_dt, window_minutes=240):
         run_dt = datetime.fromisoformat(utc_str.replace("Z", "+00:00")).astimezone(JST)
 
         if event == "schedule":
-            # 期待時刻 ±6h で cron 由来 success
-            # ただし同じ scheduled cron が複数 slot にマッチする問題回避のため、
-            # この slot の expected_jst と他 slot の expected_jst の距離が近い場合は
-            # この slot 専用とは限らない (要外部 join)。
-            # ここでは厳密性を諦めて「最近のいかなる schedule success も該当」とする
-            # (false positive 許容、watchdog の過剰 trigger を防ぐ方向)
-            delta = abs((run_dt - expected_dt).total_seconds())
-            if delta <= schedule_window.total_seconds():
-                return {"created_at": run_dt.isoformat(), "title": title, "event": event,
-                        "delay_minutes": round((run_dt - expected_dt).total_seconds() / 60)}
+            this_delta = abs((run_dt - expected_dt).total_seconds())
+            if this_delta > schedule_window.total_seconds():
+                continue
+            # この cron run が「他 slot」より「この slot」に近接か判定
+            if all_slot_expected_dts:
+                closest_dist = this_delta
+                for other_dt in all_slot_expected_dts:
+                    if other_dt == expected_dt:
+                        continue
+                    other_dist = abs((run_dt - other_dt).total_seconds())
+                    if other_dist < closest_dist:
+                        closest_dist = other_dist
+                if closest_dist < this_delta:
+                    # 他 slot の方がより近接 → この cron はこの slot のものでない
+                    continue
+            return {"created_at": run_dt.isoformat(), "title": title, "event": event,
+                    "delay_minutes": round((run_dt - expected_dt).total_seconds() / 60)}
         elif event == "workflow_dispatch":
-            # workflow_dispatch は title が mode 完全一致のみ採用
             if not (threshold <= run_dt <= threshold + dispatch_window):
                 continue
             if any(kw.lower() == title for kw in mode_keywords):
@@ -152,8 +162,11 @@ def find_recent_run_any(runs, mode_keywords, expected_dt, window_minutes=240):
     return None
 
 
-def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None):
-    """1 つの slot を評価して status を返す。"""
+def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None, all_slots_today=None):
+    """1 つの slot を評価して status を返す。
+
+    all_slots_today: {slot_name: expected_dt} — cron-to-slot exclusive 割当に使う
+    """
     today = today or jst_now()
     weekday = today.weekday()  # Mon=0 ... Sun=6
     days = slot_cfg.get("days", [])
@@ -169,6 +182,11 @@ def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None):
     time_guard = slot_cfg["time_guard_jst"]
     now = today
 
+    # all_slot_expected_dts: 他 slot との比較用 (exclusive assignment)
+    other_dts = []
+    if all_slots_today:
+        other_dts = [v for k, v in all_slots_today.items() if k != slot_name]
+
     # 期待時刻前は何もしない
     if now < expected_jst:
         return {
@@ -183,6 +201,7 @@ def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None):
         recent = find_recent_run_any(
             runs, [slot_cfg["fallback_mode"], slot_name], expected_jst,
             window_minutes=monitor_cfg.get("recent_success_window_minutes", 240),
+            all_slot_expected_dts=other_dts,
         )
         result = {
             "slot": slot_name,
@@ -199,6 +218,7 @@ def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None):
     recent = find_recent_run_any(
         runs, [slot_cfg["fallback_mode"], slot_name], expected_jst,
         window_minutes=monitor_cfg.get("recent_success_window_minutes", 240),
+        all_slot_expected_dts=other_dts,
     )
     if recent:
         delay_min = recent.get("delay_minutes", 0)
@@ -244,9 +264,17 @@ def main():
         "summary": {"ok": 0, "missing": 0, "future": 0, "not_today": 0, "missed": 0, "ok_delayed": 0, "ok_late": 0},
     }
 
+    # 今日対象の全 slot の expected_dt を事前に集める (exclusive assignment 用)
+    all_slots_today = {}
+    weekday_now = today.weekday()
+    for sn, sc in cfg["slots"].items():
+        if weekday_now in sc.get("days", []):
+            all_slots_today[sn] = parse_jst_hhmm(sc["expected_jst"], today)
+
     missing_slots = []
     for slot_name, slot_cfg in cfg["slots"].items():
-        evaluation = evaluate_slot(slot_name, slot_cfg, runs, monitor, today)
+        evaluation = evaluate_slot(slot_name, slot_cfg, runs, monitor, today,
+                                   all_slots_today=all_slots_today)
         results["slots"][slot_name] = evaluation
         status = evaluation["status"]
         results["summary"][status] = results["summary"].get(status, 0) + 1
