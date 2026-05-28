@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-28T16:04:31.968606+09:00",
+  "generated_at": "2026-05-28T18:44:36.771512+09:00",
   "today": "2026-05-28 (Thu)",
   "weekday": 3,
   "slots": {
@@ -18,9 +18,16 @@
     },
     "weekday": {
       "slot": "weekday",
-      "status": "missed",
+      "status": "ok_late",
       "expected": "12:30 JST",
-      "deadline": "15:00 JST"
+      "deadline": "15:00 JST",
+      "recent_success": {
+        "created_at": "2026-05-28T16:06:40+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 217
+      },
+      "delay_minutes": 217
     },
     "evening": {
       "slot": "evening",
@@ -58,8 +65,8 @@
     "missing": 0,
     "future": 1,
     "not_today": 5,
-    "missed": 1,
+    "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 1
+    "ok_late": 2
   }
 }
