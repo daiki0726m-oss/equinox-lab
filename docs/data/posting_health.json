@@ -1,20 +1,28 @@
 {
-  "generated_at": "2026-05-28T10:21:24.040736+09:00",
+  "generated_at": "2026-05-28T14:40:27.926190+09:00",
   "today": "2026-05-28 (Thu)",
   "weekday": 3,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "ok_delayed",
+      "status": "ok_late",
       "expected": "07:30 JST",
-      "actual": "2026-05-28T08:44:39+09:00",
-      "delay_minutes": 75,
-      "event": "schedule"
+      "deadline": "11:00 JST",
+      "recent_success": {
+        "created_at": "2026-05-28T08:44:39+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 75
+      },
+      "delay_minutes": 75
     },
     "weekday": {
       "slot": "weekday",
-      "status": "future",
-      "expected": "12:30 JST"
+      "status": "ok_delayed",
+      "expected": "12:30 JST",
+      "actual": "2026-05-28T08:44:39+09:00",
+      "delay_minutes": -225,
+      "event": "schedule"
     },
     "evening": {
       "slot": "evening",
@@ -50,10 +58,10 @@
   "summary": {
     "ok": 0,
     "missing": 0,
-    "future": 2,
+    "future": 1,
     "not_today": 5,
     "missed": 0,
     "ok_delayed": 1,
-    "ok_late": 0
+    "ok_late": 1
   }
 }
