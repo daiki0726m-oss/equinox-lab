@@ -1,72 +1,56 @@
 {
-  "generated_at": "2026-05-29T19:28:08.995805+09:00",
-  "today": "2026-05-29 (Fri)",
-  "weekday": 4,
+  "generated_at": "2026-05-30T02:27:02.208091+09:00",
+  "today": "2026-05-30 (Sat)",
+  "weekday": 5,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "ok_late",
-      "expected": "07:30 JST",
-      "deadline": "11:00 JST",
-      "recent_success": {
-        "created_at": "2026-05-29T08:49:25+09:00",
-        "title": "cron",
-        "event": "schedule",
-        "delay_minutes": 79
-      },
-      "delay_minutes": 79
+      "status": "not_today",
+      "reason": "今日 (weekday=5) は対象外"
     },
     "weekday": {
       "slot": "weekday",
-      "status": "ok_late",
-      "expected": "12:30 JST",
-      "deadline": "15:00 JST",
-      "recent_success": {
-        "created_at": "2026-05-29T16:07:23+09:00",
-        "title": "cron",
-        "event": "schedule",
-        "delay_minutes": 217
-      },
-      "delay_minutes": 217
+      "status": "not_today",
+      "reason": "今日 (weekday=5) は対象外"
     },
     "evening": {
       "slot": "evening",
-      "status": "future",
-      "expected": "20:00 JST"
+      "status": "not_today",
+      "reason": "今日 (weekday=5) は対象外"
     },
     "weekend_morning_predict": {
       "slot": "weekend_morning_predict",
-      "status": "not_today",
-      "reason": "今日 (weekday=4) は対象外"
+      "status": "future",
+      "expected": "07:00 JST"
     },
     "odds_flash": {
       "slot": "odds_flash",
-      "status": "not_today",
-      "reason": "今日 (weekday=4) は対象外"
+      "status": "future",
+      "expected": "09:30 JST"
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "not_today",
-      "reason": "今日 (weekday=4) は対象外"
+      "status": "future",
+      "expected": "10:15 JST"
     },
     "hit_flash": {
       "slot": "hit_flash",
-      "status": "not_today",
-      "reason": "今日 (weekday=4) は対象外"
+      "status": "future",
+      "expected": "15:30 JST"
     },
     "results": {
       "slot": "results",
-      "status": "not_today",
-      "reason": "今日 (weekday=4) は対象外"
+      "status": "future",
+      "expected": "17:30 JST"
     }
   },
   "summary": {
     "ok": 0,
     "missing": 0,
-    "future": 1,
-    "not_today": 5,
+    "future": 5,
+    "not_today": 3,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 2
+    "ok_late": 0
   }
 }
