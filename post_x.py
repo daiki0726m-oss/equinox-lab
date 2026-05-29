@@ -577,20 +577,28 @@ def cmd_predict(args):
             target_races.append(race)
             target_ids.add(race['race_id'])
 
-    # 推奨レース (should_bet=1 かつ 信頼度 S/A): 11R以外、最大3件
+    # 注目レース (信頼度 S/A): 11R以外、最大3件
+    # 2026-05-30 fix: should_bet=1 必須を撤廃。post_predict は「投資推奨」ではなく
+    # 「AI 注目馬コンテンツ」なので、信頼度 S/A を選定基準にする。
+    # (従来は should_bet=1 AND S/A だったが、大頭数レースで top_prob<12% だと
+    #  should_bet=0 になり、信頼度 A のレースでも投稿対象から漏れる問題があった)
+    # should_bet=1 を優先し、足りなければ should_bet=0 の S/A でも埋める。
     rec_count = 0
-    for race in all_races:
-        is_recommended = (
-            race['race_id'] not in target_ids
-            and race.get('should_bet') == 1
-            and race['confidence'] in ('S', 'A')
-        )
-        if is_recommended:
-            target_races.append(race)
-            target_ids.add(race['race_id'])
-            rec_count += 1
-            if rec_count >= 3:
-                break
+    candidates = [
+        r for r in all_races
+        if r['race_id'] not in target_ids and r['confidence'] in ('S', 'A')
+    ]
+    # 並び: should_bet=1 を先に / 同条件なら S > A
+    candidates.sort(key=lambda r: (
+        0 if r.get('should_bet') == 1 else 1,
+        {'S': 0, 'A': 1}.get(r['confidence'], 2),
+    ))
+    for race in candidates:
+        target_races.append(race)
+        target_ids.add(race['race_id'])
+        rec_count += 1
+        if rec_count >= 3:
+            break
 
     if not target_races:
         print(f"❌ 投稿対象レースがありません")
@@ -598,11 +606,11 @@ def cmd_predict(args):
 
     print(f"🏇 {date_label} 投稿対象: {len(target_races)}レース")
     print(f"   (11R: {sum(1 for r in target_races if r['race_number']==11)}件 / "
-          f"推奨: {sum(1 for r in target_races if r.get('should_bet')==1 and r['confidence'] in ('S','A') and r['race_number']!=11)}件)\n")
+          f"注目(S/A): {sum(1 for r in target_races if r['confidence'] in ('S','A') and r['race_number']!=11)}件)\n")
 
     # ── ツイート1: サマリー ──
     main_races = [r for r in target_races if r['race_number'] == 11]
-    s_races = [r for r in target_races if r.get('should_bet') == 1 and r['confidence'] in ('S', 'A') and r['race_number'] != 11]
+    s_races = [r for r in target_races if r['confidence'] in ('S', 'A') and r['race_number'] != 11]
 
     t1 = f"🧠 AI競馬予想 {date_label}\n\n"
 
