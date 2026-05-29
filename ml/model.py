@@ -26,6 +26,14 @@ class KeibaModel:
     - model_win:  Binary (1着になるか)
     """
 
+    # pred_win_norm の softmax 温度係数 (2026-05-30)
+    # LambdaRank の rank_score はばらつきが小さく、素の softmax (×1) だと
+    # 16頭で本命 9.5% / 9頭で 20% と「ほぼ均等」になり本命が分からない (改悪)。
+    # logit を WIN_SHARPEN 倍して鋭くする。3.0 で 16頭 本命≈18% / 9頭≈48% と
+    # 「割り切った」分布に。競馬予想エンタメとして本命を明確にする狙い。
+    # 副次効果: 本命が should_bet 閾値 12% を超え should_bet 判定が機能再開。
+    WIN_SHARPEN = 3.0
+
     RANK_PARAMS = {
         "objective": "lambdarank",
         "metric": "ndcg",
@@ -328,8 +336,8 @@ class KeibaModel:
             df.loc[few_only, "pred_top3"] *= 0.85
             df.loc[few_only, "pred_win"] *= 0.85
 
-        # ランキングスコアを正規化 (softmax)
-        rank_exp = np.exp(df["rank_score"] - df["rank_score"].max())
+        # ランキングスコアを正規化 (温度付き softmax — 本命を明確化)
+        rank_exp = np.exp((df["rank_score"] - df["rank_score"].max()) * self.WIN_SHARPEN)
         df["pred_win_norm"] = rank_exp / rank_exp.sum()
         df["pred_top3_norm"] = df["pred_top3"] / df["pred_top3"].sum() * 3  # 3頭入着
 
