@@ -125,6 +125,13 @@ class BettingStrategy:
         if confidence in ("C", "D"):
             return False, f"信頼度{confidence}は損失層 (backtest ROI 75-80%)"
 
+        # 🆕 2026-05-30: 未勝利・新馬は should_bet で見送り (旧は confidence 降格で実現)
+        # #28: ML が unknown horse を学習できず未勝利戦の予測 ROI が不安定。
+        # confidence は予測自信度 (◎勝率) のまま、投資回避はここで明示。
+        race_name = (race_info or {}).get("race_name", "") if race_info else ""
+        if race_name and ("未勝利" in race_name or "新馬" in race_name):
+            return False, "未勝利・新馬は ML 信頼度低のため投資見送り (印・予想は表示)"
+
         top_prob = max(p["pred_win"] for p in predictions)
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
 

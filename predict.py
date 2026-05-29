@@ -792,21 +792,17 @@ def cmd_predict(args):
         confidence = c['confidence']
         conf_reason = c['reason']
 
-        # ── race_volatility 補正: 16頭以上・重賞・芝1200m 等は信頼度を1-2段下げる ──
-        # 過去 11265R で 10+人気が3着内に絡む確率が顕著に上昇するパターンを反映。
-        if race_volatility and race_volatility.get("conf_adjust"):
-            adj = race_volatility["conf_adjust"]
-            grades = ["S", "A", "B", "C", "D"]
-            try:
-                idx = grades.index(confidence)
-                new_idx = max(0, min(len(grades) - 1, idx - adj))
-                if new_idx != idx:
-                    new_conf = grades[new_idx]
-                    factors = ",".join(race_volatility.get("factors", []))
-                    conf_reason = f"{conf_reason} / 波乱補正{adj:+d}({factors})"
-                    confidence = new_conf
-            except ValueError:
-                pass
+        # ── race_volatility 補正 (2026-05-30: confidence からは外し should_bet 専用に) ──
+        # 旧設計では未勝利-2 / 1勝×loss-1 等の「投資ROI由来の降格」を confidence に
+        # 適用していたが、エンタメ用 confidence = ◎勝率 と矛盾する (◎35%の未勝利本命が
+        # ROI 理由で C/D に落ち「自信度A表示なのにグレードC」となる)。
+        # confidence は予測自信度 (◎勝率) のまま保持し、未勝利/1勝loss/16頭等の
+        # 「投資を避けるべき要因」は should_bet 側で判定する (下の should_bet_race)。
+        # race_volatility は should_bet 用に保持。reason には参考として併記のみ。
+        if race_volatility and race_volatility.get("factors"):
+            factors = ",".join(race_volatility.get("factors", []))
+            if factors:
+                conf_reason = f"{conf_reason} / 波乱要因({factors})※should_bet判定に反映"
 
         # ── jockey_trust 補正: ◎が信頼/不信騎手の上位人気のとき微調整 ──
         top_jt = top1.get("jockey_trust", 0) if top1 else 0
