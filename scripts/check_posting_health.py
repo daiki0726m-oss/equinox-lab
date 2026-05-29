@@ -254,6 +254,8 @@ def main():
     ap.add_argument("--output", default=str(DEFAULT_OUTPUT))
     ap.add_argument("--json-only", action="store_true",
                     help="missing slots の JSON のみ stdout (watchdog 用)")
+    ap.add_argument("--missed-json", action="store_true",
+                    help="missed slots (期限切れ・復旧不能) の JSON のみ stdout (Issue 通知用)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -279,6 +281,7 @@ def main():
             all_slots_today[sn] = parse_jst_hhmm(sc["expected_jst"], today)
 
     missing_slots = []
+    missed_slots = []  # 期限切れ・復旧不能 (Issue 通知対象)
     # ① 投稿系 slot (auto_post_x.yml)
     for slot_name, slot_cfg in cfg["slots"].items():
         evaluation = evaluate_slot(slot_name, slot_cfg, posting_runs, monitor, today,
@@ -292,6 +295,13 @@ def main():
                 "slot": slot_name,
                 "workflow": "auto_post_x.yml",
                 "fallback_mode": evaluation["fallback_mode"],
+            })
+        elif status == "missed":
+            missed_slots.append({
+                "slot": slot_name,
+                "workflow": "auto_post_x.yml",
+                "expected": evaluation.get("expected"),
+                "deadline": evaluation.get("deadline"),
             })
 
     # ② データ収集系 slot (fetch_weekend_races.yml)
@@ -317,6 +327,20 @@ def main():
                 "workflow": slot_cfg.get("workflow", "fetch_weekend_races.yml"),
                 "fallback_mode": None,
             })
+        elif status == "missed":
+            missed_slots.append({
+                "slot": slot_name,
+                "workflow": slot_cfg.get("workflow", "fetch_weekend_races.yml"),
+                "expected": evaluation.get("expected"),
+                "deadline": evaluation.get("deadline"),
+            })
+
+    results["missed_slots"] = missed_slots
+
+    # --missed-json: missed slot のみ出力 (Issue 通知用) して終了
+    if args.missed_json:
+        print(json.dumps(missed_slots, ensure_ascii=False))
+        sys.exit(0)
 
     # 出力
     if not args.json_only:
