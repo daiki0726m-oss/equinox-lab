@@ -45,8 +45,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          # missing slots を JSON で取得 (exit code 1 なら未投稿あり)
-          python3 scripts/check_posting_health.py
+          # missing slots を JSON で取得 (check は未投稿ありで exit 1 を返す)
+          # ここは表示用。exit 1 を握らないと set -e で step が死に、後続の自動 trigger step が
+          # success() 判定でスキップされ「missing を検知した瞬間に復旧不能になる」自己矛盾が起きる (#36)
+          python3 scripts/check_posting_health.py || true
           echo ""
           echo "=== missing slots JSON ==="
           python3 scripts/check_posting_health.py --json-only > /tmp/missing.json || true

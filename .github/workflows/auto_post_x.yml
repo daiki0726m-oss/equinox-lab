@@ -489,10 +489,14 @@ jobs:
             echo "📭 変更なし - デプロイスキップ"
           else
             git commit -m "📊 Update predictions $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-            # 並行workflow対策: rebase+retry
+            # 並行workflow対策: rebase+retry。compet は -X theirs (リモート優先) で自動解決し
+            # unmerged(U) を作業ツリーに残さない。失敗時は rebase --abort で残骸を確実に除去する。
+            # (#36: U 残留のまま後続 Save post history が commit を試みて exit 128 で死ぬ事故を防止)
             for i in 1 2 3; do
-              git pull --rebase --autostash origin "${GITHUB_REF_NAME:-main}" || true
-              if git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then echo "🚀 デプロイ完了 (試行$i)"; break; fi
+              if git pull --rebase -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
+                echo "🚀 デプロイ完了 (試行$i)"; break
+              fi
+              git rebase --abort 2>/dev/null || true
               echo "⚠️ push失敗→リトライ($i)"; sleep 5
             done
           fi
@@ -504,13 +508,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if [ -f docs/data/.post_history.json ]; then
-            git add docs/data/.post_history.json
+            # Deploy step が if 条件で skip された type でも予測JSONの未コミット変更を一緒に取り込み、
+            # U(unmerged) を作らないよう docs/data/ 全体を add する
+            git add docs/data/
             if ! git diff --staged --quiet; then
               git commit -m "📝 Update post history $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-              # 並行workflow対策: rebase+retry
+              # compet は -X theirs (リモート優先) で自動解決し U を残さない。失敗時は rebase --abort で除去 (#36)
               for i in 1 2 3; do
-                git pull --rebase --autostash origin "${GITHUB_REF_NAME:-main}" || true
-                if git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then echo "✅ 投稿履歴を保存 (試行$i)"; break; fi
+                if git pull --rebase -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
+                  echo "✅ 投稿履歴を保存 (試行$i)"; break
+                fi
+                git rebase --abort 2>/dev/null || true
                 echo "⚠️ push失敗→リトライ($i)"; sleep 5
               done
             fi
