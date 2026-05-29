@@ -86,6 +86,44 @@ jobs:
               time.sleep(3)
           "
 
+      - name: 🔔 missed slot を GitHub Issue で通知 (復旧不能 = 沈黙の失敗を可視化)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          python3 scripts/check_posting_health.py --missed-json > /tmp/missed.json 2>/dev/null || echo "[]" > /tmp/missed.json
+          MISSED_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/missed.json'))))")
+          echo "missed count: $MISSED_COUNT"
+          if [ "$MISSED_COUNT" = "0" ]; then
+            echo "✅ missed slot なし → Issue 作成不要"
+            exit 0
+          fi
+          # 当日の Issue が既にあれば重複作成しない (title でデデュープ)
+          TODAY=$(TZ=Asia/Tokyo date '+%Y-%m-%d')
+          TITLE="🚨 投稿/データ SLO 違反 ($TODAY)"
+          EXISTING=$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+          if [ "$EXISTING" != "0" ]; then
+            echo "ℹ️ 当日の SLO Issue は既存 → スキップ"
+            exit 0
+          fi
+          BODY=$(python3 -c "
+          import json
+          missed = json.load(open('/tmp/missed.json'))
+          lines = ['## 復旧不能な未実行 slot (deadline 超過)', '']
+          lines.append('| slot | workflow | expected | deadline |')
+          lines.append('|---|---|---|---|')
+          for m in missed:
+              lines.append(f\"| {m['slot']} | {m.get('workflow','?')} | {m.get('expected','?')} | {m.get('deadline','?')} |\")
+          lines += ['', '時間ガードを超過したため自動 fallback では復旧できません。',
+                    '手動対応が必要なら \`gh workflow run\` で trigger してください。',
+                    '', '_この Issue は posting_watchdog.yml が自動生成_']
+          print(chr(10).join(lines))
+          ")
+          gh issue create --title "$TITLE" --body "$BODY" --label "slo-violation" 2>&1 || \
+            gh issue create --title "$TITLE" --body "$BODY" 2>&1 || \
+            echo "⚠️ Issue 作成失敗 (label 無し再試行も失敗)"
+          echo "✅ SLO 違反 Issue 作成 (GitHub からメール通知が飛ぶ)"
+
       - name: 📝 health.json を commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
