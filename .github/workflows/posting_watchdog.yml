@@ -64,23 +64,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          echo "📋 ${{ steps.health.outputs.missing_count }} 件の未投稿 slot を trigger します"
+          echo "📋 ${{ steps.health.outputs.missing_count }} 件の未実行 slot を trigger します"
           echo '${{ steps.health.outputs.missing_slots }}' | python3 -c "
           import json, sys, subprocess, time
           slots = json.load(sys.stdin)
           for s in slots:
-              mode = s['fallback_mode']
-              print(f'🔄 Triggering mode={mode} ({s[\"slot\"]})...')
-              result = subprocess.run(
-                  ['gh', 'workflow', 'run', 'auto_post_x.yml',
-                   '--ref', 'main', '-f', f'mode={mode}'],
-                  capture_output=True, text=True
-              )
+              workflow = s.get('workflow', 'auto_post_x.yml')
+              mode = s.get('fallback_mode')
+              if workflow == 'auto_post_x.yml' and mode:
+                  cmd = ['gh', 'workflow', 'run', workflow,
+                         '--ref', 'main', '-f', f'mode={mode}']
+                  print(f'🔄 Triggering {workflow} mode={mode} ({s[\"slot\"]})...')
+              else:
+                  cmd = ['gh', 'workflow', 'run', workflow, '--ref', 'main']
+                  print(f'🔄 Triggering {workflow} ({s[\"slot\"]})...')
+              result = subprocess.run(cmd, capture_output=True, text=True)
               if result.returncode == 0:
                   print(f'  ✅ triggered')
               else:
                   print(f'  ❌ failed: {result.stderr[:200]}')
-              time.sleep(3)  # rate limit 配慮
+              time.sleep(3)
           "
 
       - name: 📝 health.json を commit
