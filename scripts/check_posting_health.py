@@ -37,9 +37,15 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 JST = timezone(timedelta(hours=9))
 
-WORKFLOW_NAME = "auto_post_x.yml"
+WORKFLOW_NAME = "auto_post_x.yml"  # 投稿系のデフォルト
 DEFAULT_CONFIG = ROOT / "config" / "posting_slo.yml"
 DEFAULT_OUTPUT = ROOT / "docs" / "data" / "posting_health.json"
+
+# workflow ID マッピング (gh API には workflow file 名でアクセス)
+WORKFLOW_IDS = {
+    "auto_post_x.yml": 247415211,
+    "fetch_weekend_races.yml": 267465142,
+}
 
 
 def load_slo_config(config_path):
@@ -63,18 +69,18 @@ def parse_jst_hhmm(hhmm_str, base_date=None):
     return base.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
 
 
-def fetch_recent_runs(window_hours=24):
-    """gh CLI で直近 N 時間の workflow runs を取得"""
+def fetch_recent_runs(workflow_name=WORKFLOW_NAME, window_hours=24):
+    """gh CLI で指定 workflow の直近 N 時間の runs を取得"""
     cmd = [
         "gh", "api",
-        f"repos/daiki0726m-oss/equinox-lab/actions/workflows/{WORKFLOW_NAME}/runs?per_page=30",
+        f"repos/daiki0726m-oss/equinox-lab/actions/workflows/{workflow_name}/runs?per_page=30",
         "--jq",
         '.workflow_runs[] | {created_at, event, conclusion, status, display_title, name}'
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            print(f"⚠️ gh API failed: {result.stderr[:200]}", file=sys.stderr)
+            print(f"⚠️ gh API failed ({workflow_name}): {result.stderr[:200]}", file=sys.stderr)
             return []
         runs = []
         for line in result.stdout.strip().split("\n"):
@@ -82,7 +88,7 @@ def fetch_recent_runs(window_hours=24):
                 runs.append(json.loads(line))
         return runs
     except Exception as e:
-        print(f"⚠️ gh API exception: {e}", file=sys.stderr)
+        print(f"⚠️ gh API exception ({workflow_name}): {e}", file=sys.stderr)
         return []
 
 
@@ -252,7 +258,8 @@ def main():
     args = ap.parse_args()
 
     cfg = load_slo_config(args.config)
-    runs = fetch_recent_runs(window_hours=24)
+    posting_runs = fetch_recent_runs("auto_post_x.yml", window_hours=24)
+    fetch_runs = fetch_recent_runs("fetch_weekend_races.yml", window_hours=24)
     monitor = cfg.get("monitor", {})
 
     today = jst_now()
@@ -272,16 +279,43 @@ def main():
             all_slots_today[sn] = parse_jst_hhmm(sc["expected_jst"], today)
 
     missing_slots = []
+    # ① 投稿系 slot (auto_post_x.yml)
     for slot_name, slot_cfg in cfg["slots"].items():
-        evaluation = evaluate_slot(slot_name, slot_cfg, runs, monitor, today,
+        evaluation = evaluate_slot(slot_name, slot_cfg, posting_runs, monitor, today,
                                    all_slots_today=all_slots_today)
+        evaluation["workflow"] = "auto_post_x.yml"
         results["slots"][slot_name] = evaluation
         status = evaluation["status"]
         results["summary"][status] = results["summary"].get(status, 0) + 1
         if status == "missing":
             missing_slots.append({
                 "slot": slot_name,
+                "workflow": "auto_post_x.yml",
                 "fallback_mode": evaluation["fallback_mode"],
+            })
+
+    # ② データ収集系 slot (fetch_weekend_races.yml)
+    fetch_slots_today = {}
+    for sn, sc in cfg.get("data_fetch_slots", {}).items():
+        if weekday_now in sc.get("days", []):
+            fetch_slots_today[sn] = parse_jst_hhmm(sc["expected_jst"], today)
+
+    for slot_name, slot_cfg in cfg.get("data_fetch_slots", {}).items():
+        # data_fetch_slots は fallback_mode 無し (workflow_dispatch with no input)
+        slot_cfg2 = dict(slot_cfg)
+        slot_cfg2.setdefault("fallback_mode", "auto")  # ダミー
+        slot_cfg2.setdefault("time_guard_jst", [0, 23])  # データ収集は時間ガード無し相当
+        evaluation = evaluate_slot(slot_name, slot_cfg2, fetch_runs, monitor, today,
+                                   all_slots_today=fetch_slots_today)
+        evaluation["workflow"] = slot_cfg.get("workflow", "fetch_weekend_races.yml")
+        results["slots"][slot_name] = evaluation
+        status = evaluation["status"]
+        results["summary"][status] = results["summary"].get(status, 0) + 1
+        if status == "missing":
+            missing_slots.append({
+                "slot": slot_name,
+                "workflow": slot_cfg.get("workflow", "fetch_weekend_races.yml"),
+                "fallback_mode": None,
             })
 
     # 出力

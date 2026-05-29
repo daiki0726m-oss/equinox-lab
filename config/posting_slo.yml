@@ -83,6 +83,50 @@ slots:
     fallback_mode: "results"
     days: [5, 6]
 
+# ─────────── データ収集系 SLO (5/30 新規追加) ───────────
+# fetch_weekend_races.yml の cron スケジュールも watchdog 対象に。
+# 「データが入ってない」状態を構造的に防ぐ。
+data_fetch_slots:
+  fetch_monday:
+    workflow: fetch_weekend_races.yml
+    description: "月曜朝 — 来週末のレース予備登録"
+    cron: "0 21 * * 0"
+    expected_jst: "06:00"
+    watchdog_deadline_jst: "09:00"
+    days: [0]  # 月曜
+
+  fetch_wednesday:
+    workflow: fetch_weekend_races.yml
+    description: "水曜朝 — 出馬表更新 (木の出走確定前 予備)"
+    cron: "0 21 * * 2"
+    expected_jst: "06:00"
+    watchdog_deadline_jst: "09:00"
+    days: [2]
+
+  fetch_friday:
+    workflow: fetch_weekend_races.yml
+    description: "金曜朝 — 出馬表最終確認"
+    cron: "0 21 * * 4"
+    expected_jst: "06:00"
+    watchdog_deadline_jst: "09:00"
+    days: [4]
+
+  fetch_saturday:
+    workflow: fetch_weekend_races.yml
+    description: "土曜朝 — R1-R8 一般レース取り込み (重要)"
+    cron: "0 20 * * 5"
+    expected_jst: "05:00"
+    watchdog_deadline_jst: "06:30"
+    days: [5]
+
+  fetch_sunday:
+    workflow: fetch_weekend_races.yml
+    description: "日曜朝 — 日曜分の最終 fetch (重要)"
+    cron: "0 20 * * 6"
+    expected_jst: "05:00"
+    watchdog_deadline_jst: "06:30"
+    days: [6]
+
 # ─────────── 監視設定 ───────────
 monitor:
   # workflow_dispatch で何分前以内の success を「最近成功」とみなすか
