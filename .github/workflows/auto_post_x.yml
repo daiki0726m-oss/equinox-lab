@@ -279,10 +279,27 @@ jobs:
         if: steps.determine.outputs.type == 'predict'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
+          DATE_HYPHEN="${{ steps.determine.outputs.date_hyphen }}"
           JST_HOUR=$(TZ=Asia/Tokyo date +%H)
-          echo "📥 ${DATE} のデータをスクレイプ..."
-          python predict.py collect --date "$DATE"
-          
+
+          # 🛡 2026-05-30 fix: fetch_weekend_races が既に出走馬を入れている場合は
+          # collect (全レース再 scrape) を skip。これを怠ると weekend predict が
+          # scrape 段階で 15分+ stuck し、予測が生成されない事故が起きる (5/30 実例)。
+          RUNNERS=$(python -c "
+          from database import get_db
+          with get_db() as conn:
+              n = conn.execute('SELECT COUNT(*) FROM results res JOIN races r ON res.race_id=r.race_id WHERE r.race_date IN (?,?)', ('$DATE_HYPHEN','$DATE')).fetchone()[0]
+          print(n)
+          " 2>/dev/null || echo 0)
+          echo "📊 既存出走馬: ${RUNNERS}頭"
+
+          if [ "$RUNNERS" -ge 50 ]; then
+            echo "✅ 出走馬は fetch 済み (${RUNNERS}頭) → collect skip (stuck 防止)"
+          else
+            echo "📥 ${DATE} のデータをスクレイプ (timeout 300s)..."
+            timeout 300 python predict.py collect --date "$DATE" || echo "⚠️ collect timeout/失敗 → 既存データで続行"
+          fi
+
           # 10時以降は予測を再実行しない（確定済み予測を保護）
           if [ "$JST_HOUR" -ge 10 ]; then
             echo "🔒 JST ${JST_HOUR}時: 10時以降のため予測をスキップ（確定済み）"
