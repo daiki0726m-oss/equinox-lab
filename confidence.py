@@ -265,16 +265,30 @@ def evaluate(
         grade=grade,
         top1_odds=top_odds,
     )
-    rating = grade_from_composite(result['composite'])
+    # ── confidence = ◎勝率 (予測自信度) 主体 (2026-05-30 エンタメ再設計) ──────
+    # 旧 v4 は composite の 75% が投資妙味 (trio_ev/odds_pot/umaren_ev) だったため、
+    # 「◎48%の堅い本命でもオッズ低 (妙味なし) → B」という直感に反する判定が出た。
+    # 投資ではなくエンタメ用途では「AI がどれだけ本命を絞れているか = ◎勝率」を
+    # confidence にするのが自然。妙味 (composite) は reason に併記して透明性を残す。
+    # WIN_SHARPEN=3 適用後の ◎勝率分布に合わせた閾値:
+    #   S ≥45% (圧倒的本命) / A ≥30% / B ≥20% / C ≥13% / D <13% (混戦)
+    # この後 predict.py で volatility (未勝利 -2 等) 補正が入り、ノイズの多い
+    # 未勝利戦の高勝率本命は適切に減格される。
+    def _win_grade(w: float) -> str:
+        if w >= 45: return "S"
+        if w >= 30: return "A"
+        if w >= 20: return "B"
+        if w >= 13: return "C"
+        return "D"
+    rating = _win_grade(top_win_pct)
+
     label = GRADE_LABELS[rating]
     br = result['breakdown']
     odds_disp = f"{top_odds:.1f}倍" if top_odds > 0 else "?"
     reason = (
-        f"◎勝率{top_win_pct:.1f}% / 複勝{top_top3_pct:.1f}% / "
-        f"オッズ{odds_disp} / 上位3計{top3_sum_pct:.1f}% / "
-        f"人気{top_popularity if top_popularity else '?'} → "
-        f"三連複EV {br['trio_ev']:.2f} / 妙味 {br['odds_pot']:.2f} → "
-        f"{result['composite']:.2f} ({label})"
+        f"◎勝率{top_win_pct:.1f}% → 自信度{label} / "
+        f"複勝{top_top3_pct:.1f}% / オッズ{odds_disp} / 上位3計{top3_sum_pct:.1f}% / "
+        f"(参考)妙味 三連複EV {br['trio_ev']:.2f} / オッズ妙味 {br['odds_pot']:.2f}"
     )
     return {
         'confidence': rating,
