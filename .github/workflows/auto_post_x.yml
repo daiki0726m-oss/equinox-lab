@@ -26,6 +26,14 @@ on:
           - morning
           - evening
           - diagnose
+      skip_guard:
+        description: '時間ガードをバイパス (緊急手動投稿用、cron遅延等で投稿漏れた時)'
+        required: false
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
   # ─── cron フォールバック（GAS不発時のセーフティネット） ───
   schedule:
     # 平日朝7:30 JST (UTC 22:30前日) → 日-木のUTC22:30 = 月-金のJST7:30
@@ -437,6 +445,9 @@ jobs:
           X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          # 緊急手動投稿用: skip_guard=1 のときだけ時間ガードをバイパス。
+          # それ以外 (cron 含む) は空文字 → post_x.py 側で not '' = True となりガード有効。
+          SKIP_PREDICT_GUARD: ${{ github.event.inputs.skip_guard == '1' && '1' || '' }}
         run: |
           TYPE="${{ steps.determine.outputs.type }}"
           DATE="${{ steps.determine.outputs.date }}"
