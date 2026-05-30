@@ -903,14 +903,15 @@ def cmd_results(args):
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-    # ── 1) JSON-first: 公開済み JSON から読む(永続・cache不要) ──
-    race_data = _build_results_from_json(date_str)
-    src = "JSON" if race_data else None
-
-    # ── 2) DB fallback: JSON が無い・古い場合 ──
+    # ── 着順は DB の results が source of truth (#41) ──
+    # JSON の finish は「結果確定後の再 export」が漏れると欠落し、印馬が "除外" と
+    # 誤表示される (実際 11R 以外は finish=None で全滅していた)。着順が確実な DB を
+    # 最優先にし、DB が空のとき (cache 事故等) のみ JSON にフォールバックする。
+    race_data = _build_results_from_db(date_str, date_hyphen)
+    src = "DB" if race_data else None
     if not race_data:
-        race_data = _build_results_from_db(date_str, date_hyphen)
-        src = "DB" if race_data else None
+        race_data = _build_results_from_json(date_str)
+        src = "JSON" if race_data else None
 
     if not race_data:
         print(f"❌ {date_str} の予測データがありません(JSON/DB共に)")
@@ -922,40 +923,41 @@ def cmd_results(args):
         print(f"❌ {date_str} の結果がまだ出ていません")
         return
 
-    # 🛡 投稿済レース完走待ちガード (2026-05-24 修正版):
-    # 朝の post_predict で X 投稿したレース全部が完走確定するまで結果投稿をスキップ。
-    # 「投稿したレース」= predictions_cache.posted_at が NOT NULL のレース。
-    # これにより「投稿で約束したレース全部の結果が揃ってから報告」が物理保証される。
+    # 🛡 完走待ちガード (#41 改: posted_at 非依存):
+    # 予想配信した対象レース (_select_target_races と同じ 11R+注目S/A) が全部完走する
+    # まで結果投稿をスキップ =「予想した全レースの結果が揃ってから一括報告」を保証。
+    # 旧版は posted_at IS NOT NULL に依存していたが、posted_at が記録されない環境では
+    # ガードが素通りしていたため、予想と同じ選定ロジックで対象を出し完走状況で直接判定する。
     is_partial_ok = os.environ.get("ALLOW_PARTIAL_RESULTS", "0") == "1"
     if not is_partial_ok:
         with get_db() as conn:
-            posted_rows = conn.execute("""
-                SELECT pc.race_id, r.venue, r.race_number, r.race_name
-                FROM predictions_cache pc JOIN races r ON pc.race_id = r.race_id
-                WHERE (r.race_date = ? OR r.race_date = ?) AND pc.posted_at IS NOT NULL
-                ORDER BY r.race_id
+            all_rows = conn.execute("""
+                SELECT ra.race_id, ra.venue, ra.race_number, ra.race_name,
+                       pc.confidence, pc.should_bet
+                FROM races ra JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                WHERE (ra.race_date = ? OR ra.race_date = ?)
             """, (date_str, date_hyphen)).fetchall()
-            posted_race_ids = [dict(r) for r in posted_rows]
+            targets = _select_target_races([dict(r) for r in all_rows])
 
             incomplete = []
-            for pr in posted_race_ids:
+            for t in targets:
                 row = conn.execute(
                     "SELECT COUNT(*) c, SUM(CASE WHEN finish_position > 0 THEN 1 ELSE 0 END) d "
-                    "FROM results WHERE race_id = ?",
-                    (pr['race_id'],)
+                    "FROM results WHERE race_id = ?", (t['race_id'],)
                 ).fetchone()
                 total = row['c'] or 0
                 done = row['d'] or 0
                 # 除外/中止1頭まで許容 (全頭確定が原則)
                 if total == 0 or done < total - 1:
-                    incomplete.append((pr, total, done))
+                    incomplete.append((t, total, done))
 
-        if posted_race_ids and incomplete:
-            print(f"⚠️ 投稿対象 {len(posted_race_ids)}レース中 {len(incomplete)}レース未完走 → 投稿スキップ")
-            for pr, total, done in incomplete[:5]:
-                print(f"   未完走: {pr['venue']}{pr['race_number']}R {pr['race_name'][:14]} ({done}/{total})")
-            print(f"   (投稿で予想した全レース確定後に一括報告する設計)")
-            print(f"   バイパス: 環境変数 ALLOW_PARTIAL_RESULTS=1 を設定")
+        if targets and incomplete:
+            print(f"⚠️ 予想 {len(targets)}レース中 {len(incomplete)}レース未完走 → 投稿スキップ")
+            for t, total, done in incomplete[:5]:
+                print(f"   未完走: {t.get('venue')}{t.get('race_number')}R "
+                      f"{(t.get('race_name') or '')[:14]} ({done}/{total})")
+            print(f"   (予想した全レース確定後に一括報告する設計)")
+            print(f"   バイパス: 環境変数 ALLOW_PARTIAL_RESULTS=1")
             return
 
     def medal(fin):
