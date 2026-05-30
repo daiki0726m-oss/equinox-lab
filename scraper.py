@@ -973,6 +973,21 @@ class NetkeibaScraper:
             # 過去のバグで未来レースで出走馬が保存されない事象があり、
             # entries も results として処理するよう統一 (2026-05-23 修正)
             horse_records = race_data.get("results", []) or race_data.get("entries", [])
+
+            # 🆕 幽霊馬対策 (#43): 最新スクレイプの馬番に無い「結果未確定」レコードを削除。
+            # 枠順確定前の仮馬番 (出馬表の行数で 1..N 採番) が、確定後の正式馬番 (1..M,
+            # M<N) で上書きされず残存して「幽霊馬」(オッズ0・出走表に存在しない) になる
+            # 問題を根絶。確定済 (finish_position>0) は保護し、出走馬段階のみ最新スクレイプ
+            # で完全同期する。UNIQUE(race_id,horse_number) は同一馬の異馬番重複を防げない。
+            scraped_nums = [r.get("horse_number", 0) for r in horse_records if r.get("horse_number")]
+            if scraped_nums:
+                _ph = ",".join("?" * len(scraped_nums))
+                conn.execute(
+                    f"DELETE FROM results WHERE race_id = ? AND finish_position = 0 "
+                    f"AND horse_number NOT IN ({_ph})",
+                    (race_data["race_id"], *scraped_nums)
+                )
+
             for r in horse_records:
                 # 馬マスター
                 if r.get("horse_id"):
