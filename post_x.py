@@ -565,6 +565,12 @@ def cmd_predict(args):
         print(f"❌ {date_str} の予測データがありません")
         return
 
+    # DB由来 (sqlite3.Row) と JSON由来 (dict) が混在しうる。以降 .get()/[] を一貫して
+    # 使えるよう dict に統一する。
+    # (2026-05-30 #38: sqlite3.Row は .get() を持たず cmd_predict が AttributeError で
+    #  全 post_predict 投稿が落ちていた。dict 化で両経路を安全に統一)
+    all_races = [dict(r) for r in all_races]
+
     # 投稿対象: 11R(必ず) + 推奨レース(should_bet=1 かつ 信頼度S/A)(11R以外、最大3件)
     # 2026-05-25 v4.1: betting.py 12%/30% 厳格化を投稿選定にも反映。
     # should_bet=1 のみだと S/A/B 混在 → 信頼度 S/A も併せて高品質に絞る。
