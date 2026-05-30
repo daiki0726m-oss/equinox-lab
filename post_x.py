@@ -1207,16 +1207,20 @@ def generate_weekly_summary():
 
     try:
         with get_db() as conn:
-            # 先週末11Rの予測と結果を照合
-            races_11r = conn.execute("""
-                SELECT ra.race_id, ra.race_name, ra.venue, ra.race_date,
-                       pc.predictions_json
+            # 先週末の予測と結果を照合。予想・結果投稿と同じ対象 (11R + 注目S/A) を
+            # 各日について _select_target_races で選定 (#42: 旧 11R 限定では予想した
+            # 注目レースの成績がサマリーから漏れていた)。
+            all_rows = [dict(r) for r in conn.execute("""
+                SELECT ra.race_id, ra.race_name, ra.venue, ra.race_date, ra.race_number,
+                       pc.predictions_json, pc.confidence, pc.should_bet
                 FROM races ra
                 JOIN predictions_cache pc ON ra.race_id = pc.race_id
                 WHERE ra.race_date IN (?, ?)
-                AND ra.race_number = 11
-                ORDER BY ra.race_date, ra.venue
-            """, (sat_str, sun_str)).fetchall()
+                ORDER BY ra.race_date, ra.venue, ra.race_number
+            """, (sat_str, sun_str)).fetchall()]
+            races_11r = []
+            for _d in (sat_str, sun_str):
+                races_11r += _select_target_races([r for r in all_rows if r['race_date'] == _d])
 
             results_list = []
             for race in races_11r:
@@ -1253,7 +1257,7 @@ def generate_weekly_summary():
     hit_rate = round(hits / total * 100) if total > 0 else 0
 
     t1 = f"📊 先週末({dr}) AI予測の結果\n"
-    t1 += f"対象: メインレース(11R) {total}レース\n\n"
+    t1 += f"対象: AI注目レース(11R+S/A) {total}レース\n\n"
     t1 += f"AI本命(◎)の複勝的中率: {hits}/{total} ({hit_rate}%)\n\n"
     t1 += f"{data_credit(short=True)}\n"
     t1 += "#競馬予想 #AI予想 🧵↓"
