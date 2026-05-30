@@ -1662,7 +1662,18 @@ def fetch_weekend_races():
 
                         # 出走馬もresultsに仮登録（horse_number, horse_id, odds, popularity等）
                         # impost(斤量)もINSERTするように修正(features.pyがdtype要求するため必須)
-                        for entry in data.get('entries', []):
+                        entries = data.get('entries', [])
+                        # 🆕 幽霊馬対策 (#43): 最新スクレイプの馬番に無い結果未確定レコードを削除
+                        # (枠順確定前の仮馬番が確定後も残る「幽霊馬」を根絶。save_race_to_db と同じ)
+                        _snums = [e.get('horse_number', 0) for e in entries if e.get('horse_number')]
+                        if _snums:
+                            _ph = ",".join("?" * len(_snums))
+                            conn.execute(
+                                f"DELETE FROM results WHERE race_id = ? AND finish_position = 0 "
+                                f"AND horse_number NOT IN ({_ph})",
+                                (rid, *_snums)
+                            )
+                        for entry in entries:
                             if entry.get('horse_id'):
                                 conn.execute("""
                                     INSERT OR IGNORE INTO results
