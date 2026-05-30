@@ -571,40 +571,11 @@ def cmd_predict(args):
     #  全 post_predict 投稿が落ちていた。dict 化で両経路を安全に統一)
     all_races = [dict(r) for r in all_races]
 
-    # 投稿対象: 11R(必ず) + 推奨レース(should_bet=1 かつ 信頼度S/A)(11R以外、最大3件)
-    # 2026-05-25 v4.1: betting.py 12%/30% 厳格化を投稿選定にも反映。
-    # should_bet=1 のみだと S/A/B 混在 → 信頼度 S/A も併せて高品質に絞る。
-    target_races = []
-    target_ids = set()
-
-    # まず11Rを追加
-    for race in all_races:
-        if race['race_number'] == 11 and race['race_id'] not in target_ids:
-            target_races.append(race)
-            target_ids.add(race['race_id'])
-
-    # 注目レース (信頼度 S/A): 11R以外、最大3件
-    # 2026-05-30 fix: should_bet=1 必須を撤廃。post_predict は「投資推奨」ではなく
-    # 「AI 注目馬コンテンツ」なので、信頼度 S/A を選定基準にする。
-    # (従来は should_bet=1 AND S/A だったが、大頭数レースで top_prob<12% だと
-    #  should_bet=0 になり、信頼度 A のレースでも投稿対象から漏れる問題があった)
-    # should_bet=1 を優先し、足りなければ should_bet=0 の S/A でも埋める。
-    rec_count = 0
-    candidates = [
-        r for r in all_races
-        if r['race_id'] not in target_ids and r['confidence'] in ('S', 'A')
-    ]
-    # 並び: should_bet=1 を先に / 同条件なら S > A
-    candidates.sort(key=lambda r: (
-        0 if r.get('should_bet') == 1 else 1,
-        {'S': 0, 'A': 1}.get(r['confidence'], 2),
-    ))
-    for race in candidates:
-        target_races.append(race)
-        target_ids.add(race['race_id'])
-        rec_count += 1
-        if rec_count >= 3:
-            break
+    # 投稿対象の選定は _select_target_races に集約 (#39: 予想と結果で同一ロジックを共有)。
+    # 対象 = 11R(全会場) + 注目 S/A(should_bet優先で最大3件)。post_predict は
+    # 「投資推奨」でなく「AI 注目馬コンテンツ」なので confidence S/A を選定基準にする。
+    target_races = _select_target_races(all_races)
+    target_ids = {_race_key(r) for r in target_races}
 
     if not target_races:
         print(f"❌ 投稿対象レースがありません")
@@ -714,6 +685,44 @@ def cmd_predict(args):
             print(f"⚠️ seal失敗(非致命): {e}")
 
 
+def _race_key(r):
+    """レース識別キー。race_id があれば優先、無ければ (venue, race_number)。"""
+    return r.get('race_id') or (r.get('venue'), r.get('race_number'))
+
+
+def _select_target_races(all_races):
+    """予想投稿・結果投稿で共通の対象レース選定 (#39)。
+
+    対象 = 11R(全会場) + 注目レース(confidence S/A を should_bet 優先・S>A 順で最大3件)。
+    予想(cmd_predict)と結果(cmd_results)で必ず同じレース集合を扱うことを
+    構造的に保証するための単一の真実。
+    (旧バグ: cmd_predict は最大13R投稿するのに cmd_results は11Rのみ報告していて、
+     予想したレースの大半が結果報告から漏れていた)
+
+    all_races: dict のリスト。各要素は race_number, confidence, should_bet と
+               race_id または (venue, race_number) を持つこと。
+    返り値: 対象レース dict のリスト (投稿順: 11R会場順 → 注目 should_bet優先)。
+    """
+    selected = []
+    seen = set()
+    for r in all_races:
+        if r.get('race_number') == 11 and _race_key(r) not in seen:
+            selected.append(r)
+            seen.add(_race_key(r))
+    candidates = [
+        r for r in all_races
+        if _race_key(r) not in seen and r.get('confidence') in ('S', 'A')
+    ]
+    candidates.sort(key=lambda r: (
+        0 if r.get('should_bet') in (1, True) else 1,
+        {'S': 0, 'A': 1}.get(r.get('confidence'), 2),
+    ))
+    for r in candidates[:3]:
+        selected.append(r)
+        seen.add(_race_key(r))
+    return selected
+
+
 # ─── レース当日: 的中結果報告 ───
 def _build_results_from_json(date_str):
     """公開済み JSON (docs/data/predictions_YYYYMMDD.json) から
@@ -753,49 +762,58 @@ def _build_results_from_json(date_str):
     race_data = []
     mark_order = ['◎', '○', '▲', '△', '×', '注']
 
+    # 全レースを flat 化し、予想投稿と同じ _select_target_races で対象を決める (#39)。
+    # 旧: race_number != 11 で 11R 以外を全部除外 → 予想した注目レースの結果が漏れていた。
+    flat_races = []
     for venue_name, races in venues.items():
         for race in races:
-            if race.get('race_number') != 11:
+            race = dict(race)
+            race.setdefault('venue', venue_name)
+            flat_races.append(race)
+    target_keys = {_race_key(r) for r in _select_target_races(flat_races)}
+
+    for race in flat_races:
+        if _race_key(race) not in target_keys:
+            continue
+        horses = race.get('horses', [])
+        # v3 (2026-05-17): ユーザー指摘「中途半端な状態で投稿しないで」への対応。
+        # 旧版は any() で「1頭でも確定なら投稿」→ 「?着」が並ぶ未完成投稿が発生。
+        # 新版は「全頭 finish 確定」かつ「1-3着がすべて確定」を必須とする。
+        # (除外/中止が複数あるレースは confirmed=horse_count - 失格 を許容)
+        finishes = [
+            h.get('finish', 0) or 0 for h in horses
+            if isinstance(h.get('finish'), int)
+        ]
+        top3_set = set(f for f in finishes if 1 <= f <= 3)
+        unconfirmed = sum(1 for h in horses
+                          if not isinstance(h.get('finish'), int) or h.get('finish', 0) < 1)
+        # 1-3着全部確定 + 未確定馬が 1 頭以下 (除外/中止許容) で初めて投稿
+        if len(top3_set) < 3 or unconfirmed > 1:
+            continue  # 中途半端は投稿しない
+
+        marked = []
+        for m in mark_order:
+            horse = next((h for h in horses if h.get('mark') == m), None)
+            if not horse:
                 continue
-            horses = race.get('horses', [])
-            # v3 (2026-05-17): ユーザー指摘「中途半端な状態で投稿しないで」への対応。
-            # 旧版は any() で「1頭でも確定なら投稿」→ 「?着」が並ぶ未完成投稿が発生。
-            # 新版は「全頭 finish 確定」かつ「1-3着がすべて確定」を必須とする。
-            # (除外/中止が複数あるレースは confirmed=horse_count - 失格 を許容)
-            finishes = [
-                h.get('finish', 0) or 0 for h in horses
-                if isinstance(h.get('finish'), int)
-            ]
-            top3_set = set(f for f in finishes if 1 <= f <= 3)
-            confirmed_count = sum(1 for f in finishes if f >= 1)
-            unconfirmed = sum(1 for h in horses
-                              if not isinstance(h.get('finish'), int) or h.get('finish', 0) < 1)
-            # 1-3着全部確定 + 未確定馬が 1 頭以下 (除外/中止許容) で初めて投稿
-            if len(top3_set) < 3 or unconfirmed > 1:
-                continue  # 中途半端は投稿しない
+            fin = horse.get('finish')
+            if not isinstance(fin, int) or fin < 1:
+                fin = None
+            marked.append({
+                'mark': m,
+                'horse_number': horse.get('horse_number', 0),
+                'horse_name': horse.get('horse_name', ''),
+                'finish': fin,
+            })
 
-            marked = []
-            for m in mark_order:
-                horse = next((h for h in horses if h.get('mark') == m), None)
-                if not horse:
-                    continue
-                fin = horse.get('finish')
-                if not isinstance(fin, int) or fin < 1:
-                    fin = None
-                marked.append({
-                    'mark': m,
-                    'horse_number': horse.get('horse_number', 0),
-                    'horse_name': horse.get('horse_name', ''),
-                    'finish': fin,
-                })
-
-            if marked:
-                race_data.append({
-                    'venue': race.get('venue', venue_name),
-                    'race_name': race.get('race_name', ''),
-                    'grade': race.get('grade') or '',
-                    'marks': marked,
-                })
+        if marked:
+            race_data.append({
+                'venue': race.get('venue', ''),
+                'race_number': race.get('race_number', 11),
+                'race_name': race.get('race_name', ''),
+                'grade': race.get('grade') or '',
+                'marks': marked,
+            })
 
     return race_data
 
@@ -808,25 +826,30 @@ def _build_results_from_db(date_str, date_hyphen):
     try:
         with get_db() as conn:
             races = conn.execute("""
-                SELECT ra.race_id, ra.race_name, ra.venue, ra.grade,
-                       pc.predictions_json
+                SELECT ra.race_id, ra.race_name, ra.venue, ra.grade, ra.race_number,
+                       pc.predictions_json, pc.confidence, pc.should_bet
                 FROM races ra
                 JOIN predictions_cache pc ON ra.race_id = pc.race_id
                 WHERE (ra.race_date = ? OR ra.race_date = ?)
-                AND ra.race_number = 11
-                ORDER BY ra.venue
+                ORDER BY ra.venue, ra.race_number
             """, (date_str, date_hyphen)).fetchall()
 
             if not races:
                 return []
 
-            for race in races:
-                # sqlite3.Row は dict 形式アクセスのみ。.get() は使えないので keys() ベースで安全に。
-                row_keys = race.keys() if hasattr(race, 'keys') else []
-                preds_raw = race['predictions_json'] if 'predictions_json' in row_keys else None
+            # 予想投稿と同じ _select_target_races で対象を決める (#39: 旧 11R 限定を撤廃)。
+            # dict 化して .get()/[] を一貫使用 (#38 同様 sqlite3.Row の .get() クラッシュを回避)。
+            all_rows = [dict(r) for r in races]
+            target_keys = {_race_key(r) for r in _select_target_races(all_rows)}
+
+            mark_order = ['◎', '○', '▲', '△', '×', '注']
+            for race in all_rows:
+                if _race_key(race) not in target_keys:
+                    continue
+                preds_raw = race.get('predictions_json')
                 preds = json.loads(preds_raw) if preds_raw else []
 
-                race_id = race['race_id'] if 'race_id' in row_keys else None
+                race_id = race.get('race_id')
                 if not race_id:
                     continue
 
@@ -838,7 +861,6 @@ def _build_results_from_db(date_str, date_hyphen):
                 if not finish_map:
                     continue
 
-                mark_order = ['◎', '○', '▲', '△', '×', '注']
                 marked = []
                 for m in mark_order:
                     horse = next((p for p in preds if p.get('mark') == m), None)
@@ -852,11 +874,11 @@ def _build_results_from_db(date_str, date_hyphen):
                         'finish': fin,
                     })
 
-                grade_val = race['grade'] if 'grade' in row_keys else ''
                 race_data.append({
-                    'venue': race['venue'] if 'venue' in row_keys else '',
-                    'race_name': race['race_name'] if 'race_name' in row_keys else '',
-                    'grade': grade_val or '',
+                    'venue': race.get('venue', ''),
+                    'race_number': race.get('race_number', 11),
+                    'race_name': race.get('race_name', ''),
+                    'grade': race.get('grade') or '',
                     'marks': marked,
                 })
     except Exception as e:
@@ -970,7 +992,7 @@ def cmd_results(args):
         t = ""
         if is_first:
             t += f"📊 {date_label} AI予想 印別着順\n\n"
-        t += f"📍 {r['venue']}11R {r['race_name']}{grade_label}\n\n"
+        t += f"📍 {r['venue']}{r['race_number']}R {r['race_name']}{grade_label}\n\n"
 
         n_in_top3 = 0
         for m in r['marks']:
