@@ -526,22 +526,12 @@ def cmd_predict(args):
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-    # ─── 🛡 時間ガード: レース後の post_predict は禁止 ───
-    # 同日のレース で start_time が「現在時刻 - 30分」より前なら「もう走った」とみなす。
-    # 11R より早い時刻のレースが1つでも既に始まっていれば、投稿はキャンセル。
-    # SKIP_PREDICT_GUARD=1 で意図的にバイパス可能(テスト用)
-    if not os.environ.get("SKIP_PREDICT_GUARD"):
-        now = now_jst()
-        if now.strftime("%Y%m%d") == date_str:
-            # 当日かつ「11時 JST 以降」なら問答無用でスキップ
-            # 朝の予想公開は 7:00-10:45 JST の窓に限定
-            if now.hour >= 11:
-                print(f"⚠️ 時間ガード発動: 現在 {now.strftime('%H:%M JST')} は 11時以降")
-                print(f"   post_predict は朝の予想公開専用(7:00-10:45 JST)。")
-                print(f"   レース終了後の予想投稿事故防止のためスキップします。")
-                print(f"   バイパスするには環境変数 SKIP_PREDICT_GUARD=1 を設定。")
-                return
-
+    # ─── 🛡 時間ガード (#45 改): レース後の予想投稿を防ぐ ───
+    # 旧版は「当日11時以降は全スキップ」だったが粗すぎた (11時前でも午前の発走済み
+    # レースを投稿し、11時以降は未発走の午後レースも投稿不能になる)。
+    # → 時刻ベースの全体スキップを廃止し、後段で「発走済みレースを個別に除外」する
+    #   方式に変更 (下記 _not_started フィルタ)。これにより常に「未発走レースのみ」
+    #   を投稿し、過ぎたレースは出さない。
     all_races = []
 
     # まずローカルDBから取得 (should_bet も含めて取得)
@@ -575,6 +565,23 @@ def cmd_predict(args):
     # 対象 = 11R(全会場) + 注目 S/A(should_bet優先で最大3件)。post_predict は
     # 「投資推奨」でなく「AI 注目馬コンテンツ」なので confidence S/A を選定基準にする。
     target_races = _select_target_races(all_races)
+    # 🆕 発走済みレースを除外 (#45): 現在時刻を過ぎたレースは「過ぎたレース」として投稿しない。
+    # start_time(HH:MM)が現在時刻より前なら発走済み。当日のみ適用(過去日付の再投稿は対象外)。
+    if now_jst().strftime("%Y%m%d") == date_str:
+        _now = now_jst()
+        def _not_started(r):
+            st = (r.get("start_time") or "").strip()
+            if ":" not in st:
+                return True  # 発走時刻不明は安全側で残す
+            try:
+                hh, mm = map(int, st.split(":")[:2])
+                return (hh, mm) > (_now.hour, _now.minute)
+            except Exception:
+                return True
+        _b = len(target_races)
+        target_races = [r for r in target_races if _not_started(r)]
+        if _b != len(target_races):
+            print(f"⏭️ 発走済み {_b - len(target_races)}レースを除外 (過ぎたレースは投稿しない / 現在 {_now.strftime('%H:%M')})")
     target_ids = {_race_key(r) for r in target_races}
 
     if not target_races:
