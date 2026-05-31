@@ -682,6 +682,19 @@ def cmd_predict(args):
 
     post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
+    # 🆕 投稿したレースを記録 (#46): 結果投稿はこの posted_at のレースのみ報告する。
+    # 「予想投稿したレース = 結果投稿するレース」を物理保証。発走済み除外(#45)で予想を
+    # 絞った場合でも、結果が _select_target_races の再計算で予想していないレースまで
+    # 報告する事故を根絶する (target_races は発走済み除外後の実投稿レース)。
+    if not args.dry_run:
+        _ts = now_jst().isoformat()
+        with get_db() as conn:
+            for r in target_races:
+                rid = r.get('race_id')
+                if rid:
+                    conn.execute("UPDATE predictions_cache SET posted_at = ? WHERE race_id = ?", (_ts, rid))
+        print(f"📌 投稿済みレースを記録: {len(target_races)}件 (結果投稿はこのレースのみ対象)")
+
     # 投稿成功 → 予測キャッシュを seal(以降 --force でも上書き不可)
     # これで結果配信時に「投稿時の予測」と異なる予測を参照する事故を防ぐ
     if not args.dry_run:
@@ -769,18 +782,31 @@ def _build_results_from_json(date_str):
     race_data = []
     mark_order = ['◎', '○', '▲', '△', '×', '注']
 
-    # 全レースを flat 化し、予想投稿と同じ _select_target_races で対象を決める (#39)。
-    # 旧: race_number != 11 で 11R 以外を全部除外 → 予想した注目レースの結果が漏れていた。
+    # 🆕 結果投稿の対象 = 実際に予想投稿したレース (posted_at IS NOT NULL) のみ (#46)。
+    # DB から「投稿済み race_id」を取得し、JSON 側でそれだけをフィルタする。
+    # (発走済み除外で予想を絞った場合でも、予想していないレースの結果は報告しない)
+    posted_ids = set()
+    try:
+        with get_db() as conn:
+            posted_ids = {
+                row[0] for row in conn.execute(
+                    "SELECT pc.race_id FROM predictions_cache pc JOIN races ra ON pc.race_id = ra.race_id "
+                    "WHERE (ra.race_date = ? OR ra.race_date = ?) AND pc.posted_at IS NOT NULL",
+                    (date_str, f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}")
+                ).fetchall()
+            }
+    except Exception:
+        posted_ids = set()
+
     flat_races = []
     for venue_name, races in venues.items():
         for race in races:
             race = dict(race)
             race.setdefault('venue', venue_name)
             flat_races.append(race)
-    target_keys = {_race_key(r) for r in _select_target_races(flat_races)}
 
     for race in flat_races:
-        if _race_key(race) not in target_keys:
+        if race.get('race_id') not in posted_ids:
             continue
         horses = race.get('horses', [])
         # v3 (2026-05-17): ユーザー指摘「中途半端な状態で投稿しないで」への対応。
@@ -832,27 +858,25 @@ def _build_results_from_db(date_str, date_hyphen):
     race_data = []
     try:
         with get_db() as conn:
+            # 🆕 結果投稿の対象 = 実際に予想投稿したレース (posted_at IS NOT NULL) のみ (#46)。
+            # 旧版は _select_target_races の再計算だったが、発走済み除外(#45)で予想を絞った
+            # 場合に「予想していないレースの結果まで報告」する事故が起きた。実投稿の記録を正とする。
             races = conn.execute("""
                 SELECT ra.race_id, ra.race_name, ra.venue, ra.grade, ra.race_number,
                        pc.predictions_json, pc.confidence, pc.should_bet
                 FROM races ra
                 JOIN predictions_cache pc ON ra.race_id = pc.race_id
                 WHERE (ra.race_date = ? OR ra.race_date = ?)
+                  AND pc.posted_at IS NOT NULL
                 ORDER BY ra.venue, ra.race_number
             """, (date_str, date_hyphen)).fetchall()
 
             if not races:
                 return []
 
-            # 予想投稿と同じ _select_target_races で対象を決める (#39: 旧 11R 限定を撤廃)。
-            # dict 化して .get()/[] を一貫使用 (#38 同様 sqlite3.Row の .get() クラッシュを回避)。
             all_rows = [dict(r) for r in races]
-            target_keys = {_race_key(r) for r in _select_target_races(all_rows)}
-
             mark_order = ['◎', '○', '▲', '△', '×', '注']
             for race in all_rows:
-                if _race_key(race) not in target_keys:
-                    continue
                 preds_raw = race.get('predictions_json')
                 preds = json.loads(preds_raw) if preds_raw else []
 
@@ -930,21 +954,19 @@ def cmd_results(args):
         print(f"❌ {date_str} の結果がまだ出ていません")
         return
 
-    # 🛡 完走待ちガード (#41 改: posted_at 非依存):
-    # 予想配信した対象レース (_select_target_races と同じ 11R+注目S/A) が全部完走する
-    # まで結果投稿をスキップ =「予想した全レースの結果が揃ってから一括報告」を保証。
-    # 旧版は posted_at IS NOT NULL に依存していたが、posted_at が記録されない環境では
-    # ガードが素通りしていたため、予想と同じ選定ロジックで対象を出し完走状況で直接判定する。
+    # 🛡 完走待ちガード (#46: posted_at ベース):
+    # 実際に予想投稿したレース (posted_at IS NOT NULL) が全部完走するまで結果投稿を
+    # スキップ =「予想した全レースの結果が揃ってから一括報告」を保証。
+    # post_predict が投稿時に posted_at を記録するので、これが「投稿したレース」の正。
     is_partial_ok = os.environ.get("ALLOW_PARTIAL_RESULTS", "0") == "1"
     if not is_partial_ok:
         with get_db() as conn:
-            all_rows = conn.execute("""
-                SELECT ra.race_id, ra.venue, ra.race_number, ra.race_name,
-                       pc.confidence, pc.should_bet
+            targets = [dict(r) for r in conn.execute("""
+                SELECT ra.race_id, ra.venue, ra.race_number, ra.race_name
                 FROM races ra JOIN predictions_cache pc ON ra.race_id = pc.race_id
                 WHERE (ra.race_date = ? OR ra.race_date = ?)
-            """, (date_str, date_hyphen)).fetchall()
-            targets = _select_target_races([dict(r) for r in all_rows])
+                  AND pc.posted_at IS NOT NULL
+            """, (date_str, date_hyphen)).fetchall()]
 
             incomplete = []
             for t in targets:
