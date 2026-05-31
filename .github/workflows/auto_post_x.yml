@@ -308,6 +308,11 @@ jobs:
             timeout 300 python predict.py collect --date "$DATE" || echo "⚠️ collect timeout/失敗 → 既存データで続行"
           fi
 
+          # 🆕 確定馬番リフレッシュ (#44): 枠順確定前の仮馬番(五十音順)を確定馬番に更新。
+          # 怠ると馬番と馬名がズレたまま予測・投稿される。軽量(scrape_shutubaのみ)で stuck しない。
+          echo "🏇 確定馬番を更新..."
+          timeout 180 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 既存データで続行"
+
           # 10時以降は予測を再実行しない（確定済み予測を保護）
           if [ "$JST_HOUR" -ge 10 ]; then
             echo "🔒 JST ${JST_HOUR}時: 10時以降のため予測をスキップ（確定済み）"
@@ -356,6 +361,9 @@ jobs:
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           JST_HOUR=$(TZ=Asia/Tokyo date +%H)
+          # 🆕 確定馬番リフレッシュ (#44): オッズ取得前に馬番を確定版に揃える
+          echo "🏇 確定馬番を更新..."
+          timeout 180 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 続行"
           echo "📡 ${DATE} の最新オッズを取得..."
           python refresh_odds.py --date "$DATE"
           
