@@ -3041,8 +3041,21 @@ def fact_check_tweet(tweet_text):
         '【勝ち馬パターン', '当コース', '【枠順', '【脚質',
         '【人気別', '【末脚', '【コース',
     ]
+    # 🆕 データ系投稿 (コース傾向/血統/騎手ランキング等) は具体的な馬名が無くても統計が中身。
+    # %率・着度数[N-N-N-N]・成績表記・ランキングが複数あれば「中身あり」とみなす (#47)。
+    # キーワードのホワイトリスト (no_horse_ok_keywords) だけだと slot_composer の新セクション
+    # (historical/pop_trust/sires 等) で漏れて、データ豊富な投稿まで誤ブロックしていた。
+    _pct = len(re.findall(r'\d+(?:\.\d+)?\s*%', tweet_text))
+    _frac = bool(re.search(r'\(\s*\d+\s*/\s*\d+\s*\)', tweet_text))  # (15/20) サンプル数
+    has_data_substance = (
+        _pct >= 2 or                                              # 率データ2個以上
+        (_pct >= 1 and _frac) or                                  # 率+サンプル数 (複勝率75%(15/20))
+        re.search(r'\[\d+-\d+-\d+-\d+\]', tweet_text) or          # 着度数 [N-N-N-N]
+        re.search(r'\d+\.\d+\.\d+\.\d+', tweet_text) or           # 成績表記 N.N.N.N
+        len(re.findall(r'\d+位|TOP\s*\d|第\d', tweet_text)) >= 2  # ランキング
+    )
     needs_horse = not any(kw in tweet_text for kw in no_horse_ok_keywords)
-    if needs_horse and not has_specific_horse:
+    if needs_horse and not has_specific_horse and not has_data_substance:
         issues.append("🚫 具体的な馬名/馬番が含まれない投稿(中身なし)")
         critical = True
 
