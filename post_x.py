@@ -1224,92 +1224,10 @@ def cmd_weekday(args):
     post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client, race_id=race_id)
 
 
-def generate_weekly_summary():
-    """月曜: 先週末11Rの的中結果（3ツイート）"""
-    today = now_jst()
-    last_sun = today - timedelta(days=today.weekday() + 1)
-    last_sat = last_sun - timedelta(days=1)
-
-    sat_str = last_sat.strftime("%Y-%m-%d")
-    sun_str = last_sun.strftime("%Y-%m-%d")
-    dr = f"{last_sat.month}/{last_sat.day}-{last_sun.month}/{last_sun.day}"
-
-    try:
-        with get_db() as conn:
-            # 🆕 先週末に実際に予想投稿したレース (posted_at IS NOT NULL) のみ集計 (#46)。
-            # _select_target_races の再計算でなく実投稿の記録を正とする
-            # (予想していないレースの成績をサマリーに混ぜない)。
-            races_11r = [dict(r) for r in conn.execute("""
-                SELECT ra.race_id, ra.race_name, ra.venue, ra.race_date, ra.race_number,
-                       pc.predictions_json
-                FROM races ra
-                JOIN predictions_cache pc ON ra.race_id = pc.race_id
-                WHERE ra.race_date IN (?, ?)
-                  AND pc.posted_at IS NOT NULL
-                ORDER BY ra.race_date, ra.venue, ra.race_number
-            """, (sat_str, sun_str)).fetchall()]
-
-            results_list = []
-            for race in races_11r:
-                preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
-                # AI◎の馬（1位）の着順を取得
-                if preds:
-                    top_horse = preds[0]
-                    horse_num = top_horse.get('horse_number', 0)
-                    # 実際の着順取得
-                    actual = conn.execute("""
-                        SELECT r.finish_position, r.odds FROM results r
-                        WHERE r.race_id = ? AND r.horse_number = ?
-                        AND r.finish_position > 0
-                    """, (race['race_id'], horse_num)).fetchone()
-
-                    results_list.append({
-                        'venue': race['venue'],
-                        'race_name': race['race_name'],
-                        'horse_name': top_horse.get('horse_name', '?'),
-                        'finish': actual['finish_position'] if actual else '?',
-                        'odds': actual['odds'] if actual else 0,
-                        'mark': top_horse.get('mark', '◎'),
-                    })
-    except:
-        results_list = []
-
-    if not results_list:
-        # データがない場合はコラムに切替
-        return None  # データ不足時はスキップ
-
-    # 的中数計算（3着以内を的中とする）
-    hits = sum(1 for r in results_list if isinstance(r['finish'], int) and r['finish'] <= 3)
-    total = len(results_list)
-    hit_rate = round(hits / total * 100) if total > 0 else 0
-
-    t1 = f"📊 先週末({dr}) AI予測の結果\n"
-    t1 += f"対象: AI注目レース(11R+S/A) {total}レース\n\n"
-    t1 += f"AI本命(◎)の複勝的中率: {hits}/{total} ({hit_rate}%)\n\n"
-    t1 += f"{data_credit(short=True)}\n"
-    t1 += "#競馬予想 #AI予想 🧵↓"
-
-    t2 = "📋 各レース結果\n\n"
-    for r in results_list:
-        if isinstance(r['finish'], int) and r['finish'] <= 3:
-            t2 += f"✅ {r['venue']} {r['race_name']}\n"
-            t2 += f" {r['horse_name']} → {r['finish']}着\n"
-        else:
-            pos = r['finish'] if r['finish'] != '?' else '?'
-            t2 += f"❌ {r['venue']} {r['race_name']}\n"
-            t2 += f" {r['horse_name']} → {pos}着\n"
-
-    t3 = "💡 来週に向けて\n\n"
-    if hit_rate >= 50:
-        t3 += f"複勝的中率{hit_rate}%は好調\n"
-        t3 += "引き続きデータを蓄積していきます\n\n"
-    else:
-        t3 += "的中率は改善の余地あり\n"
-        t3 += "モデルの精度向上に取り組みます\n\n"
-    t3 += "土日朝8時にメインレースAI予想を配信\n"
-    t3 += "フォロー&通知ONで見逃さない🔔"
-
-    return [t1, t2, t3]
+# (削除 2026-06-01) generate_weekly_summary は「月曜=先週末成績サマリー」用に
+# 作られたがどこからも呼ばれていないデッドコードだった。月曜の投稿は
+# _build_weekday_post('morning') による「来週末メインレースのコース分析」で確定
+# (ユーザー選択)。混乱防止のため削除。先週末の振り返りが必要になったら再実装する。
 
 
 def generate_jockey_ranking():
