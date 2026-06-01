@@ -456,6 +456,10 @@ jobs:
           # 緊急手動投稿用: skip_guard=1 のときだけ時間ガードをバイパス。
           # それ以外 (cron 含む) は空文字 → post_x.py 側で not '' = True となりガード有効。
           SKIP_PREDICT_GUARD: ${{ github.event.inputs.skip_guard == '1' && '1' || '' }}
+          # SKIP_TIME_GUARD: cmd_morning/weekday/evening/odds_flash の時間ガードも同時にバイパス。
+          # 旧版は SKIP_PREDICT_GUARD のみ渡しており、手動 trigger でも cmd_morning の
+          # SKIP_TIME_GUARD が効かず時間ガードで skip される事故が起きた (#47)。
+          SKIP_TIME_GUARD: ${{ github.event.inputs.skip_guard == '1' && '1' || '' }}
         run: |
           TYPE="${{ steps.determine.outputs.type }}"
           DATE="${{ steps.determine.outputs.date }}"
