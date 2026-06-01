@@ -195,6 +195,21 @@ def load_x_client():
     except Exception as e:
         print(f"  ℹ️ V1 API 初期化失敗(画像投稿無効): {e}")
         client._v1_api = None
+
+    # 🆕 Cloudflare bot 判定回避 (#47): create_tweet (write/POST) が 403 "Just a moment"
+    # (Cloudflare JS チャレンジ HTML) でブロックされる事象。read(GET)は通るが write(POST)が
+    # ブロックされる = tweepy デフォルトの User-Agent (python-requests) が bot 判定される。
+    # requests session にブラウザ風 UA を設定して通過を試みる。
+    try:
+        ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        if getattr(client, "session", None) is not None:
+            client.session.headers["User-Agent"] = ua
+        if getattr(client, "_v1_api", None) is not None and getattr(client._v1_api, "session", None) is not None:
+            client._v1_api.session.headers["User-Agent"] = ua
+    except Exception as e:
+        print(f"  ℹ️ User-Agent 設定スキップ: {e}")
+
     return client
 
 
