@@ -1236,20 +1236,18 @@ def generate_weekly_summary():
 
     try:
         with get_db() as conn:
-            # 先週末の予測と結果を照合。予想・結果投稿と同じ対象 (11R + 注目S/A) を
-            # 各日について _select_target_races で選定 (#42: 旧 11R 限定では予想した
-            # 注目レースの成績がサマリーから漏れていた)。
-            all_rows = [dict(r) for r in conn.execute("""
+            # 🆕 先週末に実際に予想投稿したレース (posted_at IS NOT NULL) のみ集計 (#46)。
+            # _select_target_races の再計算でなく実投稿の記録を正とする
+            # (予想していないレースの成績をサマリーに混ぜない)。
+            races_11r = [dict(r) for r in conn.execute("""
                 SELECT ra.race_id, ra.race_name, ra.venue, ra.race_date, ra.race_number,
-                       pc.predictions_json, pc.confidence, pc.should_bet
+                       pc.predictions_json
                 FROM races ra
                 JOIN predictions_cache pc ON ra.race_id = pc.race_id
                 WHERE ra.race_date IN (?, ?)
+                  AND pc.posted_at IS NOT NULL
                 ORDER BY ra.race_date, ra.venue, ra.race_number
             """, (sat_str, sun_str)).fetchall()]
-            races_11r = []
-            for _d in (sat_str, sun_str):
-                races_11r += _select_target_races([r for r in all_rows if r['race_date'] == _d])
 
             results_list = []
             for race in races_11r:
