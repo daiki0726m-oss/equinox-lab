@@ -13,6 +13,7 @@ post_sections.py の sec_* 関数を組み合わせて、各 slot 用の
 """
 
 from __future__ import annotations
+import re
 import sqlite3
 from typing import Tuple, Optional
 from datetime import datetime
@@ -29,6 +30,7 @@ from post_sections import (
     sec_dangerous_favorites,
     sec_pattern_discovery,
     sec_rotation_pattern,
+    sec_age_pattern,
     sec_workout_focus,
     sec_entry_pedigree_match,
     sec_eight_axis_top,
@@ -264,63 +266,319 @@ def _fit_to_budget(header: str, sections: list, cta: str, hashtags: str,
 
 
 # ─────────────────────────────────────────────────────────
-# 月朝: 週末ラインナップ (歴代×1人気×種牡馬)
+# 朝の曜日別ローテーション (#48 根本対策)
+#
+# morning slot は毎日「今週末メイン」を扱うため、固定3セクションだと
+# 連日同一テキストになり X が "duplicate content" で 403 拒否していた
+# (#48 は header に投稿日を入れて暫定回避)。ここで曜日ごとに切り口
+# (セクションの組合せ) を変え、毎日違うコンテンツにして根本解決する。
+#
+# 各 _morning_sec_* は (section_str | None, sample_n) を返す純粋ヘルパー。
+# 重要: thread 分割で各セクションは単独 tweet になり得るため、どのセクションも
+#   単独で fact_check を通る形 (率%×2 / 率+サンプル数(N/M) / 馬名(年+カナ)) で
+#   返すこと。"該当馬なし" 等は fact_check の empty_pattern に当たるので除去する。
 # ─────────────────────────────────────────────────────────
-def build_morning_post(race: dict, conn) -> Tuple[str, dict]:
-    """月朝 (7:30): 週末メインレースのラインナップ + 歴代データ + 1人気信頼度"""
-    samples = {}
-    sections = []
+def _clean_sire_match(line: str) -> str:
+    """sec_sire_course_cross の行から fact_check NG な「該当馬なし」を除去し、
+    「該当: X Y」は「→ X他N頭」に圧縮。率%(N/M) は残すので単独 tweet 安全。"""
+    m = re.match(
+        r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", line)
+    if m:
+        medal, sire, pct, horses = m.groups()
+        names = horses.strip().split()
+        disp = names[0] if len(names) == 1 else f"{names[0]}他{len(names)-1}頭"
+        return f"{medal}{sire}産駒({pct}) → {disp}"
+    # 「→ 該当馬なし」を落として率データのみ残す
+    return re.sub(r"\s*→\s*該当馬なし$", "", line)
+
+
+def _morning_sec_historical(conn, ctx):
+    _t, lines, n = sec_historical_winners(conn, ctx["race_name"], years=6)
+    if lines and n > 0:
+        return _make_section("【歴代勝ち馬】", lines[:3]), n
+    return None, n
+
+
+def _morning_sec_pop_trust(conn, ctx):
+    _t, lines, n = sec_pop_trust_trend(
+        conn, ctx["venue"], ctx["surface"], ctx["distance"],
+        grade=ctx["grade"], years=6)
+    if lines and n >= 3:
+        relevant = [l for l in lines if "複勝率" in l or "→" in l]
+        return _make_section("【1人気の信頼度】", relevant[:2]), n
+    return None, n
+
+
+def _morning_sec_sires_compact(conn, ctx):
+    _t, lines, n = sec_sire_course_cross(
+        conn, ctx["venue"], ctx["surface"], ctx["distance"],
+        top=2, years=6, race_id=ctx["race_id"])
+    if not (lines and n > 0):
+        return None, n
+    parts = []
+    for l in lines[:2]:
+        base = re.sub(r"\s*→\s*該当(馬なし|:.*)$", "", l)
+        base = (base.replace("🥇", "").replace("🥈", "")
+                .replace("🥉", "").replace("🏅", "").strip())
+        if base:
+            parts.append(base)
+    if not parts:
+        return None, n
+    return f"【種牡馬】 {' / '.join(parts)}", n
+
+
+def _morning_sec_sires_detailed(conn, ctx):
+    _t, lines, n = sec_sire_course_cross(
+        conn, ctx["venue"], ctx["surface"], ctx["distance"],
+        top=3, years=6, race_id=ctx["race_id"])
+    if not (lines and n > 0):
+        return None, n
+    cleaned = [_clean_sire_match(l) for l in lines[:3]]
+    cleaned = [l for l in cleaned if l and "該当馬なし" not in l]
+    if not cleaned:
+        return None, n
+    return _make_section("【コース実績ある種牡馬】", cleaned), n
+
+
+def _morning_sec_pattern(conn, ctx):
+    _t, lines, n = sec_pattern_discovery(
+        conn, ctx["venue"], ctx["surface"], ctx["distance"],
+        years=6, target_top3_pct=55.0, race_id=ctx["race_id"])
+    if lines and n > 0:
+        return _make_section("【血統×枠の好相性パターン】", lines[:3]), n
+    return None, n
+
+
+def _morning_sec_age(conn, ctx):
+    _t, lines, n = sec_age_pattern(
+        conn, ctx["venue"], ctx["surface"], ctx["distance"],
+        grade=ctx["grade"], years=6)
+    if lines and n > 0:
+        return _make_section("【馬齢別 複勝率】", lines[:3]), n
+    return None, n
+
+
+def _morning_sec_jockey(conn, ctx):
+    _t, lines, n = sec_jockey_recent_form(
+        conn, ctx["venue"], ctx["surface"], ctx["distance"],
+        top=4, years=3, race_id=ctx["race_id"])
+    if lines and n > 0:
+        return _make_section("【コース好相性騎手】", lines[:4]), n
+    return None, n
+
+
+def _morning_sec_pace(conn, ctx):
+    _t, lines, n = sec_pace_decisive(
+        conn, ctx["venue"], ctx["surface"], ctx["distance"], years=6)
+    if lines and n >= 10:
+        return _make_section("【末脚の優位性】", lines[:3]), n
+    return None, n
+
+
+def _morning_sec_post_pos(conn, ctx):
+    _t, lines, n = sec_post_position_bias(
+        conn, ctx["venue"], ctx["surface"], ctx["distance"], years=6)
+    if not (lines and len(lines) >= 2):
+        return None, n
+    best_m = re.search(r"⭐(\d+)枠 複勝率 ([\d.]+)%", lines[0])
+    worst_m = re.search(r"⚠️(\d+)枠 複勝率 ([\d.]+)%", lines[1])
+    if not (best_m and worst_m):
+        return None, n
+    bw, bp = best_m.groups()
+    ww, wp = worst_m.groups()
+    diff_pt = float(bp) - float(wp)
+    block = [
+        f"⭐{bw}枠 複勝率{bp}% (ベスト)",
+        f"⚠️{ww}枠 複勝率{wp}% (ワースト)",
+        f"→ {diff_pt:.0f}pt差、枠の有利不利は{'大' if diff_pt >= 10 else '小さめ'}",
+    ]
+    return _make_section("【枠順の有利不利】", block), n
+
+
+def _morning_sec_dangerous(conn, ctx):
+    _t, lines, n = sec_dangerous_favorites(
+        conn, ctx["venue"], ctx["surface"], ctx["distance"],
+        grade=ctx["grade"], years=6)
+    if not (lines and n >= 3):
+        return None, n
+    flop_line = next((l for l in lines if "飛んだ" in l), None)
+    if not flop_line:
+        return None, n
+    block = [flop_line]
+    m = re.search(r"(\d+)%\s*\((\d+)/(\d+)\)", flop_line)
+    if m:
+        pct = int(m.group(1))
+        if pct <= 15:
+            block.append("→ 1番人気は信頼度高")
+        elif pct <= 30:
+            block.append("→ 1番人気の質を見極めること")
+        else:
+            block.append("→ 1番人気軸は危険、相手探し優先")
+    example = next((l for l in lines if l.startswith("🚨")), None)
+    if example:
+        block.append(example)
+    return _make_section("【1番人気の信頼性】", block), n
+
+
+def _morning_sec_outlier(conn, ctx):
+    _t, lines, n = sec_outlier_year(conn, ctx["race_name"], years=6)
+    if not (lines and n > 0):
+        return None, n
+    outliers = [l for l in lines if l.startswith("🚨")]
+    if not outliers:
+        # 波乱事例ゼロ = 堅め基調。% も馬名も無い文だけだと単独 tweet で
+        # fact_check に落ちるのでこのセクションは出さない (堅め情報は別 slot で扱う)。
+        return None, n
+    block = outliers[:2]
+    rate_line = next((l for l in lines if "5番人気以下勝利" in l), None)
+    if rate_line:
+        block.append(rate_line.replace("→ ", ""))
+    return _make_section("【過去の波乱年】", block), n
+
+
+# 朝の曜日別ローテーション設定。
+# 実運用では水/木/金朝は専用 builder (build_wed/thu/fri_morning_post) に
+# ルーティングされる (post_x._resolve_slot_name) ため、build_morning_post が
+# 実際に使われるのは月・火・土・日。下記は土日が隣接 / 月火が隣接するので
+# その 4 日のセクション集合が重複しないよう設計 (= 同一テキスト tweet を作らない)。
+# 水木金は専用 builder へのフォールバックなので独立に成立すれば良い。
+_MORNING_ROTATION = {
+    0: {  # 月: 週末ラインナップ (歴代×1人気×種牡馬)
+        "emoji": "🏇", "theme": "週末ラインナップ",
+        "sections": [
+            ("historical", _morning_sec_historical),
+            ("pop_trust", _morning_sec_pop_trust),
+            ("sires", _morning_sec_sires_compact),
+        ],
+        "cta": "→ 火朝は血統が活きるコースを配信🔔",
+    },
+    1: {  # 火: 血統 (CLAUDE.md 平日 slot 表)
+        "emoji": "🩸", "theme": "血統が活きるコース",
+        "sections": [
+            ("pattern", _morning_sec_pattern),
+            ("sires", _morning_sec_sires_detailed),
+            ("age", _morning_sec_age),
+        ],
+        "cta": "→ 水朝は騎手×コースの相性を配信🔔",
+    },
+    2: {  # 水: 騎手×コース (通常は build_wed_morning_post / これは fallback)
+        "emoji": "🏇", "theme": "騎手×コースの相性",
+        "sections": [
+            ("jockey", _morning_sec_jockey),
+            ("pace", _morning_sec_pace),
+        ],
+        "cta": "→ 木朝は枠順とコース適性を配信🔔",
+    },
+    3: {  # 木: 枠順とコース適性 (通常は build_thu_morning_post / fallback)
+        "emoji": "📋", "theme": "枠順とコース適性",
+        "sections": [
+            ("post_pos", _morning_sec_post_pos),
+            ("sires", _morning_sec_sires_detailed),
+        ],
+        "cta": "→ 金朝はAI独自パターンを配信🔔",
+    },
+    4: {  # 金: AI独自パターン分析 (通常は build_fri_morning_post / fallback)
+        "emoji": "🔮", "theme": "AI独自パターン分析",
+        "sections": [
+            ("pattern", _morning_sec_pattern),
+            ("sires", _morning_sec_sires_detailed),
+        ],
+        "cta": "→ 土朝は本番直前データを配信🔔",
+    },
+    5: {  # 土: 本番直前データ (1番人気の信頼性 + 枠順)
+        "emoji": "🎯", "theme": "本番直前データ",
+        "sections": [
+            ("danger", _morning_sec_dangerous),
+            ("post_pos", _morning_sec_post_pos),
+        ],
+        "cta": "→ 本日10時にAI最終予想+買い目を発表🔔",
+    },
+    6: {  # 日: 波乱とコース傾向 (波乱年 + 種牡馬 + 末脚)
+        "emoji": "⚠️", "theme": "波乱とコース傾向",
+        "sections": [
+            ("outliers", _morning_sec_outlier),
+            ("sires", _morning_sec_sires_detailed),
+            ("pace", _morning_sec_pace),
+        ],
+        "cta": "→ 本日10時にAI最終予想+買い目を発表🔔",
+    },
+}
+
+
+def build_morning_post(race: dict, conn, today: Optional[datetime] = None) -> Tuple[list, dict]:
+    """平日朝 (7:30): 今週末メインレースの「曜日別」データ tweet。
+
+    #48 根本対策: 曜日ごとに切り口 (セクション集合) を変えて毎日違う
+    コンテンツにし、X の duplicate content (403) を構造的に防ぐ。
+
+    Args:
+        race: レース dict (race_name/venue/surface/distance/grade/race_id/race_date)
+        conn: sqlite3 Connection
+        today: 投稿日時 (JST)。省略時は現在 JST。曜日別ローテの選択 + header の
+               日付表示に使う。テスト時に曜日を変えて呼ぶために注入可能。
+    """
+    if today is None:
+        import datetime as _dt
+        today = _dt.datetime.utcnow() + _dt.timedelta(hours=9)
+    dow = today.weekday()
+    cfg = _MORNING_ROTATION.get(dow, _MORNING_ROTATION[0])
+
+    ctx = {
+        "venue": race.get("venue", ""),
+        "surface": race.get("surface", ""),
+        "distance": race.get("distance", 0),
+        "race_id": race.get("race_id", ""),
+        "grade": race.get("grade"),
+        "race_name": race.get("race_name", ""),
+    }
 
     label = _race_label(race)
     day = _day_phrase(race)
-    venue = race.get("venue", "")
-    surface = race.get("surface", "")
-    distance = race.get("distance", 0)
-    race_id = race.get("race_id", "")
-    grade = race.get("grade")
-    race_name = race.get("race_name", "")
+    dow_label = ["月", "火", "水", "木", "金", "土", "日"][dow]
+    # header: 曜日テーマ + 投稿日 で tweet1 を必ず日替わりにする (#48 belt-and-suspenders)
+    header = (f"{cfg['emoji']} {day} {label}\n"
+              f"📅{today.month}/{today.day}({dow_label}) {cfg['theme']}")
 
-    # 🆕 重複回避 (#48): morning は毎日「今週末メイン」を扱うため、投稿日を入れて
-    # テキストをユニーク化し X の重複コンテンツ拒否(403 duplicate)を防ぐ。
-    # オッズ・予測は日々更新されるので「N/N(曜)時点」表示は情報としても妥当。
-    import datetime as _dt
-    _jn = _dt.datetime.utcnow() + _dt.timedelta(hours=9)
-    _dl = ["月", "火", "水", "木", "金", "土", "日"][_jn.weekday()]
-    header = f"🏇 {day} {label}\n📅{_jn.month}/{_jn.day}({_dl})時点のデータ"
+    samples = {}
+    sections = []
+    used = []
+    for key, fn in cfg["sections"]:
+        try:
+            sec, n = fn(conn, ctx)
+        except Exception as e:
+            print(f"⚠️ morning section {key} エラー: {e}")
+            sec, n = None, 0
+        samples[key] = n
+        if sec:
+            sections.append(sec)
+            used.append(key)
 
-    # Section 1: 歴代勝ち馬 (3行のみ、短縮形 "2025 馬名 1人気/2.1倍")
-    t1, lines1, n1 = sec_historical_winners(conn, race_name, years=6)
-    samples["historical"] = n1
-    if lines1 and n1 > 0:
-        # 短縮: "🏆2025 クロワデュノール (1人気/2.1倍)" → そのまま3行
-        sections.append(_make_section("【歴代勝ち馬】", lines1[:3]))
-
-    # Section 2: 1人気トレンド (2行に圧縮)
-    t2, lines2, n2 = sec_pop_trust_trend(
-        conn, venue, surface, distance, grade=grade, years=6
-    )
-    samples["pop_trust"] = n2
-    if lines2 and n2 >= 3:
-        # 「複勝率」だけ + 結論で2行に
-        relevant = [l for l in lines2 if "複勝率" in l or "→" in l]
-        sections.append(_make_section("【1人気の信頼度】", relevant[:2]))
-
-    # Section 3: 種牡馬 TOP2 → 1行に圧縮
-    t3, lines3, n3 = sec_sire_course_cross(
-        conn, venue, surface, distance, top=2, years=6, race_id=race_id)
-    samples["sires"] = n3
-    if lines3 and n3 > 0:
-        compact = " / ".join(l.replace("🥇", "").replace("🥈", "").strip() for l in lines3[:2])
-        sections.append(f"【種牡馬】 {compact}")
-
-    # CTA (短く)
-    cta = "→ 火朝に前走パターン🔔"
+    # 安全網: 当日のセクションが全滅 (極端に薄いコース/障害戦等) した場合、
+    # ほぼ常に取れる順でフォールバックして「投稿ゼロ」を避ける。先頭 section は
+    # 必ず日替わり header と同じ tweet に入るので、隣接日と同一 section になっても
+    # tweet 全文は重複しない (#48 の duplicate 回避は header で担保)。
+    if not sections:
+        for key, fn in (("historical", _morning_sec_historical),
+                        ("pop_trust", _morning_sec_pop_trust),
+                        ("sires", _morning_sec_sires_compact),
+                        ("pace", _morning_sec_pace),
+                        ("post_pos", _morning_sec_post_pos)):
+            try:
+                sec, n = fn(conn, ctx)
+            except Exception:
+                sec, n = None, 0
+            if sec:
+                sections.append(sec)
+                used.append(f"fallback:{key}")
+                samples[f"fallback:{key}"] = n
+                break
 
     hashtags = _hashtags(race)
-    tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
+    tweets = _split_to_thread(header, [s for s in sections if s], cfg["cta"], hashtags)
 
     char_count = sum(_x_len(t) for t in tweets)
-    return tweets, {"sections_used": ["historical", "pop_trust", "sires"], "samples": samples, "char_count": char_count}
+    return tweets, {"sections_used": used, "samples": samples,
+                    "char_count": char_count, "weekday": dow}
 
 
 # ─────────────────────────────────────────────────────────
@@ -989,7 +1247,7 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
 # ─────────────────────────────────────────────────────────
 SLOT_BUILDERS = {
     # 出走馬未確定時の slot (月-水 朝昼夜) — 歴代データ主体
-    "morning": build_morning_post,           # 月朝 (全曜日朝の汎用)
+    "morning": build_morning_post,           # 朝 (曜日別ローテ: 月=ラインナップ/火=血統/土日=直前)
     "weekday": build_weekday_post,           # 月昼 (全曜日昼)
     "evening": build_evening_post,           # 月夜 (全曜日夜)
     "tue_evening": build_tue_evening_post,   # 火夜 (前走パターン特化)
