@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-02T16:16:26.276860+09:00",
+  "generated_at": "2026-06-02T20:48:30.302697+09:00",
   "today": "2026-06-02 (Tue)",
   "weekday": 1,
   "slots": {
@@ -26,8 +26,11 @@
     },
     "evening": {
       "slot": "evening",
-      "status": "future",
+      "status": "ok_delayed",
       "expected": "20:00 JST",
+      "actual": "2026-06-02T17:11:50+09:00",
+      "delay_minutes": -168,
+      "event": "schedule",
       "workflow": "auto_post_x.yml"
     },
     "weekend_morning_predict": {
@@ -94,10 +97,10 @@
   "summary": {
     "ok": 0,
     "missing": 0,
-    "future": 1,
+    "future": 0,
     "not_today": 10,
     "missed": 1,
-    "ok_delayed": 0,
+    "ok_delayed": 1,
     "ok_late": 1
   },
   "missed_slots": [
