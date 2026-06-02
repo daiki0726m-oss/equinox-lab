@@ -280,7 +280,13 @@ def build_morning_post(race: dict, conn) -> Tuple[str, dict]:
     grade = race.get("grade")
     race_name = race.get("race_name", "")
 
-    header = f"🏇 {day} {label}"
+    # 🆕 重複回避 (#48): morning は毎日「今週末メイン」を扱うため、投稿日を入れて
+    # テキストをユニーク化し X の重複コンテンツ拒否(403 duplicate)を防ぐ。
+    # オッズ・予測は日々更新されるので「N/N(曜)時点」表示は情報としても妥当。
+    import datetime as _dt
+    _jn = _dt.datetime.utcnow() + _dt.timedelta(hours=9)
+    _dl = ["月", "火", "水", "木", "金", "土", "日"][_jn.weekday()]
+    header = f"🏇 {day} {label}\n📅{_jn.month}/{_jn.day}({_dl})時点のデータ"
 
     # Section 1: 歴代勝ち馬 (3行のみ、短縮形 "2025 馬名 1人気/2.1倍")
     t1, lines1, n1 = sec_historical_winners(conn, race_name, years=6)
