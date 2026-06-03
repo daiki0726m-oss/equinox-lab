@@ -962,16 +962,19 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🏋️ {day} {label}\n追い切り評価"
-
     # Section 1: 追い切り A/B 評価馬 (馬番ガード適用)
+    # 🆕 (#50): ヘッダーは「中身」に合わせて動的に決める。追い切りデータが無い未来レースで
+    # 「🏋️追い切り評価」と書きながらコース適性をフォールバック表示する「タイトル詐欺」を防ぐ。
     t1, lines1, n1 = sec_workout_focus(conn, race_id, top=4)
     samples["workout"] = n1
     if lines1 and n1 > 0:
+        header = f"🏋️ {day} {label}\n追い切り評価"
         cleaned = _strip_horse_number_from_lines(lines1, race)
         sections.append(_make_section(t1, cleaned[:6]))
     else:
-        # 追い切り未公開 → 出走馬×コース統計の handpicked TOP3 で実質情報を出す
+        # 追い切り未公開 (未来レースは直前まで非公開) → コース適性の handpicked TOP3。
+        # ヘッダーも実内容に合わせ「追い切り」とは書かない (タイトルと中身を一致させる)。
+        header = f"🏇 {day} {label}\nコース適性 注目馬TOP"
         t_alt, lines_alt, n_alt = sec_handpicked_top(
             conn, race_id, venue, surface, distance, top=3, years=6
         )
