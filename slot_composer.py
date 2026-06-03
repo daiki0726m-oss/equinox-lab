@@ -1044,7 +1044,8 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     if not [s for s in sections if s]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
-    cta = "→ 今夜は危険な1人気を配信🔔"
+    # CTA は木朝 slot 用 (#52: 水昼→木朝へ移動。netkeibaの追い切り評価は木以降公開のため)
+    cta = "→ 木昼に注目馬TOP3🔔"
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1128,7 +1129,8 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"📋 {day} {label}\n{theme}"
-    cta = "→ 今夜AI最終TOP4🔔"
+    # CTA は水昼 slot 用 (#52: 木朝→水昼へ移動。出走馬未確定でも歴代→コース適性 fallback)
+    cta = "→ 今夜は危険な1人気を配信🔔"
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1372,10 +1374,13 @@ SLOT_BUILDERS = {
     "evening": build_evening_post,           # 月夜 (全曜日夜)
     "tue_evening": build_tue_evening_post,   # 火夜 (前走パターン特化)
     "wed_morning": build_wed_morning_post,   # 水朝 (騎手特化)
-    "wed_weekday": build_wed_weekday_post,   # 水昼 (追い切り)
+    # #52: 水昼↔木朝 入れ替え。netkeiba 追い切り評価は木以降公開のため、追い切り評価は木朝へ。
+    # 水昼は build_thu_morning_post(歴代→コース適性 fallback)を流用 — 水曜は出走馬未確定だが
+    # #51 で実装済みのフォールバックで歴代勝ち馬+コース適性を出せる。
+    "wed_weekday": build_thu_morning_post,   # 水昼 (歴代→コース適性、出走未確定対応)
     "wed_evening": build_wed_evening_post,   # 水夜 (危険な人気馬)
     # 出走馬確定後の slot (木以降) — predictions_cache 連動
-    "thu_morning": build_thu_morning_post,   # 木朝 (出走確定+血統)
+    "thu_morning": build_wed_weekday_post,   # 木朝 (追い切り評価) [#52: 水昼から移動]
     "thu_weekday": build_thu_weekday_post,   # 木昼 (8軸TOP4)
     "thu_evening": build_thu_evening_post,   # 木夜 (◎○▲+note告知)
     "fri_morning": build_fri_morning_post,   # 金朝 (AI独自パターン)
