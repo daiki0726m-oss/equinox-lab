@@ -573,6 +573,14 @@ def build_morning_post(race: dict, conn, today: Optional[datetime] = None) -> Tu
                 samples[f"fallback:{key}"] = n
                 break
 
+    # 🆕 (#50): フォールバックでも 1 セクションも埋まらない極薄レースは、
+    # header+CTA だけの中身ゼロ投稿 (「📅週末ラインナップ」だけ等) を出さずにスキップする。
+    # morning header のテーマ語は fact_check の no_horse_ok に当たり素通りしてしまうため、
+    # ここで明示的に return None して空投稿を構造的に防ぐ。
+    if not [s for s in sections if s]:
+        return None, {"sections_used": [], "samples": samples,
+                      "weekday": dow, "skipped": "no_content"}
+
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cfg["cta"], hashtags)
 
@@ -805,7 +813,10 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🏇 {day} {label}\n騎手×コースの傾向"
+    # 🆕 (#50): ヘッダーのテーマは採用セクションに合わせて動的化。
+    # 騎手データの薄いコース (例: 京都芝3200m) では jockey/pace 両方が空になり、
+    # 旧コードは「🏇騎手×コースの傾向」+ CTA だけの中身ゼロ投稿を出していた。
+    theme = None
 
     # Section 1: 騎手TOP
     t1, lines1, n1 = sec_jockey_recent_form(
@@ -813,13 +824,36 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
     samples["jockey"] = n1
     if lines1 and n1 > 0:
         sections.append(_make_section("【コース好相性騎手】", lines1[:4]))
+        theme = "騎手×コースの傾向"
 
     # Section 2: 末脚
     t2, lines2, n2 = sec_pace_decisive(conn, venue, surface, distance, years=6)
     samples["pace"] = n2
     if lines2 and n2 >= 10:
         sections.append(_make_section("【末脚優位性】", lines2[:2]))
+        if theme is None:
+            theme = "末脚の優位性"
 
+    # フォールバック: 騎手も末脚も薄いコース → 歴代勝ち馬 → コース実績種牡馬 で埋める (#50)。
+    if not [s for s in sections if s]:
+        th, lh, nh = sec_historical_winners(conn, race.get("race_name", ""), years=6)
+        if lh and nh > 0:
+            sections.append(_make_section("【歴代勝ち馬】", lh[:3]))
+            theme = "歴代勝ち馬とコース傾向"
+        else:
+            ts, ls, ns = sec_sire_course_cross(
+                conn, venue, surface, distance, top=3, years=6, race_id=race_id)
+            cleaned = [_clean_sire_match(l) for l in (ls or [])[:3]]
+            cleaned = [l for l in cleaned if l and "該当馬なし" not in l]
+            if cleaned and ns > 0:
+                sections.append(_make_section("【コース実績ある種牡馬】", cleaned))
+                theme = "コース実績ある種牡馬"
+
+    # それでも空なら投稿スキップ (空投稿禁止)
+    if not [s for s in sections if s]:
+        return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
+
+    header = f"🏇 {day} {label}\n{theme}"
     cta = "→ 今夜は危険な1人気を配信🔔"
 
     hashtags = _hashtags(race)
@@ -906,7 +940,10 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🔮 {day} {label}\nAI独自パターン分析"
+    # 🆕 (#50): ヘッダーのテーマは採用セクションに合わせて動的化。
+    # パターンが取れた時のみ「AI独自パターン分析」、種牡馬のみの時は「コース実績ある血統」、
+    # 両方空 (薄いコース) なら歴代/コース傾向にフォールバックし、それも無ければスキップ。
+    theme = None
 
     # Section 1: パターン発掘 + 該当出走馬
     t1, lines1, n1 = sec_pattern_discovery(
@@ -916,6 +953,7 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     samples["patterns"] = n1
     if lines1 and n1 > 0:
         sections.append(_make_section("【AIが発掘した好相性パターン】", lines1[:3]))
+        theme = "AI独自パターン分析"
 
     # Section 2: 種牡馬 TOP (補助、該当馬付きのみ — 圧縮)
     t2, lines2, n2 = sec_sire_course_cross(
@@ -937,7 +975,21 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
                     cleaned.append(l)
             if cleaned:
                 sections.append(_make_section("【コース実績ある血統の該当馬】", cleaned))
+                if theme is None:
+                    theme = "コース実績ある血統"
 
+    # フォールバック: パターンも種牡馬も薄い → 歴代勝ち馬で埋める (#50)。
+    if not [s for s in sections if s]:
+        th, lh, nh = sec_historical_winners(conn, race.get("race_name", ""), years=6)
+        if lh and nh > 0:
+            sections.append(_make_section("【歴代勝ち馬】", lh[:3]))
+            theme = "歴代勝ち馬とコース傾向"
+
+    # それでも空なら投稿スキップ (空投稿禁止)
+    if not [s for s in sections if s]:
+        return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
+
+    header = f"🔮 {day} {label}\n{theme}"
     cta = "→ 今夜は翌朝の確定予想告知🔔"
 
     hashtags = _hashtags(race)
@@ -981,6 +1033,16 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         if lines_alt and n_alt > 0:
             cleaned = _strip_horse_number_from_lines(lines_alt, race)
             sections.append(_make_section(t_alt, cleaned[:4]))
+        else:
+            # コース適性も取れない極薄レース → 歴代勝ち馬で埋める (#50: 空投稿禁止)。
+            th, lh, nh = sec_historical_winners(conn, race.get("race_name", ""), years=6)
+            if lh and nh > 0:
+                header = f"🏇 {day} {label}\n歴代勝ち馬とコース傾向"
+                sections.append(_make_section("【歴代勝ち馬】", lh[:3]))
+
+    # 中身ゼロ (追い切り・コース適性・歴代いずれも空) は投稿スキップ (ヘッダー+CTA 空投稿禁止)
+    if not [s for s in sections if s]:
+        return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     cta = "→ 今夜は危険な1人気を配信🔔"
 
@@ -1004,7 +1066,10 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"📋 {day} {label}\n出走馬×コース適性"
+    # 🆕 (#50): ヘッダーのテーマは採用セクションに合わせて動的化。
+    # 出走馬未確定だと entry_pedigree / sires が両方空 → 旧コードは
+    # 「📋出走馬×コース適性」+ CTA だけの中身ゼロ投稿になっていた (#1 最悪パターン)。
+    theme = None
 
     # Section 1: 出走馬の血統がコース複勝35%超 (該当馬のみ)
     t1, lines1, n1 = sec_entry_pedigree_match(
@@ -1017,6 +1082,7 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
             "【コース複勝35%超 の血統に該当】",
             cleaned[:4]
         ))
+        theme = "出走馬×コース適性"
 
     # Section 2: 補助 — 種牡馬TOP の該当馬 (該当馬なし非表示)
     t2, lines2, n2 = sec_sire_course_cross(
@@ -1038,7 +1104,30 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
                     cleaned.append(l)
             if cleaned:
                 sections.append(_make_section("【コース実績ある種牡馬の該当馬】", cleaned))
+                if theme is None:
+                    # 出走馬該当は出せなかったが、コースに実績ある種牡馬は提示できる
+                    theme = "コース実績ある血統"
 
+    # フォールバック: 出走馬絡みが全滅 (出走馬未確定 / 該当血統なし) でも、ほぼ常に取れる
+    # 歴代勝ち馬 → コース適性 TOP の順で埋めて中身ゼロ投稿を回避する (#50)。
+    if not [s for s in sections if s]:
+        th, lh, nh = sec_historical_winners(conn, race.get("race_name", ""), years=6)
+        if lh and nh > 0:
+            sections.append(_make_section("【歴代勝ち馬】", lh[:3]))
+            theme = "歴代勝ち馬とコース傾向"
+        else:
+            t_hp, lines_hp, n_hp = sec_handpicked_top(
+                conn, race_id, venue, surface, distance, top=3, years=6)
+            if lines_hp and n_hp > 0:
+                cleaned = _strip_horse_number_from_lines(lines_hp, race)
+                sections.append(_make_section(t_hp, cleaned[:4]))
+                theme = "コース適性 注目馬TOP"
+
+    # それでも空なら投稿スキップ (ヘッダー+CTA だけの空投稿を絶対に出さない)
+    if not [s for s in sections if s]:
+        return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
+
+    header = f"📋 {day} {label}\n{theme}"
     cta = "→ 今夜AI最終TOP4🔔"
 
     hashtags = _hashtags(race)
@@ -1077,14 +1166,17 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🎯 {day} {label}\n注目馬TOP3"
-
     # Section 1: TOP3
+    # 🆕 (#50): ヘッダーのテーマは「実際に採用したセクション」に合わせて動的化。
+    # AI予測キャッシュ有→「AI注目馬TOP3」/ 無 (コース適性フォールバック)→「コース適性 注目馬TOP」。
+    # 固定「注目馬TOP3」だと handpicked path で 【コース適性TOP】 を出し、タイトル詐欺になる。
+    theme = None
     t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
     if lines1 and n1 > 0 and any(l.startswith(("1️⃣", "2️⃣", "3️⃣")) for l in lines1):
         cleaned = _strip_horse_number_from_lines(lines1, race)
         sections.append(_make_section(t1, cleaned[:5]))
         samples["source"] = "attention"
+        theme = "AI注目馬TOP3"
     else:
         t2, lines2, n2 = sec_handpicked_top(
             conn, race_id, venue, surface, distance, top=3, years=6
@@ -1092,6 +1184,7 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         if lines2 and n2 > 0:
             cleaned = _strip_horse_number_from_lines(lines2, race)
             sections.append(_make_section(t2, cleaned[:4]))
+            theme = "コース適性 注目馬TOP"
         samples["source"] = "handpicked"
 
     # Section 2: 補助 — 過去6年で「コース好相性パターン」
@@ -1101,7 +1194,14 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     )
     if lines_pat and n_pat > 0:
         sections.append(_make_section("【コース好相性パターン】 過去6年", lines_pat[:3]))
+        if theme is None:
+            theme = "コース好相性パターン"
 
+    # 中身ゼロ (注目馬もパターンも取れない極薄レース) は投稿しない (#50: ヘッダー+CTA 空投稿禁止)
+    if not [s for s in sections if s]:
+        return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
+
+    header = f"🎯 {day} {label}\n{theme}"
     cta = "→ 今夜AI最終予想+note告知🔔"
 
     hashtags = _hashtags(race)
@@ -1124,13 +1224,15 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🌟 {day} {label}\n最終予想 注目馬3頭"
-
+    # 🆕 (#50): ヘッダーのテーマは採用セクションに合わせて動的化 (タイトル詐欺防止)。
+    # AI予測あり→「最終予想 注目馬3頭」/ コース適性フォールバック→「コース適性 注目馬TOP」。
+    theme = None
     t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
     if lines1 and n1 > 0 and any(l.startswith(("1️⃣", "2️⃣", "3️⃣")) for l in lines1):
         cleaned = _strip_horse_number_from_lines(lines1, race)
         sections.append(_make_section(t1, cleaned[:5]))
         samples["source"] = "attention"
+        theme = "最終予想 注目馬3頭"
     else:
         t2, lines2, n2 = sec_handpicked_top(
             conn, race_id, venue, surface, distance, top=3, years=6
@@ -1138,8 +1240,14 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
         if lines2 and n2 > 0:
             cleaned = _strip_horse_number_from_lines(lines2, race)
             sections.append(_make_section(t2, cleaned[:4]))
+            theme = "コース適性 注目馬TOP"
         samples["source"] = "handpicked"
 
+    # 中身ゼロ (注目馬が全く取れない) は投稿しない (#50: ヘッダー+CTA 空投稿禁止)
+    if not [s for s in sections if s]:
+        return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
+
+    header = f"🌟 {day} {label}\n{theme}"
     cta = "→ 土朝に印 (◎○▲) と買い目を発表🔔\n→ note記事も公開予定📝"
 
     hashtags = _hashtags(race)
@@ -1162,14 +1270,15 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🎯 {day} {label}\n注目馬TOP3"
-
     # 1) AI予測キャッシュがあれば優先
+    # 🆕 (#50): ヘッダーのテーマは採用セクションに合わせて動的化 (タイトル詐欺防止)。
+    theme = None
     t1, lines1, n1 = sec_attention_top(conn, race_id, top=3, include_marks=False)
     if lines1 and n1 > 0 and any(l.startswith(("1️⃣", "2️⃣", "3️⃣")) for l in lines1):
         cleaned = _strip_horse_number_from_lines(lines1, race)
         sections.append(_make_section(t1, cleaned[:5]))
         samples["source"] = "attention"
+        theme = "AI注目馬TOP3"
     else:
         # 2) 無ければ出走予定馬 × コース統計でTOP3抽出 (内部メッセージ無し)
         t2, lines2, n2 = sec_handpicked_top(
@@ -1178,6 +1287,7 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         if lines2 and n2 > 0:
             cleaned = _strip_horse_number_from_lines(lines2, race)
             sections.append(_make_section(t2, cleaned[:4]))
+            theme = "コース適性 注目馬TOP"
         samples["source"] = "handpicked"
 
     # 補助: パターン発掘
@@ -1187,7 +1297,14 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     )
     if lines3 and n3 > 0:
         sections.append(_make_section("【コース好相性パターン】", lines3[:2]))
+        if theme is None:
+            theme = "コース好相性パターン"
 
+    # 中身ゼロ (注目馬もパターンも取れない極薄レース) は投稿しない (#50)
+    if not [s for s in sections if s]:
+        return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
+
+    header = f"🎯 {day} {label}\n{theme}"
     cta = "→ 土朝に印 (◎○▲) と買い目🔔"
 
     hashtags = _hashtags(race)

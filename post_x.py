@@ -1145,6 +1145,13 @@ def _build_weekday_post(slot, today):
                     race = dict(race_row) if hasattr(race_row, 'keys') else race_row
                     if isinstance(race, dict) and race.get("race_name"):
                         tweets, meta = build_slot_post(resolved_slot, race, conn)
+                        # 🆕 (#50): builder が中身ゼロで意図的にスキップ (tweets=None / 空) した場合は、
+                        # 旧パス (weekday_engine) にフォールバックすると同じ空投稿を復活させてしまうため、
+                        # ここで明示的に「投稿スキップ」として返す (ヘッダー+CTA だけの空投稿を出さない)。
+                        if not tweets:
+                            print(f"ℹ️ slot_composer が中身ゼロでスキップ判定 "
+                                  f"(slot={resolved_slot}, meta={meta.get('skipped', 'empty')}) → 投稿しない")
+                            return None, race.get("race_id")
                         # tweets は list[str]。1要素なら通常投稿、複数ならスレッド投稿。
                         # ファクトチェックは全 tweet で実行 (1つでも失敗で全体ブロック)
                         all_passed = True
