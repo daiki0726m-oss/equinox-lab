@@ -277,6 +277,363 @@ def _fit_to_budget(header: str, sections: list, cta: str, hashtags: str,
 # 重要: thread 分割で各セクションは単独 tweet になり得るため、どのセクションも
 #   単独で fact_check を通る形 (率%×2 / 率+サンプル数(N/M) / 馬名(年+カナ)) で
 #   返すこと。"該当馬なし" 等は fact_check の empty_pattern に当たるので除去する。
+def _format_chakudosu(rows):
+    """results 行 [(year, finish), ...] から 着度数 (1着-2着-3着-着外) を計算。
+
+    Returns:
+        (w, p, s, out, total)
+    """
+    w = p = s = out = 0
+    for _y, fp in rows:
+        if fp == 1:
+            w += 1
+        elif fp == 2:
+            p += 1
+        elif fp == 3:
+            s += 1
+        else:
+            out += 1
+    total = w + p + s + out
+    return (w, p, s, out, total)
+
+def _lede_pop_chakudosu(conn, race_name, target_pop, years=6):
+    """過去 years 年の同レースで target_pop 番人気の着度数を返す。
+
+    Returns:
+        (w, p, s, out, total) or None
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT substr(r.race_date, 1, 4) AS year, res.finish_position
+            FROM races r
+            JOIN results res ON r.race_id = res.race_id
+            WHERE r.race_name = ? AND res.popularity = ?
+              AND res.finish_position IS NOT NULL
+            ORDER BY r.race_date DESC
+            LIMIT ?
+            """,
+            (race_name, target_pop, years),
+        )
+        rows = cur.fetchall()
+        if len(rows) < 3:  # サンプル不足は煽れない
+            return None
+        return _format_chakudosu(rows)
+    except Exception:
+        return None
+
+def _lede_strong_sires_count(conn, venue, surface, distance, years=6, threshold=50.0):
+    """指定コースで過去 years 年・複勝率 threshold% 超の種牡馬数を返す。
+
+    Returns:
+        (count, sample_size_total) or None
+    """
+    if not venue or not surface or not distance:
+        return None
+    try:
+        cur = conn.cursor()
+        from_date = f"{datetime.now().year - years}-01-01"
+        cur.execute(
+            """
+            SELECT h.sire, COUNT(*) AS n,
+                   SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            FROM races r
+            JOIN results res ON r.race_id = res.race_id
+            JOIN horses h ON res.horse_id = h.horse_id
+            WHERE r.surface = ? AND r.distance = ? AND r.venue = ?
+              AND r.race_date >= ?
+              AND res.finish_position > 0
+              AND h.sire IS NOT NULL AND h.sire != ''
+            GROUP BY h.sire
+            HAVING n >= 4
+            """,
+            (surface, distance, venue, from_date),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return None
+        strong = [(sire, n, t) for sire, n, t in rows if (100.0 * t / n) >= threshold]
+        if not strong:
+            return None
+        total_n = sum(n for _, n, _ in strong)
+        total_t = sum(t for _, _, t in strong)
+        return (len(strong), total_t, total_n)
+    except Exception:
+        return None
+
+def _lede_top_jockey(conn, venue, surface, distance, years=3, min_runs=5):
+    """指定コースで複勝率 TOP の騎手 (jockey, pct, n, top3) を返す。
+
+    Returns:
+        (jockey_name, pct, top3, n) or None
+    """
+    if not venue or not surface or not distance:
+        return None
+    try:
+        cur = conn.cursor()
+        from_date = f"{datetime.now().year - years}-01-01"
+        cur.execute(
+            """
+            SELECT j.jockey_name, COUNT(*) AS n,
+                   SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            FROM races r
+            JOIN results res ON r.race_id = res.race_id
+            JOIN jockeys j ON res.jockey_id = j.jockey_id
+            WHERE r.surface = ? AND r.distance = ? AND r.venue = ?
+              AND r.race_date >= ?
+              AND res.finish_position > 0
+              AND j.jockey_name IS NOT NULL
+            GROUP BY j.jockey_name
+            HAVING n >= ?
+            ORDER BY (1.0 * top3 / n) DESC, n DESC
+            LIMIT 1
+            """,
+            (surface, distance, venue, from_date, min_runs),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        jockey, n, top3 = row
+        if not jockey or n < min_runs:
+            return None
+        pct = 100.0 * top3 / n
+        return (jockey, pct, top3, n)
+    except Exception:
+        return None
+
+def _lede_pattern_count(conn, venue, surface, distance, years=6, min_runs=5, threshold=55.0):
+    """sec_pattern_discovery 相当: 複勝 threshold% 超のパターン数を返す。
+
+    Returns:
+        (count, best_pct, best_sample_total_top3, best_sample_n) or None
+    """
+    if not venue or not surface or not distance:
+        return None
+    try:
+        cur = conn.cursor()
+        from_date = f"{datetime.now().year - years}-01-01"
+        cur.execute(
+            """
+            SELECT h.sire,
+                   CASE
+                       WHEN res.post_position BETWEEN 1 AND 3 THEN '内枠'
+                       WHEN res.post_position BETWEEN 4 AND 5 THEN '中枠'
+                       WHEN res.post_position BETWEEN 6 AND 8 THEN '外枠'
+                       ELSE '大外'
+                   END AS waku_band,
+                   COUNT(*) AS n,
+                   SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            FROM races r
+            JOIN results res ON r.race_id = res.race_id
+            JOIN horses h ON res.horse_id = h.horse_id
+            WHERE r.surface = ? AND r.distance = ? AND r.venue = ?
+              AND r.race_date >= ?
+              AND res.finish_position > 0
+              AND h.sire IS NOT NULL AND h.sire != ''
+              AND res.post_position > 0
+            GROUP BY h.sire, waku_band
+            HAVING n >= ? AND (1.0 * top3 / n) >= ?
+            ORDER BY (1.0 * top3 / n) DESC, n DESC
+            """,
+            (surface, distance, venue, from_date, min_runs, threshold / 100.0),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return None
+        cnt = len(rows)
+        _, _, n0, t0 = rows[0]
+        best_pct = 100.0 * t0 / n0
+        return (cnt, best_pct, t0, n0)
+    except Exception:
+        return None
+
+def _lede_outlier(conn, race_name, years=6):
+    """過去 years 年で最高人気外 (5番人気以下) 勝利、または最高配当を返す。
+
+    Returns:
+        (year, horse_name, pop, odds, upset_count, sample_n) or None
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT substr(r.race_date, 1, 4) AS year, h.horse_name,
+                   res.popularity, res.odds
+            FROM races r
+            JOIN results res ON r.race_id = res.race_id AND res.finish_position = 1
+            JOIN horses h ON res.horse_id = h.horse_id
+            WHERE r.race_name = ?
+            ORDER BY r.race_date DESC
+            LIMIT ?
+            """,
+            (race_name, years),
+        )
+        rows = cur.fetchall()
+        if len(rows) < 3:
+            return None
+        # 1) 人気外 (5番人気以下) 勝利を集計
+        outliers = [(y, hn, p, o) for y, hn, p, o in rows if p and p >= 5]
+        if outliers:
+            # 最も人気薄の年 (or 最高オッズ年) を返す
+            outliers.sort(key=lambda x: (-(x[2] or 0), -(x[3] or 0)))
+            year, hn, pop, odds = outliers[0]
+            return (year, hn, pop, odds, len(outliers), len(rows))
+        return None
+    except Exception:
+        return None
+
+def _lede_pace_decisive(conn, venue, surface, distance, years=6):
+    """指定コースで上り3F最速馬の複勝率を返す。
+
+    Returns:
+        (pct, top3, n) or None
+    """
+    if not venue or not surface or not distance:
+        return None
+    try:
+        cur = conn.cursor()
+        from_date = f"{datetime.now().year - years}-01-01"
+        cur.execute(
+            """
+            WITH fastest AS (
+                SELECT r.race_id, MIN(res.last_3f) AS min_3f
+                FROM races r
+                JOIN results res ON r.race_id = res.race_id
+                WHERE r.surface = ? AND r.distance = ? AND r.venue = ?
+                  AND r.race_date >= ?
+                  AND res.last_3f IS NOT NULL AND res.last_3f > 0
+                GROUP BY r.race_id
+            )
+            SELECT COUNT(*) AS n,
+                   SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            FROM fastest f
+            JOIN results res ON f.race_id = res.race_id AND res.last_3f = f.min_3f
+            WHERE res.finish_position > 0
+            """,
+            (surface, distance, venue, from_date),
+        )
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return None
+        n, top3 = row
+        if n < 10:  # サンプル少なすぎは煽れない
+            return None
+        pct = 100.0 * top3 / n
+        return (pct, top3, n)
+    except Exception:
+        return None
+
+def _build_morning_lede(dow, conn, race):
+    """曜日別の強い見出し1行を返す。データ無ければ None。
+
+    dow: 0=月 1=火 2=水 3=木 4=金 5=土 6=日
+
+    fact_check 通過のため lede は必ず「率 + サンプル(N/M)」形式 or 着度数 (N-N-N-N) を含む。
+    50字以下 (X 全角換算) を目安にする。
+    """
+    if conn is None or not isinstance(race, dict):
+        return None
+    race_name = race.get("race_name", "")
+    venue = race.get("venue", "")
+    surface = race.get("surface", "")
+    try:
+        distance = int(race.get("distance") or 0)
+    except (TypeError, ValueError):
+        distance = 0
+
+    # 月: 1番人気着度数 (race_name 必須)
+    if dow == 0:
+        if not race_name:
+            return None
+        result = _lede_pop_chakudosu(conn, race_name, target_pop=1, years=6)
+        if not result:
+            return None
+        w, p, s, o, total = result
+        # 評価フレーズ: 勝率で判定
+        if w == 0:
+            tag = "未勝利の伏兵レース"
+        elif w >= total * 0.5:
+            tag = "鉄板の1人気"
+        elif w >= 2:
+            tag = "1人気健闘も鉄板ならず"
+        else:
+            tag = "飛ばないが勝ち切らない"
+        return f"💥 過去{total}年・1番人気は ({w}-{p}-{s}-{o}) — {tag}"
+
+    # 火: 種牡馬複勝50%超の数
+    if dow == 1:
+        result = _lede_strong_sires_count(conn, venue, surface, distance, years=6, threshold=50.0)
+        if not result:
+            return None
+        cnt, t, n = result
+        return f"💥 当コース複勝50%超の種牡馬 {cnt}系統 ({t}/{n}) — 血統が決め手"
+
+    # 水: 騎手 TOP 複勝率
+    if dow == 2:
+        result = _lede_top_jockey(conn, venue, surface, distance, years=3, min_runs=5)
+        if not result:
+            return None
+        jockey, pct, top3, n = result
+        # コース名短縮
+        course = f"{venue}{surface}{distance}m" if venue and surface and distance else "当コース"
+        return f"💥 鞍上{jockey} {course}複勝{pct:.1f}% ({top3}/{n}) の鬼神"
+
+    # 木: 4番人気着度数 (race_name 必須)
+    if dow == 3:
+        if not race_name:
+            return None
+        result = _lede_pop_chakudosu(conn, race_name, target_pop=4, years=6)
+        if not result:
+            return None
+        w, p, s, o, total = result
+        if w >= 2:
+            tag = "伏兵の主役"
+        elif w + p + s >= total * 0.5:
+            tag = "ヒモには必須"
+        elif w + p + s == 0:
+            tag = "完全な脇役"
+        else:
+            tag = "侮れない一頭"
+        return f"💥 過去{total}年・4番人気は ({w}-{p}-{s}-{o}) — {tag}"
+
+    # 金: パターン発掘数
+    if dow == 4:
+        result = _lede_pattern_count(conn, venue, surface, distance, years=6, threshold=55.0)
+        if not result:
+            return None
+        cnt, best_pct, t0, n0 = result
+        return f"💥 AI発掘・複勝55%超パターン {cnt}件 (最高{best_pct:.0f}% {t0}/{n0})"
+
+    # 土: 過去最高配当 or 大波乱年 (race_name 必須)
+    if dow == 5:
+        if not race_name:
+            return None
+        result = _lede_outlier(conn, race_name, years=6)
+        if not result:
+            return None
+        year, hn, pop, odds, upset_cnt, sample_n = result
+        return f"💥 {year}年{pop}人気{hn}({odds:.1f}倍)勝利 — 過去{upset_cnt}/{sample_n}年が波乱"
+
+    # 日: 末脚最速馬複勝率
+    if dow == 6:
+        result = _lede_pace_decisive(conn, venue, surface, distance, years=6)
+        if not result:
+            return None
+        pct, top3, n = result
+        if pct >= 70:
+            tag = "上がり最速がほぼ着順"
+        elif pct >= 50:
+            tag = "末脚優位コース"
+        else:
+            tag = "前残り注意"
+        return f"💥 上がり3F最速馬の複勝率 {pct:.0f}% ({top3}/{n}) — {tag}"
+
+    return None
+
+
+# X 文字数カウント (日本語/絵文字 = 2, ASCII = 1)
+
 # ─────────────────────────────────────────────────────────
 def _clean_sire_match(line: str) -> str:
     """sec_sire_course_cross の行から fact_check NG な「該当馬なし」を除去し、
@@ -538,6 +895,11 @@ def build_morning_post(race: dict, conn, today: Optional[datetime] = None) -> Tu
     # header: 曜日テーマ + 投稿日 で tweet1 を必ず日替わりにする (#48 belt-and-suspenders)
     header = (f"{cfg['emoji']} {day} {label}\n"
               f"📅{today.month}/{today.day}({dow_label}) {cfg['theme']}")
+
+    # 🆕 強い見出し(lede)を header 直下に追加 (曜日別フック角度で「同じ投稿に見える」を解消)
+    lede = _build_morning_lede(dow, conn, race)
+    if lede:
+        header += f"\n\n{lede}"
 
     samples = {}
     sections = []
@@ -854,6 +1216,10 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"🏇 {day} {label}\n{theme}"
+    # 🆕 強い見出し (水朝固定 dow=2)
+    lede = _build_morning_lede(2, conn, race)
+    if lede:
+        header += f"\n\n{lede}"
     cta = "→ 今夜は危険な1人気を配信🔔"
 
     hashtags = _hashtags(race)
@@ -990,6 +1356,10 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"🔮 {day} {label}\n{theme}"
+    # 🆕 強い見出し (金朝固定 dow=4)
+    lede = _build_morning_lede(4, conn, race)
+    if lede:
+        header += f"\n\n{lede}"
     cta = "→ 今夜は翌朝の確定予想告知🔔"
 
     hashtags = _hashtags(race)
@@ -1043,6 +1413,11 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     # 中身ゼロ (追い切り・コース適性・歴代いずれも空) は投稿スキップ (ヘッダー+CTA 空投稿禁止)
     if not [s for s in sections if s]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
+
+    # 🆕 強い見出し (この builder は #52 で SLOT_BUILDERS[thu_morning] に割当 → dow=3)
+    lede = _build_morning_lede(3, conn, race)
+    if lede:
+        header += f"\n\n{lede}"
 
     # CTA は木朝 slot 用 (#52: 水昼→木朝へ移動。netkeibaの追い切り評価は木以降公開のため)
     cta = "→ 木昼に注目馬TOP3🔔"
@@ -1129,6 +1504,10 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"📋 {day} {label}\n{theme}"
+    # 🆕 強い見出し (この builder は #52 で SLOT_BUILDERS[wed_weekday] に割当 → dow=2)
+    lede = _build_morning_lede(2, conn, race)
+    if lede:
+        header += f"\n\n{lede}"
     # CTA は水昼 slot 用 (#52: 木朝→水昼へ移動。出走馬未確定でも歴代→コース適性 fallback)
     cta = "→ 今夜は危険な1人気を配信🔔"
 
