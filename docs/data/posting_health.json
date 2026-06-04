@@ -1,21 +1,29 @@
 {
-  "generated_at": "2026-06-04T09:11:09.242239+09:00",
+  "generated_at": "2026-06-04T14:17:44.998098+09:00",
   "today": "2026-06-04 (Thu)",
   "weekday": 3,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "missing",
+      "status": "ok_late",
       "expected": "07:30 JST",
       "deadline": "11:00 JST",
-      "fallback_mode": "morning",
-      "action": "gh workflow run auto_post_x.yml --ref main -f mode=morning",
+      "recent_success": {
+        "created_at": "2026-06-04T09:12:58+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 103
+      },
+      "delay_minutes": 103,
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
       "slot": "weekday",
-      "status": "future",
+      "status": "missing",
       "expected": "12:30 JST",
+      "deadline": "15:00 JST",
+      "fallback_mode": "weekday",
+      "action": "gh workflow run auto_post_x.yml --ref main -f mode=weekday",
       "workflow": "auto_post_x.yml"
     },
     "evening": {
@@ -88,11 +96,11 @@
   "summary": {
     "ok": 0,
     "missing": 1,
-    "future": 2,
+    "future": 1,
     "not_today": 10,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 0
+    "ok_late": 1
   },
   "missed_slots": []
 }
