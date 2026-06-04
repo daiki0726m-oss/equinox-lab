@@ -362,8 +362,12 @@ def _lede_strong_sires_count(conn, venue, surface, distance, years=6, threshold=
     except Exception:
         return None
 
-def _lede_top_jockey(conn, venue, surface, distance, years=3, min_runs=5):
+def _lede_top_jockey(conn, venue, surface, distance, race_id=None, years=3, min_runs=5):
     """指定コースで複勝率 TOP の騎手 (jockey, pct, n, top3) を返す。
+
+    race_id が与えられた場合は「**今週その race に出走する騎手**」のうち TOP を返す。
+    出走馬の騎手と紐付かない汎用 TOP(モレイラ等)を lede に出して
+    「今週騎乗してないのに?」となる事故を防ぐ。
 
     Returns:
         (jockey_name, pct, top3, n) or None
@@ -373,6 +377,25 @@ def _lede_top_jockey(conn, venue, surface, distance, years=3, min_runs=5):
     try:
         cur = conn.cursor()
         from_date = f"{datetime.now().year - years}-01-01"
+
+        # 今週レースの出走馬の騎手一覧を取得 (race_id が与えられた場合のみ)
+        entry_jockeys = None
+        if race_id:
+            rows = cur.execute(
+                """
+                SELECT DISTINCT j.jockey_name
+                FROM results res
+                JOIN jockeys j ON res.jockey_id = j.jockey_id
+                WHERE res.race_id = ? AND j.jockey_name IS NOT NULL AND j.jockey_name != ''
+                """,
+                (race_id,),
+            ).fetchall()
+            entry_jockeys = {r[0] for r in rows if r[0]}
+            if not entry_jockeys:
+                # 出走馬の騎手が未確定 → 汎用 TOP は誤誘導なので lede 出さない
+                return None
+
+        # コース内の騎手別複勝率 (上位を多めに取って出走騎手と交差)
         cur.execute(
             """
             SELECT j.jockey_name, COUNT(*) AS n,
@@ -387,18 +410,22 @@ def _lede_top_jockey(conn, venue, surface, distance, years=3, min_runs=5):
             GROUP BY j.jockey_name
             HAVING n >= ?
             ORDER BY (1.0 * top3 / n) DESC, n DESC
-            LIMIT 1
+            LIMIT 30
             """,
             (surface, distance, venue, from_date, min_runs),
         )
-        row = cur.fetchone()
-        if not row:
+        rows = cur.fetchall()
+        if not rows:
             return None
-        jockey, n, top3 = row
-        if not jockey or n < min_runs:
-            return None
-        pct = 100.0 * top3 / n
-        return (jockey, pct, top3, n)
+        # entry_jockeys と交差 (race_id 指定時のみ)
+        for jockey, n, top3 in rows:
+            if entry_jockeys is not None and jockey not in entry_jockeys:
+                continue
+            if not jockey or n < min_runs:
+                continue
+            pct = 100.0 * top3 / n
+            return (jockey, pct, top3, n)
+        return None
     except Exception:
         return None
 
@@ -569,15 +596,15 @@ def _build_morning_lede(dow, conn, race):
         cnt, t, n = result
         return f"💥 当コース複勝50%超の種牡馬 {cnt}系統 ({t}/{n}) — 血統が決め手"
 
-    # 水: 騎手 TOP 複勝率
+    # 水: 騎手 TOP 複勝率 (※ 今週レースに出走する騎手のみ対象 = race_id を渡す)
     if dow == 2:
-        result = _lede_top_jockey(conn, venue, surface, distance, years=3, min_runs=5)
+        race_id = race.get("race_id")
+        result = _lede_top_jockey(conn, venue, surface, distance, race_id=race_id, years=3, min_runs=5)
         if not result:
             return None
         jockey, pct, top3, n = result
-        # コース名短縮
         course = f"{venue}{surface}{distance}m" if venue and surface and distance else "当コース"
-        return f"💥 鞍上{jockey} {course}複勝{pct:.1f}% ({top3}/{n}) の鬼神"
+        return f"💥 鞍上{jockey} {course}複勝{pct:.1f}% ({top3}/{n}) — 今週も騎乗"
 
     # 木: 4番人気着度数 (race_name 必須)
     if dow == 3:
