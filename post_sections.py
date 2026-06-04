@@ -260,20 +260,25 @@ def sec_sire_course_cross(
 
     medals = ["🥇", "🥈", "🥉"]
     lines = []
+    has_entries = bool(entries)  # 出走馬データの有無
     for i, (sire, runs, top3) in enumerate(rows):
         pct = 100 * top3 / runs
-        m = medals[i] if i < len(medals) else "🏅"
         sire_clean = sire.split("(")[0].strip()
-        # 該当出走馬を抽出
         matched = entries_by_sire.get(sire_clean, [])
+        # 🆕 絶対ルール (CLAUDE.md 2026-06-04): 今週出走馬の父にいない種牡馬は表示しない
+        # entries 取得済かつ matched が空 = 該当馬無 → スキップ。
+        # entries 取得不可 (race_id 無し等) は従来挙動 (全 TOP 表示) を維持。
+        if has_entries and not matched:
+            continue
+        m = medals[len(lines)] if len(lines) < len(medals) else "🏅"
         match_str = ""
-        if entries:  # 出走馬データあり = 該当を表示
-            if matched:
-                names = [e["horse_name"] for e in matched[:2]]
-                match_str = f" → 該当: {' '.join(names)}"
-            else:
-                match_str = " → 該当馬なし"
+        if matched:
+            names = [e["horse_name"] for e in matched[:2]]
+            match_str = f" → 該当: {' '.join(names)}"
         lines.append(f"{m}{sire} {pct:.0f}% ({top3}/{runs}){match_str}")
+    # 該当馬付きが1件も無く出走馬データはあった場合 → セクション自体を出さない
+    if has_entries and not lines:
+        return (title, [], 0)
     return (title, lines, n)
 
 
@@ -581,18 +586,23 @@ def sec_jockey_recent_form(
             entry_jockeys.add(jn.strip())
 
     lines = []
+    has_entries = bool(entries)
     for jockey, runs, top3 in rows:
         pct = 100 * top3 / runs
-        match_str = ""
-        if entries:
-            # jockey 名と出走馬騎手名の部分一致 (姓のみ照合)
+        matched = False
+        if has_entries:
             jockey_short = jockey.replace(" ", "").strip()
             matched = any(
                 jockey_short[:3] in ej or ej[:3] in jockey_short
                 for ej in entry_jockeys
             )
-            match_str = " ★今回騎乗" if matched else ""
-        lines.append(f"🏆{jockey} {pct:.0f}% ({top3}/{runs}){match_str}")
+            # 🆕 絶対ルール (CLAUDE.md 2026-06-04): 今週騎乗しない騎手は出さない
+            if not matched:
+                continue
+        lines.append(f"🏆{jockey} {pct:.0f}% ({top3}/{runs}){' ★今回騎乗' if matched else ''}")
+    # 出走馬データあり&該当0件 → セクション自体スキップ
+    if has_entries and not lines:
+        return (title, [], 0)
     return (title, lines, n)
 
 

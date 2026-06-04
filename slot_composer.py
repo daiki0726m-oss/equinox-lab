@@ -323,17 +323,36 @@ def _lede_pop_chakudosu(conn, race_name, target_pop, years=6):
     except Exception:
         return None
 
-def _lede_strong_sires_count(conn, venue, surface, distance, years=6, threshold=50.0):
+def _lede_strong_sires_count(conn, venue, surface, distance, race_id=None, years=6, threshold=50.0):
     """指定コースで過去 years 年・複勝率 threshold% 超の種牡馬数を返す。
 
+    race_id 指定時は「今週その race に出走馬の父にいる種牡馬」のみを集計対象とする。
+    出走しない種牡馬の数字を出して誤誘導しないため (CLAUDE.md 絶対ルール: 今週レース起点)。
+
     Returns:
-        (count, sample_size_total) or None
+        (count, sample_size_total, top3_sample_total) or None
     """
     if not venue or not surface or not distance:
         return None
     try:
         cur = conn.cursor()
         from_date = f"{datetime.now().year - years}-01-01"
+
+        # 今週の出走馬の父 (race_id 指定時のみフィルタ)
+        entry_sires = None
+        if race_id:
+            rows = cur.execute(
+                """
+                SELECT DISTINCT h.sire FROM results res
+                JOIN horses h ON res.horse_id = h.horse_id
+                WHERE res.race_id = ? AND h.sire IS NOT NULL AND h.sire != ''
+                """,
+                (race_id,),
+            ).fetchall()
+            entry_sires = {r[0] for r in rows if r[0]}
+            if not entry_sires:
+                return None  # 出走馬未確定 or 血統データ無し → lede 出さない
+
         cur.execute(
             """
             SELECT h.sire, COUNT(*) AS n,
@@ -353,7 +372,10 @@ def _lede_strong_sires_count(conn, venue, surface, distance, years=6, threshold=
         rows = cur.fetchall()
         if not rows:
             return None
-        strong = [(sire, n, t) for sire, n, t in rows if (100.0 * t / n) >= threshold]
+        # 複勝率 threshold% 超 かつ (race_id 指定時) 今週出走馬の父
+        strong = [(sire, n, t) for sire, n, t in rows
+                  if (100.0 * t / n) >= threshold
+                  and (entry_sires is None or sire in entry_sires)]
         if not strong:
             return None
         total_n = sum(n for _, n, _ in strong)
@@ -429,8 +451,11 @@ def _lede_top_jockey(conn, venue, surface, distance, race_id=None, years=3, min_
     except Exception:
         return None
 
-def _lede_pattern_count(conn, venue, surface, distance, years=6, min_runs=5, threshold=55.0):
+def _lede_pattern_count(conn, venue, surface, distance, race_id=None, years=6, min_runs=5, threshold=55.0):
     """sec_pattern_discovery 相当: 複勝 threshold% 超のパターン数を返す。
+
+    race_id 指定時は「今週その race の出走馬が父系として該当する」パターンのみ集計
+    (出走馬がいない種牡馬のパターンを出して誤誘導しないため。CLAUDE.md 絶対ルール)
 
     Returns:
         (count, best_pct, best_sample_total_top3, best_sample_n) or None
@@ -440,6 +465,22 @@ def _lede_pattern_count(conn, venue, surface, distance, years=6, min_runs=5, thr
     try:
         cur = conn.cursor()
         from_date = f"{datetime.now().year - years}-01-01"
+
+        # 今週の出走馬の父 (race_id 指定時のみ)
+        entry_sires = None
+        if race_id:
+            rows = cur.execute(
+                """
+                SELECT DISTINCT h.sire FROM results res
+                JOIN horses h ON res.horse_id = h.horse_id
+                WHERE res.race_id = ? AND h.sire IS NOT NULL AND h.sire != ''
+                """,
+                (race_id,),
+            ).fetchall()
+            entry_sires = {r[0] for r in rows if r[0]}
+            if not entry_sires:
+                return None  # 出走馬未確定 or 血統未登録 → lede 出さない
+
         cur.execute(
             """
             SELECT h.sire,
@@ -466,6 +507,9 @@ def _lede_pattern_count(conn, venue, surface, distance, years=6, min_runs=5, thr
             (surface, distance, venue, from_date, min_runs, threshold / 100.0),
         )
         rows = cur.fetchall()
+        # 今週の出走馬の父にフィルタ (race_id 指定時)
+        if entry_sires is not None:
+            rows = [r for r in rows if r[0] in entry_sires]
         if not rows:
             return None
         cnt = len(rows)
@@ -588,13 +632,14 @@ def _build_morning_lede(dow, conn, race):
             tag = "飛ばないが勝ち切らない"
         return f"💥 過去{total}年・1番人気は ({w}-{p}-{s}-{o}) — {tag}"
 
-    # 火: 種牡馬複勝50%超の数
+    # 火: 種牡馬複勝50%超の数 (※ 今週出走馬の父にいる種牡馬のみ集計)
     if dow == 1:
-        result = _lede_strong_sires_count(conn, venue, surface, distance, years=6, threshold=50.0)
+        race_id = race.get("race_id")
+        result = _lede_strong_sires_count(conn, venue, surface, distance, race_id=race_id, years=6, threshold=50.0)
         if not result:
             return None
         cnt, t, n = result
-        return f"💥 当コース複勝50%超の種牡馬 {cnt}系統 ({t}/{n}) — 血統が決め手"
+        return f"💥 出走馬の父に当コース複勝50%超 {cnt}系統 ({t}/{n}) — 血統が決め手"
 
     # 水: 騎手 TOP 複勝率 (※ 今週レースに出走する騎手のみ対象 = race_id を渡す)
     if dow == 2:
@@ -624,13 +669,14 @@ def _build_morning_lede(dow, conn, race):
             tag = "侮れない一頭"
         return f"💥 過去{total}年・4番人気は ({w}-{p}-{s}-{o}) — {tag}"
 
-    # 金: パターン発掘数
+    # 金: パターン発掘数 (※ 今週出走馬の父が該当するパターンのみ集計)
     if dow == 4:
-        result = _lede_pattern_count(conn, venue, surface, distance, years=6, threshold=55.0)
+        race_id = race.get("race_id")
+        result = _lede_pattern_count(conn, venue, surface, distance, race_id=race_id, years=6, threshold=55.0)
         if not result:
             return None
         cnt, best_pct, t0, n0 = result
-        return f"💥 AI発掘・複勝55%超パターン {cnt}件 (最高{best_pct:.0f}% {t0}/{n0})"
+        return f"💥 出走馬該当のAI発掘パターン {cnt}件 (最高{best_pct:.0f}% {t0}/{n0})"
 
     # 土: 過去最高配当 or 大波乱年 (race_name 必須)
     if dow == 5:
