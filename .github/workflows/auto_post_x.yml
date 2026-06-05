@@ -433,7 +433,9 @@ jobs:
           DATE="${{ steps.determine.outputs.date }}"
           echo "🛡 Pre-flight check: $DATE"
           # auto-fix モードで実行。致命的問題が残れば exit 2 でこのステップが失敗 → 投稿スキップ
-          python3 scripts/preflight_check.py "$DATE" --auto-fix || {
+          # --ghost-api: 予測/投稿の限定スロットでのみ netkeiba API 照合で幽霊馬 (#43/#44) を検出・除去。
+          # (refresh_live の12分 cron は API 連打回避のため無料の基準A(horse_id重複)のみ)
+          python3 scripts/preflight_check.py "$DATE" --auto-fix --ghost-api || {
             EXIT_CODE=$?
             if [ $EXIT_CODE -eq 2 ]; then
               echo "❌ Pre-flight 致命的問題: 投稿スキップ"

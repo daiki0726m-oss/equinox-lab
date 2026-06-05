@@ -26,10 +26,16 @@ for i in $(seq 0 7); do
   fi
 done
 
-# 2. 予測キャッシュクリア（新データ反映のため）
+# 2. 予測キャッシュの保持期間管理（古い行のみ整理）
+#    🚨 月曜の週間成績サマリー (post_x.py weekly_review) と ROI weekly monitor は
+#    「先週末(土日)」の predictions_cache を参照する。旧 '-1 day' だと月曜朝の時点で
+#    先週末分(created_at が2-3日前)まで消え、サマリーが空(対象0件)になっていた。
+#    直近2週末 + cron遅延ぶんをカバーするため 14 日保持に拡大 (CLAUDE.md #42 残課題1)。
+#    予測の鮮度は predict.py の race_id 単位 INSERT OR REPLACE で別途担保されるため、
+#    古い行を残しても再予測の妨げにはならない。
 echo ""
-echo "🗑️  予測キャッシュクリア..."
-sqlite3 keiba.db "DELETE FROM predictions_cache WHERE created_at < datetime('now', '-1 day');" 2>/dev/null || true
+echo "🗑️  予測キャッシュ整理 (14日より古い行のみ削除)..."
+sqlite3 keiba.db "DELETE FROM predictions_cache WHERE created_at < datetime('now', '-14 days');" 2>/dev/null || true
 
 # 3. モデル自動再学習（7日以上古い場合）
 echo ""
