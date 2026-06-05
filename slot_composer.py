@@ -771,12 +771,69 @@ def _morning_sec_sires_detailed(conn, ctx):
 
 
 def _morning_sec_pattern(conn, ctx):
+    """金朝「AI独自パターン分析」用セクション。
+
+    🆕 改修 (2026-06-04 ユーザー指摘「意味のわからない投稿」):
+    旧版は「リアルスティール×内枠 75% → レーベンスティール」「同×外枠 71% → 同馬」
+    のように同種牡馬・異枠の擬似独立パターンを別行で並べ、同じ馬を3行繰り返していた。
+    これは統計的に「リアルスティールが強い」を切り口だけ変えた水増しで無意味。
+
+    新版: 馬中心に集約。
+      ✅レーベンスティール: 父リアルスティール×コース複勝65% (枠不問で好相性)
+    1頭1行、最強根拠1つ。同種牡馬の異枠は集約して「枠不問」と明示。
+    枠順抽選後は実枠を「(8枠該当)」のように付記。
+    """
+    import re as _re
     _t, lines, n = sec_pattern_discovery(
         conn, ctx["venue"], ctx["surface"], ctx["distance"],
         years=6, target_top3_pct=55.0, race_id=ctx["race_id"])
-    if lines and n > 0:
-        return _make_section("【血統×枠の好相性パターン】", lines[:3]), n
-    return None, n
+    if not (lines and n > 0):
+        return None, n
+
+    # 出走馬の枠順が抽選済か (post_position が1以上の馬があれば抽選済)
+    draw_done = False
+    try:
+        if ctx.get("race_id"):
+            cur = conn.execute(
+                "SELECT MAX(post_position) FROM results WHERE race_id = ?",
+                (ctx["race_id"],),
+            ).fetchone()
+            if cur and cur[0] and int(cur[0]) > 0:
+                draw_done = True
+    except Exception:
+        pass
+
+    # lines をパース → 馬中心に集約 (同一馬は最も複勝率の高いパターン1つだけ)
+    # 想定 line 形式: "🔮 {sire}×{waku_label} 複勝{pct}% ({top3}/{n}) → 該当: {horse} [{horse}...]"
+    horse_best = {}  # horse_name → (pct, sire, waku_label, top3, n_runs)
+    for line in lines:
+        m = _re.search(r"🔮\s*([^×]+)×([^ ]+)\s+複勝(\d+)%\s+\((\d+)/(\d+)\).*?該当:\s*(.+?)$", line)
+        if not m:
+            continue
+        sire, waku, pct, t3, nr, horses = m.groups()
+        try:
+            pct_i, t3_i, nr_i = int(pct), int(t3), int(nr)
+        except ValueError:
+            continue
+        for hn in horses.strip().split():
+            prev = horse_best.get(hn)
+            if prev is None or pct_i > prev[0]:
+                horse_best[hn] = (pct_i, sire.strip(), waku.strip(), t3_i, nr_i)
+
+    if not horse_best:
+        return None, n
+
+    # 複勝率順に上位3頭 (1馬1行)
+    top_horses = sorted(horse_best.items(), key=lambda kv: -kv[1][0])[:3]
+
+    out_lines = []
+    for horse, (pct, sire, waku, t3, nr) in top_horses:
+        waku_str = f"／{waku}該当" if draw_done else "／枠不問で好相性"
+        out_lines.append(
+            f"✅{horse}: 父{sire}×コース複勝{pct}% ({t3}/{nr}){waku_str}"
+        )
+
+    return _make_section("【AI注目馬: 父×コース複勝率】", out_lines), len(out_lines)
 
 
 def _morning_sec_age(conn, ctx):
@@ -1384,36 +1441,47 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     # 両方空 (薄いコース) なら歴代/コース傾向にフォールバックし、それも無ければスキップ。
     theme = None
 
-    # Section 1: パターン発掘 + 該当出走馬
-    t1, lines1, n1 = sec_pattern_discovery(
-        conn, venue, surface, distance, years=6, target_top3_pct=55.0,
-        race_id=race_id,
-    )
+    # Section 1: パターン発掘 → 馬中心に集約 (#53: 同種牡馬の異枠を別行で並べる水増しを廃止)
+    sec1, n1 = _morning_sec_pattern(conn, {
+        "venue": venue, "surface": surface, "distance": distance, "race_id": race_id,
+    })
     samples["patterns"] = n1
-    if lines1 and n1 > 0:
-        sections.append(_make_section("【AIが発掘した好相性パターン】", lines1[:3]))
+    horses_in_sec1 = set()
+    if sec1:
+        sections.append(sec1)
         theme = "AI独自パターン分析"
+        # Section 1 に含まれる馬を抽出 ("✅馬名: " 行から)
+        import re as _re
+        for line in sec1.split("\n"):
+            m = _re.match(r"^✅([^:]+):", line)
+            if m:
+                horses_in_sec1.add(m.group(1).strip())
 
-    # Section 2: 種牡馬 TOP (補助、該当馬付きのみ — 圧縮)
+    # Section 2: 種牡馬 TOP (補助) — Section 1 で既出の馬は除外 (重複防止)
     t2, lines2, n2 = sec_sire_course_cross(
         conn, venue, surface, distance, top=3, years=6, race_id=race_id)
     samples["sires"] = n2
     if lines2 and n2 > 0:
         filtered = [l for l in lines2 if "該当馬なし" not in l]
         if filtered:
-            import re as _re
+            import re as _re2
             cleaned = []
-            for l in filtered[:2]:
-                m = _re.match(r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", l)
-                if m:
-                    medal, sire, pct, horses = m.groups()
-                    names = horses.strip().split()
-                    horses_disp = names[0] if len(names) == 1 else f"{names[0]}他{len(names)-1}頭"
-                    cleaned.append(f"{medal}{sire}産駒({pct}) → {horses_disp}")
-                else:
-                    cleaned.append(l)
+            for l in filtered[:3]:
+                m = _re2.match(r"^(🥇|🥈|🥉|🏅)([^\s]+)\s+(\d+%)\s+\(\d+/\d+\)\s+→\s+該当:\s+(.+)$", l)
+                if not m:
+                    continue
+                medal, sire, pct, horses = m.groups()
+                names = horses.strip().split()
+                # Section 1 既出馬を除外
+                fresh = [n for n in names if n not in horses_in_sec1]
+                if not fresh:
+                    continue
+                horses_disp = fresh[0] if len(fresh) == 1 else f"{fresh[0]}他{len(fresh)-1}頭"
+                cleaned.append(f"{medal}{sire}産駒({pct}) → {horses_disp}")
+                if len(cleaned) >= 2:
+                    break
             if cleaned:
-                sections.append(_make_section("【コース実績ある血統の該当馬】", cleaned))
+                sections.append(_make_section("【他に注目: コース実績ある血統】", cleaned))
                 if theme is None:
                     theme = "コース実績ある血統"
 
