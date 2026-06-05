@@ -676,7 +676,7 @@ def _build_morning_lede(dow, conn, race):
         if not result:
             return None
         cnt, best_pct, t0, n0 = result
-        return f"💥 出走馬該当のAI発掘パターン {cnt}件 (最高{best_pct:.0f}% {t0}/{n0})"
+        return f"💥 出走馬該当パターン{cnt}件 (最高{best_pct:.0f}%)"
 
     # 土: 過去最高配当 or 大波乱年 (race_name 必須)
     if dow == 5:
@@ -826,14 +826,20 @@ def _morning_sec_pattern(conn, ctx):
     # 複勝率順に上位3頭 (1馬1行)
     top_horses = sorted(horse_best.items(), key=lambda kv: -kv[1][0])[:3]
 
+    # 圧縮表記: 3頭が1 tweet (280字以内) に収まるよう各行40字以下
+    medals = ["🥇", "🥈", "🥉"]
     out_lines = []
-    for horse, (pct, sire, waku, t3, nr) in top_horses:
-        waku_str = f"／{waku}該当" if draw_done else "／枠不問で好相性"
-        out_lines.append(
-            f"✅{horse}: 父{sire}×コース複勝{pct}% ({t3}/{nr}){waku_str}"
-        )
+    for i, (horse, (pct, sire, waku, t3, nr)) in enumerate(top_horses):
+        m = medals[i] if i < len(medals) else "🏅"
+        # 種牡馬名から外国表記を除去
+        sire_clean = sire.split("(")[0].strip()
+        # 末尾の英字 (例: "ドレフォンDrefong") も除去
+        import re as _re_sire
+        sire_clean = _re_sire.sub(r"[A-Za-z]+$", "", sire_clean).strip()
+        waku_str = f" {waku}" if draw_done else ""
+        out_lines.append(f"{m}{horse} {pct}% {sire_clean}{waku_str}")
 
-    return _make_section("【AI注目馬: 父×コース複勝率】", out_lines), len(out_lines)
+    return _make_section("【父×コース複勝率TOP】", out_lines), len(out_lines)
 
 
 def _morning_sec_age(conn, ctx):
@@ -1450,10 +1456,10 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     if sec1:
         sections.append(sec1)
         theme = "AI独自パターン分析"
-        # Section 1 に含まれる馬を抽出 ("✅馬名: " 行から)
+        # Section 1 に含まれる馬を抽出 (新フォーマット: "🥇ウォーターリヒト ★67% (父..)")
         import re as _re
         for line in sec1.split("\n"):
-            m = _re.match(r"^✅([^:]+):", line)
+            m = _re.match(r"^(?:🥇|🥈|🥉|🏅)([^ ★]+)", line)
             if m:
                 horses_in_sec1.add(m.group(1).strip())
 
