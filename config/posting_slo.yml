@@ -43,7 +43,11 @@ slots:
     cron: "0 22 * * 5,6"     # = 07:00 JST 土日
     expected_jst: "07:00"
     time_guard_jst: [6, 9]
-    watchdog_deadline_jst: "08:30"
+    # 🆕 deadline 早期化 (2026-06-06 #36 ユーザー指摘「6/6 予想取得失敗 404」)
+    # 旧 08:30 だと GitHub Actions cron 遅延 (1-4h 普通) と watchdog 30分間隔の
+    # 組合せで 6/6 8:12 時点でも JSON 未生成=ダッシュボード404 が長時間発生。
+    # 07:30 に早めて、7:00 cron が遅延しても 7:30 watchdog が即補完するように。
+    watchdog_deadline_jst: "07:30"
     fallback_mode: "auto"     # cron に応じて type を内部判定
     days: [5, 6]              # 土日
 
