@@ -190,7 +190,7 @@ def sec_pop_trust_trend(
 
     lines = [
         f"✅勝率 {win_pct:.0f}% ({wins}勝/{n})",
-        f"✅複勝率 {top3_pct:.0f}% ({top3}/{n})",
+        f"✅複勝率 {top3_pct:.0f}% ({n}走中{top3}複)",
     ]
     if win_pct >= 40:
         lines.append("→ 1番人気軸が王道")
@@ -275,7 +275,7 @@ def sec_sire_course_cross(
         if matched:
             names = [e["horse_name"] for e in matched[:2]]
             match_str = f" → 該当: {' '.join(names)}"
-        lines.append(f"{m}{sire} {pct:.0f}% ({top3}/{runs}){match_str}")
+        lines.append(f"{m}{sire} {pct:.0f}% ({runs}走中{top3}複){match_str}")
     # 該当馬付きが1件も無く出走馬データはあった場合 → セクション自体を出さない
     if has_entries and not lines:
         return (title, [], 0)
@@ -517,8 +517,8 @@ def sec_pace_decisive(
     win_pct = 100 * wins / n
     top3_pct = 100 * top3 / n
     lines = [
-        f"💨上がり最速馬 勝率 {win_pct:.0f}% ({wins}/{n})",
-        f"💨上がり最速馬 複勝率 {top3_pct:.0f}% ({top3}/{n})",
+        f"💨上がり最速馬 勝率 {win_pct:.0f}% ({n}走中{wins}勝)",
+        f"💨上がり最速馬 複勝率 {top3_pct:.0f}% ({n}走中{top3}複)",
     ]
     if top3_pct >= 60:
         lines.append("→ 末脚決着型コース、上り注目")
@@ -599,7 +599,7 @@ def sec_jockey_recent_form(
             # 🆕 絶対ルール (CLAUDE.md 2026-06-04): 今週騎乗しない騎手は出さない
             if not matched:
                 continue
-        lines.append(f"🏆{jockey} {pct:.0f}% ({top3}/{runs}){' ★今回騎乗' if matched else ''}")
+        lines.append(f"🏆{jockey} {pct:.0f}% ({runs}走中{top3}複){' ★今回騎乗' if matched else ''}")
     # 出走馬データあり&該当0件 → セクション自体スキップ
     if has_entries and not lines:
         return (title, [], 0)
@@ -711,7 +711,7 @@ def sec_dangerous_favorites(
 
     flop_pct = 100 * flop / n
     lines = [
-        f"⚠️1人気が飛んだ (5着以下): {flop_pct:.0f}% ({flop}/{n})",
+        f"⚠️1人気が飛んだ (5着以下): {flop_pct:.0f}% ({n}走中{flop}回)",
     ]
     if flop_pct >= 30:
         lines.append("→ 1人気軸は危険、相手探し優先")
@@ -919,7 +919,7 @@ def sec_pattern_discovery(
                 match_str = f" → 該当: {' '.join(names)}"
             else:
                 match_str = f" → 該当: {names[0]}他{len(names)-1}頭"
-        lines.append(f"🔮 {sire}×{band} 複勝{pct:.0f}% ({top3}/{runs}){match_str}")
+        lines.append(f"🔮 {sire}×{band} 複勝{pct:.0f}% ({runs}走中{top3}複){match_str}")
     return (title, lines, n)
 
 
@@ -1080,7 +1080,7 @@ def sec_age_pattern(
     total_n = 0
     for age, runs, top3 in rows[:3]:
         pct = 100 * top3 / runs
-        lines.append(f"🐴{age}歳 複勝率 {pct:.0f}% ({top3}/{runs})")
+        lines.append(f"🐴{age}歳 複勝率 {pct:.0f}% ({runs}走中{top3}複)")
         total_n += runs
     return (title, lines, total_n)
 

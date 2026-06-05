@@ -639,7 +639,7 @@ def _build_morning_lede(dow, conn, race):
         if not result:
             return None
         cnt, t, n = result
-        return f"💥 出走馬の父に当コース複勝50%超 {cnt}系統 ({t}/{n}) — 血統が決め手"
+        return f"💥 出走馬の父に当コース複勝50%超 {cnt}系統 (うち{t}走複勝圏) — 血統が決め手"
 
     # 水: 騎手 TOP 複勝率 (※ 今週レースに出走する騎手のみ対象 = race_id を渡す)
     if dow == 2:
@@ -649,7 +649,7 @@ def _build_morning_lede(dow, conn, race):
             return None
         jockey, pct, top3, n = result
         course = f"{venue}{surface}{distance}m" if venue and surface and distance else "当コース"
-        return f"💥 鞍上{jockey} {course}複勝{pct:.1f}% ({top3}/{n}) — 今週も騎乗"
+        return f"💥 鞍上{jockey} {course}複勝{pct:.1f}% ({n}走中{top3}複) — 今週も騎乗"
 
     # 木: 4番人気着度数 (race_name 必須)
     if dow == 3:
@@ -686,7 +686,7 @@ def _build_morning_lede(dow, conn, race):
         if not result:
             return None
         year, hn, pop, odds, upset_cnt, sample_n = result
-        return f"💥 {year}年{pop}人気{hn}({odds:.1f}倍)勝利 — 過去{upset_cnt}/{sample_n}年が波乱"
+        return f"💥 {year}年{pop}人気{hn}({odds:.1f}倍)勝利 — 過去{sample_n}年で{upset_cnt}度の波乱"
 
     # 日: 末脚最速馬複勝率
     if dow == 6:
@@ -700,7 +700,7 @@ def _build_morning_lede(dow, conn, race):
             tag = "末脚優位コース"
         else:
             tag = "前残り注意"
-        return f"💥 上がり3F最速馬の複勝率 {pct:.0f}% ({top3}/{n}) — {tag}"
+        return f"💥 上がり3F最速馬の複勝率 {pct:.0f}% ({n}走中{top3}複) — {tag}"
 
     return None
 
@@ -804,7 +804,7 @@ def _morning_sec_pattern(conn, ctx):
         pass
 
     # lines をパース → 馬中心に集約 (同一馬は最も複勝率の高いパターン1つだけ)
-    # 想定 line 形式: "🔮 {sire}×{waku_label} 複勝{pct}% ({top3}/{n}) → 該当: {horse} [{horse}...]"
+    # 想定 line 形式: "🔮 {sire}×{waku_label} 複勝{pct}% ({n}走中{top3}複) → 該当: {horse} [{horse}...]"
     horse_best = {}  # horse_name → (pct, sire, waku_label, top3, n_runs)
     for line in lines:
         m = _re.search(r"🔮\s*([^×]+)×([^ ]+)\s+複勝(\d+)%\s+\((\d+)/(\d+)\).*?該当:\s*(.+?)$", line)
@@ -1240,9 +1240,9 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
                 if flop_pct <= 20:
                     insight = f"✅複勝圏 {hit_pct}% ({total_n-flop_cnt}/{total_n}) → 1人気は信頼可"
                 elif flop_pct <= 30:
-                    insight = f"⚠️5着以下 {flop_pct}% ({flop_cnt}/{total_n}) → 1人気の質を見極めること"
+                    insight = f"⚠️5着以下 {flop_pct}% ({total_n}走中{flop_cnt}回) → 1人気の質を見極めること"
                 else:
-                    insight = f"🚨5着以下 {flop_pct}% ({flop_cnt}/{total_n}) → 1人気軸は危険、相手探し"
+                    insight = f"🚨5着以下 {flop_pct}% ({total_n}走中{flop_cnt}回) → 1人気軸は危険、相手探し"
                 sections.append(f"【1人気の信頼性】\n{insight}")
 
     cta = "→ 火朝に血統深掘り🔔"
