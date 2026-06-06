@@ -509,7 +509,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # docs/data/のJSONのみをデプロイ（predict.htmlはindex.htmlが本体）
           git add docs/data/
-          # keiba.dbはcacheで管理するためgitには含めない
+          # 🆕 #37 root-cause: post_predict が記録した posted_at を次の results run に
+          # 引き継ぐため、type=post_predict のときは keiba.db も含めて push する。
+          # 旧設計「keiba.dbは cache 管理で git push しない」だと、results run が
+          # git HEAD から DB を強制復元 → posted_at=0 → 「予測データなし」で投稿失敗。
+          if [ "${{ steps.determine.outputs.type }}" = "post_predict" ]; then
+            git add keiba.db
+            echo "🆕 keiba.db も add (posted_at を results run に引き継ぐため)"
+          fi
           if git diff --staged --quiet; then
             echo "📭 変更なし - デプロイスキップ"
           else
