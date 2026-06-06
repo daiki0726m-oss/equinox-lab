@@ -34,6 +34,11 @@ on:
         options:
           - '0'
           - '1'
+      date_override:
+        description: '日付を指定 (YYYYMMDD、空なら今日)。前日の results を補完投稿する時用'
+        required: false
+        default: ''
+        type: string
   # ─── cron フォールバック（GAS不発時のセーフティネット） ───
   schedule:
     # 平日朝7:30 JST (UTC 22:30前日) → 日-木のUTC22:30 = 月-金のJST7:30
@@ -225,7 +230,14 @@ jobs:
 
           MODE="${{ github.event.inputs.mode }}"
           SCHEDULE="${{ github.event.schedule }}"
-          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE, SCHEDULE=$SCHEDULE"
+          # 🆕 date_override: 手動 trigger で「前日の results を補完投稿」する時に使用 (#37)
+          DATE_OVERRIDE="${{ github.event.inputs.date_override }}"
+          if [ -n "$DATE_OVERRIDE" ]; then
+            TODAY_YYYYMMDD="$DATE_OVERRIDE"
+            TODAY_HYPHEN="${DATE_OVERRIDE:0:4}-${DATE_OVERRIDE:4:2}-${DATE_OVERRIDE:6:2}"
+            echo "🗓 date_override 指定: $TODAY_YYYYMMDD"
+          fi
+          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE, SCHEDULE=$SCHEDULE, DATE=$TODAY_YYYYMMDD"
 
           # ── GASからの直接モード指定 ──
           if [ "$MODE" != "" ] && [ "$MODE" != "auto" ]; then
