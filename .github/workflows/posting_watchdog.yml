@@ -60,26 +60,44 @@ jobs:
           echo "" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: 🚨 未投稿 slot を自動 trigger
+      - name: 🚨 未投稿 slot を自動 trigger (posted_slots aware)
         if: steps.health.outputs.missing_count != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           echo "📋 ${{ steps.health.outputs.missing_count }} 件の未実行 slot を trigger します"
+          # 🔒 #40 (2026-06-07): dispatch 前に posted_slots テーブル (atomic lock) を
+          # 事前 check し、既に lock が取られている slot は trigger しない。
+          # check_posting_health は workflow run の event/title で判定してるが、
+          # cron success の display_title='cron' で見落とすことがある (cron success が
+          # missing 誤判定 → 重複 dispatch の元、#40 audit より)。posted_slots は
+          # post_x.py が物理的に書く lock なので、これが SoT。
           echo '${{ steps.health.outputs.missing_slots }}' | python3 -c "
           import json, sys, subprocess, time
+          from database import is_slot_posted
           slots = json.load(sys.stdin)
           for s in slots:
               workflow = s.get('workflow', 'auto_post_x.yml')
               mode = s.get('fallback_mode')
+              slot_name = s.get('slot', '')
+
+              # 🔒 atomic lock check (auto_post_x.yml 系のみ)
+              if workflow == 'auto_post_x.yml' and mode:
+                  # fallback_mode が slot_name と一致しないことがあるので mode を優先
+                  existing = is_slot_posted(mode)
+                  if existing:
+                      print(f'⏭️ {workflow} mode={mode} ({slot_name}) は posted_slots に lock 済み → trigger skip')
+                      print(f'    posted_at={existing.get(\"posted_at\")} run_id={existing.get(\"run_id\")}')
+                      continue
+
               if workflow == 'auto_post_x.yml' and mode:
                   cmd = ['gh', 'workflow', 'run', workflow,
                          '--ref', 'main', '-f', f'mode={mode}']
-                  print(f'🔄 Triggering {workflow} mode={mode} ({s[\"slot\"]})...')
+                  print(f'🔄 Triggering {workflow} mode={mode} ({slot_name})...')
               else:
                   cmd = ['gh', 'workflow', 'run', workflow, '--ref', 'main']
-                  print(f'🔄 Triggering {workflow} ({s[\"slot\"]})...')
+                  print(f'🔄 Triggering {workflow} ({slot_name})...')
               result = subprocess.run(cmd, capture_output=True, text=True)
               if result.returncode == 0:
                   print(f'  ✅ triggered')

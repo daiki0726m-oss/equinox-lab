@@ -75,16 +75,36 @@ jobs:
           touch "$TRIGGER_FILE"
 
           # cron 不発時の保険として、loop内で時刻が来たら直接 auto_post_x.yml を dispatch する。
-          # 各 mode は当日 1 回だけ発火 (TRIGGER_FILE で記録)。
+          # 各 mode は当日 1 回だけ発火 (TRIGGER_FILE + posted_slots で記録)。
           # auto_post_x.yml の dedup_cron は scheduled event のみ働くので、
           # ここからの workflow_dispatch は素通りで実行される。
+          #
+          # 🔒 #40 (2026-06-07): /tmp の TRIGGER_FILE は run-scoped (= 別 run では空)。
+          # 遅延 cron 発火で別 run が起動すると flag check を素通りして重複 dispatch していた
+          # (6/7 17:03 二重投稿事故の原因)。対策として **posted_slots テーブル** を事前 check し、
+          # atomic lock が既に取られていれば dispatch しない。
           trigger_post() {
             local mode=$1
             local minimum_jst_hm=$2  # 例: 1015 = 10:15
             local current_jst_hm=$3
+
+            # 🔒 atomic lock (posted_slots) 事前 check — run 間でも共有される
+            TODAY=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+            EXISTING=$(sqlite3 keiba.db \
+              "SELECT run_id FROM posted_slots WHERE post_date='$TODAY' AND slot_name='$mode' LIMIT 1" \
+              2>/dev/null)
+            if [ -n "$EXISTING" ]; then
+              echo "⏭️ [$mode] posted_slots に lock 済み (run=$EXISTING) → dispatch skip"
+              # /tmp flag にも記録して次 iter で再 check しない
+              grep -q "^${mode}\$" "$TRIGGER_FILE" 2>/dev/null || echo "${mode}" >> "$TRIGGER_FILE"
+              return 0
+            fi
+
+            # 同 run 内の /tmp flag check (旧仕組み)
             if grep -q "^${mode}\$" "$TRIGGER_FILE" 2>/dev/null; then
               return 0
             fi
+
             if [ "$current_jst_hm" -ge "$minimum_jst_hm" ]; then
               echo "🚀 [SAFETY-NET] ${mode} を dispatch (予定 ${minimum_jst_hm:0:2}:${minimum_jst_hm:2:4} 到達, 現在 $(TZ=Asia/Tokyo date +%H:%M))"
               if gh workflow run auto_post_x.yml -R ${{ github.repository }} -f mode="$mode" 2>&1; then

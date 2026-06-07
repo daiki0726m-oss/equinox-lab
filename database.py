@@ -276,34 +276,89 @@ def is_slot_posted(slot_name, post_date=None):
         return dict(row) if row else None
 
 
+def _is_degenerate_predictions(predictions_json):
+    """予測が degenerate (≒全頭均等) かを判定する。
+
+    判定基準: 全馬の pred_win_pct (%) の最大値が 12% 未満 = ML 出力が flat。
+    16頭立てなら均等 6.25%、12% は均等 + 6pt 上乗せ程度で「ばらつき有」とみなせる閾値。
+    18頭立てで均等 5.5% 〜 通常本命 22% の中央付近に 12% を置く。
+
+    #40 (2026-06-07) seal lockout 対策:
+    07:00 で flat prediction が seal される → 10:15 以降 --force でも修正不能になる事故が
+    6/7 に発生。degenerate な予測は seal しないことで、後段の再 predict を可能にする。
+    """
+    import json as _json
+    try:
+        preds = _json.loads(predictions_json) if isinstance(predictions_json, str) else predictions_json
+    except Exception:
+        return False  # 解析失敗時は安全側 (degenerate でない扱い)
+    if not preds:
+        return False
+    max_win_pct = 0.0
+    for p in preds:
+        pw = p.get('pred_win_pct') or 0
+        if pw > max_win_pct:
+            max_win_pct = pw
+    return max_win_pct < 12.0
+
+
 def seal_predictions_for_date(date_str):
     """指定日の predictions_cache を「投稿済み」としてロック。
     post_predict 投稿成功時に呼ぶ。
+
+    #40 (2026-06-07): degenerate (ML flat) な予測は seal しない (seal lockout 対策)。
+    seal してしまうと以降 --force でも上書き不能になり、朝の bad prediction が
+    1 日中固定されてしまう (6/7 で発生)。
     """
     if len(date_str) == 8:
         hy = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     else:
         hy = date_str
     with get_db() as conn:
-        n = conn.execute("""
-            UPDATE predictions_cache
-            SET posted_at = CURRENT_TIMESTAMP
-            WHERE race_id IN (
-                SELECT race_id FROM races WHERE race_date = ? OR race_date = ?
-            ) AND posted_at IS NULL
-        """, (date_str, hy)).rowcount
-    print(f"🔒 predictions_cache を {n} レース seal({date_str})")
-    return n
+        # 対象レースを抽出 (まだ posted_at が NULL のもの)
+        candidates = conn.execute("""
+            SELECT pc.race_id, pc.predictions_json
+            FROM predictions_cache pc
+            JOIN races r ON pc.race_id = r.race_id
+            WHERE (r.race_date = ? OR r.race_date = ?) AND pc.posted_at IS NULL
+        """, (date_str, hy)).fetchall()
+
+        sealed = 0
+        skipped_degenerate = 0
+        for row in candidates:
+            if _is_degenerate_predictions(row['predictions_json']):
+                skipped_degenerate += 1
+                continue
+            conn.execute(
+                "UPDATE predictions_cache SET posted_at = CURRENT_TIMESTAMP WHERE race_id = ?",
+                (row['race_id'],)
+            )
+            sealed += 1
+    msg = f"🔒 predictions_cache を {sealed} レース seal({date_str})"
+    if skipped_degenerate:
+        msg += f" / ⚠ degenerate {skipped_degenerate} レースは seal せず再 predict 可能のまま"
+    print(msg)
+    return sealed
 
 
 def is_prediction_sealed(race_id):
-    """そのレースの予測が投稿済み(seal)かを返す"""
+    """そのレースの予測が投稿済み(seal)かを返す。
+
+    #40 (2026-06-07): degenerate predictions (全頭均等 = ML flat output) は
+    seal されていても sealed=False として扱う → 再 predict --force が可能になる。
+    朝の bad prediction が seal で固定される事故 (6/7) の対策。
+    """
     with get_db() as conn:
         row = conn.execute(
-            "SELECT posted_at FROM predictions_cache WHERE race_id = ?",
+            "SELECT posted_at, predictions_json FROM predictions_cache WHERE race_id = ?",
             (race_id,)
         ).fetchone()
-        return row is not None and row['posted_at'] is not None
+        if row is None or row['posted_at'] is None:
+            return False
+        # posted_at あり = 通常は sealed だが、degenerate なら escape hatch として上書きを許す
+        if _is_degenerate_predictions(row['predictions_json']):
+            return False
+        return True
 
 
 def sync_cache_race_ids(race_date_str):

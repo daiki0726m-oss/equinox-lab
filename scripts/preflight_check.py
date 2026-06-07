@@ -112,6 +112,60 @@ def check_predictions(conn, date_iso: str) -> tuple[int, list[str]]:
     return (1 if issues else 0), issues
 
 
+def check_ml_output_sanity(conn, date_iso: str) -> tuple[int, list[str]]:
+    """ML 出力の正常性 (#40 sanity gate, 2026-06-07).
+
+    今日 6/7 に発生した「24R 全 D + ◎勝率 5-13% (均等近傍)」事故の再発防止。
+    各レースの max(pred_win_pct) と確率分布から「ML が flat に近い出力」を検出。
+
+    判定: 50% 以上のレースで max(pred_win_pct) < 12% なら critical (exit 2)。
+          30% 以上なら warning (exit 1)。
+    """
+    import json as _json
+    issues = []
+    rows = conn.execute(
+        """SELECT pc.race_id, pc.predictions_json
+           FROM predictions_cache pc
+           JOIN races r ON pc.race_id = r.race_id
+           WHERE r.race_date = ?""",
+        (date_iso,)
+    ).fetchall()
+    if not rows:
+        return 0, []  # 予測なしは別の check で扱う
+
+    n_total = len(rows)
+    n_flat = 0
+    flat_details = []
+    for r in rows:
+        try:
+            preds = _json.loads(r["predictions_json"])
+        except Exception:
+            continue
+        if not preds:
+            continue
+        max_pw = max((p.get("pred_win_pct") or 0) for p in preds)
+        if max_pw < 12.0:
+            n_flat += 1
+            flat_details.append((r["race_id"], max_pw))
+
+    flat_ratio = n_flat / n_total if n_total else 0
+    if flat_ratio >= 0.5:
+        sample = ", ".join(f"{rid}({mx:.1f}%)" for rid, mx in flat_details[:3])
+        issues.append(
+            f"❌ ML flat output 検出: {n_flat}/{n_total} レース ({flat_ratio*100:.0f}%) "
+            f"で max ◎勝率<12% — 例: {sample}. seal せず再 predict 必須"
+        )
+        return 2, issues
+    elif flat_ratio >= 0.3:
+        sample = ", ".join(f"{rid}({mx:.1f}%)" for rid, mx in flat_details[:3])
+        issues.append(
+            f"⚠️ ML 部分 flat: {n_flat}/{n_total} レース ({flat_ratio*100:.0f}%) "
+            f"で max ◎勝率<12% — 例: {sample}"
+        )
+        return 1, issues
+    return 0, []
+
+
 def check_ghost_horses(conn, date_iso: str, use_api: bool = False) -> tuple[int, list[str], bool]:
     """幽霊馬 (枠順確定前の仮馬番が finish=0 で残存) を検出 (#43/#44)。
 
@@ -278,6 +332,14 @@ def main():
         all_issues.extend(issues)
         pred_critical = sev == 2
 
+        # 3.5. ML 出力 sanity (#40, 2026-06-07): flat / degenerate prediction の早期検知
+        # 「24R 全 D + ◎勝率 5-13%」のような ML 異常を seal 前に検出して
+        # auto-fix の re-predict を発動させる
+        sev, issues = check_ml_output_sanity(conn, date_iso)
+        overall_severity = max(overall_severity, sev)
+        all_issues.extend(issues)
+        ml_critical = sev == 2
+
         # 4. 幽霊馬 (#43/#44) — 基準A は無料・常時、基準B(API) は --ghost-api 時のみ
         sev, issues, ghost_detected = check_ghost_horses(conn, date_iso, use_api=args.ghost_api)
         overall_severity = max(overall_severity, sev)
@@ -291,8 +353,10 @@ def main():
                 print("✅ 出走馬の自動修復成功")
             else:
                 print("❌ 出走馬の自動修復失敗")
-        if pred_critical or runners_critical:
-            # 出走馬入ったら予測も再実行
+        if pred_critical or runners_critical or ml_critical:
+            # 出走馬入ったら予測も再実行。ML flat output も再 predict で修復試行
+            if ml_critical:
+                print("🔄 ML flat output → predict --force で再予測")
             if auto_fix_predictions(args.date):
                 print("✅ 予測の自動修復成功")
                 overall_severity = 0
