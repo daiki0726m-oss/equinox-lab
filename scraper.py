@@ -1011,13 +1011,37 @@ class NetkeibaScraper:
                     """, (r["trainer_id"], r.get("trainer_name", "")))
 
                 # 結果
+                # 🆕 #52 (2026-06-08): INSERT OR REPLACE → ON CONFLICT DO UPDATE (保全 UPSERT)。
+                # 旧 INSERT OR REPLACE は行を削除して再挿入するため、出馬表 scrape (scrape_shutuba
+                # =odds/weight を持たない) で save するたびに既存の odds/popularity/weight/着順 を
+                # 0 で上書きしていた。これが「予測時 odds=0 → rank_score フラット → 全レース D」
+                # (model_rank gain 92% が odds_log) と「馬体重補正 dead code」(#38) の主因。
+                # 対策: 各列「新値が非ゼロ/非空ならそれを採用、ゼロ/空なら既存値を保全」する。
+                # → 出馬表 save は既存 odds/weight を壊さず、結果 save は実値で正しく更新される。
+                # conflict key は results の UNIQUE(race_id, horse_number)。
                 conn.execute("""
-                    INSERT OR REPLACE INTO results
+                    INSERT INTO results
                     (race_id, horse_id, jockey_id, trainer_id,
                      post_position, horse_number, odds, popularity,
                      finish_position, finish_time, finish_time_seconds,
                      margin, last_3f, passing_order, weight, weight_change, impost)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(race_id, horse_number) DO UPDATE SET
+                        horse_id = CASE WHEN excluded.horse_id != '' THEN excluded.horse_id ELSE results.horse_id END,
+                        jockey_id = CASE WHEN excluded.jockey_id != '' THEN excluded.jockey_id ELSE results.jockey_id END,
+                        trainer_id = CASE WHEN excluded.trainer_id != '' THEN excluded.trainer_id ELSE results.trainer_id END,
+                        post_position = CASE WHEN excluded.post_position != 0 THEN excluded.post_position ELSE results.post_position END,
+                        odds = CASE WHEN excluded.odds != 0 THEN excluded.odds ELSE results.odds END,
+                        popularity = CASE WHEN excluded.popularity != 0 THEN excluded.popularity ELSE results.popularity END,
+                        finish_position = CASE WHEN excluded.finish_position != 0 THEN excluded.finish_position ELSE results.finish_position END,
+                        finish_time = CASE WHEN excluded.finish_time != '' THEN excluded.finish_time ELSE results.finish_time END,
+                        finish_time_seconds = CASE WHEN excluded.finish_time_seconds != 0 THEN excluded.finish_time_seconds ELSE results.finish_time_seconds END,
+                        margin = CASE WHEN excluded.margin != '' THEN excluded.margin ELSE results.margin END,
+                        last_3f = CASE WHEN excluded.last_3f != 0 THEN excluded.last_3f ELSE results.last_3f END,
+                        passing_order = CASE WHEN excluded.passing_order != '' THEN excluded.passing_order ELSE results.passing_order END,
+                        weight = CASE WHEN excluded.weight != 0 THEN excluded.weight ELSE results.weight END,
+                        weight_change = CASE WHEN excluded.weight_change != 0 THEN excluded.weight_change ELSE results.weight_change END,
+                        impost = CASE WHEN excluded.impost != 0 THEN excluded.impost ELSE results.impost END
                 """, (
                     race_data["race_id"], r.get("horse_id", ""),
                     r.get("jockey_id", ""), r.get("trainer_id", ""),

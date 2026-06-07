@@ -301,6 +301,47 @@ def cmd_predict(args):
 
         race_info = dict(race)
 
+        # ── 🆕 #52 (2026-06-08): オッズ充足ゲート (全D化の最終防御) ──
+        # model_rank は gain の 92% が odds_log。出走馬の odds が全頭 0 のまま予測すると
+        # rank_score がフラット化し、全レース confidence=D の degenerate 予測になる
+        # (6/7 の事故)。予測の「前」に odds を確認し、全頭0なら API 取得を試みる。
+        # それでも0なら degenerate を書かず、このレースを skip して既存 cache を保持する。
+        # (refresh_odds が後で走れば次サイクルで正常予測される)
+        if not getattr(args, 'allow_zero_odds', False):
+            with get_db() as oconn:
+                odds_rows = oconn.execute(
+                    "SELECT odds FROM results WHERE race_id = ?", (race_id,)
+                ).fetchall()
+            n_horses = len(odds_rows)
+            n_zero = sum(1 for r in odds_rows if not (r['odds'] and r['odds'] > 0))
+            if n_horses > 0 and n_zero == n_horses:
+                print(f"  ⚠️ 全{n_horses}頭 odds=0 → 予測前に API でオッズ取得を試行")
+                try:
+                    from refresh_odds import fetch_odds_from_api
+                    api_odds = fetch_odds_from_api(race_id)
+                    if api_odds:
+                        with get_db() as oconn:
+                            for hn, od in api_odds.items():
+                                win = od.get('win_odds', 0) if isinstance(od, dict) else od
+                                if win and win > 0:
+                                    oconn.execute(
+                                        "UPDATE results SET odds = ? WHERE race_id = ? AND horse_number = ?",
+                                        (win, race_id, int(hn))
+                                    )
+                        print(f"  📡 API オッズ {len(api_odds)}頭分を反映")
+                except Exception as e:
+                    print(f"  ⚠️ API オッズ取得失敗: {e}")
+                # 再確認: まだ全頭0なら degenerate 予測を避けて skip
+                with get_db() as oconn:
+                    odds_rows2 = oconn.execute(
+                        "SELECT odds FROM results WHERE race_id = ?", (race_id,)
+                    ).fetchall()
+                n_zero2 = sum(1 for r in odds_rows2 if not (r['odds'] and r['odds'] > 0))
+                if n_zero2 == len(odds_rows2) and len(odds_rows2) > 0:
+                    print(f"  🚫 オッズ取得不能 (全頭0) → degenerate 予測を避けて skip (既存cache保持)")
+                    _skipped_races.append((race_id, 'オッズ全頭0 (degenerate回避)'))
+                    continue
+
         # 予測
         try:
             pred_df = model.predict_race(race_id)
@@ -990,6 +1031,8 @@ def main():
     p_predict.add_argument("--race-id", help="レースID")
     p_predict.add_argument("--date", help="日付 (YYYYMMDD)")
     p_predict.add_argument("--force", action="store_true", help="10時以降でも強制再予測")
+    p_predict.add_argument("--allow-zero-odds", action="store_true",
+                           help="odds=0 でも予測する (#42 odds充足ゲートを無効化、履歴backtest用)")
 
     # backtest
     p_backtest = subparsers.add_parser("backtest", help="バックテスト実行")

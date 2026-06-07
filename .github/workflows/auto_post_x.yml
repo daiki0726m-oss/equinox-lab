@@ -325,6 +325,15 @@ jobs:
           echo "🏇 確定馬番を更新..."
           timeout 180 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 既存データで続行"
 
+          # 🆕 #52 (2026-06-08): refresh_entries の直後に **必ず** refresh_odds を実行する。
+          # refresh_entries (scrape_shutuba) は出馬表ベースで odds を持たないため、
+          # FIX C の保全UPSERT前は results.odds を 0 で上書きしていた (= 全D化の主因)。
+          # FIX C 適用後も「初回 fetch でまだ odds 未取得」のレースは odds=0 のままなので、
+          # 予測の前に odds を埋めておくことが必須。model_rank は gain 92% が odds_log =
+          # odds=0 のまま predict すると rank_score がフラット化し全レース confidence=D になる。
+          echo "💹 オッズを取得 (予測前に必須 — odds=0 だと全D化する)..."
+          timeout 180 python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ取得失敗 → 既存データで続行"
+
           # 10時以降は予測を再実行しない（確定済み予測を保護）
           if [ "$JST_HOUR" -ge 10 ]; then
             echo "🔒 JST ${JST_HOUR}時: 10時以降のため予測をスキップ（確定済み）"
@@ -538,8 +547,12 @@ jobs:
             # 並行workflow対策: rebase+retry。compet は -X theirs (リモート優先) で自動解決し
             # unmerged(U) を作業ツリーに残さない。失敗時は rebase --abort で残骸を確実に除去する。
             # (#36: U 残留のまま後続 Save post history が commit を試みて exit 128 で死ぬ事故を防止)
+            # 🆕 #52 (2026-06-08): --autostash 必須。commit 後も 100MB keiba.db が WAL flush で
+            #   unstaged に戻り、autostash 無しの rebase は「you have unstaged changes」で即死する。
+            #   → 6/6 は predict 成功・export 成功・commit 成功なのに push が3回とも死に、
+            #   予測JSONが origin に届かず朝404 が継続した (他の全 workflow は autostash 有りで生存)。
             for i in 1 2 3; do
-              if git pull --rebase -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
+              if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
                 echo "🚀 デプロイ完了 (試行$i)"; break
               fi
               git rebase --abort 2>/dev/null || true
@@ -560,8 +573,9 @@ jobs:
             if ! git diff --staged --quiet; then
               git commit -m "📝 Update post history $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
               # compet は -X theirs (リモート優先) で自動解決し U を残さない。失敗時は rebase --abort で除去 (#36)
+              # 🆕 #52 (2026-06-08): --autostash 必須 (上の Deploy step と同理由。keiba.db WAL対策)
               for i in 1 2 3; do
-                if git pull --rebase -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
+                if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
                   echo "✅ 投稿履歴を保存 (試行$i)"; break
                 fi
                 git rebase --abort 2>/dev/null || true
