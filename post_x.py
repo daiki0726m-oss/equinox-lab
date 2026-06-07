@@ -39,7 +39,55 @@ def now_jst():
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from database import init_db, get_db
+from database import init_db, get_db, acquire_post_slot, release_post_slot
+
+
+# ─── 投稿スロット排他制御 (#40) ────────────────────────────────────
+# 1日1スロット1回の atomic lock。cron/watchdog/手動 のどこから何回 trigger
+# されても、同じ (post_date, slot_name) で 2 度目以降は skip される。
+# 失敗時は posted_slots 行を削除して再試行可能。
+def _acquire_or_exit(slot_name):
+    """各 cmd_* の冒頭で呼ぶ。lock 取れなければ exit 0 で正常終了。
+
+    DRY_RUN (--dry-run) 時は lock を取らずに通す (本番投稿しないため)。
+    SKIP_POST_LOCK=1 でも lock を完全 bypass (緊急復旧用)。
+    _POST_LOCK_DELEGATED=1 は internal 委譲時に set (例: cmd_hit_flash → cmd_results)。
+    """
+    if os.environ.get('SKIP_POST_LOCK') == '1':
+        print(f"⚠️ SKIP_POST_LOCK=1 のため atomic lock を bypass ({slot_name})")
+        return
+    if os.environ.get('_POST_LOCK_DELEGATED') == '1':
+        # 親 cmd_* が既に別 slot で lock 取得済み、子は lock を取らない
+        print(f"↪️ delegated 内部委譲のため [{slot_name}] lock を skip")
+        return
+    # --dry-run は sys.argv で見る (acquire 前に呼ばれるため args 未パース)
+    if '--dry-run' in sys.argv:
+        # dry-run でも lock は試すが、取得しない (= skip 判定なし、ただ通す)
+        return
+    ok, prev = acquire_post_slot(
+        slot_name,
+        run_id=os.environ.get('GITHUB_RUN_ID'),
+        workflow_event=os.environ.get('GITHUB_EVENT_NAME'),
+    )
+    if not ok:
+        posted_at = prev.get('posted_at') if prev else '?'
+        run_id = prev.get('run_id') if prev else '?'
+        event = prev.get('workflow_event') if prev else '?'
+        success = prev.get('success', 1) if prev else 1
+        print(f"⏭️ 既に本日 [{slot_name}] 投稿済み (atomic lock skip)")
+        print(f"   posted_at={posted_at}  run_id={run_id}  event={event}  success={success}")
+        print(f"   再投稿したい場合: sqlite3 keiba.db \"DELETE FROM posted_slots WHERE post_date=date('now','+9 hours') AND slot_name='{slot_name}';\"")
+        sys.exit(0)
+    print(f"🔒 [{slot_name}] atomic lock 取得: {datetime.now(timezone(timedelta(hours=9))).strftime('%H:%M JST')}")
+
+
+def _release_on_failure(slot_name, exc):
+    """投稿失敗時の cleanup。lock 自体は残し success=0 マークのみ (二重投稿を防ぐ)。"""
+    try:
+        release_post_slot(slot_name, note=f"{type(exc).__name__}: {str(exc)[:100]}")
+        print(f"⚠️ [{slot_name}] 投稿失敗、lock を success=0 マーク (二重投稿はやはり防止)")
+    except Exception:
+        pass
 
 # X API (tweepy)
 try:
@@ -534,7 +582,10 @@ def cmd_predict(args):
     post_predict は朝の予想公開専用。GAS や workflow_dispatch で誤発火された場合、
     レース終了後に「予想」が投稿される事故が発生した (5/23 16:33 JST)。
     対象日のメインレース(11R)の発走時刻を過ぎている場合は投稿せず即座にスキップ。
+
+    🔒 atomic lock (#40, 2026-06-07): 同じ日の post_predict は何回 trigger されても 1 回のみ。
     """
+    _acquire_or_exit('post_predict')
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
@@ -942,7 +993,10 @@ def cmd_results(args):
     データソース優先順位 (root-cause-fix: cache@v4 が脆いので JSON-first):
       1. GitHub Pages の docs/data/predictions_YYYYMMDD.json (git-tracked, 永続)
       2. ローカル DB (predictions_cache + results) — ephemeral cache のフォールバック
+
+    🔒 atomic lock (#40, 2026-06-07): 同じ日の results は何回 trigger されても 1 回のみ。
     """
+    _acquire_or_exit('results')
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
@@ -1217,7 +1271,10 @@ def cmd_weekday(args):
     1-3h 遅延発火するケースは正常運転として許容するが、夕方以降は
     昼コンテンツとして不適切なのでスキップ (5/25 は 17:03 発火 → 正しくスキップ)。
     SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
+
+    🔒 atomic lock (#40, 2026-06-07): 同じ日の weekday は何回 trigger されても 1 回のみ。
     """
+    _acquire_or_exit('weekday')
     if not os.environ.get("SKIP_TIME_GUARD"):
         now = now_jst()
         if not (11 <= now.hour <= 15):
@@ -3130,9 +3187,17 @@ def cmd_hit_flash(args):
     ユーザー要件に統一: 結果系の post は金額表示なし、印別着順のみ。
     cmd_hit_flash と cmd_results の出力フォーマットを単一化することで、
     cron schedule が hit_flash でも results でも同じ post が出るようになる。
+
+    🔒 atomic lock (#40, 2026-06-07): 同じ日の hit_flash は何回 trigger されても 1 回のみ。
     """
+    _acquire_or_exit('hit_flash')
     print("ℹ️ hit_flash → results に委譲(金額なし・印別着順フォーマット)")
-    return cmd_results(args)
+    # hit_flash の lock は取得済み、cmd_results 内部の results lock は取らせない
+    os.environ['_POST_LOCK_DELEGATED'] = '1'
+    try:
+        return cmd_results(args)
+    finally:
+        os.environ.pop('_POST_LOCK_DELEGATED', None)
 
 
 def _legacy_cmd_hit_flash_DEPRECATED(args):  # noqa: N802
@@ -3346,7 +3411,11 @@ def _legacy_cmd_hit_flash_DEPRECATED(args):  # noqa: N802
 
 # ─── オッズ確定＋最終見解 ───
 def cmd_odds_flash(args):
-    """オッズ確定後の最終見解ツイート"""
+    """オッズ確定後の最終見解ツイート
+
+    🔒 atomic lock (#40, 2026-06-07): 同じ日の odds_flash は何回 trigger されても 1 回のみ。
+    """
+    _acquire_or_exit('odds_flash')
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
@@ -3454,7 +3523,10 @@ def cmd_morning(args):
     7:30 予定の cron が 8:30-9:30 に発火するケースは正常運転として許容。
     ただし 12時超え (= 大幅遅延) は朝コンテンツとして不適切なのでスキップ。
     SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
+
+    🔒 atomic lock (#40, 2026-06-07): 同じ日の morning は何回 trigger されても 1 回のみ。
     """
+    _acquire_or_exit('morning')
     if not os.environ.get("SKIP_TIME_GUARD"):
         now = now_jst()
         if not (7 <= now.hour <= 11):
@@ -3497,7 +3569,10 @@ def cmd_evening(args):
     cmd_evening は 19:00-23:59 JST 専用。GitHub Actions cron が
     1-3h 遅延発火するケースは正常運転として許容。
     SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
+
+    🔒 atomic lock (#40, 2026-06-07): 同じ日の evening は何回 trigger されても 1 回のみ。
     """
+    _acquire_or_exit('evening')
     if not os.environ.get("SKIP_TIME_GUARD"):
         now = now_jst()
         if not (19 <= now.hour <= 23):

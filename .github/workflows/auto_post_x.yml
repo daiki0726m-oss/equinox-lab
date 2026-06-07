@@ -521,14 +521,16 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # docs/data/のJSONのみをデプロイ（predict.htmlはindex.htmlが本体）
           git add docs/data/
-          # 🆕 #37 root-cause: post_predict が記録した posted_at を次の results run に
-          # 引き継ぐため、type=post_predict のときは keiba.db も含めて push する。
-          # 旧設計「keiba.dbは cache 管理で git push しない」だと、results run が
-          # git HEAD から DB を強制復元 → posted_at=0 → 「予測データなし」で投稿失敗。
-          if [ "${{ steps.determine.outputs.type }}" = "post_predict" ]; then
-            git add keiba.db
-            echo "🆕 keiba.db も add (posted_at を results run に引き継ぐため)"
-          fi
+          # 🔒 #40 (2026-06-07): 全 post 系で keiba.db を push する
+          # 理由: posted_slots テーブルに記録した atomic lock 状態を、後続の cron/watchdog
+          # /手動 trigger に確実に引き継ぐため。これがないと「checkout 直後の DB に lock なし」
+          # → lock 取得 → 二重投稿 が発生する (5/23, 6/7 で実際に発生)。
+          case "${{ steps.determine.outputs.type }}" in
+            morning|weekday|evening|predict|post_predict|odds_flash|hit_flash|results)
+              git add keiba.db
+              echo "🔒 keiba.db を add (atomic lock 状態を後続 trigger に引き継ぎ)"
+              ;;
+          esac
           if git diff --staged --quiet; then
             echo "📭 変更なし - デプロイスキップ"
           else

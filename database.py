@@ -178,6 +178,21 @@ def init_db(db_path=None):
             CREATE INDEX IF NOT EXISTS idx_results_jockey ON results(jockey_id);
             CREATE INDEX IF NOT EXISTS idx_bets_race ON bets(race_id);
             CREATE INDEX IF NOT EXISTS idx_bets_date ON bets(bet_date);
+
+            -- 投稿スロット排他制御 (1日1スロット1回保証) — #40
+            -- 任意の trigger (cron, watchdog, 手動) が走っても 1 回しか実行されない
+            CREATE TABLE IF NOT EXISTS posted_slots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_date TEXT NOT NULL,              -- JST 'YYYY-MM-DD'
+                slot_name TEXT NOT NULL,              -- 'morning'/'weekday'/'evening'/'odds_flash'/'post_predict'/'hit_flash'/'results' 等
+                posted_at TEXT NOT NULL,              -- ISO 8601 UTC, lock 取得時刻
+                run_id TEXT,                          -- GitHub Actions GITHUB_RUN_ID
+                workflow_event TEXT,                  -- 'schedule'/'workflow_dispatch'
+                success INTEGER DEFAULT 1,            -- 1=投稿成功 / 0=lock 取得後に投稿失敗
+                note TEXT,                            -- 補足 (失敗理由など)
+                UNIQUE(post_date, slot_name)          -- ← 二重投稿を物理的に防ぐ核
+            );
+            CREATE INDEX IF NOT EXISTS idx_posted_slots_date ON posted_slots(post_date);
         """)
 
         # ── マイグレーション: predictions_cache に posted_at がなければ追加 ──
@@ -186,6 +201,79 @@ def init_db(db_path=None):
             conn.execute("ALTER TABLE predictions_cache ADD COLUMN posted_at TIMESTAMP NULL")
             print("🔧 predictions_cache: posted_at カラム追加")
     print("✅ データベース初期化完了")
+
+
+# ─── 投稿スロット排他制御 (#40) ───────────────────────────────────
+def acquire_post_slot(slot_name, run_id=None, workflow_event=None, post_date=None):
+    """投稿前に呼ぶ atomic lock.
+
+    Returns:
+        (True, None) — lock 取得成功、投稿を続行してよい
+        (False, existing_dict) — 既に同じ (date, slot) が登録済み、投稿しない
+
+    使い方:
+        ok, prev = acquire_post_slot('post_predict', run_id=os.environ.get('GITHUB_RUN_ID'),
+                                     workflow_event=os.environ.get('GITHUB_EVENT_NAME'))
+        if not ok:
+            print(f'⏭️ 既に投稿済み: {prev["posted_at"]} (run {prev["run_id"]})')
+            sys.exit(0)
+        # ... 投稿処理 ...
+        # 失敗時は release_post_slot() を呼ぶ
+    """
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    if post_date is None:
+        post_date = datetime.now(JST).strftime('%Y-%m-%d')
+    elif len(post_date) == 8:
+        post_date = f"{post_date[:4]}-{post_date[4:6]}-{post_date[6:8]}"
+    now_utc = datetime.now(timezone.utc).isoformat()
+    with get_db() as conn:
+        try:
+            conn.execute("""
+                INSERT INTO posted_slots (post_date, slot_name, posted_at, run_id, workflow_event)
+                VALUES (?, ?, ?, ?, ?)
+            """, (post_date, slot_name, now_utc, run_id, workflow_event))
+            return True, None
+        except sqlite3.IntegrityError:
+            row = conn.execute("""
+                SELECT post_date, slot_name, posted_at, run_id, workflow_event, success
+                FROM posted_slots WHERE post_date=? AND slot_name=?
+            """, (post_date, slot_name)).fetchone()
+            return False, dict(row) if row else None
+
+
+def release_post_slot(slot_name, note='post failed', post_date=None):
+    """投稿失敗時のロールバック。success=0 でマークするのみ (二重投稿はやはり防ぐ)。
+
+    note: 失敗理由など短い文字列。
+    """
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    if post_date is None:
+        post_date = datetime.now(JST).strftime('%Y-%m-%d')
+    elif len(post_date) == 8:
+        post_date = f"{post_date[:4]}-{post_date[4:6]}-{post_date[6:8]}"
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE posted_slots SET success=0, note=COALESCE(note,'')||?||'; '
+            WHERE post_date=? AND slot_name=?
+        """, (note[:200], post_date, slot_name))
+
+
+def is_slot_posted(slot_name, post_date=None):
+    """既に投稿済みかチェック (lock 取得せず参照だけ)。watchdog/health check 用。"""
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    if post_date is None:
+        post_date = datetime.now(JST).strftime('%Y-%m-%d')
+    elif len(post_date) == 8:
+        post_date = f"{post_date[:4]}-{post_date[4:6]}-{post_date[6:8]}"
+    with get_db() as conn:
+        row = conn.execute("""
+            SELECT posted_at, run_id, success FROM posted_slots
+            WHERE post_date=? AND slot_name=?
+        """, (post_date, slot_name)).fetchone()
+        return dict(row) if row else None
 
 
 def seal_predictions_for_date(date_str):
