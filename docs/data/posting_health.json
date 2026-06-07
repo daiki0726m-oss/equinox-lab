@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-07T08:57:04.193998+09:00",
+  "generated_at": "2026-06-07T11:58:38.487595+09:00",
   "today": "2026-06-07 (Sun)",
   "weekday": 6,
   "slots": {
@@ -37,14 +37,30 @@
     },
     "odds_flash": {
       "slot": "odds_flash",
-      "status": "future",
+      "status": "ok_late",
       "expected": "09:30 JST",
+      "deadline": "10:15 JST",
+      "recent_success": {
+        "created_at": "2026-06-07T11:02:42+09:00",
+        "title": "odds_flash",
+        "event": "workflow_dispatch",
+        "delay_minutes": 93
+      },
+      "delay_minutes": 93,
       "workflow": "auto_post_x.yml"
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "future",
+      "status": "ok_late",
       "expected": "10:15 JST",
+      "deadline": "10:50 JST",
+      "recent_success": {
+        "created_at": "2026-06-07T11:02:44+09:00",
+        "title": "post_predict",
+        "event": "workflow_dispatch",
+        "delay_minutes": 48
+      },
+      "delay_minutes": 48,
       "workflow": "auto_post_x.yml"
     },
     "hit_flash": {
@@ -101,11 +117,11 @@
   "summary": {
     "ok": 0,
     "missing": 0,
-    "future": 4,
+    "future": 2,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 2
+    "ok_late": 4
   },
   "missed_slots": []
 }
