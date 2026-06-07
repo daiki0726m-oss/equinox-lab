@@ -521,7 +521,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # docs/data/のJSONのみをデプロイ（predict.htmlはindex.htmlが本体）
           git add docs/data/
-          # 🔒 #40 (2026-06-07): 全 post 系で keiba.db を push する
+          # 🔒 #41 (2026-06-07): 全 post 系で keiba.db を push する
           # 理由: posted_slots テーブルに記録した atomic lock 状態を、後続の cron/watchdog
           # /手動 trigger に確実に引き継ぐため。これがないと「checkout 直後の DB に lock なし」
           # → lock 取得 → 二重投稿 が発生する (5/23, 6/7 で実際に発生)。

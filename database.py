@@ -179,7 +179,7 @@ def init_db(db_path=None):
             CREATE INDEX IF NOT EXISTS idx_bets_race ON bets(race_id);
             CREATE INDEX IF NOT EXISTS idx_bets_date ON bets(bet_date);
 
-            -- 投稿スロット排他制御 (1日1スロット1回保証) — #40
+            -- 投稿スロット排他制御 (1日1スロット1回保証) — #41
             -- 任意の trigger (cron, watchdog, 手動) が走っても 1 回しか実行されない
             CREATE TABLE IF NOT EXISTS posted_slots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,7 +203,7 @@ def init_db(db_path=None):
     print("✅ データベース初期化完了")
 
 
-# ─── 投稿スロット排他制御 (#40) ───────────────────────────────────
+# ─── 投稿スロット排他制御 (#41) ───────────────────────────────────
 def acquire_post_slot(slot_name, run_id=None, workflow_event=None, post_date=None):
     """投稿前に呼ぶ atomic lock.
 
@@ -283,7 +283,7 @@ def _is_degenerate_predictions(predictions_json):
     16頭立てなら均等 6.25%、12% は均等 + 6pt 上乗せ程度で「ばらつき有」とみなせる閾値。
     18頭立てで均等 5.5% 〜 通常本命 22% の中央付近に 12% を置く。
 
-    #40 (2026-06-07) seal lockout 対策:
+    #41 (2026-06-07) seal lockout 対策:
     07:00 で flat prediction が seal される → 10:15 以降 --force でも修正不能になる事故が
     6/7 に発生。degenerate な予測は seal しないことで、後段の再 predict を可能にする。
     """
@@ -306,7 +306,7 @@ def seal_predictions_for_date(date_str):
     """指定日の predictions_cache を「投稿済み」としてロック。
     post_predict 投稿成功時に呼ぶ。
 
-    #40 (2026-06-07): degenerate (ML flat) な予測は seal しない (seal lockout 対策)。
+    #41 (2026-06-07): degenerate (ML flat) な予測は seal しない (seal lockout 対策)。
     seal してしまうと以降 --force でも上書き不能になり、朝の bad prediction が
     1 日中固定されてしまう (6/7 で発生)。
     """
@@ -344,7 +344,7 @@ def seal_predictions_for_date(date_str):
 def is_prediction_sealed(race_id):
     """そのレースの予測が投稿済み(seal)かを返す。
 
-    #40 (2026-06-07): degenerate predictions (全頭均等 = ML flat output) は
+    #41 (2026-06-07): degenerate predictions (全頭均等 = ML flat output) は
     seal されていても sealed=False として扱う → 再 predict --force が可能になる。
     朝の bad prediction が seal で固定される事故 (6/7) の対策。
     """

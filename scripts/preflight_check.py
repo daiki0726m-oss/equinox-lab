@@ -113,7 +113,7 @@ def check_predictions(conn, date_iso: str) -> tuple[int, list[str]]:
 
 
 def check_ml_output_sanity(conn, date_iso: str) -> tuple[int, list[str]]:
-    """ML 出力の正常性 (#40 sanity gate, 2026-06-07).
+    """ML 出力の正常性 (#41 sanity gate, 2026-06-07).
 
     今日 6/7 に発生した「24R 全 D + ◎勝率 5-13% (均等近傍)」事故の再発防止。
     各レースの max(pred_win_pct) と確率分布から「ML が flat に近い出力」を検出。
@@ -332,7 +332,7 @@ def main():
         all_issues.extend(issues)
         pred_critical = sev == 2
 
-        # 3.5. ML 出力 sanity (#40, 2026-06-07): flat / degenerate prediction の早期検知
+        # 3.5. ML 出力 sanity (#41, 2026-06-07): flat / degenerate prediction の早期検知
         # 「24R 全 D + ◎勝率 5-13%」のような ML 異常を seal 前に検出して
         # auto-fix の re-predict を発動させる
         sev, issues = check_ml_output_sanity(conn, date_iso)

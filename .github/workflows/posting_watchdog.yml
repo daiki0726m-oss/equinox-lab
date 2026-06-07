@@ -67,11 +67,11 @@ jobs:
         run: |
           set -e
           echo "📋 ${{ steps.health.outputs.missing_count }} 件の未実行 slot を trigger します"
-          # 🔒 #40 (2026-06-07): dispatch 前に posted_slots テーブル (atomic lock) を
+          # 🔒 #41 (2026-06-07): dispatch 前に posted_slots テーブル (atomic lock) を
           # 事前 check し、既に lock が取られている slot は trigger しない。
           # check_posting_health は workflow run の event/title で判定してるが、
           # cron success の display_title='cron' で見落とすことがある (cron success が
-          # missing 誤判定 → 重複 dispatch の元、#40 audit より)。posted_slots は
+          # missing 誤判定 → 重複 dispatch の元、#41 audit より)。posted_slots は
           # post_x.py が物理的に書く lock なので、これが SoT。
           echo '${{ steps.health.outputs.missing_slots }}' | python3 -c "
           import json, sys, subprocess, time

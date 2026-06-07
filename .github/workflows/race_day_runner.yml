@@ -79,7 +79,7 @@ jobs:
           # auto_post_x.yml の dedup_cron は scheduled event のみ働くので、
           # ここからの workflow_dispatch は素通りで実行される。
           #
-          # 🔒 #40 (2026-06-07): /tmp の TRIGGER_FILE は run-scoped (= 別 run では空)。
+          # 🔒 #41 (2026-06-07): /tmp の TRIGGER_FILE は run-scoped (= 別 run では空)。
           # 遅延 cron 発火で別 run が起動すると flag check を素通りして重複 dispatch していた
           # (6/7 17:03 二重投稿事故の原因)。対策として **posted_slots テーブル** を事前 check し、
           # atomic lock が既に取られていれば dispatch しない。

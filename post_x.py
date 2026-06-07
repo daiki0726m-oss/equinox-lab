@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from database import init_db, get_db, acquire_post_slot, release_post_slot
 
 
-# ─── 投稿スロット排他制御 (#40) ────────────────────────────────────
+# ─── 投稿スロット排他制御 (#41) ────────────────────────────────────
 # 1日1スロット1回の atomic lock。cron/watchdog/手動 のどこから何回 trigger
 # されても、同じ (post_date, slot_name) で 2 度目以降は skip される。
 # 失敗時は posted_slots 行を削除して再試行可能。
@@ -583,7 +583,7 @@ def cmd_predict(args):
     レース終了後に「予想」が投稿される事故が発生した (5/23 16:33 JST)。
     対象日のメインレース(11R)の発走時刻を過ぎている場合は投稿せず即座にスキップ。
 
-    🔒 atomic lock (#40, 2026-06-07): 同じ日の post_predict は何回 trigger されても 1 回のみ。
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の post_predict は何回 trigger されても 1 回のみ。
     """
     _acquire_or_exit('post_predict')
     date_str = args.date
@@ -994,7 +994,7 @@ def cmd_results(args):
       1. GitHub Pages の docs/data/predictions_YYYYMMDD.json (git-tracked, 永続)
       2. ローカル DB (predictions_cache + results) — ephemeral cache のフォールバック
 
-    🔒 atomic lock (#40, 2026-06-07): 同じ日の results は何回 trigger されても 1 回のみ。
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の results は何回 trigger されても 1 回のみ。
     """
     _acquire_or_exit('results')
     date_str = args.date
@@ -1272,7 +1272,7 @@ def cmd_weekday(args):
     昼コンテンツとして不適切なのでスキップ (5/25 は 17:03 発火 → 正しくスキップ)。
     SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
 
-    🔒 atomic lock (#40, 2026-06-07): 同じ日の weekday は何回 trigger されても 1 回のみ。
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の weekday は何回 trigger されても 1 回のみ。
     """
     _acquire_or_exit('weekday')
     if not os.environ.get("SKIP_TIME_GUARD"):
@@ -3188,7 +3188,7 @@ def cmd_hit_flash(args):
     cmd_hit_flash と cmd_results の出力フォーマットを単一化することで、
     cron schedule が hit_flash でも results でも同じ post が出るようになる。
 
-    🔒 atomic lock (#40, 2026-06-07): 同じ日の hit_flash は何回 trigger されても 1 回のみ。
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の hit_flash は何回 trigger されても 1 回のみ。
     """
     _acquire_or_exit('hit_flash')
     print("ℹ️ hit_flash → results に委譲(金額なし・印別着順フォーマット)")
@@ -3413,7 +3413,7 @@ def _legacy_cmd_hit_flash_DEPRECATED(args):  # noqa: N802
 def cmd_odds_flash(args):
     """オッズ確定後の最終見解ツイート
 
-    🔒 atomic lock (#40, 2026-06-07): 同じ日の odds_flash は何回 trigger されても 1 回のみ。
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の odds_flash は何回 trigger されても 1 回のみ。
     """
     _acquire_or_exit('odds_flash')
     date_str = args.date
@@ -3524,7 +3524,7 @@ def cmd_morning(args):
     ただし 12時超え (= 大幅遅延) は朝コンテンツとして不適切なのでスキップ。
     SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
 
-    🔒 atomic lock (#40, 2026-06-07): 同じ日の morning は何回 trigger されても 1 回のみ。
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の morning は何回 trigger されても 1 回のみ。
     """
     _acquire_or_exit('morning')
     if not os.environ.get("SKIP_TIME_GUARD"):
@@ -3570,7 +3570,7 @@ def cmd_evening(args):
     1-3h 遅延発火するケースは正常運転として許容。
     SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
 
-    🔒 atomic lock (#40, 2026-06-07): 同じ日の evening は何回 trigger されても 1 回のみ。
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の evening は何回 trigger されても 1 回のみ。
     """
     _acquire_or_exit('evening')
     if not os.environ.get("SKIP_TIME_GUARD"):
