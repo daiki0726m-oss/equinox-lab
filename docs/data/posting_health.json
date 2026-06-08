@@ -1,21 +1,29 @@
 {
-  "generated_at": "2026-06-08T08:58:07.309126+09:00",
+  "generated_at": "2026-06-08T12:44:42.542581+09:00",
   "today": "2026-06-08 (Mon)",
   "weekday": 0,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "ok_delayed",
+      "status": "ok_late",
       "expected": "07:30 JST",
-      "actual": "2026-06-08T08:35:50+09:00",
+      "deadline": "11:00 JST",
+      "recent_success": {
+        "created_at": "2026-06-08T08:35:50+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 66
+      },
       "delay_minutes": 66,
-      "event": "schedule",
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
       "slot": "weekday",
-      "status": "future",
+      "status": "missing",
       "expected": "12:30 JST",
+      "deadline": "15:00 JST",
+      "fallback_mode": "weekday",
+      "action": "gh workflow run auto_post_x.yml --ref main -f mode=weekday",
       "workflow": "auto_post_x.yml"
     },
     "evening": {
@@ -56,11 +64,16 @@
     },
     "fetch_monday": {
       "slot": "fetch_monday",
-      "status": "ok_delayed",
+      "status": "ok_late",
       "expected": "06:00 JST",
-      "actual": "2026-06-08T07:09:03+09:00",
+      "deadline": "09:00 JST",
+      "recent_success": {
+        "created_at": "2026-06-08T07:09:03+09:00",
+        "title": "📅 fetch weekend races",
+        "event": "schedule",
+        "delay_minutes": 69
+      },
       "delay_minutes": 69,
-      "event": "schedule",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_wednesday": {
@@ -90,12 +103,12 @@
   },
   "summary": {
     "ok": 0,
-    "missing": 0,
-    "future": 2,
+    "missing": 1,
+    "future": 1,
     "not_today": 9,
     "missed": 0,
-    "ok_delayed": 2,
-    "ok_late": 0
+    "ok_delayed": 0,
+    "ok_late": 2
   },
   "missed_slots": []
 }
