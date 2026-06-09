@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-09T11:39:14.953362+09:00",
+  "generated_at": "2026-06-09T15:39:36.350399+09:00",
   "today": "2026-06-09 (Tue)",
   "weekday": 1,
   "slots": {
@@ -19,8 +19,9 @@
     },
     "weekday": {
       "slot": "weekday",
-      "status": "future",
+      "status": "missed",
       "expected": "12:30 JST",
+      "deadline": "15:00 JST",
       "workflow": "auto_post_x.yml"
     },
     "evening": {
@@ -93,11 +94,18 @@
   "summary": {
     "ok": 0,
     "missing": 0,
-    "future": 2,
+    "future": 1,
     "not_today": 10,
-    "missed": 0,
+    "missed": 1,
     "ok_delayed": 0,
     "ok_late": 1
   },
-  "missed_slots": []
+  "missed_slots": [
+    {
+      "slot": "weekday",
+      "workflow": "auto_post_x.yml",
+      "expected": "12:30 JST",
+      "deadline": "15:00 JST"
+    }
+  ]
 }
