@@ -84,6 +84,16 @@ def _sample_note(sample_n: int, expected_n: int) -> str:
     return ""
 
 
+def _chakudosu(first: int, second: int, third: int, total: int) -> str:
+    """着度数 [1着-2着-3着-着外] を返す (競馬の標準表記, #55)。
+
+    total は finish_position>0 の実走数 (取消/除外は含めない)。
+    「N勝/M」「過去N年でX勝」のような独自表記は使わず、必ずこの着度数で統一する。
+    """
+    out = max(0, total - first - second - third)
+    return f"[{first}-{second}-{third}-{out}]"
+
+
 # ─────────────────────────────────────────────────────────
 # sec_historical_winners
 # ─────────────────────────────────────────────────────────
@@ -158,11 +168,14 @@ def sec_pop_trust_trend(
     """
     cur = conn.cursor()
     from_date = f"{datetime.now().year - years}-01-01"
+    # 着度数 [1-2-3-着外] を出すため 1着/2着/3着 を個別集計。
+    # n は finish_position>0 の実走数 (取消/除外は除く = 正しい着度数の母数)。
     base_query = """
         SELECT
-            COUNT(*) AS n,
-            SUM(CASE WHEN res.finish_position = 1 THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            SUM(CASE WHEN res.finish_position > 0 THEN 1 ELSE 0 END) AS n,
+            SUM(CASE WHEN res.finish_position = 1 THEN 1 ELSE 0 END) AS p1,
+            SUM(CASE WHEN res.finish_position = 2 THEN 1 ELSE 0 END) AS p2,
+            SUM(CASE WHEN res.finish_position = 3 THEN 1 ELSE 0 END) AS p3
         FROM races r
         JOIN results res ON r.race_id = res.race_id AND res.popularity = 1
         WHERE r.surface = ? AND r.distance = ? AND r.venue = ?
@@ -173,10 +186,12 @@ def sec_pop_trust_trend(
         base_query += " AND r.grade = ?"
         params.append(grade)
     cur.execute(base_query, params)
-    n, wins, top3 = cur.fetchone()
+    n, p1, p2, p3 = cur.fetchone()
     n = n or 0
-    wins = wins or 0
-    top3 = top3 or 0
+    p1 = p1 or 0
+    p2 = p2 or 0
+    p3 = p3 or 0
+    top3 = p1 + p2 + p3
 
     grade_label = f"{grade} " if grade else ""
     note = _sample_note(n, 0)
@@ -185,12 +200,12 @@ def sec_pop_trust_trend(
     if n < 3:
         return (title, [f"サンプル{n}件のみ (信頼性低)"], n)
 
-    win_pct = 100 * wins / n
+    win_pct = 100 * p1 / n
     top3_pct = 100 * top3 / n
 
+    # 競馬標準の着度数 [1着-2着-3着-着外] で表記 (#55)
     lines = [
-        f"✅勝率 {win_pct:.0f}% ({n}走中{wins}勝)",
-        f"✅複勝率 {top3_pct:.0f}% ({n}走中{top3}複)",
+        f"1番人気 {_chakudosu(p1, p2, p3, n)} 複勝率{top3_pct:.0f}%",
     ]
     if win_pct >= 40:
         lines.append("→ 1番人気軸が王道")
@@ -227,7 +242,10 @@ def sec_sire_course_cross(
         SELECT
             h.sire,
             COUNT(*) AS runs,
-            SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3,
+            SUM(CASE WHEN res.finish_position = 1 THEN 1 ELSE 0 END) AS p1,
+            SUM(CASE WHEN res.finish_position = 2 THEN 1 ELSE 0 END) AS p2,
+            SUM(CASE WHEN res.finish_position = 3 THEN 1 ELSE 0 END) AS p3
         FROM races r
         JOIN results res ON r.race_id = res.race_id
         JOIN horses h ON res.horse_id = h.horse_id
@@ -261,7 +279,7 @@ def sec_sire_course_cross(
     medals = ["🥇", "🥈", "🥉"]
     lines = []
     has_entries = bool(entries)  # 出走馬データの有無
-    for i, (sire, runs, top3) in enumerate(rows):
+    for i, (sire, runs, top3, p1, p2, p3) in enumerate(rows):
         pct = 100 * top3 / runs
         sire_clean = sire.split("(")[0].strip()
         matched = entries_by_sire.get(sire_clean, [])
@@ -275,7 +293,8 @@ def sec_sire_course_cross(
         if matched:
             names = [e["horse_name"] for e in matched[:2]]
             match_str = f" → 該当: {' '.join(names)}"
-        lines.append(f"{m}{sire} {pct:.0f}% ({runs}走中{top3}複){match_str}")
+        # 競馬標準の着度数 [1-2-3-着外] 表記 (#55)
+        lines.append(f"{m}{sire} {_chakudosu(p1, p2, p3, runs)} 複勝{pct:.0f}%{match_str}")
     # 該当馬付きが1件も無く出走馬データはあった場合 → セクション自体を出さない
     if has_entries and not lines:
         return (title, [], 0)
@@ -354,12 +373,12 @@ def sec_prev_race_pattern(
         lines.append(f"🎯 過去{n}年全勝ち馬が【{top_prev_name}】経由")
         lines.append(f"  → 他ローテで勝った馬: 0頭")
     elif coverage_pct >= 75:
-        lines.append(f"🎯 {top_prev_name}経由 が過去{n}年で{top_prev_cnt}勝 ({coverage_pct:.0f}%)")
+        lines.append(f"🎯 {top_prev_name}経由 が{top_prev_cnt}頭 ({coverage_pct:.0f}%)")
         other = n - top_prev_cnt
         lines.append(f"  → 他ローテ計 {other}頭のみ ({100-coverage_pct:.0f}%)")
     else:
         for prev_name, cnt in sorted_prev[:3]:
-            lines.append(f"🏆{prev_name}: 過去{n}年で{cnt}勝")
+            lines.append(f"🏆{prev_name}: {cnt}頭")
 
     # 出走馬の中で「top_prev_name 経由」の馬を特定
     if race_id:
@@ -489,7 +508,9 @@ def sec_pace_decisive(
         )
         SELECT
             COUNT(*) AS n,
-            SUM(CASE WHEN res.finish_position = 1 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN res.finish_position = 1 THEN 1 ELSE 0 END) AS p1,
+            SUM(CASE WHEN res.finish_position = 2 THEN 1 ELSE 0 END) AS p2,
+            SUM(CASE WHEN res.finish_position = 3 THEN 1 ELSE 0 END) AS p3,
             SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
         FROM fastest f
         JOIN results res ON f.race_id = res.race_id AND res.last_3f = f.min_3f
@@ -504,9 +525,11 @@ def sec_pace_decisive(
             ["DB に上り3Fデータなし"],
             0,
         )
-    n, wins, top3 = row
+    n, p1, p2, p3, top3 = row
     n = n or 0
-    wins = wins or 0
+    p1 = p1 or 0
+    p2 = p2 or 0
+    p3 = p3 or 0
     top3 = top3 or 0
     note = _sample_note(n, 0)
     title = f"【{venue}{surface}{distance}m 過去{years}年 末脚最速馬{('・' + note) if note else ''}】"
@@ -514,11 +537,10 @@ def sec_pace_decisive(
     if n < 3:
         return (title, [f"サンプル{n}件のみ"], n)
 
-    win_pct = 100 * wins / n
     top3_pct = 100 * top3 / n
+    # 競馬標準の着度数 [1-2-3-着外] 表記 (#55)
     lines = [
-        f"💨上がり最速馬 勝率 {win_pct:.0f}% ({n}走中{wins}勝)",
-        f"💨上がり最速馬 複勝率 {top3_pct:.0f}% ({n}走中{top3}複)",
+        f"💨上がり最速馬 {_chakudosu(p1, p2, p3, n)} 複勝率{top3_pct:.0f}%",
     ]
     if top3_pct >= 60:
         lines.append("→ 末脚決着型コース、上り注目")
@@ -553,7 +575,10 @@ def sec_jockey_recent_form(
         SELECT
             j.jockey_name,
             COUNT(*) AS runs,
-            SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3,
+            SUM(CASE WHEN res.finish_position = 1 THEN 1 ELSE 0 END) AS p1,
+            SUM(CASE WHEN res.finish_position = 2 THEN 1 ELSE 0 END) AS p2,
+            SUM(CASE WHEN res.finish_position = 3 THEN 1 ELSE 0 END) AS p3
         FROM races r
         JOIN results res ON r.race_id = res.race_id
         JOIN jockeys j ON res.jockey_id = j.jockey_id
@@ -587,7 +612,7 @@ def sec_jockey_recent_form(
 
     lines = []
     has_entries = bool(entries)
-    for jockey, runs, top3 in rows:
+    for jockey, runs, top3, p1, p2, p3 in rows:
         pct = 100 * top3 / runs
         matched = False
         if has_entries:
@@ -599,7 +624,8 @@ def sec_jockey_recent_form(
             # 🆕 絶対ルール (CLAUDE.md 2026-06-04): 今週騎乗しない騎手は出さない
             if not matched:
                 continue
-        lines.append(f"🏆{jockey} {pct:.0f}% ({runs}走中{top3}複){' ★今回騎乗' if matched else ''}")
+        # 競馬標準の着度数 [1-2-3-着外] 表記 (#55)
+        lines.append(f"🏆{jockey} {_chakudosu(p1, p2, p3, runs)} 複勝{pct:.0f}%{' ★今回騎乗' if matched else ''}")
     # 出走馬データあり&該当0件 → セクション自体スキップ
     if has_entries and not lines:
         return (title, [], 0)
@@ -865,7 +891,10 @@ def sec_pattern_discovery(
                 ELSE '大外'
             END AS waku_band,
             COUNT(*) AS runs,
-            SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3,
+            SUM(CASE WHEN res.finish_position = 1 THEN 1 ELSE 0 END) AS p1,
+            SUM(CASE WHEN res.finish_position = 2 THEN 1 ELSE 0 END) AS p2,
+            SUM(CASE WHEN res.finish_position = 3 THEN 1 ELSE 0 END) AS p3
         FROM races r
         JOIN results res ON r.race_id = res.race_id
         JOIN horses h ON res.horse_id = h.horse_id
@@ -909,7 +938,7 @@ def sec_pattern_discovery(
                 entries_by_sire.setdefault(s, []).append(e)
 
     lines = []
-    for sire, band, runs, top3 in rows:
+    for sire, band, runs, top3, p1, p2, p3 in rows:
         pct = 100 * top3 / runs
         sire_clean = sire.split("(")[0].strip()
         match_str = ""
@@ -919,7 +948,8 @@ def sec_pattern_discovery(
                 match_str = f" → 該当: {' '.join(names)}"
             else:
                 match_str = f" → 該当: {names[0]}他{len(names)-1}頭"
-        lines.append(f"🔮 {sire}×{band} 複勝{pct:.0f}% ({runs}走中{top3}複){match_str}")
+        # 競馬標準の着度数 [1-2-3-着外] 表記 (#55)
+        lines.append(f"🔮 {sire}×{band} {_chakudosu(p1, p2, p3, runs)} 複勝{pct:.0f}%{match_str}")
     return (title, lines, n)
 
 
@@ -1008,7 +1038,7 @@ def sec_rotation_pattern(
         lines.append(f"  → 他間隔の勝ち馬: 0頭")
         lines.append(f"→ {top_label} 以外のローテは不利")
     elif coverage_pct >= 75:
-        lines.append(f"🎯 {top_label} が過去{n}年で{top_cnt}勝 ({coverage_pct:.0f}%)")
+        lines.append(f"🎯 {top_label} が{top_cnt}頭 ({coverage_pct:.0f}%)")
         # その他のローテも併記
         others = [f"{l}{c}" for l, c in sorted_counts[1:]]
         if others:
@@ -1017,7 +1047,7 @@ def sec_rotation_pattern(
     else:
         # 上位3つを並列表示
         for label, cnt in sorted_counts[:3]:
-            lines.append(f"🏆{label}: 過去{n}年で{cnt}勝")
+            lines.append(f"🏆{label}: {cnt}頭")
 
     return (title, lines, n)
 
@@ -1055,7 +1085,10 @@ def sec_age_pattern(
         SELECT
             (CAST(substr(r.race_date, 1, 4) AS INTEGER) - h.birth_year + 1) AS age,
             COUNT(*) AS n,
-            SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3
+            SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3,
+            SUM(CASE WHEN res.finish_position = 1 THEN 1 ELSE 0 END) AS p1,
+            SUM(CASE WHEN res.finish_position = 2 THEN 1 ELSE 0 END) AS p2,
+            SUM(CASE WHEN res.finish_position = 3 THEN 1 ELSE 0 END) AS p3
         FROM races r
         JOIN results res ON r.race_id = res.race_id
         JOIN horses h ON res.horse_id = h.horse_id
@@ -1078,9 +1111,10 @@ def sec_age_pattern(
 
     lines = []
     total_n = 0
-    for age, runs, top3 in rows[:3]:
+    for age, runs, top3, p1, p2, p3 in rows[:3]:
         pct = 100 * top3 / runs
-        lines.append(f"🐴{age}歳 複勝率 {pct:.0f}% ({runs}走中{top3}複)")
+        # 競馬標準の着度数 [1-2-3-着外] 表記 (#55)
+        lines.append(f"🐴{age}歳 {_chakudosu(p1, p2, p3, runs)} 複勝率{pct:.0f}%")
         total_n += runs
     return (title, lines, total_n)
 

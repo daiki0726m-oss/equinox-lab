@@ -658,7 +658,7 @@ def _build_morning_lede(dow, conn, race):
             return None
         jockey, pct, top3, n = result
         course = f"{venue}{surface}{distance}m" if venue and surface and distance else "当コース"
-        return f"💥 鞍上{jockey} {course}複勝{pct:.1f}% ({n}走中{top3}複) — 今週も騎乗"
+        return f"💥 鞍上{jockey} {course}複勝{pct:.1f}% — 今週も騎乗"
 
     # 木: 4番人気着度数 (race_name 必須)
     if dow == 3:
@@ -709,7 +709,7 @@ def _build_morning_lede(dow, conn, race):
             tag = "末脚優位コース"
         else:
             tag = "前残り注意"
-        return f"💥 上がり3F最速馬の複勝率 {pct:.0f}% ({n}走中{top3}複) — {tag}"
+        return f"💥 上がり3F最速馬の複勝率 {pct:.0f}% — {tag}"
 
     return None
 
