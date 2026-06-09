@@ -1168,8 +1168,13 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     race_id = race.get("race_id", "")
     race_name = race.get("race_name", "")
 
-    header = f"🔍 {day} {label}"
+    header = f"🔍 {day} {label}\n今週の注目馬とコース傾向"
     import re as _re
+
+    # 🆕 #53: 先頭に「今週の注目馬」(実名+データ) を必ず置く
+    nb = _notable_lead(conn, race, mode="combined")
+    if nb:
+        sections.append(nb)
 
     # Section 1: 鉄板系統の該当馬 (該当馬なし非表示、複数馬は「他N頭」に圧縮)
     t1, lines1, n1 = sec_sire_course_cross(
