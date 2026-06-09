@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-09T19:27:43.595077+09:00",
+  "generated_at": "2026-06-09T22:23:09.168960+09:00",
   "today": "2026-06-09 (Tue)",
   "weekday": 1,
   "slots": {
@@ -33,8 +33,11 @@
     },
     "evening": {
       "slot": "evening",
-      "status": "future",
+      "status": "missing",
       "expected": "20:00 JST",
+      "deadline": "23:00 JST",
+      "fallback_mode": "evening",
+      "action": "gh workflow run auto_post_x.yml --ref main -f mode=evening",
       "workflow": "auto_post_x.yml"
     },
     "weekend_morning_predict": {
@@ -100,8 +103,8 @@
   },
   "summary": {
     "ok": 0,
-    "missing": 0,
-    "future": 1,
+    "missing": 1,
+    "future": 0,
     "not_today": 10,
     "missed": 0,
     "ok_delayed": 0,
