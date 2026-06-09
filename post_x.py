@@ -3001,19 +3001,38 @@ def fact_check_tweet_or_thread(tweet_or_thread):
     この helper で str/list 両方を統一的に処理する。
     """
     items = tweet_or_thread if isinstance(tweet_or_thread, list) else [tweet_or_thread]
+    # 🆕 #53: 「具体的な馬名ゼロ=中身なし」チェックはスレッド全体で評価する。
+    # X 上でスレッドは一体表示されるため、tweet1 に注目馬(実名)があれば、ローテ/枠等の
+    # 統計補足 tweet が単独で馬名を持たなくても全体としては中身がある。これを各 tweet
+    # 個別に要求すると、注目馬リード + 統計補足 の良い構成が補足 tweet で落ちてしまう。
+    import re as _re
+    joined = "\n".join(t for t in items if isinstance(t, str))
+    thread_has_horse = bool(
+        _re.search(r'\d{1,2}番\s*[ァ-ヴー]', joined) or
+        _re.search(r'[ァ-ヴー]{3,}\s*[:：]', joined) or       # 注目馬「馬名: 根拠」
+        _re.search(r'該当(出走馬)?:\s*[ァ-ヴー]', joined) or  # 「該当出走馬: 馬名」
+        _re.search(r'\d{4}\s+[ァ-ヴー]{3,}', joined)          # 「2025 馬名」歴代
+    )
     for t in items:
         if not isinstance(t, str):
             print(f"⚠️ fact_check: 予期しない型 {type(t).__name__} → スキップ")
             return False
-        if not fact_check_tweet(t):
+        # スレッド全体に馬名があれば個別 tweet の馬名要求を解除 (補足統計 tweet を通す)
+        if not fact_check_tweet(t, require_horse=not thread_has_horse):
             return False
     return True
 
 
-def fact_check_tweet(tweet_text):
+def fact_check_tweet(tweet_text, require_horse=True):
     """ツイートの数値データをDBと照合して検証する。
     数値が含まれるツイートの場合、DBからデータを再取得して一致を確認。
     不一致があればWarningを出す。
+
+    Args:
+        require_horse: True なら「具体的な馬名/馬番ゼロ = 中身なし」を致命的扱いにする。
+            スレッド投稿で全体には注目馬があるが補足 tweet 単独には馬名が無い場合、
+            呼び出し側 (fact_check_tweet_or_thread) が False を渡して個別 tweet の
+            馬名要求を解除する (#53)。
 
     Returns:
         True: チェック通過（投稿OK）
@@ -3092,11 +3111,15 @@ def fact_check_tweet(tweet_text):
 
     # 投稿に具体的な馬名/馬番が1つも含まれない 「中身なし」検出
     # → 「{番号}番 {馬名}」or「⭐{番号}番」or「{年}年:{馬名}」のパターン
+    # 🆕 #53 (2026-06-08): 枠順抽選前の注目馬セクションは馬番を伏せ「1️⃣ ミステリーウェイ: 父…」
+    #   形式 (馬番なし) になる。従来の「数字+番+カナ」regex では検出できず誤ブロックしていた
+    #   (ユーザー「中身がない」の一因)。「カタカナ名(3字+) + コロン」= 注目馬の実名表記を追加。
     has_specific_horse = (
         re.search(r'\d{1,2}番\s*[ァ-ヴー]', tweet_text) or
         re.search(r'⭐\s*\d', tweet_text) or
         re.search(r'\d{4}\s+[ァ-ヴー]{3,}', tweet_text) or
-        re.search(r'\d{4}年:?\s*[ァ-ヴー]{3,}', tweet_text)
+        re.search(r'\d{4}年:?\s*[ァ-ヴー]{3,}', tweet_text) or
+        re.search(r'[ァ-ヴー]{3,}\s*[:：]', tweet_text)  # 注目馬「馬名: 根拠」形式
     )
     # ただし馬名不要な投稿カテゴリは許容 (universal_fallback の8テーマ + その他)
     # v9 universal_fallback で出る theme_title を網羅
@@ -3133,7 +3156,7 @@ def fact_check_tweet(tweet_text):
         re.search(r'\d+\.\d+\.\d+\.\d+', tweet_text) or           # 成績表記 N.N.N.N
         len(re.findall(r'\d+位|TOP\s*\d|第\d', tweet_text)) >= 2  # ランキング
     )
-    needs_horse = not any(kw in tweet_text for kw in no_horse_ok_keywords)
+    needs_horse = require_horse and not any(kw in tweet_text for kw in no_horse_ok_keywords)
     if needs_horse and not has_specific_horse and not has_data_substance:
         issues.append("🚫 具体的な馬名/馬番が含まれない投稿(中身なし)")
         critical = True

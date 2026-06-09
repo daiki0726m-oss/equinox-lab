@@ -37,6 +37,7 @@ from post_sections import (
     sec_top3_with_reasons,
     sec_attention_top,
     sec_handpicked_top,
+    sec_notable_horses,
 )
 
 
@@ -212,6 +213,14 @@ def _split_to_thread(header: str, sections: list, cta: str, hashtags: str,
             if _x_len(tw) <= budget or len(section_lines) <= 1:
                 break
             section_lines = section_lines[:-1]
+        # 🆕 #53: trim の結果セクションが「【見出し】」1行だけ (中身ゼロ) に
+        # なった場合、見出しだけの無価値 tweet は出さない。header tweet (i==0) は
+        # header 自体に価値があるので残すが、本文が見出しだけなら本文を空にする。
+        if len(section_lines) == 1 and section_lines[0].startswith("【"):
+            if i == 0:
+                tw = f"{tw_header}\n\n{tw_cta}{tw_tags}"
+            else:
+                continue  # 2nd以降の見出しのみ tweet は丸ごとスキップ
         tweets.append(tw)
 
     return tweets
@@ -722,6 +731,52 @@ def _clean_sire_match(line: str) -> str:
     return re.sub(r"\s*→\s*該当馬なし$", "", line)
 
 
+def _morning_sec_notable(conn, ctx, mode):
+    """今週の出走馬から「注目馬」を実名+データで抽出 (#53 中身ゼロ撲滅の主軸)。
+
+    枠順抽選 (金11時) 前は馬番を伏せて馬名のみ表示する (JRA ルール遵守)。
+    出走馬さえ確定していれば常に実名+数値根拠が出るので、朝投稿が
+    「歴代勝ち馬」「コース統計」だけの抽象的な内容になるのを防ぐ。
+    """
+    drawn = _is_post_position_drawn(
+        {"race_date": ctx.get("race_date", "")}, ctx.get("today"))
+    title, lines, n = sec_notable_horses(
+        conn, ctx["race_id"], ctx["venue"], ctx["surface"], ctx["distance"],
+        mode=mode, top=3, show_number=drawn)
+    if not (lines and n > 0):
+        return None, n
+    return _make_section(title, lines), n
+
+
+def _morning_sec_notable_combined(conn, ctx):
+    return _morning_sec_notable(conn, ctx, "combined")
+
+
+def _morning_sec_notable_blood(conn, ctx):
+    return _morning_sec_notable(conn, ctx, "blood")
+
+
+def _morning_sec_notable_jockey(conn, ctx):
+    return _morning_sec_notable(conn, ctx, "jockey")
+
+
+def _notable_lead(conn, race, mode="combined", today=None):
+    """昼/夜ビルダー共通: 今週の出走馬から注目馬セクション文字列を返す (#53)。
+
+    枠順抽選前は馬番を伏せる。出走馬さえ確定していれば実名+数値根拠が出るので、
+    どの slot も「具体的な馬名ゼロ」を構造的に防ぐ。該当馬無しなら None。
+    """
+    drawn = _is_post_position_drawn(
+        {"race_date": race.get("race_date", "")}, today)
+    title, lines, n = sec_notable_horses(
+        conn, race.get("race_id", ""), race.get("venue", ""),
+        race.get("surface", ""), race.get("distance", 0),
+        mode=mode, top=3, show_number=drawn)
+    if lines and n > 0:
+        return _make_section(title, lines)
+    return None
+
+
 def _morning_sec_historical(conn, ctx):
     _t, lines, n = sec_historical_winners(conn, ctx["race_name"], years=6)
     if lines and n > 0:
@@ -936,37 +991,38 @@ def _morning_sec_outlier(conn, ctx):
 # その 4 日のセクション集合が重複しないよう設計 (= 同一テキスト tweet を作らない)。
 # 水木金は専用 builder へのフォールバックなので独立に成立すれば良い。
 _MORNING_ROTATION = {
-    0: {  # 月: 週末ラインナップ (歴代×1人気×種牡馬)
-        "emoji": "🏇", "theme": "週末ラインナップ",
+    0: {  # 月: 週末ラインナップ (今週の注目馬TOP3 + 歴代 + 1人気)
+        "emoji": "🏇", "theme": "今週の注目馬",
         "sections": [
+            ("notable", _morning_sec_notable_combined),
             ("historical", _morning_sec_historical),
             ("pop_trust", _morning_sec_pop_trust),
-            ("sires", _morning_sec_sires_compact),
         ],
-        "cta": "→ 火朝は血統が活きるコースを配信🔔",
+        "cta": "→ 火朝は血統で狙える注目馬を配信🔔",
     },
-    1: {  # 火: 血統 (CLAUDE.md 平日 slot 表)
-        "emoji": "🩸", "theme": "血統が活きるコース",
+    1: {  # 火: 血統で狙う注目馬 (CLAUDE.md 平日 slot 表)
+        "emoji": "🩸", "theme": "血統で狙う注目馬",
         "sections": [
+            ("notable", _morning_sec_notable_blood),
             ("pattern", _morning_sec_pattern),
-            ("sires", _morning_sec_sires_detailed),
             ("age", _morning_sec_age),
         ],
-        "cta": "→ 水朝は騎手×コースの相性を配信🔔",
+        "cta": "→ 水朝は鞍上で狙える注目馬を配信🔔",
     },
-    2: {  # 水: 騎手×コース (通常は build_wed_morning_post / これは fallback)
-        "emoji": "🏇", "theme": "騎手×コースの相性",
+    2: {  # 水: 鞍上で狙う注目馬 (通常は build_wed_morning_post / これは fallback)
+        "emoji": "🏇", "theme": "鞍上で狙う注目馬",
         "sections": [
+            ("notable", _morning_sec_notable_jockey),
             ("jockey", _morning_sec_jockey),
             ("pace", _morning_sec_pace),
         ],
         "cta": "→ 木朝は枠順とコース適性を配信🔔",
     },
-    3: {  # 木: 枠順とコース適性 (通常は build_thu_morning_post / fallback)
-        "emoji": "📋", "theme": "枠順とコース適性",
+    3: {  # 木: コース適性の注目馬 + 枠順 (通常は build_thu_morning_post / fallback)
+        "emoji": "📋", "theme": "コース適性の注目馬",
         "sections": [
+            ("notable", _morning_sec_notable_combined),
             ("post_pos", _morning_sec_post_pos),
-            ("sires", _morning_sec_sires_detailed),
         ],
         "cta": "→ 金朝はAI独自パターンを配信🔔",
     },
@@ -974,7 +1030,7 @@ _MORNING_ROTATION = {
         "emoji": "🔮", "theme": "AI独自パターン分析",
         "sections": [
             ("pattern", _morning_sec_pattern),
-            ("sires", _morning_sec_sires_detailed),
+            ("notable", _morning_sec_notable_blood),
         ],
         "cta": "→ 土朝は本番直前データを配信🔔",
     },
@@ -1023,6 +1079,8 @@ def build_morning_post(race: dict, conn, today: Optional[datetime] = None) -> Tu
         "race_id": race.get("race_id", ""),
         "grade": race.get("grade"),
         "race_name": race.get("race_name", ""),
+        "race_date": race.get("race_date", ""),
+        "today": today,
     }
 
     label = _race_label(race)
@@ -1033,9 +1091,16 @@ def build_morning_post(race: dict, conn, today: Optional[datetime] = None) -> Tu
               f"📅{today.month}/{today.day}({dow_label}) {cfg['theme']}")
 
     # 🆕 強い見出し(lede)を header 直下に追加 (曜日別フック角度で「同じ投稿に見える」を解消)
-    lede = _build_morning_lede(dow, conn, race)
-    if lede:
-        header += f"\n\n{lede}"
+    # 🆕 #53 (2026-06-08): 先頭が「注目馬 (notable)」セクションの日は lede を省く。
+    # 理由: lede は種牡馬/人気のコース統計フックだが、notable セクションが
+    # 「実名 + 数値根拠」でより強い内容を持つため lede は冗長。さらに lede が
+    # 文字数を食うと _split_to_thread が notable の馬名行を末尾から削り、見出しだけ
+    # 残す事故 (火曜の【血統で狙う注目馬】が空) が起きていた。注目馬を主役にする。
+    lead_is_notable = cfg["sections"] and cfg["sections"][0][0] == "notable"
+    if not lead_is_notable:
+        lede = _build_morning_lede(dow, conn, race)
+        if lede:
+            header += f"\n\n{lede}"
 
     samples = {}
     sections = []
@@ -1207,8 +1272,13 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     grade = race.get("grade")
 
-    header = f"🌙 {day} {label}"
+    header = f"🌙 {day} {label}\n今週の注目馬と傾向"
     import re as _re
+
+    # 🆕 #53: 先頭に「今週の注目馬」(実名+データ) を必ず置く
+    nb = _notable_lead(conn, race, mode="combined")
+    if nb:
+        sections.append(nb)
 
     # Section 1: 末脚 (1行 + 含意)
     t1, lines1, n1 = sec_pace_decisive(conn, venue, surface, distance, years=6)
@@ -1258,7 +1328,7 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
 # 火夜: 前走パターン + ローテーション
 # ─────────────────────────────────────────────────────────
 def build_tue_evening_post(race: dict, conn) -> Tuple[str, dict]:
-    """火夜: レース詳細 (前走パターン + ローテ)"""
+    """火夜: レース詳細 (注目馬 + 前走パターン + ローテ)"""
     samples = {}
     sections = []
 
@@ -1267,7 +1337,12 @@ def build_tue_evening_post(race: dict, conn) -> Tuple[str, dict]:
     race_name = race.get("race_name", "")
     race_id = race.get("race_id", "")
 
-    header = f"📊 {day} {label}\n勝ち馬の傾向"
+    header = f"📊 {day} {label}\n注目馬と勝ち馬の傾向"
+
+    # 🆕 #53: 先頭に「今週の注目馬」(実名+データ) を必ず置く
+    nb = _notable_lead(conn, race, mode="combined")
+    if nb:
+        sections.append(nb)
 
     # Section 1: 前走パターン (新フォーマット = 🎯 + 該当出走馬 を含む)
     t1, lines1, n1 = sec_prev_race_pattern(conn, race_name, years=6, race_id=race_id)
@@ -1315,6 +1390,12 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
     # 騎手データの薄いコース (例: 京都芝3200m) では jockey/pace 両方が空になり、
     # 旧コードは「🏇騎手×コースの傾向」+ CTA だけの中身ゼロ投稿を出していた。
     theme = None
+
+    # 🆕 #53: 先頭に「鞍上で狙う注目馬」(実名+データ) を必ず置く
+    nb = _notable_lead(conn, race, mode="jockey")
+    if nb:
+        sections.append(nb)
+        theme = "鞍上で狙う注目馬"
 
     # Section 1: 騎手TOP
     t1, lines1, n1 = sec_jockey_recent_form(
@@ -1381,7 +1462,12 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
     grade = race.get("grade")
     race_name = race.get("race_name", "")
 
-    header = f"⚠️ {day} {label}\n人気馬の落とし穴"
+    header = f"⚠️ {day} {label}\n注目馬と人気馬の落とし穴"
+
+    # 🆕 #53: 先頭に「今週の注目馬」(実名+データ) を必ず置く
+    nb = _notable_lead(conn, race, mode="combined")
+    if nb:
+        sections.append(nb)
     import re as _re
 
     # Section 1: 1人気 + 2-3人気 で 5着以下になった事例 (具体的馬名で警鐘)
@@ -1446,6 +1532,12 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     # パターンが取れた時のみ「AI独自パターン分析」、種牡馬のみの時は「コース実績ある血統」、
     # 両方空 (薄いコース) なら歴代/コース傾向にフォールバックし、それも無ければスキップ。
     theme = None
+
+    # 🆕 #53: 先頭に「血統で狙う注目馬」(実名+データ) を必ず置く
+    nb = _notable_lead(conn, race, mode="blood")
+    if nb:
+        sections.append(nb)
+        theme = "血統で狙う注目馬"
 
     # Section 1: パターン発掘 → 馬中心に集約 (#53: 同種牡馬の異枠を別行で並べる水増しを廃止)
     sec1, n1 = _morning_sec_pattern(conn, {

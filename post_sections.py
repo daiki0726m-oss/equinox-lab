@@ -1273,6 +1273,132 @@ def sec_entry_pedigree_match(
 # ─────────────────────────────────────────────────────────
 # sec_attention_top (木昼/木夜/金昼: 注目馬 + 客観データ) — v2
 # ─────────────────────────────────────────────────────────
+def _score_entries_by_course(conn, race_id, venue, surface, distance, years=6):
+    """今週の出走馬を「父産駒コース複勝率」+「鞍上コース複勝率」でスコア化。
+
+    sec_notable_horses / sec_handpicked_top の共通スコアラ。各馬に対し当コース
+    (venue×surface×distance) の過去実績を引く。AI 予測キャッシュ不要 = 出走馬さえ
+    確定すれば平日いつでも「実名 + 数値根拠」で注目馬を出せる (#53 中身ゼロ撲滅の主軸)。
+
+    Returns: [{name, hn, sire, sire_pct, sire_n, jockey, jockey_pct, jockey_n}, ...]
+    """
+    cur = conn.cursor()
+    entries = _get_entries(conn, race_id)
+    if not entries:
+        return []
+    from_date_sire = f"{datetime.now().year - years}-01-01"
+    from_date_jockey = f"{datetime.now().year - 3}-01-01"
+    scored = []
+    for e in entries:
+        sire_raw = (e.get("sire") or "").split("(")[0].strip()
+        jockey = (e.get("jockey_name") or "").strip()
+        name = e.get("horse_name", "")
+        hn = e.get("horse_number") or 0
+        if not name:
+            continue
+        sire_pct = 0.0
+        sire_n = 0
+        if sire_raw:
+            cur.execute(
+                """
+                SELECT COUNT(*) runs, SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) top3
+                FROM races r JOIN results res ON r.race_id=res.race_id
+                JOIN horses h ON res.horse_id=h.horse_id
+                WHERE r.surface=? AND r.distance=? AND r.venue=? AND r.race_date >= ?
+                  AND h.sire = ? AND res.finish_position > 0
+                """,
+                (surface, distance, venue, from_date_sire, sire_raw),
+            )
+            row = cur.fetchone()
+            if row and row[0] and row[0] >= 4:
+                sire_n = row[0]
+                sire_pct = 100 * row[1] / row[0]
+        jockey_pct = 0.0
+        jockey_n = 0
+        if jockey:
+            cur.execute(
+                """
+                SELECT COUNT(*) runs, SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) top3
+                FROM races r JOIN results res ON r.race_id=res.race_id
+                JOIN jockeys j ON res.jockey_id=j.jockey_id
+                WHERE r.surface=? AND r.distance=? AND r.venue=? AND r.race_date >= ?
+                  AND j.jockey_name = ? AND res.finish_position > 0
+                """,
+                (surface, distance, venue, from_date_jockey, jockey),
+            )
+            row = cur.fetchone()
+            if row and row[0] and row[0] >= 5:
+                jockey_n = row[0]
+                jockey_pct = 100 * row[1] / row[0]
+        scored.append({
+            "name": name, "hn": hn,
+            "sire": sire_raw, "sire_pct": sire_pct, "sire_n": sire_n,
+            "jockey": jockey, "jockey_pct": jockey_pct, "jockey_n": jockey_n,
+        })
+    return scored
+
+
+def sec_notable_horses(
+    conn, race_id, venue, surface, distance,
+    mode: str = "combined", top: int = 3, years: int = 6,
+    show_number: bool = True,
+) -> Tuple[str, List[str], int]:
+    """今週の出走馬から「注目馬」を実名 + 数値根拠で抽出する (#53 中身ゼロ撲滅の主軸)。
+
+    ユーザー要望 (2026-06-08):「必ずデータを元に今週の出走馬から注目馬として
+    ピックアップする形にして欲しい」。従来の朝投稿は歴代勝ち馬/コース統計など
+    "レースについて語る" 抽象的な内容で、今週の出走馬を実名で挙げていなかった。
+    この関数は曜日ごとに切り口 (mode) を変えて、毎日違う注目馬を実名で出す。
+
+    mode:
+      - "combined": 父産駒+鞍上の総合コース適性 (月の主軸)
+      - "blood"   : 父産駒コース複勝率で上位 (火 = 血統テーマ)
+      - "jockey"  : 鞍上コース複勝率で上位 (水 = 騎手テーマ)
+    show_number: 枠順抽選後 True で「12番 馬名」、抽選前 False で「馬名」のみ
+                 (JRA 金11時抽選前に馬番を出すのはルール違反のため呼び出し側で制御)。
+    """
+    scored = _score_entries_by_course(conn, race_id, venue, surface, distance, years)
+    if not scored:
+        return ("【今週の注目馬】", [], 0)
+
+    # タイトルは簡潔に (コース詳細はヘッダーと各馬の行に既出 = 冗長を避け馬を多く載せる, #53)
+    if mode == "blood":
+        pool = [h for h in scored if h["sire_pct"] > 0]
+        pool.sort(key=lambda x: (-x["sire_pct"], -x["sire_n"]))
+        title = f"【血統で狙う注目馬】{venue}{surface}{distance}m"
+        def fmt(h):
+            return f"父{h['sire'][:9]} {h['sire_pct']:.0f}%({h['sire_n']}走)"
+    elif mode == "jockey":
+        pool = [h for h in scored if h["jockey_pct"] > 0]
+        pool.sort(key=lambda x: (-x["jockey_pct"], -x["jockey_n"]))
+        title = f"【鞍上で狙う注目馬】{venue}{surface}{distance}m"
+        def fmt(h):
+            extra = f" / 父{h['sire'][:7]}{h['sire_pct']:.0f}%" if h["sire_pct"] >= 30 else ""
+            return f"{h['jockey']} {h['jockey_pct']:.0f}%({h['jockey_n']}走){extra}"
+    else:  # combined
+        for h in scored:
+            h["_score"] = h["sire_pct"] * 1.0 + h["jockey_pct"] * 0.5
+        pool = [h for h in scored if h["_score"] > 0]
+        pool.sort(key=lambda x: -x["_score"])
+        title = f"【今週の注目馬TOP{top}】{venue}{surface}{distance}m"
+        def fmt(h):
+            parts = []
+            if h["sire_pct"] >= 30:
+                parts.append(f"父{h['sire'][:9]}{h['sire_pct']:.0f}%")
+            if h["jockey_pct"] >= 30:
+                parts.append(f"{h['jockey']}{h['jockey_pct']:.0f}%")
+            return " / ".join(parts) if parts else "コース実績上位"
+
+    if not pool:
+        return (title, [], 0)
+    medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+    lines = []
+    for i, h in enumerate(pool[:top]):
+        num = f"{h['hn']}番 " if (show_number and h.get("hn")) else ""
+        lines.append(f"{medals[i]} {num}{h['name']}: {fmt(h)}")
+    return (title, lines, len(pool))
+
+
 def sec_handpicked_top(
     conn,
     race_id: str,
