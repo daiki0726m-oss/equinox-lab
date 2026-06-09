@@ -189,7 +189,7 @@ def sec_pop_trust_trend(
     top3_pct = 100 * top3 / n
 
     lines = [
-        f"✅勝率 {win_pct:.0f}% ({wins}勝/{n})",
+        f"✅勝率 {win_pct:.0f}% ({n}走中{wins}勝)",
         f"✅複勝率 {top3_pct:.0f}% ({n}走中{top3}複)",
     ]
     if win_pct >= 40:
@@ -354,12 +354,12 @@ def sec_prev_race_pattern(
         lines.append(f"🎯 過去{n}年全勝ち馬が【{top_prev_name}】経由")
         lines.append(f"  → 他ローテで勝った馬: 0頭")
     elif coverage_pct >= 75:
-        lines.append(f"🎯 {top_prev_name}経由 が {top_prev_cnt}/{n}勝 ({coverage_pct:.0f}%)")
+        lines.append(f"🎯 {top_prev_name}経由 が過去{n}年で{top_prev_cnt}勝 ({coverage_pct:.0f}%)")
         other = n - top_prev_cnt
         lines.append(f"  → 他ローテ計 {other}頭のみ ({100-coverage_pct:.0f}%)")
     else:
         for prev_name, cnt in sorted_prev[:3]:
-            lines.append(f"🏆{prev_name}: {cnt}勝/{n}")
+            lines.append(f"🏆{prev_name}: 過去{n}年で{cnt}勝")
 
     # 出走馬の中で「top_prev_name 経由」の馬を特定
     if race_id:
@@ -1008,7 +1008,7 @@ def sec_rotation_pattern(
         lines.append(f"  → 他間隔の勝ち馬: 0頭")
         lines.append(f"→ {top_label} 以外のローテは不利")
     elif coverage_pct >= 75:
-        lines.append(f"🎯 {top_label} が {top_cnt}/{n}勝 ({coverage_pct:.0f}%)")
+        lines.append(f"🎯 {top_label} が過去{n}年で{top_cnt}勝 ({coverage_pct:.0f}%)")
         # その他のローテも併記
         others = [f"{l}{c}" for l, c in sorted_counts[1:]]
         if others:
@@ -1017,7 +1017,7 @@ def sec_rotation_pattern(
     else:
         # 上位3つを並列表示
         for label, cnt in sorted_counts[:3]:
-            lines.append(f"🏆{label}: {cnt}勝/{n}")
+            lines.append(f"🏆{label}: 過去{n}年で{cnt}勝")
 
     return (title, lines, n)
 

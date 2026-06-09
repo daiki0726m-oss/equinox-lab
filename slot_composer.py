@@ -1237,16 +1237,16 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
                 year_m = _re.match(r"🚨(\d{4})", outlier_line)
                 if pop_m and year_m:
                     extras.append(
-                        f"傾向: 堅め (4人気以内が{normal_cnt}/{n3}勝) ※例外{year_m.group(1)}({pop_m.group(1)}人気)"
+                        f"傾向: 堅め (4人気以内が過去{n3}年で{normal_cnt}勝) ※例外{year_m.group(1)}({pop_m.group(1)}人気)"
                     )
                 else:
-                    extras.append(f"傾向: 堅め基調 (5番人気以下勝利は{upset_cnt}/{n3}のみ)")
+                    extras.append(f"傾向: 堅め基調 (5番人気以下の勝利は過去{n3}年で{upset_cnt}回のみ)")
             else:
                 extras.append(f"傾向: 完全堅め (5番人気以下勝利ゼロ)")
         elif upset_rate >= 0.5:  # 50%以上 = 荒れ型
-            extras.append(f"傾向: 荒れ型 ({upset_cnt}/{n3}が5番人気以下勝利) → 1人気軸は危険")
+            extras.append(f"傾向: 荒れ型 (過去{n3}年で{upset_cnt}回が5番人気以下勝利) → 1人気軸は危険")
         else:
-            extras.append(f"傾向: 中庸 (5番人気以下勝利{upset_cnt}/{n3})")
+            extras.append(f"傾向: 中庸 (5番人気以下勝利 過去{n3}年で{upset_cnt}回)")
 
     # extras を別々 sections として append (Phase 2 で 1個ずつ trim 可能)
     # 優先順: 枠順 > 波乱 (枠順は当週の予測に直結、波乱は文脈情報)

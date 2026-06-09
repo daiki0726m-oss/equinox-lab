@@ -3091,6 +3091,19 @@ def fact_check_tweet(tweet_text, require_horse=True):
             issues.append("🚫 投資0円の的中報告は不正です")
             critical = True
 
+    # 🚫 #54 (2026-06-09): 「N勝/M」分数表記の禁止 (ユーザー「絶対やめて」を機械化)
+    # 「2勝/5」「3勝/8」のような勝数を分母付き分数で書く表記はユーザーが繰り返し
+    # 禁止指示。CLAUDE.md #49 で sec_rotation/prev_race を採用見送りにしたが、
+    # builder 改修で復活した (#53)。「気をつける」では再発するので commit 前に
+    # ここで物理ブロックし、生成箇所を「過去N年でX勝」等の自然表記に直す。
+    # (「複勝率75%(15/20)」のような %+サンプル数の括弧表記は対象外 = 勝/負を直接
+    #  分数化したものだけを禁止)
+    bad_fraction = re.search(r'\d+\s*勝\s*/\s*\d+', tweet_text) or \
+                   re.search(r'\d+\s*/\s*\d+\s*勝', tweet_text)
+    if bad_fraction:
+        issues.append(f"🚫 禁止された分数表記「{bad_fraction.group(0)}」(N勝/M は使わない → 「過去N年でX勝」等に)")
+        critical = True
+
     # ── v9 「中身なし」検出 — データ薄い slot は投稿ブロック ──
     # 「(○○データ収集中)」「該当なし」「(取得中)」等のプレースホルダー残存
     empty_patterns = [
