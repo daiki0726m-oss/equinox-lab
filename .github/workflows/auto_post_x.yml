@@ -40,15 +40,25 @@ on:
         default: ''
         type: string
   # ─── cron フォールバック（GAS不発時のセーフティネット） ───
+  # 🆕 #56 (2026-06-10): 平日3スロットに冗長 cron を追加。GitHub Actions cron は
+  # 遅延 (1-4.5h) だけでなく完全スキップもある (#36)。posted_slots の atomic lock が
+  # origin に push される (#41+#56 Deploy fix) ため、多重発火しても2本目は lock を見て
+  # skip するだけ = 安全な冗長化。watchdog (実測~2h間隔) より速い自己復旧層になる。
   schedule:
     # 平日朝7:30 JST (UTC 22:30前日) → 日-木のUTC22:30 = 月-金のJST7:30
     - cron: '30 22 * * 0-4'
+    # 平日朝の冗長フォールバック 8:10 JST (UTC 23:10前日)
+    - cron: '10 23 * * 0-4'
     # 土日朝7:00 JST (UTC 22:00前日) → predict
     - cron: '0 22 * * 5,6'
     # 平日昼12:30 JST (UTC 3:30)
     - cron: '30 3 * * 1-5'
+    # 平日昼の冗長フォールバック 13:10 JST (UTC 4:10)
+    - cron: '10 4 * * 1-5'
     # 平日夜20:00 JST (UTC 11:00)
     - cron: '0 11 * * 1-5'
+    # 平日夜の冗長フォールバック 20:40 JST (UTC 11:40)
+    - cron: '40 11 * * 1-5'
     # ─── 土日の結果系（GAS不発対策） ───
     # 土日 9:30 JST (UTC 0:30) → odds_flash（内部処理のみ）
     - cron: '30 0 * * 6,0'
@@ -60,6 +70,13 @@ on:
     - cron: '30 8 * * 6,0'
     # 土日 18:30 JST (UTC 9:30) → refresh_dashboard
     - cron: '30 9 * * 6,0'
+
+# 🆕 #56 (2026-06-10): 同時多重発火の直列化。冗長 cron / watchdog / 手動 dispatch が
+# 重なっても、前の run が posted_slots lock を push し終えてから次の run が checkout する
+# ことを保証する (並走すると両方が「lock なし」の DB を見て二重投稿するレースが残るため)。
+concurrency:
+  group: auto-post-x
+  cancel-in-progress: false
 
 jobs:
   # ─── 重複投稿防止: cron実行時、直近90分以内にGAS実行があればスキップ ───
@@ -88,9 +105,12 @@ jobs:
           SCHEDULE="${{ github.event.schedule }}"
           case "$SCHEDULE" in
             "30 22 * * 0-4")  EXPECTED_MODE="morning" ;;
+            "10 23 * * 0-4")  EXPECTED_MODE="morning" ;;   # 冗長フォールバック 8:10 JST
             "0 22 * * 5,6")   EXPECTED_MODE="predict" ;;
             "30 3 * * 1-5")   EXPECTED_MODE="weekday" ;;
+            "10 4 * * 1-5")   EXPECTED_MODE="weekday" ;;   # 冗長フォールバック 13:10 JST
             "0 11 * * 1-5")   EXPECTED_MODE="evening" ;;
+            "40 11 * * 1-5")  EXPECTED_MODE="evening" ;;   # 冗長フォールバック 20:40 JST
             "30 0 * * 6,0")   EXPECTED_MODE="odds_flash" ;;
             "15 1 * * 6,0")   EXPECTED_MODE="post_predict" ;;
             "30 6 * * 6,0")   EXPECTED_MODE="hit_flash" ;;
@@ -252,9 +272,12 @@ jobs:
           # 各cronエントリに対して固定のtypeを返す
           case "$SCHEDULE" in
             "30 22 * * 0-4")  TYPE="morning" ;;         # 平日朝7:30 JST
+            "10 23 * * 0-4")  TYPE="morning" ;;         # 平日朝 冗長 8:10 JST
             "0 22 * * 5,6")   TYPE="predict" ;;         # 土日朝7:00 JST
             "30 3 * * 1-5")   TYPE="weekday" ;;         # 平日昼12:30 JST
+            "10 4 * * 1-5")   TYPE="weekday" ;;         # 平日昼 冗長 13:10 JST
             "0 11 * * 1-5")   TYPE="evening" ;;         # 平日夜20:00 JST
+            "40 11 * * 1-5")  TYPE="evening" ;;         # 平日夜 冗長 20:40 JST
             "30 0 * * 6,0")   TYPE="odds_flash" ;;      # 土日 9:30 JST
             "15 1 * * 6,0")   TYPE="post_predict" ;;    # 土日10:15 JST
             "30 6 * * 6,0")   TYPE="hit_flash" ;;       # 土日15:30 JST
@@ -524,7 +547,12 @@ jobs:
           python export_predictions.py "$DATE"
 
       - name: Deploy to GitHub Pages
-        if: contains(fromJSON('["predict","odds_flash","post_predict","hit_flash","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
+        # 🆕 #56 (2026-06-10): morning/weekday/evening を if に追加。
+        # #41 は step 内の case 文に平日3スロットを足したが、step レベルの if が旧リストの
+        # ままで平日は Deploy ごと skip → posted_slots lock が origin に push されず、
+        # 後続 cron が「lock なし」DB で再投稿可能になっていた (6/9 夜に実発生、
+        # post_history の文面ハッシュ重複検出が偶然防いだだけ)。
+        if: contains(fromJSON('["predict","odds_flash","post_predict","hit_flash","refresh_dashboard","results","answer_check","weekly_review","morning","weekday","evening"]'), steps.determine.outputs.type)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
