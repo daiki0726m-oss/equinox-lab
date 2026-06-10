@@ -1,15 +1,20 @@
 {
-  "generated_at": "2026-06-10T08:48:07.438491+09:00",
+  "generated_at": "2026-06-10T11:14:35.310699+09:00",
   "today": "2026-06-10 (Wed)",
   "weekday": 2,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "ok_delayed",
+      "status": "ok_late",
       "expected": "07:30 JST",
-      "actual": "2026-06-10T08:34:01+09:00",
-      "delay_minutes": 64,
-      "event": "workflow_dispatch",
+      "deadline": "11:00 JST",
+      "recent_success": {
+        "created_at": "2026-06-10T08:50:50+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 81
+      },
+      "delay_minutes": 81,
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
@@ -42,12 +47,6 @@
       "reason": "今日 (weekday=2) は対象外",
       "workflow": "auto_post_x.yml"
     },
-    "hit_flash": {
-      "slot": "hit_flash",
-      "status": "not_today",
-      "reason": "今日 (weekday=2) は対象外",
-      "workflow": "auto_post_x.yml"
-    },
     "results": {
       "slot": "results",
       "status": "not_today",
@@ -62,11 +61,16 @@
     },
     "fetch_wednesday": {
       "slot": "fetch_wednesday",
-      "status": "ok_delayed",
+      "status": "ok_late",
       "expected": "06:00 JST",
-      "actual": "2026-06-10T07:41:12+09:00",
+      "deadline": "09:00 JST",
+      "recent_success": {
+        "created_at": "2026-06-10T07:41:12+09:00",
+        "title": "📅 fetch weekend races",
+        "event": "schedule",
+        "delay_minutes": 101
+      },
       "delay_minutes": 101,
-      "event": "schedule",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_friday": {
@@ -92,10 +96,10 @@
     "ok": 0,
     "missing": 0,
     "future": 2,
-    "not_today": 9,
+    "not_today": 8,
     "missed": 0,
-    "ok_delayed": 2,
-    "ok_late": 0
+    "ok_delayed": 0,
+    "ok_late": 2
   },
   "missed_slots": []
 }
