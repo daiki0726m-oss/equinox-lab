@@ -74,7 +74,8 @@ jobs:
               if [ "$HM" -ge "$due" ]; then
                 # 🔒 fresh な posted_slots を確認 (#61: stale checkout 対策で必ず fetch)
                 git fetch -q origin "${GITHUB_REF_NAME:-main}" --depth 1 || true
-                git checkout -q "origin/${GITHUB_REF_NAME:-main}" -- keiba.db 2>/dev/null || true
+                git checkout -q "origin/${GITHUB_REF_NAME:-main}" -- keiba.db.gz 2>/dev/null || true
+                gunzip -c keiba.db.gz > keiba.db 2>/dev/null || true
                 TODAY=$(JST +%Y-%m-%d)
                 LOCK=$(sqlite3 keiba.db \
                   "SELECT run_id FROM posted_slots WHERE post_date='$TODAY' AND slot_name='$slot' LIMIT 1" \

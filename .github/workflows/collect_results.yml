@@ -35,7 +35,8 @@ jobs:
           # fetch + reset で「真の origin/main 最新」に進めてから DB を採用する。
           git fetch origin "${GITHUB_REF_NAME:-main}" --depth 1
           git reset --hard "origin/${GITHUB_REF_NAME:-main}"
-          git checkout HEAD -- keiba.db
+          git checkout HEAD -- keiba.db.gz
+          bash scripts/db_unpack.sh
           echo "✅ keiba.db を git HEAD に復元"
 
       - name: Set up Python
@@ -110,7 +111,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # docs/data/ + keiba.db を一緒にcommit (永続データ蓄積)
-          git add docs/data/ keiba.db 2>/dev/null || true
+          bash scripts/db_pack.sh || true
+          git add docs/data/ keiba.db.gz 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "📋 変更なし"
           else

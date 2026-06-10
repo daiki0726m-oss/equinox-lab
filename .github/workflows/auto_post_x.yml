@@ -178,7 +178,8 @@ jobs:
           # fetch + reset で「真の origin/main 最新」に進めてから DB を採用する。
           git fetch origin "${GITHUB_REF_NAME:-main}" --depth 1
           git reset --hard "origin/${GITHUB_REF_NAME:-main}"
-          git checkout HEAD -- keiba.db
+          git checkout HEAD -- keiba.db.gz
+          bash scripts/db_unpack.sh
           echo "✅ keiba.db を git HEAD に復元 (stale cache を上書き)"
 
       - name: Set up Python
@@ -560,7 +561,8 @@ jobs:
           # → lock 取得 → 二重投稿 が発生する (5/23, 6/7 で実際に発生)。
           case "${{ steps.determine.outputs.type }}" in
             morning|weekday|evening|predict|post_predict|odds_flash|results)
-              git add keiba.db
+              bash scripts/db_pack.sh
+              git add keiba.db.gz
               echo "🔒 keiba.db を add (atomic lock 状態を後続 trigger に引き継ぎ)"
               ;;
           esac

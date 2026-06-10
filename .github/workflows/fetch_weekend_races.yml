@@ -36,7 +36,8 @@ jobs:
       # 🛡 git を source of truth に強制 (cache 古さの事故防止 - 2026-05-24)
       - name: Force git DB (override stale cache)
         run: |
-          git checkout HEAD -- keiba.db
+          git checkout HEAD -- keiba.db.gz
+          bash scripts/db_unpack.sh
           echo "✅ keiba.db を git HEAD に復元"
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -166,7 +167,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add keiba.db 2>/dev/null || true
+          bash scripts/db_pack.sh || true
+          git add keiba.db.gz 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "no DB changes to commit"
           else
