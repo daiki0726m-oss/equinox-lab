@@ -121,6 +121,19 @@ class NetkeibaScraper:
 
         return race_data
 
+    def scrape_race_result_archive(self, race_id):
+        """db.netkeiba.com のアーカイブページから結果を取得 (#65)。
+
+        race.netkeiba.com の result.html は過去レースで「通過」列を持たないが、
+        db.netkeiba.com/race/<id>/ には通過・上りが常設。通過順 backfill 用。
+        """
+        url = f"https://db.netkeiba.com/race/{race_id}/"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return None
+        soup = BeautifulSoup(resp.text, "lxml")
+        return {"race_id": race_id, "results": self._parse_result_table(soup, race_id)}
+
     def _parse_race_info(self, soup, race_id):
         """レース基本情報をパース"""
         info = {
@@ -289,7 +302,7 @@ class NetkeibaScraper:
                 cmap.setdefault("popularity", i)
             elif h in ("単勝", "オッズ", "単勝オッズ"):
                 cmap.setdefault("odds", i)
-            elif "上がり" in h or "上り" in h or h == "後3F":
+            elif ("上がり" in h or "上り" in h or h == "後3F") and "指数" not in h:
                 cmap.setdefault("last_3f", i)
             elif h in ("通過", "通過順", "通過順位"):
                 cmap.setdefault("passing_order", i)

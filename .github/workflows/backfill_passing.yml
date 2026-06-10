@@ -1,0 +1,55 @@
+name: 🐎 Backfill passing_order
+
+# #65: 2021-2023 の通過順がほぼ全滅 (旧 seed が通過列の無いページを参照)。
+# db.netkeiba アーカイブから一括補完する。手動 dispatch のみ。
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: '対象年 (空白区切り)'
+        required: false
+        default: '2021 2022 2023'
+
+concurrency:
+  group: backfill-passing
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack DB
+        run: bash scripts/db_unpack.sh
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml
+
+      - name: Backfill
+        run: python3 scripts/backfill_passing_order.py ${{ inputs.years }}
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          bash scripts/db_pack.sh
+          git add keiba.db.gz
+          if git diff --staged --quiet; then echo "📭 変更なし"; exit 0; fi
+          git commit -m "🐎 Backfill passing_order: ${{ inputs.years }}"
+          for i in 1 2 3 4 5; do
+            if git pull --rebase --autostash origin main && git push origin HEAD:main; then
+              echo "🚀 pushed (try $i)"; exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((i*10))
+          done
+          exit 1
