@@ -65,3 +65,26 @@ function triggerRefreshDashboard() { if (isWeekend_()) dispatchWorkflow("refresh
 
 // 初回テスト用: 実行して 204 が返ればトークン設定 OK (refresh_dashboard は無害)
 function testDispatch() { dispatchWorkflow("refresh_dashboard"); }
+
+// ═══ セットアップ: 時刻トリガー8個を一括作成 (1回だけ実行) ═══
+// UI でトリガーを8個手作業で作るのは面倒+ミスりやすいので、コードで冪等に作る。
+// (2026-06-10 実セットアップで使用済み — 再セットアップ時もこれを実行するだけ)
+function setupTriggers() {
+  // 既存のトリガーを全削除してから作り直す (冪等)
+  ScriptApp.getProjectTriggers().forEach(function(t) { ScriptApp.deleteTrigger(t); });
+  var defs = [
+    ["triggerMorning", 7],          // 平日朝 7-8時
+    ["triggerWeekday", 12],         // 平日昼 12-13時
+    ["triggerEvening", 20],         // 平日夜 20-21時
+    ["triggerPredict", 7],          // 土日 予測 7-8時
+    ["triggerOddsFlash", 9],        // 土日 オッズ 9-10時
+    ["triggerPostPredict", 10],     // 土日 予想投稿 10-11時
+    ["triggerResults", 17],         // 土日 結果 17-18時
+    ["triggerRefreshDashboard", 18] // 土日 dashboard 18-19時
+  ];
+  defs.forEach(function(d) {
+    ScriptApp.newTrigger(d[0]).timeBased().atHour(d[1]).everyDays(1)
+      .inTimezone("Asia/Tokyo").create();
+  });
+  Logger.log("✅ トリガー " + ScriptApp.getProjectTriggers().length + " 個を作成");
+}
