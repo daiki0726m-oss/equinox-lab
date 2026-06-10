@@ -1004,11 +1004,13 @@ def run_backtest(df, models, feature_cols, year=2025):
         print(f"\n  📉 マイナス収支")
 
 
-def main():
-    init_db()
-    t_start = time.time()
+def build_feature_table():
+    """Step 1-3 (データロード → プリコンパイル → 全レース特徴量計算) を実行して
+    特徴量 DataFrame を返す。
 
-    # Step 1: データロード
+    #57: main() からの切り出し。scripts/train_ability_model.py (odds 非依存の
+    能力モデル学習) からも同一の特徴量テーブルを再利用するための共通化。
+    """
     races_df, results_df, payouts_df = load_all_data()
 
     # race_date をresults_dfに追加（horse_historyビルド用）
@@ -1062,6 +1064,15 @@ def main():
 
     elapsed = time.time() - t0
     print(f"  ✅ 特徴量計算完了: {len(df)}行 ({elapsed:.1f}秒)")
+    return df
+
+
+def main():
+    init_db()
+    t_start = time.time()
+
+    # Step 1-3: 特徴量テーブル構築
+    df = build_feature_table()
 
     # Step 4: 学習
     feature_cols = get_feature_columns()
