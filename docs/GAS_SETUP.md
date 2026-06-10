@@ -39,24 +39,29 @@ Script Properties に保存**する (コードには書かない)。
    - 実行ログに「✅ dispatch 成功: refresh_dashboard」と出れば OK
    - (GitHub の Actions タブに refresh_dashboard run が現れる。無害な内部処理)
 
-## Step 3: 時刻トリガーを設定 — 2分
+## Step 3: 時刻トリガーを設定 — 1分 (コードで一括作成)
 
-左メニュー ⏰「トリガー」→ 右下「トリガーを追加」で以下の **8個** を作る。
-共通設定: イベントのソース=「時間主導型」/ タイプ=「日付ベースのタイマー」
+エディタ上部の関数選択で **`setupTriggers`** を選んで「実行」を1回押すだけ。
+既存トリガーを全削除してから 8 個を作り直す (冪等なので何度実行してもよい)。
+初回はトリガー管理スコープの許可ダイアログが出る → 許可。
 
-| # | 実行する関数 | 時刻 (毎日) | 備考 |
-|---|---|---|---|
-| 1 | `triggerMorning` | 午前7時〜8時 | 平日のみ発火 (関数内で曜日判定) |
-| 2 | `triggerWeekday` | 午後12時〜1時 | 〃 |
-| 3 | `triggerEvening` | 午後8時〜9時 | 〃 |
-| 4 | `triggerPredict` | 午前7時〜8時 | 土日のみ発火 |
-| 5 | `triggerOddsFlash` | 午前9時〜10時 | 〃 |
-| 6 | `triggerPostPredict` | 午前10時〜11時 | 〃 |
-| 7 | `triggerResults` | 午後5時〜6時 | 〃 |
-| 8 | `triggerRefreshDashboard` | 午後6時〜7時 | 〃 |
+作成されるトリガー (Asia/Tokyo):
 
-(GAS の日付タイマーは指定した1時間幅の中のどこかで発火する。slot 側の時間ガードと
+| 関数 | 時刻 (毎日) | 発火対象 |
+|---|---|---|
+| `triggerMorning` | 7-8時 | 平日のみ (関数内で曜日判定) |
+| `triggerWeekday` | 12-13時 | 〃 |
+| `triggerEvening` | 20-21時 | 〃 |
+| `triggerPredict` | 7-8時 | 土日のみ |
+| `triggerOddsFlash` | 9-10時 | 〃 |
+| `triggerPostPredict` | 10-11時 | 〃 |
+| `triggerResults` | 17-18時 | 〃 |
+| `triggerRefreshDashboard` | 18-19時 | 〃 |
+
+(GAS の日タイマーは指定1時間幅の中のどこかで発火する。slot 側の時間ガードと
 atomic lock が吸収するので、幅の中のいつ発火しても安全)
+
+※ 2026-06-10 に上記手順で実構築済み (トリガー8個稼働中)。
 
 ## 完了後の防御構成 (4層・故障モード独立)
 
