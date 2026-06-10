@@ -2,18 +2,22 @@ name: 🏇 Race Day Runner
 
 # GitHub Actions cron は fire しないことが頻発するため、
 # 1回の起動で 10時間 内部ループする long-running workflow に統一する。
-# - 8:50 JST に 1回だけ起動(cron 1本で済む = 不発リスク最小)
-# - 内部で 10分間隔 + 19:00 JST まで継続
+# - 8:30 JST に起動 → 内部で 10分間隔 + 19:00 JST まで継続
 # - 各 iteration で: collect/refresh_odds/collect_payouts/export/deploy
 #
-# refresh_live.yml と並行動作可能(冗長配置)。どちらかが動けばOK。
+# #59 (2026-06-10): レース日の結果収集は本 workflow に一本化。
+# 旧 refresh_live.yml (15分 cron、機能は本 loop の部分集合) は削除した。
+# 生存監視は refresh_watchdog.yml (15分毎に in_progress を確認、死んでいれば再起動)。
+# 夜間の最終スイープのみ collect_results.yml (20:00/22:00 JST) が担う。
 
 on:
   schedule:
-    # 土日 8:50 JST 起動 (UTC 前日23:50) — primary
-    - cron: '50 23 * * 5,6'
-    # ↓ cron 不発の保険として 9:00 / 9:30 / 10:00 JST にも backup 起動
+    # 土日 8:30 JST 起動 (UTC 前日23:30) — primary (#59 で 8:50→8:30 前倒し。
+    # 旧 refresh_live が担っていた 8時台のオッズ/ダッシュボード更新を吸収)
+    - cron: '30 23 * * 5,6'
+    # ↓ cron 不発の保険として 8:50 / 9:00 / 9:30 / 10:00 JST にも backup 起動
     #   concurrency:race-day-runner により 1本だけ実行(他は queue → 19時即終了)
+    - cron: '50 23 * * 5,6'    # 8:50 JST
     - cron: '0 0 * * 6,0'      # 9:00 JST
     - cron: '30 0 * * 6,0'     # 9:30 JST
     - cron: '0 1 * * 6,0'      # 10:00 JST

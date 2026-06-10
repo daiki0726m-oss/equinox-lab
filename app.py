@@ -1163,9 +1163,9 @@ if __name__ == "__main__":
 
     # 注: バックグラウンド結果取得は GitHub Actions 側に一本化(課題#10解消)
     # 旧: bg_thread = threading.Thread(target=_bg_result_fetcher, daemon=True); bg_thread.start()
-    # 結果取得は collect_results.yml / refresh_live.yml が担当
+    # 結果取得は race_day_runner.yml (日中loop) / collect_results.yml (夜間スイープ) が担当
     # app.py はダッシュボード閲覧専用に縮小
-    print("   ℹ️  結果自動取得は GitHub Actions(refresh_live.yml/collect_results.yml)に委譲")
+    print("   ℹ️  結果自動取得は GitHub Actions(race_day_runner.yml/collect_results.yml)に委譲")
 
     app.run(debug=True, host="0.0.0.0", port=5001)
 
