@@ -51,7 +51,7 @@ def _acquire_or_exit(slot_name):
 
     DRY_RUN (--dry-run) 時は lock を取らずに通す (本番投稿しないため)。
     SKIP_POST_LOCK=1 でも lock を完全 bypass (緊急復旧用)。
-    _POST_LOCK_DELEGATED=1 は internal 委譲時に set (例: cmd_hit_flash → cmd_results)。
+    _POST_LOCK_DELEGATED=1 は internal 委譲時に set (cmd 間委譲で子の lock を取らせない)。
     """
     if os.environ.get('SKIP_POST_LOCK') == '1':
         print(f"⚠️ SKIP_POST_LOCK=1 のため atomic lock を bypass ({slot_name})")
@@ -3215,234 +3215,8 @@ def fact_check_tweet(tweet_text, require_horse=True):
     return True
 
 
-# ─── 的中速報ポスト ───
-def cmd_hit_flash(args):
-    """的中速報ツイート — cmd_results に委譲(印別着順、金額なし)。
-
-    旧実装は「投資/回収/ROI」を含む金額入りの的中速報だったが、
-    ユーザー要件に統一: 結果系の post は金額表示なし、印別着順のみ。
-    cmd_hit_flash と cmd_results の出力フォーマットを単一化することで、
-    cron schedule が hit_flash でも results でも同じ post が出るようになる。
-
-    🔒 atomic lock (#41, 2026-06-07): 同じ日の hit_flash は何回 trigger されても 1 回のみ。
-    """
-    _acquire_or_exit('hit_flash')
-    print("ℹ️ hit_flash → results に委譲(金額なし・印別着順フォーマット)")
-    # hit_flash の lock は取得済み、cmd_results 内部の results lock は取らせない
-    os.environ['_POST_LOCK_DELEGATED'] = '1'
-    try:
-        return cmd_results(args)
-    finally:
-        os.environ.pop('_POST_LOCK_DELEGATED', None)
-
-
-def _legacy_cmd_hit_flash_DEPRECATED(args):  # noqa: N802
-    """旧 hit_flash 実装(金額/ROI 入り)。互換目的で参照可能だが呼ばない。"""
-    date_str = args.date
-    dt = datetime.strptime(date_str, "%Y%m%d")
-    weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
-    date_label = f"{dt.month}/{dt.day}({weekday})"
-    date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-
-    with get_db() as conn:
-        # 全レース対象（11Rだけでなく）
-        races = conn.execute("""
-            SELECT ra.race_id, ra.race_name, ra.venue, ra.grade, ra.race_number,
-                   pc.predictions_json, pc.all_bets_json, pc.confidence
-            FROM races ra
-            JOIN predictions_cache pc ON ra.race_id = pc.race_id
-            WHERE (ra.race_date = ? OR ra.race_date = ?)
-            ORDER BY ra.venue, ra.race_number
-        """, (date_str, date_hyphen)).fetchall()
-
-        if not races:
-            print(f"❌ {date_str} の予測データがありません")
-            return
-
-        total_invested = 0
-        total_payout = 0
-        total_bets = 0
-        total_hits = 0
-        hit_details = []  # 的中レース詳細
-        honmei_total = 0
-        honmei_win = 0
-        honmei_top3 = 0
-        races_analyzed = 0
-
-        for race in races:
-            preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
-            all_bets = json.loads(race['all_bets_json']) if race['all_bets_json'] else {}
-
-            # 着順取得
-            finishes = conn.execute("""
-                SELECT horse_number, finish_position, odds FROM results
-                WHERE race_id = ? AND finish_position > 0
-            """, (race['race_id'],)).fetchall()
-            finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
-
-            if not finish_map:
-                continue
-            races_analyzed += 1
-
-            # ◎成績
-            honmei = next((p for p in preds if p.get('mark') == '◎'), None)
-            if honmei:
-                hn = honmei['horse_number']
-                f = finish_map.get(hn, 99)
-                honmei_total += 1
-                if f == 1: honmei_win += 1
-                if f <= 3: honmei_top3 += 1
-
-            # 配当情報取得
-            payouts = conn.execute("""
-                SELECT bet_type, combination, payout_amount
-                FROM payouts WHERE race_id = ?
-            """, (race['race_id'],)).fetchall()
-            payout_map = {(p['bet_type'], p['combination']): p['payout_amount'] for p in payouts}
-
-            # 各券種の的中チェック（三連単はスキップ）
-            for bt, bt_bets in all_bets.items():
-                if bt == '三連単':
-                    continue  # 三連単は非公開
-
-                for b in bt_bets:
-                    amount = b.get('amount', 100)
-                    hns = b.get('horse_numbers', [])
-                    detail_str = b.get('detail', b.get('bet_detail', ''))
-                    total_bets += 1
-                    total_invested += amount
-
-                    is_hit = False
-                    actual_payout = 0
-
-                    if bt == '単勝' and len(hns) >= 1:
-                        if finish_map.get(hns[0], 99) == 1:
-                            is_hit = True
-                            actual_payout = payout_map.get(('単勝', str(hns[0])), 0)
-                    elif bt == '複勝' and len(hns) >= 1:
-                        if finish_map.get(hns[0], 99) <= 3:
-                            is_hit = True
-                            actual_payout = payout_map.get(('複勝', str(hns[0])), 0)
-                    elif bt == 'ワイド' and len(hns) >= 2:
-                        combo = '-'.join(str(h) for h in sorted(hns))
-                        if all(finish_map.get(h, 99) <= 3 for h in hns):
-                            is_hit = True
-                            actual_payout = payout_map.get(('ワイド', combo), 0)
-                    elif bt == '馬連' and len(hns) >= 2:
-                        combo = '-'.join(str(h) for h in sorted(hns))
-                        top2 = sorted([h for h, f in finish_map.items() if f <= 2])
-                        if sorted(hns) == top2:
-                            is_hit = True
-                            actual_payout = payout_map.get(('馬連', combo), 0)
-                    elif bt == '三連複' and len(hns) >= 3:
-                        combo = '-'.join(str(h) for h in sorted(hns[:3]))
-                        top3 = sorted([h for h, f in finish_map.items() if f <= 3])
-                        if sorted(hns[:3]) == top3:
-                            is_hit = True
-                            actual_payout = payout_map.get(('三連複', combo), 0)
-
-                    if is_hit and actual_payout > 0:
-                        payout_val = int(actual_payout * (amount / 100))
-                        total_payout += payout_val
-                        total_hits += 1
-                        hit_details.append({
-                            'venue': race['venue'],
-                            'race_number': race['race_number'],
-                            'race_name': race['race_name'],
-                            'grade': race['grade'] or '',
-                            'confidence': race['confidence'],
-                            'type': bt,
-                            'detail': detail_str,
-                            'invested': amount,
-                            'payout': payout_val,
-                            'roi': payout_val / amount * 100,
-                        })
-
-    # ── ツイート生成 ──
-    hit_rate = total_hits / total_bets * 100 if total_bets > 0 else 0
-    roi = total_payout / total_invested * 100 if total_invested > 0 else 0
-    profit = total_payout - total_invested
-    honmei_rate = honmei_top3 / honmei_total * 100 if honmei_total > 0 else 0
-
-    if hit_details:
-        # ── 的中あり → インパクト版 ──
-        # ベスト的中をハイライト
-        best = sorted(hit_details, key=lambda x: x['payout'], reverse=True)
-
-        tweet = f"🎯 AI競馬 {date_label} 的中速報\n\n"
-
-        # ベスト3的中
-        for i, h in enumerate(best[:3]):
-            emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
-            grade_str = f" [{h['grade']}]" if h['grade'] else ""
-            tweet += f"{emoji} {h['venue']}{h['race_number']}R{grade_str}\n"
-            tweet += f"  {h['type']} {h['detail']} → ¥{h['payout']:,}\n"
-
-        tweet += f"\n━━ 本日の成績 ━━\n"
-        tweet += f"◎複勝率: {honmei_rate:.0f}% ({honmei_top3}/{honmei_total})\n"
-        tweet += f"的中: {total_hits}/{total_bets}件\n"
-
-        # ROIに応じた表現
-        if roi >= 200:
-            tweet += f"💰 回収率: {roi:.0f}% 🔥🔥🔥\n"
-            tweet += f"収支: +{profit:,}円\n"
-        elif roi >= 100:
-            tweet += f"💰 回収率: {roi:.0f}% 📈\n"
-            tweet += f"収支: +{profit:,}円\n"
-        else:
-            tweet += f"回収率: {roi:.0f}%\n"
-            tweet += f"収支: {profit:,}円\n"
-
-        # CTA
-        tweet += f"\n買い目は今朝のツイートで事前公開済み📋\n"
-
-        # ハッシュタグ（ベストのレース名）
-        tweet += f"\n{data_credit(short=True)}\n"
-        tweet += "#AI競馬 #競馬予想"
-        if best[0]['grade']:
-            tag = best[0]['race_name'].replace(' ', '').replace('　', '')
-            tweet += f" #{tag}"
-
-    else:
-        # ── 的中なし ──
-        tweet = f"📊 AI競馬 {date_label} 結果\n\n"
-        tweet += f"◎複勝率: {honmei_rate:.0f}% ({honmei_top3}/{honmei_total})\n"
-        tweet += f"買い目的中: {total_hits}/{total_bets}件\n\n"
-
-        if honmei_rate >= 60:
-            tweet += "◎は安定していたものの買い目が裏目に。\n"
-            tweet += "配当研究を継続します💪\n"
-        else:
-            tweet += "展開が合わず不調の1日。\n"
-            tweet += "データを蓄積して精度向上に努めます💪\n"
-
-        tweet += f"\n次回も買い目を朝に事前公開します📋\n"
-        tweet += f"\n{data_credit(short=True)}\n"
-        tweet += "#AI競馬 #競馬予想"
-
-    # ファクトチェック
-    if not fact_check_tweet(tweet):
-        print("🚫 ファクトチェック不合格のため投稿を中止します")
-        return
-
-    print(f"\n📊 ファクトチェック詳細:")
-    print(f"  対象: {races_analyzed}レース")
-    print(f"  ◎成績: 勝率{honmei_win}/{honmei_total} 複勝率{honmei_top3}/{honmei_total}")
-    print(f"  的中: {total_hits}/{total_bets}")
-    print(f"  投資{total_invested:,}円 / 回収{total_payout:,}円 / ROI={roi:.1f}%")
-    if hit_details:
-        print(f"\n  🎯 ベスト的中:")
-        for h in sorted(hit_details, key=lambda x: x['payout'], reverse=True)[:5]:
-            print(f"    {h['venue']}{h['race_number']}R {h['type']} {h['detail']} → ¥{h['payout']:,} (ROI {h['roi']:.0f}%)")
-
-    client = None
-    threads_client = load_threads_client()
-    if not args.dry_run:
-        client = load_x_client()
-        if not client:
-            return
-
-    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client)
+# (cmd_hit_flash は #57 で削除 — 完走ガードで常にスキップされる構造的 no-op だった。
+#  結果投稿は cmd_results (17:30) に一本化)
 
 
 # ─── オッズ確定＋最終見解 ───
@@ -3672,11 +3446,6 @@ def main():
     p_rev = subparsers.add_parser("weekly_review", help="週間ROIレビューを投稿")
     p_rev.add_argument("--dry-run", action="store_true", help="投稿せずプレビュー")
 
-    # hit_flash（的中速報）
-    p_hit = subparsers.add_parser("hit_flash", help="的中速報ポスト")
-    p_hit.add_argument("--date", required=True, help="対象日 (YYYYMMDD)")
-    p_hit.add_argument("--dry-run", action="store_true", help="投稿せずプレビュー")
-
     # odds_flash（オッズ確定＋最終見解）
     p_odds = subparsers.add_parser("odds_flash", help="オッズ確定＋最終見解")
     p_odds.add_argument("--date", required=True, help="対象日 (YYYYMMDD)")
@@ -3720,8 +3489,6 @@ def main():
         cmd_answer_check(args)
     elif args.command == "weekly_review":
         cmd_weekly_review(args)
-    elif args.command == "hit_flash":
-        cmd_hit_flash(args)
     elif args.command == "odds_flash":
         cmd_odds_flash(args)
     elif args.command == "morning":

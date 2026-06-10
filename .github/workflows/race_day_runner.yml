@@ -117,7 +117,7 @@ jobs:
           }
 
           echo "🏇 Race Day Runner start. date=$DATE, end_hour=${END_HH}:00 JST"
-          echo "📋 投稿 safety net: odds_flash@9:30 / post_predict@10:15 / hit_flash@15:30 / results@17:30 / refresh_dashboard@18:30"
+          echo "📋 投稿 safety net: odds_flash@9:30 / post_predict@10:15 / results@17:30 / refresh_dashboard@18:30"
 
           ITER=0
           while true; do
@@ -168,9 +168,9 @@ jobs:
             fi
 
             # ── 投稿 safety net: 時刻が来たら post mode を dispatch ──
+            # (hit_flash@15:30 は #57 で削除 — 完走ガードで常にスキップされる no-op だった)
             trigger_post odds_flash    0930 "$JST_HM"
             trigger_post post_predict  1015 "$JST_HM"
-            trigger_post hit_flash     1530 "$JST_HM"
             trigger_post results       1730 "$JST_HM"
             trigger_post refresh_dashboard 1830 "$JST_HM"
 

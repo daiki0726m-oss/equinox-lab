@@ -72,14 +72,8 @@ slots:
     fallback_mode: "predict"
     days: [5, 6]
 
-  hit_flash:
-    description: "土日 15:30 中間結果速報"
-    cron: "30 6 * * 6,0"
-    expected_jst: "15:30"
-    time_guard_jst: [15, 17]
-    watchdog_deadline_jst: "16:30"
-    fallback_mode: "hit_flash"
-    days: [5, 6]
+  # (旧 hit_flash slot は #57 で削除 — cmd_results の完走ガードにより 15:30 時点では
+  #  メイン11R 未発走で常にスキップされる構造的 no-op だった。結果投稿は results に一本化)
 
   results:
     description: "土日 17:30 結果スレッド投稿"

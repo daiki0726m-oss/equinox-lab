@@ -3,7 +3,8 @@ name: 🐦 Auto Post to X
 run-name: "${{ github.event.inputs.mode || 'cron' }}"
 
 on:
-  # ─── GASからの直接呼び出し（メイン） ───
+  # ─── 手動・watchdog・race_day_runner からの dispatch ───
+  # (旧設計の GAS トリガーは廃止済み — run 履歴に GAS 発火実績なし #57)
   workflow_dispatch:
     inputs:
       mode:
@@ -20,7 +21,6 @@ on:
           - weekly_review
           - refresh_odds
           - refresh_dashboard
-          - hit_flash
           - odds_flash
           - post_predict
           - morning
@@ -39,7 +39,7 @@ on:
         required: false
         default: ''
         type: string
-  # ─── cron フォールバック（GAS不発時のセーフティネット） ───
+  # ─── cron スケジュール（メイントリガー。watchdog が30分毎の保険） ───
   # 🆕 #56 (2026-06-10): 平日3スロットに冗長 cron を追加。GitHub Actions cron は
   # 遅延 (1-4.5h) だけでなく完全スキップもある (#36)。posted_slots の atomic lock が
   # origin に push される (#41+#56 Deploy fix) ため、多重発火しても2本目は lock を見て
@@ -59,13 +59,13 @@ on:
     - cron: '0 11 * * 1-5'
     # 平日夜の冗長フォールバック 20:40 JST (UTC 11:40)
     - cron: '40 11 * * 1-5'
-    # ─── 土日の結果系（GAS不発対策） ───
+    # ─── 土日の結果系 ───
     # 土日 9:30 JST (UTC 0:30) → odds_flash（内部処理のみ）
     - cron: '30 0 * * 6,0'
     # 土日 10:15 JST (UTC 1:15) → post_predict（確定予想投稿）
     - cron: '15 1 * * 6,0'
-    # 土日 15:30 JST (UTC 6:30) → hit_flash
-    - cron: '30 6 * * 6,0'
+    # (旧 15:30 hit_flash cron は #57 で削除 — cmd_results の完走ガードにより
+    #  15:30 時点では 11R 未発走で常にスキップされる構造的 no-op だった)
     # 土日 17:30 JST (UTC 8:30) → results
     - cron: '30 8 * * 6,0'
     # 土日 18:30 JST (UTC 9:30) → refresh_dashboard
@@ -79,7 +79,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ─── 重複投稿防止: cron実行時、直近90分以内にGAS実行があればスキップ ───
+  # ─── 重複投稿防止: cron実行時、直近90分以内に同モードの dispatch 成功があればスキップ ───
   dedup:
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
@@ -113,7 +113,6 @@ jobs:
             "40 11 * * 1-5")  EXPECTED_MODE="evening" ;;   # 冗長フォールバック 20:40 JST
             "30 0 * * 6,0")   EXPECTED_MODE="odds_flash" ;;
             "15 1 * * 6,0")   EXPECTED_MODE="post_predict" ;;
-            "30 6 * * 6,0")   EXPECTED_MODE="hit_flash" ;;
             "30 8 * * 6,0")   EXPECTED_MODE="results" ;;
             "30 9 * * 6,0")   EXPECTED_MODE="refresh_dashboard" ;;
             *)                EXPECTED_MODE="" ;;
@@ -259,7 +258,7 @@ jobs:
           fi
           echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE, SCHEDULE=$SCHEDULE, DATE=$TODAY_YYYYMMDD"
 
-          # ── GASからの直接モード指定 ──
+          # ── dispatch からの直接モード指定 (watchdog/race_day_runner/手動) ──
           if [ "$MODE" != "" ] && [ "$MODE" != "auto" ]; then
             echo "type=$MODE" >> $GITHUB_OUTPUT
             echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
@@ -280,7 +279,6 @@ jobs:
             "40 11 * * 1-5")  TYPE="evening" ;;         # 平日夜 冗長 20:40 JST
             "30 0 * * 6,0")   TYPE="odds_flash" ;;      # 土日 9:30 JST
             "15 1 * * 6,0")   TYPE="post_predict" ;;    # 土日10:15 JST
-            "30 6 * * 6,0")   TYPE="hit_flash" ;;       # 土日15:30 JST
             "30 8 * * 6,0")   TYPE="results" ;;         # 土日17:30 JST
             "30 9 * * 6,0")   TYPE="refresh_dashboard" ;; # 土日18:30 JST
             *)
@@ -300,7 +298,6 @@ jobs:
                   06|07|08) TYPE="predict" ;;
                   09)       TYPE="odds_flash" ;;
                   10)       TYPE="post_predict" ;;
-                  14|15|16) TYPE="hit_flash" ;;
                   17)       TYPE="results" ;;
                   18|19)    TYPE="refresh_dashboard" ;;
                   20)       TYPE="answer_check" ;;
@@ -419,15 +416,6 @@ jobs:
             python predict.py predict --date "$DATE"
           fi
 
-      # 的中速報用の結果収集
-      - name: Collect results for hit_flash
-        if: steps.determine.outputs.type == 'hit_flash'
-        run: |
-          DATE="${{ steps.determine.outputs.date }}"
-          echo "📥 ${DATE} の結果を収集..."
-          python predict.py collect --date "$DATE"
-          python collect_payouts.py --date "$DATE"
-
       # 平日投稿の前に来週末のレースを事前登録
       - name: Fetch weekend races for weekday posts
         if: contains(fromJSON('["morning","evening","weekday"]'), steps.determine.outputs.type)
@@ -472,7 +460,7 @@ jobs:
       # 5/23-24 の事故 (R1-R8 欠落・出走馬未登録・予測キャッシュ空 等) の再発防止
       # races件数 / 出走馬登録率 / 予測キャッシュ件数 を検査し、不足あれば auto-fix
       - name: Pre-flight check (data integrity)
-        if: contains(fromJSON('["predict","post_predict","results","hit_flash","odds_flash","answer_check","refresh_dashboard","weekly_review"]'), steps.determine.outputs.type)
+        if: contains(fromJSON('["predict","post_predict","results","odds_flash","answer_check","refresh_dashboard","weekly_review"]'), steps.determine.outputs.type)
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "🛡 Pre-flight check: $DATE"
@@ -527,8 +515,6 @@ jobs:
             python post_x.py answer_check --date "$DATE"
           elif [ "$TYPE" = "weekly_review" ]; then
             python post_x.py weekly_review
-          elif [ "$TYPE" = "hit_flash" ]; then
-            python post_x.py hit_flash --date "$DATE"
           elif [ "$TYPE" = "morning" ]; then
             python post_x.py morning
           elif [ "$TYPE" = "evening" ]; then
@@ -540,7 +526,7 @@ jobs:
 
       # ── 静的予測サイト更新（GitHub Pages） ──
       - name: Export predictions to static JSON
-        if: contains(fromJSON('["predict","odds_flash","post_predict","hit_flash","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
+        if: contains(fromJSON('["predict","odds_flash","post_predict","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📊 予測データを静的JSONに書き出し..."
@@ -552,7 +538,7 @@ jobs:
         # ままで平日は Deploy ごと skip → posted_slots lock が origin に push されず、
         # 後続 cron が「lock なし」DB で再投稿可能になっていた (6/9 夜に実発生、
         # post_history の文面ハッシュ重複検出が偶然防いだだけ)。
-        if: contains(fromJSON('["predict","odds_flash","post_predict","hit_flash","refresh_dashboard","results","answer_check","weekly_review","morning","weekday","evening"]'), steps.determine.outputs.type)
+        if: contains(fromJSON('["predict","odds_flash","post_predict","refresh_dashboard","results","answer_check","weekly_review","morning","weekday","evening"]'), steps.determine.outputs.type)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -563,7 +549,7 @@ jobs:
           # /手動 trigger に確実に引き継ぐため。これがないと「checkout 直後の DB に lock なし」
           # → lock 取得 → 二重投稿 が発生する (5/23, 6/7 で実際に発生)。
           case "${{ steps.determine.outputs.type }}" in
-            morning|weekday|evening|predict|post_predict|odds_flash|hit_flash|results)
+            morning|weekday|evening|predict|post_predict|odds_flash|results)
               git add keiba.db
               echo "🔒 keiba.db を add (atomic lock 状態を後続 trigger に引き継ぎ)"
               ;;
