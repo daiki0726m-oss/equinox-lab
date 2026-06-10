@@ -871,6 +871,18 @@ def _build_results_from_json(date_str):
             race.setdefault('venue', venue_name)
             flat_races.append(race)
 
+    # 🆕 #61 seal消失フォールバック (DB builder と同一思想):
+    # posted_at が全消失していても posted_slots に post_predict 成功記録があれば
+    # 対象を _select_target_races で再計算する (結果投稿の全滅を防ぐ)。
+    if not posted_ids:
+        try:
+            from database import is_slot_posted
+            if is_slot_posted('post_predict', date_str):
+                print("⚠️ seal 消失だが posted_slots に記録あり → JSON 側で対象を再計算 (#61)")
+                posted_ids = {r.get('race_id') for r in _select_target_races(flat_races)}
+        except Exception:
+            pass
+
     for race in flat_races:
         if race.get('race_id') not in posted_ids:
             continue
@@ -936,6 +948,26 @@ def _build_results_from_db(date_str, date_hyphen):
                   AND pc.posted_at IS NOT NULL
                 ORDER BY ra.venue, ra.race_number
             """, (date_str, date_hyphen)).fetchall()
+
+            # 🆕 #61 seal消失フォールバック (週末リハーサルで発見):
+            # posted_at (seal) は再predict/push競合/DB復元で消えることがある (6/7 で実際に消えた)。
+            # seal が無くても posted_slots (atomic lock) に post_predict 成功の記録があれば
+            # 「その日は予想を投稿した」事実は確実なので、対象レースを _select_target_races で
+            # 再計算して結果投稿の全滅 (silent skip) を防ぐ。
+            if not races:
+                from database import is_slot_posted
+                if is_slot_posted('post_predict', date_str):
+                    print("⚠️ seal (posted_at) 消失だが posted_slots に post_predict 成功記録あり"
+                          " → 対象レースを再計算 (#61 fallback)")
+                    all_rows = [dict(r) for r in conn.execute("""
+                        SELECT ra.race_id, ra.race_name, ra.venue, ra.grade, ra.race_number,
+                               pc.predictions_json, pc.confidence, pc.should_bet
+                        FROM races ra
+                        JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                        WHERE (ra.race_date = ? OR ra.race_date = ?)
+                        ORDER BY ra.venue, ra.race_number
+                    """, (date_str, date_hyphen)).fetchall()]
+                    races = _select_target_races(all_rows)
 
             if not races:
                 return []

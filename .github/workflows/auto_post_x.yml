@@ -51,6 +51,9 @@ on:
     - cron: '10 23 * * 0-4'
     # 土日朝7:00 JST (UTC 22:00前日) → predict
     - cron: '0 22 * * 5,6'
+    # 土日朝の冗長フォールバック 7:40 JST (#61: 6/6 の predict cron 完全スキップ事故クラス対策。
+    # 平日 #56 と同パターン — posted_slots/seal は冪等なので多重発火は安全)
+    - cron: '40 22 * * 5,6'
     # 平日昼12:30 JST (UTC 3:30)
     - cron: '30 3 * * 1-5'
     # 平日昼の冗長フォールバック 13:10 JST (UTC 4:10)
@@ -107,6 +110,7 @@ jobs:
             "30 22 * * 0-4")  EXPECTED_MODE="morning" ;;
             "10 23 * * 0-4")  EXPECTED_MODE="morning" ;;   # 冗長フォールバック 8:10 JST
             "0 22 * * 5,6")   EXPECTED_MODE="predict" ;;
+            "40 22 * * 5,6")  EXPECTED_MODE="predict" ;;   # 冗長フォールバック 7:40 JST
             "30 3 * * 1-5")   EXPECTED_MODE="weekday" ;;
             "10 4 * * 1-5")   EXPECTED_MODE="weekday" ;;   # 冗長フォールバック 13:10 JST
             "0 11 * * 1-5")   EXPECTED_MODE="evening" ;;
@@ -273,6 +277,7 @@ jobs:
             "30 22 * * 0-4")  TYPE="morning" ;;         # 平日朝7:30 JST
             "10 23 * * 0-4")  TYPE="morning" ;;         # 平日朝 冗長 8:10 JST
             "0 22 * * 5,6")   TYPE="predict" ;;         # 土日朝7:00 JST
+            "40 22 * * 5,6")  TYPE="predict" ;;         # 土日朝 冗長 7:40 JST
             "30 3 * * 1-5")   TYPE="weekday" ;;         # 平日昼12:30 JST
             "10 4 * * 1-5")   TYPE="weekday" ;;         # 平日昼 冗長 13:10 JST
             "0 11 * * 1-5")   TYPE="evening" ;;         # 平日夜20:00 JST
