@@ -173,6 +173,11 @@ jobs:
       # cache restore 後に git の DB を強制採用することで、git push 直後でも整合性確保。
       - name: Force git DB (override stale cache)
         run: |
+          # 🆕 #61: checkout SHA は run 作成時点で固定されるため、ほぼ同時 dispatch の
+          # 先行 run が push した posted_slots lock が見えない (stale checkout)。
+          # fetch + reset で「真の origin/main 最新」に進めてから DB を採用する。
+          git fetch origin "${GITHUB_REF_NAME:-main}" --depth 1
+          git reset --hard "origin/${GITHUB_REF_NAME:-main}"
           git checkout HEAD -- keiba.db
           echo "✅ keiba.db を git HEAD に復元 (stale cache を上書き)"
 
