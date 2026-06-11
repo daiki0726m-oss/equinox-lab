@@ -7,7 +7,8 @@
 
 usage: python3 scripts/backfill_passing_order.py 2021 2022 2023
 """
-import sys, time, sqlite3
+import sys, os, time, sqlite3
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root を import path に
 from scraper import NetkeibaScraper
 
 def main():
