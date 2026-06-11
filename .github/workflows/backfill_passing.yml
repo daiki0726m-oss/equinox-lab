@@ -32,7 +32,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 lxml
+        run: pip install -r requirements.txt
 
       - name: Backfill
         run: python3 scripts/backfill_passing_order.py ${{ inputs.years }}
