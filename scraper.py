@@ -280,7 +280,7 @@ class NetkeibaScraper:
             h = h.strip()
             if not h:
                 continue
-            if h in ("着順", "着") or (h.endswith("着") and h != "着差"):
+            if h in ("着順", "着", "入線") or (h.endswith("着") and h != "着差"):
                 cmap.setdefault("finish_position", i)
             elif h in ("枠", "枠番"):
                 cmap.setdefault("post_position", i)
