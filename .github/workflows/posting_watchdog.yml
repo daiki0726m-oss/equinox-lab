@@ -172,3 +172,26 @@ jobs:
           echo '```json' >> $GITHUB_STEP_SUMMARY
           cat /tmp/missing.json >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "(no data)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # 🆕 #67 (2026-06-13): race_day_runner の生存監視を統合。
+      # 6/13 朝、runner の 5 crons + 専用 watchdog (refresh_watchdog) の全 cron が
+      # 同時不発 = 収集系が完全停止した (投稿系 GAS 4層は機能、収集は2層とも
+      # GitHub スケジューラ依存で相関故障)。本 workflow の cron は同朝も生存して
+      # いた実績があるため、土日 8:40-17:00 JST に runner が不在なら再起動する。
+      - name: Ensure race_day_runner alive (weekend)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DOW=$(TZ=Asia/Tokyo date +%u)   # 6=土, 7=日
+          HM=$((10#$(TZ=Asia/Tokyo date +%H) * 100 + 10#$(TZ=Asia/Tokyo date +%M)))
+          if [ "$DOW" -lt 6 ] || [ "$HM" -lt 840 ] || [ "$HM" -ge 1700 ]; then
+            echo "⏭️ 平日 or 窓外 ($HM) → runner check skip"; exit 0
+          fi
+          ALIVE=$(gh api "repos/${{ github.repository }}/actions/workflows/race_day_runner.yml/runs?status=in_progress&per_page=1" --jq '.total_count')
+          QUEUED=$(gh api "repos/${{ github.repository }}/actions/workflows/race_day_runner.yml/runs?status=queued&per_page=1" --jq '.total_count')
+          if [ "$ALIVE" = "0" ] && [ "$QUEUED" = "0" ]; then
+            echo "🚨 race_day_runner 不在 → 再起動 dispatch"
+            gh workflow run race_day_runner.yml -R "${{ github.repository }}"
+          else
+            echo "✅ runner 生存 (in_progress=$ALIVE queued=$QUEUED)"
+          fi
