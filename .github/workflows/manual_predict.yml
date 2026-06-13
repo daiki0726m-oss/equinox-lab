@@ -111,6 +111,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 🆕 #68 audit: debug 用のため意図的に docs/data/ のみ commit (DB変更は破棄される)。
+          # 本番 predict は auto_post_x.yml を使うこと。
           git add docs/data/predictions_*.json docs/data/index.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "no JSON changes to commit"
