@@ -166,13 +166,22 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add docs/data/ 2>/dev/null || true
+            # 🆕 #68: iter ごとに DB 結果も push する (旧版は loop 後の最終 step まで保留 →
+            # collect で結果が入っても origin に届かず JSON の has_results=False 状態が
+            # 終日続く事故が 6/13 に発生)。
+            bash scripts/db_pack.sh 2>/dev/null || true
+            git add keiba.db.gz 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "📭 変更なし"
             else
               git commit -m "🏇 Race day runner iter=$ITER ($(TZ=Asia/Tokyo date '+%H:%M') JST)"
               for i in 1 2 3; do
-                git pull --rebase --autostash origin "${GITHUB_REF_NAME:-main}" || true
-                if git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then echo "🚀 deployed (try $i)"; break; fi
+                # binary 衝突は --theirs (= 自分の最新 DB) を採用 (seed_historical と同パターン)
+                if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" && \
+                   git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
+                  echo "🚀 deployed (try $i)"; break
+                fi
+                git rebase --abort 2>/dev/null || true
                 echo "⚠️ push失敗→retry($i)"; sleep 5
               done
             fi
