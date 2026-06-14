@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-14T17:07:55.720138+09:00",
+  "generated_at": "2026-06-14T20:11:35.597581+09:00",
   "today": "2026-06-14 (Sun)",
   "weekday": 6,
   "slots": {
@@ -65,8 +65,16 @@
     },
     "results": {
       "slot": "results",
-      "status": "future",
+      "status": "ok_late",
       "expected": "17:30 JST",
+      "deadline": "18:30 JST",
+      "recent_success": {
+        "created_at": "2026-06-14T17:41:31+09:00",
+        "title": "results",
+        "event": "workflow_dispatch",
+        "delay_minutes": 12
+      },
+      "delay_minutes": 12,
       "workflow": "auto_post_x.yml"
     },
     "fetch_monday": {
@@ -111,11 +119,11 @@
   "summary": {
     "ok": 0,
     "missing": 0,
-    "future": 1,
+    "future": 0,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 4
+    "ok_late": 5
   },
   "missed_slots": []
 }
