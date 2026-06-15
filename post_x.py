@@ -791,36 +791,73 @@ def _race_key(r):
     return r.get('race_id') or (r.get('venue'), r.get('race_number'))
 
 
-def _select_target_races(all_races):
-    """予想投稿・結果投稿で共通の対象レース選定 (#39)。
+def _is_stakes_race(r):
+    """重賞 or 特別(OP/リステッド/名前が特別・S・杯・記念)か判定 (#71)。"""
+    import re as _re
+    g = (r.get('grade') or '').strip()
+    if g in ('G1', 'G2', 'G3', 'Ｇ１', 'Ｇ２', 'Ｇ３', 'OP', 'Ｌ', 'L', 'リステッド'):
+        return True
+    nm = r.get('race_name') or ''
+    # 「○○特別」「○○S/ステークス」「○○杯」「○○記念」= 特別競走
+    return bool(_re.search(r'特別|ステークス|ｽﾃｰｸｽ|[ァ-ヶー]S(\b|$|\()|杯|記念', nm))
 
-    対象 = 11R(全会場) + 注目レース(confidence S/A を should_bet 優先・S>A 順で最大3件)。
-    予想(cmd_predict)と結果(cmd_results)で必ず同じレース集合を扱うことを
-    構造的に保証するための単一の真実。
-    (旧バグ: cmd_predict は最大13R投稿するのに cmd_results は11Rのみ報告していて、
-     予想したレースの大半が結果報告から漏れていた)
 
-    all_races: dict のリスト。各要素は race_number, confidence, should_bet と
-               race_id または (venue, race_number) を持つこと。
-    返り値: 対象レース dict のリスト (投稿順: 11R会場順 → 注目 should_bet優先)。
+def _select_target_races(all_races, max_total=None):
+    """予想投稿・結果投稿で共通の対象レース選定 (#39 → #71 拡大)。
+
+    対象 (#71, 2026-06-15 ユーザー指示で「重賞・特別 + S/A/B」に拡大):
+      1. 全会場 11R
+      2. 重賞 (G1/G2/G3) — 全件
+      3. 特別・OP・リステッド — 全件 (_is_stakes_race)
+      4. 信頼度 S/A/B の注目レース — should_bet 優先・S>A>B 順で残り枠を埋める
+    予想(cmd_predict)と結果(cmd_results)で必ず同じレース集合を扱う単一の真実。
+
+    max_total: X 投稿数制限への安全弁。重賞・特別は must-have で必ず通すが、
+      S/A/B の追加分は合計が max_total を超えない範囲に絞る。
+      env POST_MAX_RACES で上書き可 (default 14)。0/None なら env or 14。
     """
+    import os as _os
+    if max_total is None:
+        try:
+            max_total = int(_os.environ.get('POST_MAX_RACES', '14'))
+        except ValueError:
+            max_total = 14
+
     selected = []
     seen = set()
-    for r in all_races:
-        if r.get('race_number') == 11 and _race_key(r) not in seen:
+
+    def _add(r):
+        k = _race_key(r)
+        if k not in seen:
             selected.append(r)
-            seen.add(_race_key(r))
+            seen.add(k)
+
+    # 1. 全会場 11R (メインレース)
+    for r in all_races:
+        if r.get('race_number') == 11:
+            _add(r)
+    # 2-3. 重賞・特別・OP — must-have (全件、cap 対象外)
+    for r in all_races:
+        if _is_stakes_race(r):
+            _add(r)
+    # 4. S/A/B 注目 — should_bet 優先・S>A>B、残り枠 (max_total まで) を埋める
+    #    ただし未勝利・新馬は除外 (#28: 未経験馬は ML が学習できず信頼度がノイズ。
+    #    重賞・特別の未勝利は存在しないので上の must-have には影響しない)。
+    _noise_class = ('未勝利', '新馬')
     candidates = [
         r for r in all_races
-        if _race_key(r) not in seen and r.get('confidence') in ('S', 'A')
+        if _race_key(r) not in seen and r.get('confidence') in ('S', 'A', 'B')
+        and (r.get('grade') or '') not in _noise_class
     ]
     candidates.sort(key=lambda r: (
         0 if r.get('should_bet') in (1, True) else 1,
-        {'S': 0, 'A': 1}.get(r.get('confidence'), 2),
+        {'S': 0, 'A': 1, 'B': 2}.get(r.get('confidence'), 3),
     ))
-    for r in candidates[:3]:
-        selected.append(r)
-        seen.add(_race_key(r))
+    for r in candidates:
+        if len(selected) >= max_total:
+            print(f"   ⚠️ 投稿上限 {max_total} 到達 → S/A/B 注目を {len(candidates) - candidates.index(r)} 件ドロップ (POST_MAX_RACES で調整可)")
+            break
+        _add(r)
     return selected
 
 
