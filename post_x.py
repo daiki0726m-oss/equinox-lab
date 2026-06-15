@@ -944,6 +944,92 @@ def _build_results_from_json(date_str):
     return race_data
 
 
+def _build_results_jsonmarks_dbfinish(date_str):
+    """#70 根本対策: 結果投稿の堅牢ビルダー。
+
+    設計: keiba.db.gz の単一バイナリ clobber で predictions_cache が消えても動くよう、
+      - **印 (◎○▲) は per-day JSON ファイルから** (git-tracked text、clobber されない)
+      - **着順は results テーブルから** (workflow の collect step が直前に新規収集)
+    両者を race_id + horse_number で結合する。predictions_cache / posted_at(seal) に
+    一切依存しない。6/14 宝塚の結果未投稿 (予測キャッシュ clobber) の再発を構造的に防ぐ。
+    """
+    import requests as req
+    local_path = os.path.join("docs", "data", f"predictions_{date_str}.json")
+    data = None
+    if os.path.exists(local_path):
+        try:
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"  ⚠️ ローカル JSON 読込失敗: {e}")
+    if data is None:
+        url = f"https://raw.githubusercontent.com/daiki0726m-oss/equinox-lab/main/docs/data/predictions_{date_str}.json"
+        try:
+            r = req.get(url, timeout=15)
+            data = r.json() if r.status_code == 200 else None
+        except Exception:
+            data = None
+    if not data:
+        return []
+
+    venues = data.get('venues', {}) if isinstance(data, dict) else {}
+    flat_races = []
+    for venue_name, races in venues.items():
+        for race in races:
+            race = dict(race)
+            race.setdefault('venue', venue_name)
+            flat_races.append(race)
+    if not flat_races:
+        return []
+
+    # 対象レース = 予想投稿したのと同じ選定 (11R 全会場 + S/A)。seal 非依存。
+    target = _select_target_races(flat_races)
+    target_ids = {r.get('race_id') for r in target}
+
+    race_data = []
+    mark_order = ['◎', '○', '▲', '△', '×', '注']
+    with get_db() as conn:
+        for race in flat_races:
+            if race.get('race_id') not in target_ids:
+                continue
+            rid = race.get('race_id')
+            # 着順は results テーブル (新規収集済み) が source of truth
+            finish_map = {
+                row[0]: row[1] for row in conn.execute(
+                    "SELECT horse_number, finish_position FROM results "
+                    "WHERE race_id=? AND finish_position>0", (rid,)
+                ).fetchall()
+            }
+            if not finish_map:
+                continue  # まだ結果が収集されていない → スキップ (次 run で再試行)
+            # 全頭確定 + 1-3着が揃ってから投稿 (中途半端な "?着" を出さない)
+            top3 = set(f for f in finish_map.values() if 1 <= f <= 3)
+            if len(top3) < 3:
+                continue
+
+            marked = []
+            horses = race.get('horses', [])
+            for m in mark_order:
+                h = next((x for x in horses if x.get('mark') == m), None)
+                if not h:
+                    continue
+                marked.append({
+                    'mark': m,
+                    'horse_number': h.get('horse_number', 0),
+                    'horse_name': h.get('horse_name', ''),
+                    'finish': finish_map.get(h.get('horse_number', 0)),
+                })
+            if marked:
+                race_data.append({
+                    'venue': race.get('venue', ''),
+                    'race_number': race.get('race_number', 11),
+                    'race_name': race.get('race_name', ''),
+                    'grade': race.get('grade') or '',
+                    'marks': marked,
+                })
+    return race_data
+
+
 def _build_results_from_db(date_str, date_hyphen):
     """DB (predictions_cache + results) から 11R の race_data を組み立てる。
     JSON が無い場合のフォールバック。
@@ -1054,8 +1140,13 @@ def cmd_results(args):
     # JSON の finish は「結果確定後の再 export」が漏れると欠落し、印馬が "除外" と
     # 誤表示される (実際 11R 以外は finish=None で全滅していた)。着順が確実な DB を
     # 最優先にし、DB が空のとき (cache 事故等) のみ JSON にフォールバックする。
-    race_data = _build_results_from_db(date_str, date_hyphen)
-    src = "DB" if race_data else None
+    # #70 根本対策: JSON印 × DB着順 の堅牢ビルダーを最優先 (predictions_cache clobber 耐性)。
+    race_data = _build_results_jsonmarks_dbfinish(date_str)
+    src = "JSON印×DB着順" if race_data else None
+    # フォールバック: 旧 DB builder (predictions_cache 健在時) → 旧 JSON builder
+    if not race_data:
+        race_data = _build_results_from_db(date_str, date_hyphen)
+        src = "DB" if race_data else None
     if not race_data:
         race_data = _build_results_from_json(date_str)
         src = "JSON" if race_data else None
