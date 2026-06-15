@@ -23,6 +23,56 @@ from analyzers.odds_value import OddsValueAnalyzer
 # APIオッズキャッシュ（レースIDごとに1回だけAPI呼び出しするため）
 _api_odds_cache = {}
 
+# ── 能力モデル (オッズ非依存) ローダー (#72) ──
+# 2020-2025 backtest で「能力◎」単勝ROI 112% (現◎ 92% / +20pt, 全6年100%超) を実証。
+# 各馬の「市場を見ない実力評価」を attach し、◎ の2軸化 + ★妙味 + ⚠️危険な人気 に使う。
+_ABILITY_MODEL = None  # (model, calibrator, feature_cols) or False(=ロード失敗)
+
+
+def _load_ability_model():
+    """能力モデルを一度だけロード (失敗時は False を返し以後 skip)。"""
+    global _ABILITY_MODEL
+    if _ABILITY_MODEL is not None:
+        return _ABILITY_MODEL
+    try:
+        import pickle
+        from fast_train import get_feature_columns
+        mdir = os.path.join(os.path.dirname(__file__), "models")
+        with open(os.path.join(mdir, "model_ability_win.pkl"), "rb") as f:
+            model = pickle.load(f)
+        with open(os.path.join(mdir, "calibrator_ability_win.pkl"), "rb") as f:
+            calib = pickle.load(f)
+        cols = [c for c in get_feature_columns() if c not in ("odds_log", "popularity_norm")]
+        _ABILITY_MODEL = (model, calib, cols)
+    except Exception as e:
+        print(f"  ⚠️ 能力モデル未ロード ({e}) → ability_score=0 で継続")
+        _ABILITY_MODEL = False
+    return _ABILITY_MODEL
+
+
+def _attach_ability_score(pred_df):
+    """pred_df に _ability_score 列 (レース内正規化済み勝率) を付与。
+    特徴量列が揃っていれば計算、失敗時は 0。純加算なので既存挙動は不変。"""
+    am = _load_ability_model()
+    if not am:
+        pred_df["_ability_score"] = 0.0
+        return pred_df
+    model, calib, cols = am
+    try:
+        missing = [c for c in cols if c not in pred_df.columns]
+        if missing:
+            pred_df["_ability_score"] = 0.0
+            return pred_df
+        X = pred_df[cols].fillna(0)
+        raw = model.predict(X, num_iteration=getattr(model, "best_iteration", None))
+        p = calib.predict(raw)
+        s = p.sum()
+        pred_df["_ability_score"] = (p / s) if s > 0 else p
+    except Exception as e:
+        print(f"  ⚠️ 能力スコア計算失敗 ({e}) → 0")
+        pred_df["_ability_score"] = 0.0
+    return pred_df
+
 
 def cmd_collect(args):
     """データ収集コマンド"""
@@ -359,6 +409,9 @@ def cmd_predict(args):
             _skipped_races.append((race_id, '予測データ空'))
             continue
 
+        # 能力スコア (オッズ非依存) を付与 (#72、純加算で既存挙動に影響なし)
+        pred_df = _attach_ability_score(pred_df)
+
         # ── 追い切り (workout) 補正 — ML 統合できない過去データ不足を補う ──
         # workouts は 2026年シーズン分のみ (513件) で、ML 学習データに統合できない。
         # 代替として予測後に grade A/B/C で pred_win/pred_top3 を後処理スケール。
@@ -565,6 +618,8 @@ def cmd_predict(args):
                 "cat_weather": round(row.get("horse_wet_top3_rate", 0) * 100, 1),
                 "win_rate": round(row.get("win_rate_10r", 0) * 100, 1),
                 "top3_rate": round(row.get("top3_rate_10r", 0) * 100, 1),
+                # 能力モデル (オッズ非依存) 勝率 — 記事の AI独自評価 / ◎2軸化に使用 (#72)
+                "ability_score": round(float(row.get("_ability_score", 0) or 0), 4),
             })
 
         # ── 穴予兆スコア (anasanee_score) と波乱度 (race_volatility) を計算 ──
@@ -694,12 +749,35 @@ def cmd_predict(args):
         for p in sorted_preds:
             p['mark'] = ''
 
-        # ◎ = ML 1位 (Contrarian 補正後)
-        if sorted_preds:
-            sorted_preds[0]['mark'] = '◎'
+        # ── ◎ 選定 (#72 2軸化、USE_ABILITY_CORE で切替) ──
+        # 既定 (OFF): 従来通り ML 1位を ◎。
+        # ON: 能力モデル (オッズ非依存) 1位を ◎。2020-2025 backtest で単勝ROI
+        #     112% (ML◎ 92% / +20pt、全6年100%超、単日支配クリア) を実証。
+        #     ※full bet (三連複◎軸) ROI の検証 + walk-forward 確認後に既定ONへ。
+        # 併せて妙味/危険フラグを「データ」として付与 (印は変えず、記事/UI 用、bet 非影響)。
+        ml_top = sorted_preds[0] if sorted_preds else None
+        abil_top = max(sorted_preds, key=lambda p: p.get('ability_score', 0) or 0) if sorted_preds else None
+        mkt_fav = min(sorted_preds, key=lambda p: (p.get('odds_win') or 1e9)) if sorted_preds else None
 
-        # 相手候補プール (ML 2-7位 / 6頭)
-        relay_pool = sorted_preds[1:7]
+        # 妙味/危険フラグ (additive data) — 能力 vs 市場の乖離
+        for p in sorted_preds:
+            a = p.get('ability_score', 0) or 0        # 能力勝率 (レース内正規化)
+            od = p.get('odds_win') or 0
+            m = (1.0 / od) if od > 0 else 0           # 市場の暗黙勝率 (控除前)
+            p['_ability_vs_market'] = round(a / m, 2) if m > 0 else 0
+        if abil_top and mkt_fav:
+            # 妙味馬 = 能力1位かつ市場本命でない (能力≠市場、backtest 135% 層)
+            abil_top['is_value_pick'] = (abil_top is not mkt_fav)
+            # 危険な人気馬 = 市場本命だが能力順位が低い (A/M < 0.6 目安)
+            mkt_fav['is_danger_fav'] = ((mkt_fav.get('_ability_vs_market') or 0) < 0.6)
+
+        use_ability_core = os.environ.get('USE_ABILITY_CORE') == '1'
+        core = abil_top if (use_ability_core and abil_top) else ml_top
+        if core:
+            core['mark'] = '◎'
+
+        # 相手候補プール (◎ を除く ML 上位 6頭)
+        relay_pool = [p for p in sorted_preds if p is not core][:6]
 
         def _relay_score(p):
             """相手選定スコア: ML 評価 + データ強度 + 人気外ボーナス + 穴予兆。"""
