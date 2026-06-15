@@ -1,0 +1,134 @@
+{
+  "trio_axis": {
+    "0-15%": {
+      "races": 4635,
+      "hit_rate": 22.6,
+      "roi": 81.7,
+      "avg_payout": 3612,
+      "roi_excl_best_day": 81.1
+    },
+    "15-20%": {
+      "races": 5919,
+      "hit_rate": 35.0,
+      "roi": 87.2,
+      "avg_payout": 2491,
+      "roi_excl_best_day": 86.9
+    },
+    "20-25%": {
+      "races": 5160,
+      "hit_rate": 43.7,
+      "roi": 82.8,
+      "avg_payout": 1896,
+      "roi_excl_best_day": 82.4
+    },
+    "25-30%": {
+      "races": 2467,
+      "hit_rate": 46.8,
+      "roi": 78.6,
+      "avg_payout": 1678,
+      "roi_excl_best_day": 78.2
+    },
+    "30-40%": {
+      "races": 2196,
+      "hit_rate": 62.1,
+      "roi": 79.1,
+      "avg_payout": 1275,
+      "roi_excl_best_day": 78.4
+    },
+    "40-101%": {
+      "races": 286,
+      "hit_rate": 86.4,
+      "roi": 83.7,
+      "avg_payout": 969,
+      "roi_excl_best_day": 81.4
+    }
+  },
+  "trio_box": {
+    "0-15%": {
+      "races": 4635,
+      "hit_rate": 33.3,
+      "roi": 77.8,
+      "avg_payout": 4667,
+      "roi_excl_best_day": 77.4
+    },
+    "15-20%": {
+      "races": 5919,
+      "hit_rate": 47.3,
+      "roi": 78.3,
+      "avg_payout": 3311,
+      "roi_excl_best_day": 77.8
+    },
+    "20-25%": {
+      "races": 5160,
+      "hit_rate": 55.2,
+      "roi": 76.2,
+      "avg_payout": 2761,
+      "roi_excl_best_day": 75.4
+    },
+    "25-30%": {
+      "races": 2467,
+      "hit_rate": 56.7,
+      "roi": 79.0,
+      "avg_payout": 2787,
+      "roi_excl_best_day": 77.9
+    },
+    "30-40%": {
+      "races": 2196,
+      "hit_rate": 71.4,
+      "roi": 69.7,
+      "avg_payout": 1952,
+      "roi_excl_best_day": 69.1
+    },
+    "40-101%": {
+      "races": 286,
+      "hit_rate": 92.7,
+      "roi": 67.2,
+      "avg_payout": 1451,
+      "roi_excl_best_day": 61.3
+    }
+  },
+  "wide_axis": {
+    "0-15%": {
+      "races": 4635,
+      "hit_rate": 70.7,
+      "roi": 87.3,
+      "avg_payout": 617,
+      "roi_excl_best_day": 87.1
+    },
+    "15-20%": {
+      "races": 5919,
+      "hit_rate": 96.4,
+      "roi": 89.9,
+      "avg_payout": 466,
+      "roi_excl_best_day": 89.7
+    },
+    "20-25%": {
+      "races": 5160,
+      "hit_rate": 111.9,
+      "roi": 84.1,
+      "avg_payout": 376,
+      "roi_excl_best_day": 83.9
+    },
+    "25-30%": {
+      "races": 2467,
+      "hit_rate": 121.4,
+      "roi": 80.9,
+      "avg_payout": 333,
+      "roi_excl_best_day": 80.7
+    },
+    "30-40%": {
+      "races": 2196,
+      "hit_rate": 145.0,
+      "roi": 81.0,
+      "avg_payout": 279,
+      "roi_excl_best_day": 80.8
+    },
+    "40-101%": {
+      "races": 286,
+      "hit_rate": 179.4,
+      "roi": 82.7,
+      "avg_payout": 231,
+      "roi_excl_best_day": 81.1
+    }
+  }
+}
