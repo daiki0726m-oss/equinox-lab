@@ -29,6 +29,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: keiba-db-accum          # #70 part1: 蓄積系writerを直列化しgz clobberを防ぐ
+  cancel-in-progress: false
+
 jobs:
   backfill:
     runs-on: ubuntu-latest

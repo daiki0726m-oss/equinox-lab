@@ -11,7 +11,7 @@ on:
         default: '2021 2022 2023'
 
 concurrency:
-  group: backfill-passing
+  group: keiba-db-accum          # #70 part1: 蓄積系writer直列化
   cancel-in-progress: false
 
 jobs:
