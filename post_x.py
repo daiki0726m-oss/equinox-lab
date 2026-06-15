@@ -39,7 +39,7 @@ def now_jst():
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from database import init_db, get_db, acquire_post_slot, release_post_slot
+from database import init_db, get_db, acquire_post_slot, release_post_slot, clear_post_slot
 
 
 # ─── 投稿スロット排他制御 (#41) ────────────────────────────────────
@@ -1061,13 +1061,19 @@ def cmd_results(args):
         src = "JSON" if race_data else None
 
     if not race_data:
-        print(f"❌ {date_str} の予測データがありません(JSON/DB共に)")
+        # 🆕 #70: データ無しで return する前に lock を必ず解放する。
+        # 旧版は _acquire_or_exit で取った lock を解放せず return → success=1 のまま残り、
+        # 後でデータが揃っても「投稿済み」扱いで永久にスキップ (6/14 結果未投稿の主因)。
+        # データはまだ無い (収集が間に合っていない) だけなので、後続 run が再試行できるよう release。
+        clear_post_slot('results', post_date=date_str)
+        print(f"❌ {date_str} の予測データがありません(JSON/DB共に) → lock 削除して再試行可能に (#70)")
         return
     print(f"📥 結果ソース: {src}")
 
     # 結果未確定 (finish_map 空) のレースは _build_*_ 内ですでに除外済み
     if not race_data:
-        print(f"❌ {date_str} の結果がまだ出ていません")
+        clear_post_slot('results', post_date=date_str)
+        print(f"❌ {date_str} の結果がまだ出ていません → lock 削除 (#70)")
         return
 
     # 🛡 完走待ちガード (#46: posted_at ベース):

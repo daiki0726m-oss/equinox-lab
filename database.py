@@ -260,6 +260,25 @@ def release_post_slot(slot_name, note='post failed', post_date=None):
         """, (note[:200], post_date, slot_name))
 
 
+def clear_post_slot(slot_name, post_date=None):
+    """lock を完全に削除して再取得可能にする (#70)。
+
+    release_post_slot は success=0 マークのみで行を残すため、UNIQUE 制約で
+    再 acquire できない。「まだデータが無いだけ」で投稿していないケースは、
+    本関数で行ごと削除し、後続 run が改めて lock を取って再試行できるようにする。
+    投稿に成功していないことが確実な場合のみ呼ぶこと (二重投稿防止のため)。
+    """
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    if post_date is None:
+        post_date = datetime.now(JST).strftime('%Y-%m-%d')
+    elif len(post_date) == 8:
+        post_date = f"{post_date[:4]}-{post_date[4:6]}-{post_date[6:8]}"
+    with get_db() as conn:
+        conn.execute("DELETE FROM posted_slots WHERE post_date=? AND slot_name=?",
+                     (post_date, slot_name))
+
+
 def is_slot_posted(slot_name, post_date=None):
     """既に投稿済みかチェック (lock 取得せず参照だけ)。watchdog/health check 用。"""
     from datetime import datetime, timezone, timedelta
