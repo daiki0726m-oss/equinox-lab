@@ -585,9 +585,24 @@ def cmd_predict(args):
 
     🔒 atomic lock (#41, 2026-06-07): 同じ日の post_predict は何回 trigger されても 1 回のみ。
     """
-    _acquire_or_exit('post_predict')
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
+
+    # ─── 🛡 ハード上限ガード (#69, 2026-06-15): 午後の予想再投稿を完全遮断 ───
+    # 6/14 宝塚記念で 15:05 JST (発走35分前) に予想5連スレッドが再投稿される事故。
+    # 真因: #45 で「11時以降全スキップ」を撤廃し「発走済みレースを個別除外」に変更
+    #   → 未発走の午後レース (宝塚 15:40) は除外されず、午後でも投稿されてしまった。
+    # atomic lock も #68 の gz-push 遅延で後続 run に見えず素通り。
+    # → post_predict は「朝のコンテンツ投下」専用。当日 12:00 JST を過ぎたら
+    #   ロック状態に依存せず即 exit。SKIP_TIME_GUARD=1 で緊急 override 可。
+    if (os.environ.get('SKIP_TIME_GUARD') != '1'
+            and now_jst().strftime("%Y%m%d") == date_str
+            and now_jst().hour >= 12):
+        print(f"⏭️ [post_predict] {now_jst().strftime('%H:%M JST')} は上限 12:00 を超過 "
+              f"→ 午後の予想再投稿を遮断 (#69)。override: SKIP_TIME_GUARD=1")
+        return
+
+    _acquire_or_exit('post_predict')
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
