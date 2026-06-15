@@ -69,15 +69,19 @@ def build_scored(year_from, year_to):
     abil_feat = [c for c in feat if c not in MARKET_COLS]
     with open(MODEL_DIR / "model_rank.pkl", "rb") as f:
         model_rank = pickle.load(f)
+    with open(MODEL_DIR / "model_top3.pkl", "rb") as f:
+        model_top3 = pickle.load(f)
     with open(MODEL_DIR / "model_ability_win.pkl", "rb") as f:
         model_abil = pickle.load(f)
     with open(MODEL_DIR / "calibrator_ability_win.pkl", "rb") as f:
         calib_abil = pickle.load(f)
     t = df[df["finish_position"] > 0].copy()
     t["rank_score"] = model_rank.predict(t[feat].fillna(0))
+    t["pred_top3"] = model_top3.predict(t[feat].fillna(0))  # 複勝率モデル (3着内確率)
     raw = model_abil.predict(t[abil_feat].fillna(0), num_iteration=getattr(model_abil, "best_iteration", None))
     t["abil"] = calib_abil.predict(raw)
-    keep = ["race_id", "race_date", "horse_number", "finish_position", "odds", "rank_score", "abil"]
+    keep = ["race_id", "race_date", "horse_number", "finish_position", "odds",
+            "rank_score", "pred_top3", "abil"]
     return t[keep].copy()
 
 
@@ -154,7 +158,8 @@ def main():
     print(f"6頭の印が「実際の3着内3頭」を捕捉する力 ({args.year_from}-{args.year_to})")
     print("=" * 78)
     out = {}
-    out["ml_rank"] = report("ML rank(現行)", coverage(scored, "rank_score"))
+    out["ml_rank"] = report("ML rank/勝(現行)", coverage(scored, "rank_score"))
+    out["pred_top3"] = report("複勝率モデル", coverage(scored, "pred_top3"))
     out["market_odds"] = report("市場(オッズ)", coverage(scored, "mkt"))
     out["ability"] = report("能力モデル", coverage(scored, "abil"))
     out["blend_76_24"] = report("ブレンド76:24", coverage(scored, "blend"))
