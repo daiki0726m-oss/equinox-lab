@@ -1569,6 +1569,15 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
             if m:
                 horses_in_sec1.add(m.group(1).strip())
 
+    # 🆕 #78: 母父まで掘る「血統の深層」(金=枠順確定後、馬番も出せる)
+    ptd, pdl, pdn = sec_pedigree_deep(
+        conn, race_id, venue, surface, distance, top=3, years=6,
+        show_number=_is_post_position_drawn(race))
+    if pdn > 0 and len(pdl) >= 2:
+        sections.append(_make_section(ptd, pdl))
+        if not theme:
+            theme = "血統の深層(父+母父)"
+
     # Section 2: 種牡馬 TOP (補助) — Section 1 で既出の馬は除外 (重複防止)
     t2, lines2, n2 = sec_sire_course_cross(
         conn, venue, surface, distance, top=3, years=6, race_id=race_id)
@@ -1712,6 +1721,16 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
             cleaned[:4]
         ))
         theme = "出走馬×コース適性"
+
+    # 🆕 #78: 母父まで掘る「血統の深層」(木=出走確定日、血統が主役)。
+    # 先頭ツイートはヘッダで埋まるため、2番目以降の独立ツイートに置く (trim回避)。
+    ptd, pdl, pdn = sec_pedigree_deep(
+        conn, race_id, venue, surface, distance, top=3, years=6,
+        show_number=_is_post_position_drawn(race))
+    if pdn > 0 and len(pdl) >= 2:
+        sections.append(_make_section(ptd, pdl))
+        if not theme:
+            theme = "血統の深層(父+母父)"
 
     # Section 2: 補助 — 種牡馬TOP の該当馬 (該当馬なし非表示)
     t2, lines2, n2 = sec_sire_course_cross(

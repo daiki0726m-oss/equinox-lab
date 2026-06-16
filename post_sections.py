@@ -1394,28 +1394,29 @@ def sec_pedigree_deep(
     def _tag(r):  # 馬番は枠順抽選後のみ (#27/#78)
         return f"{r['hn']}番{r['name']}" if show_number else r['name']
 
-    # X 280字に収めるためコンパクトに (top2頭 + 母父隠し味)。父コース or 母父適性を1行で。
-    title = f"【{venue}{surface}{distance}m 血統の深層・父+母父】"
+    # 父+母父の2行 (= ユーザーが求めた「母父まで深く」の核) はどのtweet位置でも残す。
+    # 💡隠し味は3行目で、最終tweet(ハッシュタグ込)位置でのみ稀に trim され得る (許容)。
+    # venue/surface は post header に既出なので title からは省いて短縮。
+    title = "【血統深層・父+母父まで】"
     lines = []
     for r in shown[:min(top, 2)]:
         seg = []
         if r["sc"] is not None:
-            seg.append(f"父{r['sire']}コース{r['sc']:.0f}%")
+            seg.append(f"父{r['sire']}当コース{r['sc']:.0f}%")
         if r["dw"] is not None:
             seg.append(f"母父{r['damsire']}道悪{r['dw']:.0f}%")
         elif r["ds"] is not None:
-            seg.append(f"母父{r['damsire']}長め{r['ds']:.0f}%")
+            seg.append(f"母父{r['damsire']}長距離{r['ds']:.0f}%")
         if seg:
-            lines.append(f"🩸{_tag(r)}: " + " / ".join(seg))
+            lines.append(f"🩸{_tag(r)}: " + "・".join(seg))
 
     # 母父の隠し味 = 表示した2頭の外から、母父の道悪/スタミナが際立つ「隠れた1頭」。
-    # 父コースでは目立たないが母父で買える妙味馬を新たに提示する。
     pool_hidden = [r for r in shown[2:] if max(r["dw"] or 0, r["ds"] or 0) >= 40]
     if pool_hidden:
         best_dam = max(pool_hidden, key=lambda r: max(r["dw"] or 0, r["ds"] or 0))
         kind = "道悪" if (best_dam["dw"] or 0) >= (best_dam["ds"] or 0) else "長距離"
         val = best_dam["dw"] if kind == "道悪" else best_dam["ds"]
-        lines.append(f"💡隠し味: {_tag(best_dam)}は母父{best_dam['damsire']}が{kind}複勝{val:.0f}% — 人気薄なら妙味")
+        lines.append(f"💡母父の隠し味: {_tag(best_dam)}=母父{best_dam['damsire']}{kind}{val:.0f}%")
     return (title, lines, len(shown))
 
 
