@@ -1304,6 +1304,121 @@ def sec_entry_pedigree_match(
     return (title, lines, len(matches))
 
 
+def _wet_cond_sql():
+    """道悪 (稍重/重/不良) の track_condition 候補。略記 '稍'/'不' も含む。"""
+    return "('稍重','重','不良','稍','不')"
+
+
+def _lineage_top3(cur, col, name, from_date, *, surface=None, venue=None,
+                  distance=None, wet=False, min_dist=None):
+    """種牡馬(col='h.sire') or 母父(col='h.damsire') の top3率を引く汎用。
+    surface/venue/distance で絞り、wet=True で道悪、min_dist で距離下限(スタミナ)。
+    Returns (runs, top3) or (0,0)。"""
+    where = [f"{col} = ?", "res.finish_position > 0", "r.race_date >= ?"]
+    params = [name, from_date]
+    if surface:
+        where.append("r.surface = ?"); params.append(surface)
+    if venue:
+        where.append("r.venue = ?"); params.append(venue)
+    if distance:
+        where.append("r.distance = ?"); params.append(distance)
+    if min_dist:
+        where.append("r.distance >= ?"); params.append(min_dist)
+    if wet:
+        where.append(f"r.track_condition IN {_wet_cond_sql()}")
+    cur.execute(
+        f"""SELECT COUNT(*), SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END)
+            FROM races r JOIN results res ON r.race_id=res.race_id
+            JOIN horses h ON res.horse_id=h.horse_id
+            WHERE {' AND '.join(where)}""", params)
+    row = cur.fetchone()
+    return (row[0] or 0, row[1] or 0) if row else (0, 0)
+
+
+def sec_pedigree_deep(
+    conn, race_id, venue, surface, distance,
+    top: int = 3, years: int = 6, min_runs: int = 8, show_number: bool = True,
+) -> Tuple[str, List[str], int]:
+    """血統を「父×コース」だけでなく「母父×道悪 / 母父×スタミナ」まで深掘りする投稿 (#78)。
+
+    ユーザー指摘「父の成績だけで浅い。母父まで深く」への対応。記事(宝塚)で好評だった
+    母父分析 (道悪適性・スタミナ・隠れた糸) を X 投稿に展開する。
+
+    各出走馬の 父(sire)×当コース複勝率 + 母父(damsire)×道悪複勝率 + 母父×芝中長距離
+    (距離-200m以上) を引き、「父だけでは見えない適性」を提示。
+    最後に「母父の隠し味」= 母父の道悪 or スタミナが際立つ1頭を妙味として添える。
+    """
+    cur = conn.cursor()
+    entries = _get_entries(conn, race_id)
+    if not entries:
+        return ("【血統の深層】", ["出走馬未確定 (血統深掘りは確定後)"], 0)
+    from_date = f"{datetime.now().year - years}-01-01"
+    min_dist = max(1600, distance - 200)  # スタミナ判定の距離下限
+
+    rows = []
+    for e in entries:
+        name = e.get("horse_name", "")
+        hn = e.get("horse_number") or 0
+        hid = e.get("horse_id")
+        sire = (e.get("sire") or "").strip()
+        if not name or not hid:
+            continue
+        cur.execute("SELECT damsire FROM horses WHERE horse_id = ? LIMIT 1", (hid,))
+        dr = cur.fetchone()
+        damsire = (dr[0] or "").strip() if dr else ""
+        # 父×当コース
+        sc_runs, sc_top3 = _lineage_top3(cur, "h.sire", sire, from_date,
+                                         surface=surface, venue=venue, distance=distance) if sire else (0, 0)
+        # 母父×道悪 (芝/ダート別、全場)
+        dw_runs, dw_top3 = _lineage_top3(cur, "h.damsire", damsire, from_date,
+                                         surface=surface, wet=True) if damsire else (0, 0)
+        # 母父×スタミナ (同surface・距離下限以上)
+        ds_runs, ds_top3 = _lineage_top3(cur, "h.damsire", damsire, from_date,
+                                         surface=surface, min_dist=min_dist) if damsire else (0, 0)
+        rows.append({
+            "name": name, "hn": hn, "sire": sire.split("(")[0][:9],
+            "damsire": damsire.split("(")[0][:9],
+            "sc": (100 * sc_top3 / sc_runs) if sc_runs >= 3 else None, "sc_n": sc_runs,
+            "dw": (100 * dw_top3 / dw_runs) if dw_runs >= min_runs else None, "dw_n": dw_runs,
+            "ds": (100 * ds_top3 / ds_runs) if ds_runs >= min_runs else None, "ds_n": ds_runs,
+        })
+
+    # 父コース複勝率 or 母父適性が際立つ馬を上位に
+    def _rank(r):
+        return max(r["sc"] or 0, (r["dw"] or 0) * 0.9, (r["ds"] or 0) * 0.9)
+    rows.sort(key=_rank, reverse=True)
+    shown = [r for r in rows if (r["sc"] is not None or r["dw"] is not None or r["ds"] is not None)]
+    if not shown:
+        return ("【血統の深層】", ["血統データ不足 (父・母父とも未登録)"], 0)
+
+    def _tag(r):  # 馬番は枠順抽選後のみ (#27/#78)
+        return f"{r['hn']}番{r['name']}" if show_number else r['name']
+
+    # X 280字に収めるためコンパクトに (top2頭 + 母父隠し味)。父コース or 母父適性を1行で。
+    title = f"【{venue}{surface}{distance}m 血統の深層・父+母父】"
+    lines = []
+    for r in shown[:min(top, 2)]:
+        seg = []
+        if r["sc"] is not None:
+            seg.append(f"父{r['sire']}コース{r['sc']:.0f}%")
+        if r["dw"] is not None:
+            seg.append(f"母父{r['damsire']}道悪{r['dw']:.0f}%")
+        elif r["ds"] is not None:
+            seg.append(f"母父{r['damsire']}長め{r['ds']:.0f}%")
+        if seg:
+            lines.append(f"🩸{_tag(r)}: " + " / ".join(seg))
+
+    # 母父の隠し味 = 表示した2頭の外から、母父の道悪/スタミナが際立つ「隠れた1頭」。
+    # 父コースでは目立たないが母父で買える妙味馬を新たに提示する。
+    pool_hidden = [r for r in shown[2:] if max(r["dw"] or 0, r["ds"] or 0) >= 40]
+    if pool_hidden:
+        best_dam = max(pool_hidden, key=lambda r: max(r["dw"] or 0, r["ds"] or 0))
+        kind = "道悪" if (best_dam["dw"] or 0) >= (best_dam["ds"] or 0) else "長距離"
+        val = best_dam["dw"] if kind == "道悪" else best_dam["ds"]
+        lines.append(f"💡隠し味: {_tag(best_dam)}は母父{best_dam['damsire']}が{kind}複勝{val:.0f}% — 人気薄なら妙味")
+    return (title, lines, len(shown))
+
+
 # ─────────────────────────────────────────────────────────
 # sec_attention_top (木昼/木夜/金昼: 注目馬 + 客観データ) — v2
 # ─────────────────────────────────────────────────────────

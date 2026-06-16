@@ -33,6 +33,7 @@ from post_sections import (
     sec_age_pattern,
     sec_workout_focus,
     sec_entry_pedigree_match,
+    sec_pedigree_deep,
     sec_eight_axis_top,
     sec_top3_with_reasons,
     sec_attention_top,
@@ -1175,6 +1176,14 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     nb = _notable_lead(conn, race, mode="combined")
     if nb:
         sections.append(nb)
+
+    # 🆕 #78: 母父まで掘る「血統の深層」(出走確定後のみ)。父だけの浅い投稿への対応。
+    # 馬番は枠順抽選 (金11時) 後のみ表示 (#27)。
+    pt, plines, pn = sec_pedigree_deep(
+        conn, race_id, venue, surface, distance, top=3, years=6,
+        show_number=_is_post_position_drawn(race))
+    if pn > 0 and len(plines) >= 2:  # 父+母父データが取れた時だけ
+        sections.append(_make_section(pt, plines))
 
     # Section 1: 鉄板系統の該当馬 (該当馬なし非表示、複数馬は「他N頭」に圧縮)
     t1, lines1, n1 = sec_sire_course_cross(
