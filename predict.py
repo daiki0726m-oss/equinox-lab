@@ -771,68 +771,69 @@ def cmd_predict(args):
             # 危険な人気馬 = 市場本命だが能力順位が低い (A/M < 0.6 目安)
             mkt_fav['is_danger_fav'] = ((mkt_fav.get('_ability_vs_market') or 0) < 0.6)
 
-        use_ability_core = os.environ.get('USE_ABILITY_CORE') == '1'
-        core = abil_top if (use_ability_core and abil_top) else ml_top
-        if core:
-            core['mark'] = '◎'
+        # ═══ 印ロジック v5 (#76, 2026-06-16): 捕捉率最大化 + 妙味注 ═══
+        # ユーザー目標確定: 「6頭の印が3着内3頭を捕捉する確率」を最大化 (黒字化でなく)。
+        # 2020-2025 20,663R backtest:
+        #   - ◎○▲△× = 複勝率モデル(pred_top3)上位5頭 → 完全捕捉 52.1% (現行ML勝率 50.5%)。
+        #     穴を混ぜると 26.8% に半減するため、捕捉枠には穴を入れない。
+        #   - 注 = 妙味 longshot (複勝率÷市場率 が最大、オッズ7倍+)。複勝率11.4% だが
+        #     平均101倍・複勝期待回収135円/100 = ユーザー要望「人気ないが馬券になる高配当馬」。
+        # MARKS_LEGACY=1 で旧 ROI 志向ロジック (◎ML1位 + ○▲△relay + ×注穴) に戻せる。
+        if os.environ.get('MARKS_LEGACY') == '1':
+            core = abil_top if (os.environ.get('USE_ABILITY_CORE') == '1' and abil_top) else ml_top
+            if core:
+                core['mark'] = '◎'
+            relay_pool = [p for p in sorted_preds if p is not core][:6]
 
-        # 相手候補プール (◎ を除く ML 上位 6頭)
-        relay_pool = [p for p in sorted_preds if p is not core][:6]
+            def _relay_score(p):
+                pred = (p.get('pred_win', 0) or 0) * 80
+                si = (p.get('si_avg', 0) or 0) / 4
+                data = _data_strength(p) * 3
+                pop = p.get('popularity', 0) or 0
+                pop_bonus = max(min(pop - 3, 9), 0) * 1.5
+                ana = (p.get('anasanee_score', 0) or 0) * 2.0
+                return pred + si + data + pop_bonus + ana
 
-        def _relay_score(p):
-            """相手選定スコア: ML 評価 + データ強度 + 人気外ボーナス + 穴予兆。"""
-            pred = (p.get('pred_win', 0) or 0) * 80  # base ML 評価
-            si = (p.get('si_avg', 0) or 0) / 4
-            data = _data_strength(p) * 3
-            pop = p.get('popularity', 0) or 0
-            # 4-12人気を妙味とみなしてボーナス (1-3人気は加点なし)
-            pop_bonus = max(min(pop - 3, 9), 0) * 1.5
-            # 穴予兆スコア (前走凡走 + 距離変更 + 脚質 + 血統 等) を 2倍重み
-            ana = (p.get('anasanee_score', 0) or 0) * 2.0
-            return pred + si + data + pop_bonus + ana
+            relay_sorted = sorted(relay_pool, key=_relay_score, reverse=True)
+            for i, mk in enumerate(['○', '▲', '△']):
+                if i < len(relay_sorted):
+                    relay_sorted[i]['mark'] = mk
 
-        # 相手候補をスコア順に並べ替え → ○▲△ に割当
-        relay_sorted = sorted(relay_pool, key=_relay_score, reverse=True)
-        for i, mk in enumerate(['○', '▲', '△']):
-            if i < len(relay_sorted):
-                relay_sorted[i]['mark'] = mk
+            def _ana_score(p, pop):
+                if pop < 5:
+                    return 0
+                si = p.get('si_avg', 0) or 0
+                diversion = si / max(pop, 1)
+                course_fit = ((p.get('cat_track', 0) or 0) + (p.get('cat_pedigree', 0) or 0)) / 2
+                return diversion + course_fit * 0.5 + (p.get('anasanee_score', 0) or 0) * 3.0 + (p.get('cat_jockey', 0) or 0) * 0.3
+            ana_scored = sorted(
+                ((_ana_score(p, popularity_map.get(p['horse_number'], 0) or 0), p)
+                 for p in sorted_preds if not p.get('mark')),
+                key=lambda x: -x[0])
+            for i, mk in enumerate(['注', '×']):
+                if i < len(ana_scored) and ana_scored[i][0] > 0:
+                    ana_scored[i][1]['mark'] = mk
+        else:
+            # ── 捕捉枠 ◎○▲△× = 複勝率(pred_top3) 上位5頭 ──
+            by_top3 = sorted(sorted_preds, key=lambda p: p.get('pred_top3', 0) or 0, reverse=True)
+            capture5 = by_top3[:5]
+            for i, mk in enumerate(['◎', '○', '▲', '△', '×']):
+                if i < len(capture5):
+                    capture5[i]['mark'] = mk
 
-        # ─── × 注 = 「穴馬スコア」 (2026-05-24 改修) ─────────────────────
-        # 過去 3-5月 7000R バックテスト結果に基づく改修:
-        # 旧: × = 相手候補残り中の AI 勝率最高 / 注 = データ強度最大馬
-        #   → × 単独 ROI 50% / 注 単独 ROI 69% で「機能不全」(ノイズ印)
-        # 新: × 注 = 穴馬スコア (人気-実力乖離 + コース適性 + 血統 + 穴予兆 + 騎手) 順
-        #   → × 単独 ROI 95% / 注 単独 ROI 136% に大幅改善
-        #   → ◎軸 三連複ROI 130% → 174% に +44pt 改善
-        # 入力データ: si_avg / cat_track / cat_pedigree / cat_jockey / anasanee_score
-        # 人気フィルター: 5人気以上 (上位人気は ◎○▲△ で拾うべき)
-        def _ana_score(p, pop):
-            """穴馬スコア — 人気-実力乖離 + コース適性 + 穴予兆 + 騎手"""
-            if pop < 5:  # 上位人気は ◎○▲△ で拾う
-                return 0
-            si = p.get('si_avg', 0) or 0
-            cat_track = p.get('cat_track', 0) or 0
-            cat_pedigree = p.get('cat_pedigree', 0) or 0
-            cat_jockey = p.get('cat_jockey', 0) or 0
-            ana = p.get('anasanee_score', 0) or 0
-            diversion = si / max(pop, 1)  # SI ÷ 人気 (実力過小評価度)
-            course_fit = (cat_track + cat_pedigree) / 2  # コース適性
-            return diversion * 1.0 + course_fit * 0.5 + ana * 3.0 + cat_jockey * 0.3
-
-        # ◎○▲△ 以外を対象に穴馬スコアでランク
-        unmarked = [p for p in sorted_preds if not p.get('mark')]
-        ana_scored = []
-        for p in unmarked:
-            pop = popularity_map.get(p['horse_number'], 0) or 0
-            score = _ana_score(p, pop)
-            if score > 0:  # スコア 0 (人気上位 or データ不足) は除外
-                ana_scored.append((score, p))
-        ana_scored.sort(key=lambda x: -x[0])
-        # 注 = 穴馬スコア1位(注目すべき穴馬)、× = 2位(押さえ)
-        # 競馬慣習: 注 = 注目、× = 押さえ
-        for i, mk in enumerate(['注', '×']):
-            if i < len(ana_scored):
-                ana_scored[i][1]['mark'] = mk
+            # ── 注 = 妙味 longshot (複勝率÷市場率 最大、オッズ7倍+、捕捉5頭の外) ──
+            def _value(p):
+                od = p.get('odds_win') or 0
+                mkt = (1.0 / od) if od > 0 else 0          # 市場の暗黙率
+                t3 = p.get('pred_top3', 0) or 0            # モデルの複勝率
+                return (t3 / mkt) if mkt > 0 else 0
+            rest = [p for p in sorted_preds if not p.get('mark')]
+            longshots = [p for p in rest if (p.get('odds_win') or 0) >= 7]
+            pool = longshots if longshots else rest
+            if pool:
+                chu = max(pool, key=_value)
+                chu['mark'] = '注'
+                chu['is_value_pick'] = True
 
         # 推奨理由を生成 (UI-2 fix)
         for i, p in enumerate(sorted_preds):
