@@ -33,7 +33,18 @@ class NetkeibaScraper:
         time.sleep(self.REQUEST_INTERVAL)
         try:
             resp = self.session.get(url, timeout=30)
-            resp.encoding = encoding or resp.apparent_encoding
+            # 🆕 #84: サーバが Content-Type で charset を宣言していれば最優先で採用する。
+            #   netkeiba は 2026 に EUC-JP → UTF-8 へ移行。旧コードは呼び出し側の
+            #   encoding='EUC-JP' を強制していたため出馬表が文字化けし、<title> の
+            #   「YYYY年M月D日」が壊れて race_date が空 → 週末レースが全日付クエリで
+            #   不可視 → 過去レースを誤投稿する事故になった (6/17 函館スプリントS=6/13)。
+            #   宣言が無い時のみ呼び出し側 hint → chardet にフォールバック。
+            ct = resp.headers.get("Content-Type", "")
+            m = re.search(r"charset=([\w-]+)", ct, re.I)
+            if m:
+                resp.encoding = m.group(1)
+            else:
+                resp.encoding = encoding or resp.apparent_encoding
             if resp.status_code == 200:
                 return resp
             print(f"⚠️ HTTP {resp.status_code}: {url}")
