@@ -1400,9 +1400,11 @@ def sec_pedigree_deep(
     # venue/surface は post header に既出なので title からは省いて短縮。
     title = "【血統深層・父+母父まで】"
     lines = []
-    # #80: メイン2頭は「父の当コースデータがある馬」に限定 → 父抜け(母父だけ)を防ぐ。
+    # #80: メインは「父の当コースデータがある馬」に限定 → 父抜け(母父だけ)を防ぐ。
     #   母父だけが際立つ馬は下の「隠し味」枠で拾うので情報は落とさない。
-    main = [r for r in shown if r["sc"] is not None][:min(top, 2)]
+    # #82: 上限を2→top(3)。_split_to_thread のページ送りで溢れても trim されず、
+    #   単一 section slot (水昼) でも 3頭フルに出せるようになった。
+    main = [r for r in shown if r["sc"] is not None][:top]
     main_keys = {id(r) for r in main}
     for r in main:
         seg = [f"父{r['sire']}当コース{r['sc']:.0f}%"]

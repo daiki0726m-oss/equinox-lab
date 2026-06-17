@@ -167,6 +167,61 @@ CHAR_BUDGET = 280
 MAX_THREAD_TWEETS = 3  # スレッドの最大ツイート数
 
 
+def _paginate_single_section(header: str, section: str, cta: str, hashtags: str,
+                             budget: int, max_tweets: int):
+    """単一 section が 1 tweet に収まらない時、末尾 trim でなく行を複数 tweet に
+    ページ送りする (#82)。
+
+    末尾 trim (従来) は単一 section の slot (血統深層 / handpicked) で「2-3頭出せる
+    データがあるのに見出し+1行」へ潰す主因だった (#80/#81 で何度も対症療法)。
+    複数 section の slot は _split_to_thread の 1 section=1 tweet で十分なので呼ばない。
+    見出し (【...】) は各ページ先頭に複製し、各 tweet を単独で fact_check 可能に保つ。
+
+    Returns: tweet list、または pagination 不要/不可なら None (従来 trim に委譲)。
+    """
+    lines = section.split("\n")
+    title = lines[0] if lines and lines[0].startswith("【") else ""
+    data = [l for l in (lines[1:] if title else lines) if l.strip()]
+    if len(data) <= 1:
+        return None  # 1 行以下は分割しても無意味 → 従来 trim へ
+
+    cont = "→ 続く🧵"
+    footer_max = max(_x_len(cont), _x_len(cta) + 1 + _x_len(hashtags))
+
+    def _prefix_len(idx: int) -> int:
+        # N 未確定なので最大桁の "(max/max)" で上限見積り (実 render では同等以下)
+        head = header if idx == 0 else f"🧵 ({max_tweets}/{max_tweets})"
+        pre = f"{head}\n\n{title}" if title else head
+        return _x_len(pre)
+
+    # greedy: 各ページ = prefix + 行群 + footer が budget 以内になるよう詰める
+    pages = [[]]
+    for ln in data:
+        idx = len(pages) - 1
+        trial = pages[idx] + [ln]
+        size = _prefix_len(idx) + 1 + _x_len("\n".join(trial)) + 2 + footer_max
+        if size <= budget or not pages[idx]:
+            pages[idx].append(ln)
+        else:
+            if len(pages) >= max_tweets:
+                break  # ページ上限 → 残り行は諦め (従来 trim 相当の打ち切り)
+            pages.append([ln])
+
+    if len(pages) <= 1:
+        return None  # 1 ページに収まる (= ここに来ない想定だが念のため) → 従来へ
+
+    total = len(pages)
+    tweets = []
+    for i, pg in enumerate(pages):
+        is_last = (i == total - 1)
+        head = header if i == 0 else f"🧵 ({i+1}/{total})"
+        prefix = f"{head}\n\n{title}" if title else head
+        footer = (f"{cta}\n{hashtags}" if hashtags else cta) if is_last else cont
+        body = "\n".join(pg)
+        tweets.append(f"{prefix}\n{body}\n\n{footer}")
+    return tweets
+
+
 def _split_to_thread(header: str, sections: list, cta: str, hashtags: str,
                       budget: int = CHAR_BUDGET,
                       max_tweets: int = MAX_THREAD_TWEETS) -> list:
@@ -190,6 +245,13 @@ def _split_to_thread(header: str, sections: list, cta: str, hashtags: str,
     full_tweet = f"{header}\n\n{full_body}\n\n{cta}\n{hashtags}"
     if _x_len(full_tweet) <= budget:
         return [full_tweet]
+
+    # 🆕 #82: 単一 section が溢れる場合は末尾 trim でなくページ送り (「1頭だけ激薄」防止)。
+    # 複数 section の場合は下の 1 section=1 tweet で十分なので従来通り (回帰ゼロ)。
+    if len(sections) == 1:
+        paged = _paginate_single_section(header, sections[0], cta, hashtags, budget, max_tweets)
+        if paged is not None:
+            return paged
 
     # 1 section = 1 tweet で分割
     sections = sections[:max_tweets]  # max を超える section は捨てる
