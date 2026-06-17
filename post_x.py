@@ -1376,6 +1376,12 @@ def _build_weekday_post(slot, today):
                 # base slot から race を取得 (resolved_slot は build_slot_post 側で使う)
                 slot_idx = {"morning": 0, "weekday": 1, "evening": 2}.get(slot, 0)
                 race_row = get_todays_race(conn, slot=slot_idx)
+                # 🛡 #83: 今週末の重賞が未登録なら、旧パスに落とさず即スキップ。
+                #   旧 weekday_engine も get_todays_race を使うが、ここで止めて
+                #   過去レース誤投稿の経路を完全に断つ (誤投稿より無投稿が安全)。
+                if not race_row:
+                    print("ℹ️ 今週末の重賞が未登録 → 過去レースは出さず投稿スキップ (#83)")
+                    return None, None
                 if race_row:
                     race = dict(race_row) if hasattr(race_row, 'keys') else race_row
                     if isinstance(race, dict) and race.get("race_name"):
@@ -1905,8 +1911,15 @@ def fetch_weekend_races():
         print(f"✅ {registered}レース登録完了")
 
 
-def get_weekend_graded_races(conn):
-    """今週末の11Rを取得（なければ直近週末）。G1>G2>G3>OPでソート"""
+def get_weekend_graded_races(conn, allow_past=True):
+    """今週末の11Rを取得。G1>G2>G3>OPでソート。
+
+    allow_past=True (既定): 今週末レースが未登録なら直近の過去11Rにフォールバック
+        (結果反映/ダッシュボード等、過去レースを扱う文脈用)。
+    allow_past=False: 過去フォールバックを無効化 (#83)。朝/昼/夜の「今週の予告」
+        投稿が、今週末レース未登録時に先週のレースを掴んで投稿する事故を防ぐ。
+        2026-06-17 昼に函館スプリントS(6/13=先週)を今週予告として誤投稿した実害から導入。
+    """
     today = now_jst()
     dow = today.weekday()
     days_until_sat = (5 - dow) % 7
@@ -1930,8 +1943,10 @@ def get_weekend_graded_races(conn):
         ORDER BY race_date, venue
     """, (sat_str, sun_str)).fetchall()
 
-    # 来週末のレースがなければ直近の11Rを使う
-    if not result:
+    # 来週末のレースがなければ直近の11Rを使う (allow_past=True のときのみ)。
+    # allow_past=False の前方視点投稿では、過去レースを掴むくらいなら空を返して
+    # 呼び出し側にスキップさせる (#83: 先週レースの誤投稿防止)。
+    if not result and allow_past:
         result = conn.execute("""
             SELECT race_id, race_name, venue, surface, distance, grade, race_date, race_number
             FROM races
@@ -2038,8 +2053,16 @@ def get_todays_race(conn, slot=0):
     重賞2件: 同上(2巡で1サイクル)
     重賞1件: 全て同レース(同じレースだが日替りで content 変わる)
     金曜: メイン固定
+
+    🛡 #83: 前方視点の投稿 (朝/昼/夜) は過去レースを絶対に返さない。
+    get_weekend_graded_races の過去フォールバックが暴発すると先週のレースを
+    「今週の予告」として投稿してしまう (2026-06-17 昼に函館スプリントS=6/13 を
+    今週予告として誤投稿した実害)。allow_past=False + race_date>=today の二重防御で、
+    今週末レース未登録時は None を返してスキップさせる (誤投稿より無投稿が遥かにマシ)。
     """
-    all_races = get_weekend_graded_races(conn)
+    today_str = now_jst().strftime('%Y-%m-%d')
+    all_races = [r for r in get_weekend_graded_races(conn, allow_past=False)
+                 if (r['race_date'] or '') >= today_str]
     if not all_races:
         return None
 

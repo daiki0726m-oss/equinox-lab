@@ -1634,12 +1634,12 @@ def build_post_for_slot(slot, today_d, conn, get_todays_race_fn, get_course_stat
     # 金曜は土曜重賞(昼) / 日曜G1(夜) で分岐
     if dow == 4 and slot == 'weekday':
         from post_x import get_weekend_graded_races
-        all_races = get_weekend_graded_races(conn)
+        all_races = get_weekend_graded_races(conn, allow_past=False)  # #83 過去レース誤投稿防止
         sat, sun = split_weekend_races(all_races)
         race = sat[0] if sat else (all_races[0] if all_races else None)
     elif dow == 4 and slot == 'evening':
         from post_x import get_weekend_graded_races
-        all_races = get_weekend_graded_races(conn)
+        all_races = get_weekend_graded_races(conn, allow_past=False)  # #83 過去レース誤投稿防止
         sat, sun = split_weekend_races(all_races)
         race = sun[0] if sun else (all_races[0] if all_races else None)
     else:
@@ -1712,7 +1712,7 @@ def _dispatch_v8(dow, slot, race, stats, entries, sires, damsires,
         if slot == 'morning':
             try:
                 from post_x import get_weekend_graded_races
-                graded = get_weekend_graded_races(conn)
+                graded = get_weekend_graded_races(conn, allow_past=False)  # #83 過去レース誤投稿防止
             except Exception:
                 graded = [race]
             return build_mon_morning(graded, today_d, hashtags_fn, conn=conn)
@@ -1754,7 +1754,7 @@ def _dispatch_v8(dow, slot, race, stats, entries, sires, damsires,
         else:
             try:
                 from post_x import get_weekend_graded_races
-                graded = get_weekend_graded_races(conn)
+                graded = get_weekend_graded_races(conn, allow_past=False)  # #83 過去レース誤投稿防止
             except Exception:
                 graded = [race]
             return build_fri_evening(graded, today_d, hashtags_fn)
