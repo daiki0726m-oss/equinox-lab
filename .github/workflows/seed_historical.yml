@@ -156,7 +156,7 @@ jobs:
           # (2026-05-25 修正: 旧 'git push || true' は rejected で 3h 分の作業が消える事故あり)
           for i in 1 2 3 4 5; do
             git fetch origin main
-            if git pull --rebase --autostash origin main; then
+            if git pull --rebase --autostash -X theirs origin main; then
               if git push origin HEAD:main; then
                 echo "🚀 deployed (try $i)"
                 exit 0

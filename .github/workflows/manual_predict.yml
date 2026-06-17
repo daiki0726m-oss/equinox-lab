@@ -123,7 +123,7 @@ jobs:
             BRANCH="${GITHUB_REF_NAME:-main}"
             # 並行workflow対策: rebase+retry
             for i in 1 2 3; do
-              git pull --rebase --autostash origin "$BRANCH" || true
+              git pull --rebase --autostash -X theirs origin "$BRANCH" || true
               if git push origin "HEAD:$BRANCH"; then echo "✅ pushed (試行$i, branch=$BRANCH)"; break; fi
               echo "⚠️ push失敗→リトライ($i, branch=$BRANCH)"; sleep 5
             done

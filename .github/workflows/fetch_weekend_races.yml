@@ -40,9 +40,14 @@ jobs:
       # 🛡 git を source of truth に強制 (cache 古さの事故防止 - 2026-05-24)
       - name: Force git DB (override stale cache)
         run: |
+          # 🆕 #84: 他 workflow と同じく fetch+reset で「真の origin/main 最新」に進める。
+          #   これが無いと run 作成時固定の stale SHA の DB を採用し、最新を巻き戻す
+          #   (旧版は git checkout HEAD のみ = stale。6/17 の週末レース消失の一因)。
+          git fetch origin "${GITHUB_REF_NAME:-main}" --depth 1
+          git reset --hard "origin/${GITHUB_REF_NAME:-main}"
           git checkout HEAD -- keiba.db.gz
           bash scripts/db_unpack.sh
-          echo "✅ keiba.db を git HEAD に復元"
+          echo "✅ keiba.db を origin/main 最新に復元"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -177,13 +182,15 @@ jobs:
             echo "no DB changes to commit"
           else
             git commit -m "auto: weekend races + pedigree $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-            # 他workflowが先にpushしている可能性に備え、rebase&リトライ
+            # 他workflowが先にpushしている可能性に備え、rebase&リトライ。
+            # 🆕 #84: -X theirs 必須 (binary keiba.db.gz は3-way mergeできず、無いと競合で
+            #   ローカルの新レースが落ちる)。+ 失敗時 rebase --abort で残骸除去 (他workflow と統一)。
             for i in 1 2 3; do
-              git pull --rebase --autostash origin "${GITHUB_REF_NAME:-main}" || true
-              if git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
+              if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
                 echo "✅ pushed (試行$i)"
                 break
               fi
+              git rebase --abort 2>/dev/null || true
               echo "⚠️ push失敗→リトライ($i)"
               sleep 5
             done

@@ -78,7 +78,7 @@ jobs:
             BRANCH="${GITHUB_REF_NAME:-main}"
             # 他workflowが先にpushしている可能性に備え、rebaseしてからpush(最大3回リトライ)
             for i in 1 2 3; do
-              git pull --rebase --autostash origin "$BRANCH" || true
+              git pull --rebase --autostash -X theirs origin "$BRANCH" || true
               if git push origin "HEAD:$BRANCH"; then
                 echo "🚀 モデルをデプロイ完了 (試行$i, branch=$BRANCH)"
                 break

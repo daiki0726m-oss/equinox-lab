@@ -156,7 +156,7 @@ jobs:
           else
             git commit -m "watchdog: health update $(TZ=Asia/Tokyo date '+%H:%M JST')"
             for i in 1 2 3; do
-              git pull --rebase --autostash origin main || true
+              git pull --rebase --autostash -X theirs origin main || true
               if git push origin HEAD:main; then echo "✅ pushed (try $i)"; break; fi
               echo "⚠️ push retry $i"; sleep 5
             done
