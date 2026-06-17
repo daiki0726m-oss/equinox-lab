@@ -1547,11 +1547,8 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     # 両方空 (薄いコース) なら歴代/コース傾向にフォールバックし、それも無ければスキップ。
     theme = None
 
-    # 🆕 #53: 先頭に「血統で狙う注目馬」(実名+データ) を必ず置く
-    nb = _notable_lead(conn, race, mode="blood")
-    if nb:
-        sections.append(nb)
-        theme = "血統で狙う注目馬"
+    # #80: 金朝は血統が3つ(血統で狙う+血統深層+種牡馬TOP)で過剰だった →
+    #   浅い「血統で狙う(父のみ)」を廃止し、母父まで掘る「血統深層」に集約 (下で追加)。
 
     # Section 1: パターン発掘 → 馬中心に集約 (#53: 同種牡馬の異枠を別行で並べる水増しを廃止)
     sec1, n1 = _morning_sec_pattern(conn, {

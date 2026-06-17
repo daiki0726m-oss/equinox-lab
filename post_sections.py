@@ -1376,8 +1376,9 @@ def sec_pedigree_deep(
         ds_runs, ds_top3 = _lineage_top3(cur, "h.damsire", damsire, from_date,
                                          surface=surface, min_dist=min_dist) if damsire else (0, 0)
         rows.append({
-            "name": name, "hn": hn, "sire": sire.split("(")[0][:9],
-            "damsire": damsire.split("(")[0][:9],
+            # #80: 母父の英字名が中途半端に切れる問題 → 名前の長さを確保 (英字は1幅で安価)
+            "name": name, "hn": hn, "sire": sire.split("(")[0][:12],
+            "damsire": damsire.split("(")[0][:14],
             "sc": (100 * sc_top3 / sc_runs) if sc_runs >= 3 else None, "sc_n": sc_runs,
             "dw": (100 * dw_top3 / dw_runs) if dw_runs >= min_runs else None, "dw_n": dw_runs,
             "ds": (100 * ds_top3 / ds_runs) if ds_runs >= min_runs else None, "ds_n": ds_runs,
@@ -1399,19 +1400,21 @@ def sec_pedigree_deep(
     # venue/surface は post header に既出なので title からは省いて短縮。
     title = "【血統深層・父+母父まで】"
     lines = []
-    for r in shown[:min(top, 2)]:
-        seg = []
-        if r["sc"] is not None:
-            seg.append(f"父{r['sire']}当コース{r['sc']:.0f}%")
+    # #80: メイン2頭は「父の当コースデータがある馬」に限定 → 父抜け(母父だけ)を防ぐ。
+    #   母父だけが際立つ馬は下の「隠し味」枠で拾うので情報は落とさない。
+    main = [r for r in shown if r["sc"] is not None][:min(top, 2)]
+    main_keys = {id(r) for r in main}
+    for r in main:
+        seg = [f"父{r['sire']}当コース{r['sc']:.0f}%"]
         if r["dw"] is not None:
             seg.append(f"母父{r['damsire']}道悪{r['dw']:.0f}%")
         elif r["ds"] is not None:
             seg.append(f"母父{r['damsire']}長距離{r['ds']:.0f}%")
-        if seg:
-            lines.append(f"🩸{_tag(r)}: " + "・".join(seg))
+        lines.append(f"🩸{_tag(r)}: " + "・".join(seg))
 
-    # 母父の隠し味 = 表示した2頭の外から、母父の道悪/スタミナが際立つ「隠れた1頭」。
-    pool_hidden = [r for r in shown[2:] if max(r["dw"] or 0, r["ds"] or 0) >= 40]
+    # 母父の隠し味 = メイン表示の外から、母父の道悪/スタミナが際立つ「隠れた1頭」。
+    pool_hidden = [r for r in shown if id(r) not in main_keys
+                   and max(r["dw"] or 0, r["ds"] or 0) >= 40]
     if pool_hidden:
         best_dam = max(pool_hidden, key=lambda r: max(r["dw"] or 0, r["ds"] or 0))
         kind = "道悪" if (best_dam["dw"] or 0) >= (best_dam["ds"] or 0) else "長距離"
@@ -1513,15 +1516,16 @@ def sec_notable_horses(
 
     # タイトルは簡潔に (コース詳細はヘッダーと各馬の行に既出 = 冗長を避け馬を多く載せる, #53)
     if mode == "blood":
+        # #80: 「父X%」が何の%か不明 → タイトルに「父産駒の当コース複勝率」を明示。
         pool = [h for h in scored if h["sire_pct"] > 0]
         pool.sort(key=lambda x: (-x["sire_pct"], -x["sire_n"]))
-        title = f"【血統で狙う注目馬】{venue}{surface}{distance}m"
+        title = f"【血統で狙う注目馬】{venue}{surface}{distance}m\n(数値=父産駒の当コース複勝率)"
         def fmt(h):
             return f"父{h['sire'][:9]} {h['sire_pct']:.0f}%({h['sire_n']}走)"
     elif mode == "jockey":
         pool = [h for h in scored if h["jockey_pct"] > 0]
         pool.sort(key=lambda x: (-x["jockey_pct"], -x["jockey_n"]))
-        title = f"【鞍上で狙う注目馬】{venue}{surface}{distance}m"
+        title = f"【鞍上で狙う注目馬】{venue}{surface}{distance}m\n(数値=鞍上の当コース複勝率)"
         def fmt(h):
             extra = f" / 父{h['sire'][:7]}{h['sire_pct']:.0f}%" if h["sire_pct"] >= 30 else ""
             return f"{h['jockey']} {h['jockey_pct']:.0f}%({h['jockey_n']}走){extra}"
@@ -1530,13 +1534,13 @@ def sec_notable_horses(
             h["_score"] = h["sire_pct"] * 1.0 + h["jockey_pct"] * 0.5
         pool = [h for h in scored if h["_score"] > 0]
         pool.sort(key=lambda x: -x["_score"])
-        title = f"【今週の注目馬TOP{top}】{venue}{surface}{distance}m"
+        title = f"【今週の注目馬TOP{top}】{venue}{surface}{distance}m\n(%=当コース複勝率/父産駒・鞍上)"
         def fmt(h):
             parts = []
             if h["sire_pct"] >= 30:
                 parts.append(f"父{h['sire'][:9]}{h['sire_pct']:.0f}%")
             if h["jockey_pct"] >= 30:
-                parts.append(f"{h['jockey']}{h['jockey_pct']:.0f}%")
+                parts.append(f"騎{h['jockey']}{h['jockey_pct']:.0f}%")
             return " / ".join(parts) if parts else "コース実績上位"
 
     if not pool:
