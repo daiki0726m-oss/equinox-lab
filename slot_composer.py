@@ -1172,8 +1172,12 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     header = f"🔍 {day} {label}\n今週の注目馬とコース傾向"
     import re as _re
 
-    # 🆕 #53: 先頭に「今週の注目馬」(実名+データ) を必ず置く
-    nb = _notable_lead(conn, race, mode="combined")
+    # 🆕 #81: 月昼と火昼で同じ「総合TOP3」が出て反復していた → 曜日で切り口を変える。
+    #   月(0)=総合 / 火(1)=血統(父) / その他=総合。これで連日の昼が別物になる。
+    from datetime import timezone as _tz, timedelta as _td2
+    _dow = (datetime.now(_tz.utc) + _td2(hours=9)).weekday()
+    _mode = "blood" if _dow == 1 else "combined"
+    nb = _notable_lead(conn, race, mode=_mode)
     if nb:
         sections.append(nb)
 

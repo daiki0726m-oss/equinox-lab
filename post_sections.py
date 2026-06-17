@@ -1589,9 +1589,12 @@ def sec_handpicked_top(
         if not name:
             continue
 
-        # 父産駒のコース複勝率
+        # 父産駒のコース複勝率。#81: exact-course(venue×surface×distance)はマイナー
+        # コースで4走未満が多く投稿が1頭に痩せる → データ薄い時は「同surface×距離(全場)」に
+        # 自動で broaden して頭数を確保 (ラベルで region を区別)。
         sire_pct = 0.0
         sire_n = 0
+        sire_scope = ""
         if sire_raw:
             cur.execute(
                 """
@@ -1607,6 +1610,24 @@ def sec_handpicked_top(
             if row and row[0] and row[0] >= 4:
                 sire_n = row[0]
                 sire_pct = 100 * row[1] / row[0]
+                sire_scope = "当コース"
+            else:
+                # broaden: 同 surface × 距離 (全場) で再集計
+                cur.execute(
+                    """
+                    SELECT COUNT(*) runs, SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) top3
+                    FROM races r JOIN results res ON r.race_id=res.race_id
+                    JOIN horses h ON res.horse_id=h.horse_id
+                    WHERE r.surface=? AND r.distance=? AND r.race_date >= ?
+                      AND h.sire = ? AND res.finish_position > 0
+                    """,
+                    (surface, distance, from_date_sire, sire_raw),
+                )
+                row = cur.fetchone()
+                if row and row[0] and row[0] >= 6:
+                    sire_n = row[0]
+                    sire_pct = 100 * row[1] / row[0]
+                    sire_scope = f"{surface}{distance}m"
 
         # 鞍上のコース複勝率 (騎手名の完全一致 + 短縮 fallback)
         jockey_pct = 0.0
@@ -1633,6 +1654,7 @@ def sec_handpicked_top(
             scored.append({
                 "name": name, "hn": hn, "score": score,
                 "sire": sire_raw, "sire_pct": sire_pct, "sire_n": sire_n,
+                "sire_scope": sire_scope,
                 "jockey": jockey, "jockey_pct": jockey_pct, "jockey_n": jockey_n,
             })
 
@@ -1645,11 +1667,12 @@ def sec_handpicked_top(
     medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
     lines = []
     for i, h in enumerate(scored[:top]):
-        # 主軸: 父産駒の複勝率 (分母付き)。鞍上は副次的に。
+        # 主軸: 父産駒の複勝率 (分母付き + region)。鞍上は副次的に。
         parts = []
         if h["sire_pct"] >= 30:
             sire_short = h["sire"][:8]
-            parts.append(f"父{sire_short}{h['sire_pct']:.0f}%({h['sire_n']}走)")
+            scope = h.get("sire_scope") or ""
+            parts.append(f"父{sire_short}{scope}{h['sire_pct']:.0f}%({h['sire_n']}走)")
         if h["jockey_pct"] >= 30:
             parts.append(f"{h['jockey']}{h['jockey_pct']:.0f}%")
         facts_str = " / ".join(parts) if parts else f"スコア{h['score']:.0f}"
