@@ -1855,7 +1855,7 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"🎯 {day} {label}\n{theme}"
-    cta = "→ 今夜AI最終予想+note告知🔔"
+    cta = "→ 今夜AI最終予想🔔"  # #79: note は手動のため告知しない
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1901,7 +1901,7 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"🌟 {day} {label}\n{theme}"
-    cta = "→ 土朝に印 (◎○▲) と買い目を発表🔔\n→ note記事も公開予定📝"
+    cta = "→ 土朝に印 (◎○▲) と買い目を発表🔔"  # #79: note は手動のため自動告知しない
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)

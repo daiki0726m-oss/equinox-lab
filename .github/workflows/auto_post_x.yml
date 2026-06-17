@@ -516,7 +516,9 @@ jobs:
           elif [ "$TYPE" = "predict" ]; then
             echo "⏳ 7:00予測完了。X投稿は10:15のpost_predict後に実行します"
           elif [ "$TYPE" = "odds_flash" ]; then
-            echo "📡 オッズ更新完了。X投稿は10:15のpost_predictで実行します"
+            # #79: 旧版は echo だけで odds_flash を一度も投稿していなかった (土日9:30枠が空)。
+            # cmd_odds_flash を実際に呼ぶ。post_predict (10:15) とは別物 (オッズ確定後の最終見解)。
+            python post_x.py odds_flash --date "$DATE"
           elif [ "$TYPE" = "post_predict" ]; then
             python post_x.py predict --date "$DATE"
           elif [ "$TYPE" = "results" ]; then

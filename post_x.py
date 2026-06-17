@@ -2983,8 +2983,7 @@ def cmd_weekly_review(args):
     t3 += "火〜木 12:00: 重賞データ分析\n"
     t3 += "土日 7:00: 全レースAI予想\n"
     t3 += "土日 20:00: 結果報告\n\n"
-    t3 += "フォローして見逃さないでください🔔\n"
-    t3 += "noteで重賞の無料分析も公開中👇"
+    t3 += "フォローして見逃さないでください🔔"  # #79: note 自動言及を削除 (手動投稿のため)
 
     tweets = [t1, t2, t3]
 
@@ -3471,9 +3470,8 @@ def cmd_odds_flash(args):
                     tweet += f"\n💎 {p['horse_name']}は妙味あり！\n"
                     break
 
-        tweet += f"\n全レース予想はnoteで👇\n"
-        tweet += f"{NOTE_URL}\n"
-        tweet += f"#競馬予想 #AI予想"
+        # #79: note は手動投稿のため自動リンクを入れない (ユーザー指示)。
+        tweet += f"\n#競馬予想 #AI予想"
 
         # ファクトチェック
         print(f"\n📊 ファクトチェック: {venue} {rname}")
