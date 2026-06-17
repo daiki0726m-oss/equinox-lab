@@ -1659,22 +1659,23 @@ def sec_handpicked_top(
             })
 
     scored.sort(key=lambda x: -x["score"])
-    # タイトルで「東京芝2400m 過去6年の複勝率」と明示
-    title = f"【コース適性TOP】{venue}{surface}{distance}m 過去{years}年・複勝率"
+    # #81: title 短縮 (単一section slot で3頭目を確保)。% は行で「父X複勝率」と自明。
+    title = f"【コース適性TOP{top}】{venue}{surface}{distance}m"
     if not scored:
         return (title, ["該当馬データ不足"], 0)
 
     medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
     lines = []
     for i, h in enumerate(scored[:top]):
-        # 主軸: 父産駒の複勝率 (分母付き + region)。鞍上は副次的に。
+        # 主軸: 父産駒の複勝率 + region。#81: 単一セクション slot (木夜) で 3 行が
+        # 280 字超過→末尾 trim で 1 頭に痩せていたため (N走) を削って行を短縮。
         parts = []
         if h["sire_pct"] >= 30:
             sire_short = h["sire"][:8]
             scope = h.get("sire_scope") or ""
-            parts.append(f"父{sire_short}{scope}{h['sire_pct']:.0f}%({h['sire_n']}走)")
+            parts.append(f"父{sire_short}{scope}{h['sire_pct']:.0f}%")
         if h["jockey_pct"] >= 30:
-            parts.append(f"{h['jockey']}{h['jockey_pct']:.0f}%")
+            parts.append(f"騎{h['jockey']}{h['jockey_pct']:.0f}%")
         facts_str = " / ".join(parts) if parts else f"スコア{h['score']:.0f}"
         lines.append(f"{medals[i]} {h['hn']}番 {h['name']}: {facts_str}")
     return (title, lines, len(scored))

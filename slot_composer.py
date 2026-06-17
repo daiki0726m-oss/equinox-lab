@@ -1902,7 +1902,7 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"🌟 {day} {label}\n{theme}"
-    cta = "→ 土朝に印 (◎○▲) と買い目を発表🔔"  # #79: note は手動のため自動告知しない
+    cta = "→ 土朝に印+買い目🔔"  # #79 note削除 / #81 短縮し3頭目を確保
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
