@@ -43,13 +43,14 @@ def _get_entries(conn, race_id: str) -> list:
                 entries = []
                 for p in preds:
                     name = p.get("horse_name", "")
-                    cur.execute("SELECT horse_id, sire FROM horses WHERE horse_name = ? LIMIT 1", (name,))
+                    cur.execute("SELECT horse_id, sire, damsire FROM horses WHERE horse_name = ? LIMIT 1", (name,))
                     h = cur.fetchone()
                     entries.append({
                         "horse_id": h[0] if h else None,
                         "horse_name": name,
                         "horse_number": p.get("horse_number") or 0,
                         "sire": h[1] if h else None,
+                        "damsire": h[2] if h else None,  # #86: 母父を全 section に供給
                         "jockey_name": p.get("jockey_name", ""),
                     })
                 return entries
@@ -58,7 +59,7 @@ def _get_entries(conn, race_id: str) -> list:
 
     # ② results から (finish_position=0 の出走予定エントリ)
     cur.execute("""
-        SELECT res.horse_id, h.horse_name, res.horse_number, h.sire, j.jockey_name
+        SELECT res.horse_id, h.horse_name, res.horse_number, h.sire, j.jockey_name, h.damsire
         FROM results res
         JOIN horses h ON res.horse_id = h.horse_id
         LEFT JOIN jockeys j ON res.jockey_id = j.jockey_id
@@ -68,7 +69,7 @@ def _get_entries(conn, race_id: str) -> list:
     rows = cur.fetchall()
     return [
         {"horse_id": r[0], "horse_name": r[1], "horse_number": r[2],
-         "sire": r[3], "jockey_name": r[4]}
+         "sire": r[3], "jockey_name": r[4], "damsire": r[5]}  # #86: 母父を供給
         for r in rows
     ]
 
@@ -1335,6 +1336,39 @@ def _lineage_top3(cur, col, name, from_date, *, surface=None, venue=None,
     return (row[0] or 0, row[1] or 0) if row else (0, 0)
 
 
+def _lineage_course_rate(cur, col, name, venue, surface, distance, from_date,
+                         min_exact=4, min_broad=6):
+    """系統 (col='h.sire'|'h.damsire') = name の『当コース複勝率(3着内率)』を返す。
+
+    exact (venue×surface×distance) が薄い (min_exact 未満) 時は surface×距離(全場) に
+    broaden する (#81 と同方針)。全 section で父/母父の率を統一的に出すための共通ヘルパー (#86)。
+    Returns (pct, n, scope): scope='当コース' / '{surface}{distance}m' / '' (データ不足)。
+    col は 'h.sire'/'h.damsire' の固定値のみ (SQL インジェクション無し)。
+    """
+    if not name:
+        return (0.0, 0, "")
+    for where_extra, params, scope, min_n in (
+        ("AND r.venue=?", (surface, distance, venue, from_date, name), "当コース", min_exact),
+        ("", (surface, distance, from_date, name), f"{surface}{distance}m", min_broad),
+    ):
+        cur.execute(
+            f"""SELECT COUNT(*), SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END)
+                FROM races r JOIN results res ON r.race_id=res.race_id
+                JOIN horses h ON res.horse_id=h.horse_id
+                WHERE r.surface=? AND r.distance=? {where_extra} AND r.race_date>=?
+                  AND {col}=? AND res.finish_position>0""",
+            params)
+        row = cur.fetchone()
+        if row and row[0] and row[0] >= min_n:
+            return (100 * row[1] / row[0], row[0], scope)
+    return (0.0, 0, "")
+
+
+def _scope_tag(scope: str) -> str:
+    """当コース集計は無印、broaden 時のみ範囲を括弧表記 (率の母数を誤解させない, #86)。"""
+    return "" if scope in ("当コース", "") else f"({scope})"
+
+
 def sec_pedigree_deep(
     conn, race_id, venue, surface, distance,
     top: int = 3, years: int = 6, min_runs: int = 8, show_number: bool = True,
@@ -1446,28 +1480,17 @@ def _score_entries_by_course(conn, race_id, venue, surface, distance, years=6):
     scored = []
     for e in entries:
         sire_raw = (e.get("sire") or "").split("(")[0].strip()
+        damsire_raw = (e.get("damsire") or "").split("(")[0].strip()
         jockey = (e.get("jockey_name") or "").strip()
         name = e.get("horse_name", "")
         hn = e.get("horse_number") or 0
         if not name:
             continue
-        sire_pct = 0.0
-        sire_n = 0
-        if sire_raw:
-            cur.execute(
-                """
-                SELECT COUNT(*) runs, SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) top3
-                FROM races r JOIN results res ON r.race_id=res.race_id
-                JOIN horses h ON res.horse_id=h.horse_id
-                WHERE r.surface=? AND r.distance=? AND r.venue=? AND r.race_date >= ?
-                  AND h.sire = ? AND res.finish_position > 0
-                """,
-                (surface, distance, venue, from_date_sire, sire_raw),
-            )
-            row = cur.fetchone()
-            if row and row[0] and row[0] >= 4:
-                sire_n = row[0]
-                sire_pct = 100 * row[1] / row[0]
+        # #86: 父『と母父』の当コース複勝率を共通ヘルパーで取得 (薄ければ同距離全場へ broaden)。
+        sire_pct, sire_n, sire_scope = _lineage_course_rate(
+            cur, "h.sire", sire_raw, venue, surface, distance, from_date_sire)
+        dam_pct, dam_n, dam_scope = _lineage_course_rate(
+            cur, "h.damsire", damsire_raw, venue, surface, distance, from_date_sire)
         jockey_pct = 0.0
         jockey_n = 0
         if jockey:
@@ -1487,7 +1510,8 @@ def _score_entries_by_course(conn, race_id, venue, surface, distance, years=6):
                 jockey_pct = 100 * row[1] / row[0]
         scored.append({
             "name": name, "hn": hn,
-            "sire": sire_raw, "sire_pct": sire_pct, "sire_n": sire_n,
+            "sire": sire_raw, "sire_pct": sire_pct, "sire_n": sire_n, "sire_scope": sire_scope,
+            "damsire": damsire_raw, "dam_pct": dam_pct, "dam_n": dam_n, "dam_scope": dam_scope,
             "jockey": jockey, "jockey_pct": jockey_pct, "jockey_n": jockey_n,
         })
     return scored
@@ -1518,32 +1542,47 @@ def sec_notable_horses(
 
     # タイトルは簡潔に (コース詳細はヘッダーと各馬の行に既出 = 冗長を避け馬を多く載せる, #53)
     if mode == "blood":
-        # #80: 「父X%」が何の%か不明 → タイトルに「父産駒の当コース複勝率」を明示。
-        pool = [h for h in scored if h["sire_pct"] > 0]
-        pool.sort(key=lambda x: (-x["sire_pct"], -x["sire_n"]))
-        title = f"【血統で狙う注目馬】{venue}{surface}{distance}m\n(数値=父産駒の当コース複勝率)"
+        # #86: 血統テーマなので父『と母父』を必ず出す。%の意味も legend で明示。
+        pool = [h for h in scored if h["sire_pct"] > 0 or h["dam_pct"] > 0]
+        pool.sort(key=lambda x: (-(x["sire_pct"] + x["dam_pct"] * 0.7), -x["sire_n"]))
+        title = (f"【血統で狙う注目馬】{venue}{surface}{distance}m\n"
+                 f"（数字＝父・母父産駒の当コース複勝率／3着内率）")
         def fmt(h):
-            return f"父{h['sire'][:9]} {h['sire_pct']:.0f}%({h['sire_n']}走)"
+            parts = []
+            if h["sire_n"] > 0:
+                parts.append(f"父{h['sire'][:12]}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%")
+            if h["dam_n"] > 0:
+                parts.append(f"母父{h['damsire'][:18]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%")
+            return "・".join(parts) if parts else "血統データ不足"
     elif mode == "jockey":
         pool = [h for h in scored if h["jockey_pct"] > 0]
         pool.sort(key=lambda x: (-x["jockey_pct"], -x["jockey_n"]))
-        title = f"【鞍上で狙う注目馬】{venue}{surface}{distance}m\n(数値=鞍上の当コース複勝率)"
+        title = (f"【鞍上で狙う注目馬】{venue}{surface}{distance}m\n"
+                 f"（数字＝当コースの複勝率／3着内率）")
         def fmt(h):
-            extra = f" / 父{h['sire'][:7]}{h['sire_pct']:.0f}%" if h["sire_pct"] >= 30 else ""
-            return f"{h['jockey']} {h['jockey_pct']:.0f}%({h['jockey_n']}走){extra}"
+            extra = []
+            if h["sire_n"] > 0 and h["sire_pct"] >= 30:
+                extra.append(f"父{h['sire'][:10]}{h['sire_pct']:.0f}%")
+            if h["dam_n"] > 0 and h["dam_pct"] >= 30:
+                extra.append(f"母父{h['damsire'][:14]}{h['dam_pct']:.0f}%")
+            tail = ("・" + "・".join(extra)) if extra else ""
+            return f"騎{h['jockey']}{h['jockey_pct']:.0f}%{tail}"
     else:  # combined
         for h in scored:
-            h["_score"] = h["sire_pct"] * 1.0 + h["jockey_pct"] * 0.5
+            h["_score"] = h["sire_pct"] * 1.0 + h["dam_pct"] * 0.7 + h["jockey_pct"] * 0.5
         pool = [h for h in scored if h["_score"] > 0]
         pool.sort(key=lambda x: -x["_score"])
-        title = f"【今週の注目馬TOP{top}】{venue}{surface}{distance}m\n(%=当コース複勝率/父産駒・鞍上)"
+        title = (f"【今週の注目馬TOP{top}】{venue}{surface}{distance}m\n"
+                 f"（数字＝父・母父産駒/騎手の当コース複勝率）")
         def fmt(h):
             parts = []
-            if h["sire_pct"] >= 30:
-                parts.append(f"父{h['sire'][:9]}{h['sire_pct']:.0f}%")
+            if h["sire_n"] > 0:
+                parts.append(f"父{h['sire'][:10]}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%")
+            if h["dam_n"] > 0:
+                parts.append(f"母父{h['damsire'][:14]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%")
             if h["jockey_pct"] >= 30:
                 parts.append(f"騎{h['jockey']}{h['jockey_pct']:.0f}%")
-            return " / ".join(parts) if parts else "コース実績上位"
+            return "・".join(parts) if parts else "コース実績上位"
 
     if not pool:
         return (title, [], 0)
@@ -1585,51 +1624,19 @@ def sec_handpicked_top(
     scored = []
     for e in entries:
         sire_raw = (e.get("sire") or "").split("(")[0].strip()
+        damsire_raw = (e.get("damsire") or "").split("(")[0].strip()
         jockey = (e.get("jockey_name") or "").strip()
         name = e.get("horse_name", "")
         hn = e.get("horse_number") or 0
         if not name:
             continue
 
-        # 父産駒のコース複勝率。#81: exact-course(venue×surface×distance)はマイナー
-        # コースで4走未満が多く投稿が1頭に痩せる → データ薄い時は「同surface×距離(全場)」に
-        # 自動で broaden して頭数を確保 (ラベルで region を区別)。
-        sire_pct = 0.0
-        sire_n = 0
-        sire_scope = ""
-        if sire_raw:
-            cur.execute(
-                """
-                SELECT COUNT(*) runs, SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) top3
-                FROM races r JOIN results res ON r.race_id=res.race_id
-                JOIN horses h ON res.horse_id=h.horse_id
-                WHERE r.surface=? AND r.distance=? AND r.venue=? AND r.race_date >= ?
-                  AND h.sire = ? AND res.finish_position > 0
-                """,
-                (surface, distance, venue, from_date_sire, sire_raw),
-            )
-            row = cur.fetchone()
-            if row and row[0] and row[0] >= 4:
-                sire_n = row[0]
-                sire_pct = 100 * row[1] / row[0]
-                sire_scope = "当コース"
-            else:
-                # broaden: 同 surface × 距離 (全場) で再集計
-                cur.execute(
-                    """
-                    SELECT COUNT(*) runs, SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) top3
-                    FROM races r JOIN results res ON r.race_id=res.race_id
-                    JOIN horses h ON res.horse_id=h.horse_id
-                    WHERE r.surface=? AND r.distance=? AND r.race_date >= ?
-                      AND h.sire = ? AND res.finish_position > 0
-                    """,
-                    (surface, distance, from_date_sire, sire_raw),
-                )
-                row = cur.fetchone()
-                if row and row[0] and row[0] >= 6:
-                    sire_n = row[0]
-                    sire_pct = 100 * row[1] / row[0]
-                    sire_scope = f"{surface}{distance}m"
+        # #86: 父産駒『と母父産駒』の当コース複勝率を共通ヘルパーで取得 (薄ければ同距離全場へ
+        #   broaden)。ユーザー要望「父だけで判断するな・母父まで出せ」への対応。
+        sire_pct, sire_n, sire_scope = _lineage_course_rate(
+            cur, "h.sire", sire_raw, venue, surface, distance, from_date_sire)
+        dam_pct, dam_n, dam_scope = _lineage_course_rate(
+            cur, "h.damsire", damsire_raw, venue, surface, distance, from_date_sire)
 
         # 鞍上のコース複勝率 (騎手名の完全一致 + 短縮 fallback)
         jockey_pct = 0.0
@@ -1650,35 +1657,36 @@ def sec_handpicked_top(
                 jockey_n = row[0]
                 jockey_pct = 100 * row[1] / row[0]
 
-        # スコア = 父産駒複勝率 * 1.0 + 鞍上複勝率 * 0.5
-        score = sire_pct * 1.0 + jockey_pct * 0.5
+        # スコア = 父1.0 + 母父0.7 + 鞍上0.5 (母父も評価に反映)
+        score = sire_pct * 1.0 + dam_pct * 0.7 + jockey_pct * 0.5
         if score > 0:
             scored.append({
                 "name": name, "hn": hn, "score": score,
-                "sire": sire_raw, "sire_pct": sire_pct, "sire_n": sire_n,
-                "sire_scope": sire_scope,
+                "sire": sire_raw, "sire_pct": sire_pct, "sire_n": sire_n, "sire_scope": sire_scope,
+                "damsire": damsire_raw, "dam_pct": dam_pct, "dam_n": dam_n, "dam_scope": dam_scope,
                 "jockey": jockey, "jockey_pct": jockey_pct, "jockey_n": jockey_n,
             })
 
     scored.sort(key=lambda x: -x["score"])
-    # #81: title 短縮 (単一section slot で3頭目を確保)。% は行で「父X複勝率」と自明。
-    title = f"【コース適性TOP{top}】{venue}{surface}{distance}m"
+    # #86: ユーザー指摘「何の%か分からない / 父だけ」を解消 → legend で『当コースの複勝率
+    #   (3着内率)』と明示し、父だけでなく母父も必ず出す。
+    title = (f"【コース適性TOP{top}】{venue}{surface}{distance}m\n"
+             f"（数字＝当コースの複勝率／3着内率・過去{years}年）")
     if not scored:
         return (title, ["該当馬データ不足"], 0)
 
     medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
     lines = []
     for i, h in enumerate(scored[:top]):
-        # 主軸: 父産駒の複勝率 + region。#81: 単一セクション slot (木夜) で 3 行が
-        # 280 字超過→末尾 trim で 1 頭に痩せていたため (N走) を削って行を短縮。
         parts = []
-        if h["sire_pct"] >= 30:
-            sire_short = h["sire"][:8]
-            scope = h.get("sire_scope") or ""
-            parts.append(f"父{sire_short}{scope}{h['sire_pct']:.0f}%")
-        if h["jockey_pct"] >= 30:
+        if h["sire_n"] > 0:
+            parts.append(f"父{h['sire'][:12]}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%")
+        if h["dam_n"] > 0:
+            # #80/#86: 母父の英字名 (Dubai Destination 等) が途中で切れる苦情 → 18字に拡張
+            parts.append(f"母父{h['damsire'][:18]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%")
+        if h["jockey_n"] > 0:
             parts.append(f"騎{h['jockey']}{h['jockey_pct']:.0f}%")
-        facts_str = " / ".join(parts) if parts else f"スコア{h['score']:.0f}"
+        facts_str = "・".join(parts) if parts else "コース実績データ不足"
         lines.append(f"{medals[i]} {h['hn']}番 {h['name']}: {facts_str}")
     return (title, lines, len(scored))
 
