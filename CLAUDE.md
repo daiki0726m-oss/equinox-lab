@@ -119,6 +119,7 @@ JRA の出走スケジュール:
 
 - DB の正本は git 上では **keiba.db.gz** (#64: raw が GitHub 100MB 制限超過)。作業ファイル keiba.db は untracked。**pull 後は `bash scripts/db_unpack.sh`、commit 前は `bash scripts/db_pack.sh`**。write の取り消しは db_unpack.sh 再実行 (= **DB 補完作業中は unpack 禁止。書き込み完了まで pull/unpack しない**)
 - features.py と fast_train.py の `get_feature_columns()` は**完全一致**
+- **`post_sections.py` の出走馬セクションを編集したら必ず `python3 scripts/verify_post_sections.py`** を実行 (#86)。「血統は父+母父」「%は複勝率/3着内率と legend で明示」を機械検査。違反で exit 1 = commit 前に止める。1 section だけ直して他を漏らす再発 (#21/#86) の防止弁
 - 投稿履歴: `docs/data/.post_history.json` が git tracked / source of truth。ローカルの `.post_history.json` は .gitignore 対象のフォールバックバックアップ
 - weekly_retrain が走ると models/*.pkl が更新される(自動デプロイ)
 - ML 特徴量を変えたら **必ず retrain が必要** (古い models/*.pkl は新 features で predict できずエラー)
