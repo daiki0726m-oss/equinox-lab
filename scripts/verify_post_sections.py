@@ -85,11 +85,12 @@ def main():
         print(f"🔎 検査対象: {race['race_date']} {race['venue']} {race['race_name']} ({v}{s}{d}m)")
 
         problems = []
-        # コース適性TOP (毎朝の主力。父だけ→母父漏れの再発元)
+        # コース適性TOP (#87: 鞍上主役に転換、母父は際立つ時のみ → 母父必須にしない)
         t, lines, _ = ps.sec_handpicked_top(conn, rid, v, s, d, top=3)
-        problems += _check_section("コース適性TOP", t, lines, require_pedigree=True)
-        # 注目馬 (combined/blood/jockey)。blood は血統テーマなので母父必須
-        for mode, req in (("combined", True), ("blood", True), ("jockey", False)):
+        problems += _check_section("コース適性TOP", t, lines, require_pedigree=False)
+        # 注目馬: blood=血統テーマなので母父必須 / combined・jockey は母父任意 (#87:
+        #   総合まで母父リードにすると「血統ばっかり」になるため、母父深掘りは blood に集約)。
+        for mode, req in (("combined", False), ("blood", True), ("jockey", False)):
             t, lines, _ = ps.sec_notable_horses(conn, rid, v, s, d, mode=mode, top=3)
             problems += _check_section(f"注目馬:{mode}", t, lines, require_pedigree=req)
         # 血統深層 (元から母父あり、回帰監視)

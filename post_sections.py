@@ -1442,11 +1442,14 @@ def sec_pedigree_deep(
     main = [r for r in shown if r["sc"] is not None][:top]
     main_keys = {id(r) for r in main}
     for r in main:
-        seg = [f"父{r['sire']}当コース{r['sc']:.0f}%"]
+        # #87: 母父を主役に並べる (ユーザー:「父はいらない、母父メイン」)。母父の隠れた
+        #   適性 (道悪/スタミナ) を先頭に、父の当コースは補足として後ろに小さく添える。
+        seg = []
         if r["dw"] is not None:
             seg.append(f"母父{r['damsire']}道悪{r['dw']:.0f}%")
         elif r["ds"] is not None:
             seg.append(f"母父{r['damsire']}長距離{r['ds']:.0f}%")
+        seg.append(f"父{r['sire']}当コース{r['sc']:.0f}%")
         lines.append(f"🩸{_tag(r)}: " + "・".join(seg))
 
     # 母父の隠し味 = メイン表示の外から、母父の道悪/スタミナが際立つ「隠れた1頭」。
@@ -1543,46 +1546,44 @@ def sec_notable_horses(
 
     # タイトルは簡潔に (コース詳細はヘッダーと各馬の行に既出 = 冗長を避け馬を多く載せる, #53)
     if mode == "blood":
-        # #86: 血統テーマなので父『と母父』を必ず出す。%の意味も legend で明示。
-        pool = [h for h in scored if h["sire_pct"] > 0 or h["dam_pct"] > 0]
-        pool.sort(key=lambda x: (-(x["sire_pct"] + x["dam_pct"] * 0.7), -x["sire_n"]))
-        title = (f"【血統で狙う注目馬】{venue}{surface}{distance}m\n"
-                 f"（数字＝父・母父産駒の当コース複勝率／3着内率）")
+        # #87: 血統テーマの slot (火曜のみ) は『母父』を主役に (ユーザー:「父はいらない、
+        #   母父だけでもいい」)。父は母父データが無い時のフォールバックでのみ表示。
+        pool = [h for h in scored if h["dam_pct"] > 0 or h["sire_pct"] > 0]
+        pool.sort(key=lambda x: (-x["dam_pct"], -x["dam_n"], -x["sire_pct"]))
+        title = (f"【母父まで見る血統注目馬】{venue}{surface}{distance}m\n"
+                 f"（数字＝母父産駒の当コース複勝率／3着内率。深い血統の妙味）")
         def fmt(h):
-            parts = []
-            if h["sire_n"] > 0:
-                parts.append(f"父{h['sire'][:12]}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%")
             if h["dam_n"] > 0:
-                parts.append(f"母父{h['damsire'][:18]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%")
-            return "・".join(parts) if parts else "血統データ不足"
+                return f"母父{h['damsire'][:18]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%"
+            if h["sire_n"] > 0:  # 母父データ無し時のみ父で代替
+                return f"父{h['sire'][:12]}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%"
+            return "血統データ不足"
     elif mode == "jockey":
         pool = [h for h in scored if h["jockey_pct"] > 0]
         pool.sort(key=lambda x: (-x["jockey_pct"], -x["jockey_n"]))
         title = (f"【鞍上で狙う注目馬】{venue}{surface}{distance}m\n"
                  f"（数字＝当コースの複勝率／3着内率）")
         def fmt(h):
-            extra = []
-            if h["sire_n"] > 0 and h["sire_pct"] >= 30:
-                extra.append(f"父{h['sire'][:10]}{h['sire_pct']:.0f}%")
-            if h["dam_n"] > 0 and h["dam_pct"] >= 30:
-                extra.append(f"母父{h['damsire'][:14]}{h['dam_pct']:.0f}%")
-            tail = ("・" + "・".join(extra)) if extra else ""
+            # #87: 父は出さない。母父は際立つ時(45%+)だけ妙味で添える。
+            tail = ""
+            if h["dam_n"] > 0 and h["dam_pct"] >= 45:
+                tail = f"・母父{h['damsire'][:14]}{h['dam_pct']:.0f}%"
             return f"騎{h['jockey']}{h['jockey_pct']:.0f}%{tail}"
     else:  # combined
+        # #87: 総合枠は『鞍上(コース実績)』を主役に。父は出さない (ユーザー要望)。
+        #   母父は際立つ時(45%+)だけ妙味で添える = 毎日の血統リードを脱却。
         for h in scored:
-            h["_score"] = h["sire_pct"] * 1.0 + h["dam_pct"] * 0.7 + h["jockey_pct"] * 0.5
+            h["_score"] = h["jockey_pct"] * 1.0 + h["dam_pct"] * 0.5 + h["sire_pct"] * 0.3
         pool = [h for h in scored if h["_score"] > 0]
         pool.sort(key=lambda x: -x["_score"])
         title = (f"【今週の注目馬TOP{top}】{venue}{surface}{distance}m\n"
-                 f"（数字＝父・母父産駒/騎手の当コース複勝率）")
+                 f"（数字＝当コースの複勝率／3着内率）")
         def fmt(h):
             parts = []
-            if h["sire_n"] > 0:
-                parts.append(f"父{h['sire'][:10]}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%")
-            if h["dam_n"] > 0:
-                parts.append(f"母父{h['damsire'][:14]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%")
             if h["jockey_pct"] >= 30:
                 parts.append(f"騎{h['jockey']}{h['jockey_pct']:.0f}%")
+            if h["dam_n"] > 0 and h["dam_pct"] >= 45:
+                parts.append(f"母父{h['damsire'][:14]}{h['dam_pct']:.0f}%")
             return "・".join(parts) if parts else "コース実績上位"
 
     if not pool:
@@ -1680,14 +1681,14 @@ def sec_handpicked_top(
     lines = []
     for i, h in enumerate(scored[:top]):
         parts = []
-        if h["sire_n"] > 0:
-            parts.append(f"父{h['sire'][:12]}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%")
-        if h["dam_n"] > 0:
-            # #80/#86: 母父の英字名 (Dubai Destination 等) が途中で切れる苦情 → 18字に拡張
-            parts.append(f"母父{h['damsire'][:18]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%")
+        # #87: 父は表示しない (ユーザー:「父はいらない」)。鞍上の当コース実績を主役にする。
+        #   選定スコアには父も使う (内部) が、画面は鞍上中心 = 血統リードを脱却。
         if h["jockey_n"] > 0:
             parts.append(f"騎{h['jockey']}{h['jockey_pct']:.0f}%")
-        facts_str = "・".join(parts) if parts else "コース実績データ不足"
+        # 母父は『本当に際立つ時(45%+)』だけ深い妙味として添える (毎回血統を出さない)。
+        if h["dam_n"] > 0 and h["dam_pct"] >= 45:
+            parts.append(f"母父{h['damsire'][:18]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%")
+        facts_str = "・".join(parts) if parts else f"コース適性スコア{h['score']:.0f}"
         lines.append(f"{medals[i]} {h['hn']}番 {h['name']}: {facts_str}")
     return (title, lines, len(scored))
 

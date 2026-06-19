@@ -1243,13 +1243,15 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     if nb:
         sections.append(nb)
 
-    # 🆕 #78: 母父まで掘る「血統の深層」(出走確定後のみ)。父だけの浅い投稿への対応。
-    # 馬番は枠順抽選 (金11時) 後のみ表示 (#27)。
-    pt, plines, pn = sec_pedigree_deep(
-        conn, race_id, venue, surface, distance, top=3, years=6,
-        show_number=_is_post_position_drawn(race))
-    if pn > 0 and len(plines) >= 2:  # 父+母父データが取れた時だけ
-        sections.append(_make_section(pt, plines))
+    # 🆕 #87: 「血統ばっかり」是正 — 母父まで掘る血統深層は『火曜(血統テーマの日)』だけに限定。
+    #   月昼はコース傾向 (枠順/波乱/種牡馬傾向) が主題なので血統深層は出さない。
+    #   血統深層を平日4 slot に乗せていたのが画一化の主因 (#87)。
+    if _dow == 1:
+        pt, plines, pn = sec_pedigree_deep(
+            conn, race_id, venue, surface, distance, top=3, years=6,
+            show_number=_is_post_position_drawn(race))
+        if pn > 0 and len(plines) >= 2:  # 父+母父データが取れた時だけ
+            sections.append(_make_section(pt, plines))
 
     # Section 1: 鉄板系統の該当馬 (該当馬なし非表示、複数馬は「他N頭」に圧縮)
     t1, lines1, n1 = sec_sire_course_cross(
@@ -1632,14 +1634,9 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
             if m:
                 horses_in_sec1.add(m.group(1).strip())
 
-    # 🆕 #78: 母父まで掘る「血統の深層」(金=枠順確定後、馬番も出せる)
-    ptd, pdl, pdn = sec_pedigree_deep(
-        conn, race_id, venue, surface, distance, top=3, years=6,
-        show_number=_is_post_position_drawn(race))
-    if pdn > 0 and len(pdl) >= 2:
-        sections.append(_make_section(ptd, pdl))
-        if not theme:
-            theme = "血統の深層(父+母父)"
+    # 🆕 #87: 「血統ばっかり」是正 — 金朝の本来テーマは『AI独自パターン分析』(上の
+    #   _morning_sec_pattern が主役)。血統深層は火曜に集約し金朝からは外す
+    #   (パターン + 種牡馬該当 で構成し、毎朝の血統リード画一化を解消)。
 
     # Section 2: 種牡馬 TOP (補助) — Section 1 で既出の馬は除外 (重複防止)
     t2, lines2, n2 = sec_sire_course_cross(
@@ -1785,15 +1782,18 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
         ))
         theme = "出走馬×コース適性"
 
-    # 🆕 #78: 母父まで掘る「血統の深層」(木=出走確定日、血統が主役)。
-    # 先頭ツイートはヘッダで埋まるため、2番目以降の独立ツイートに置く (trim回避)。
-    ptd, pdl, pdn = sec_pedigree_deep(
-        conn, race_id, venue, surface, distance, top=3, years=6,
-        show_number=_is_post_position_drawn(race))
-    if pdn > 0 and len(pdl) >= 2:
-        sections.append(_make_section(ptd, pdl))
+    # 🆕 #87: 「血統ばっかり」是正 — 水昼の本来テーマは『追い切り情報』(schedule)。
+    #   血統深層は火曜/木朝に集約し、ここでは追い切り評価(あれば) + 末脚傾向で
+    #   調整・コースの切り口に変える (毎日血統リードの画一化を解消)。
+    tw, lw, nw = sec_workout_focus(conn, race_id, top=4)
+    if lw and nw > 0 and "データなし" not in (lw[0] if lw else ""):
+        sections.append(_make_section(tw, lw[:4]))
+        theme = "追い切り評価とコース傾向"
+    tp, lp, npace = sec_pace_decisive(conn, venue, surface, distance, years=6)
+    if lp and npace > 0:
+        sections.append(_make_section("【コース脚質傾向 (末脚)】", lp[:2]))
         if not theme:
-            theme = "血統の深層(父+母父)"
+            theme = "コース傾向 (末脚決着型か)"
 
     # Section 2: 補助 — 種牡馬TOP の該当馬 (該当馬なし非表示)
     t2, lines2, n2 = sec_sire_course_cross(
