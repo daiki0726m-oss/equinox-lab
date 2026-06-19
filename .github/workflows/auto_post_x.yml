@@ -73,6 +73,13 @@ on:
     - cron: '30 8 * * 6,0'
     # 土日 18:30 JST (UTC 9:30) → refresh_dashboard
     - cron: '30 9 * * 6,0'
+  # 🆕 #88: fetch_weekend_races 完了をトリガーに即 predict (土日のみ)。
+  #   7:00 の別 cron を待たず、fetch 直後 (~5:30-6:00) に予測を反映する。
+  #   data取得(fetch 5:00)→予測(7:00)の分断 + 二重 cron 遅延を解消する。
+  workflow_run:
+    workflows: ["📅 Fetch Weekend Races"]
+    types:
+      - completed
 
 # 🆕 #56 (2026-06-10): 同時多重発火の直列化。冗長 cron / watchdog / 手動 dispatch が
 # 重なっても、前の run が posted_slots lock を push し終えてから次の run が checkout する
@@ -267,6 +274,23 @@ jobs:
             echo "🗓 date_override 指定: $TODAY_YYYYMMDD"
           fi
           echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE, SCHEDULE=$SCHEDULE, DATE=$TODAY_YYYYMMDD"
+
+          # ── 🆕 #88: fetch_weekend_races 完了トリガー → 即 predict (土日のみ) ──
+          # fetch (5:00) が終わった直後に予測を回し、7:00 cron を待たずに ~6時前に反映する。
+          # 平日の fetch (来週末レース登録) では予測不要 (レースは数日先) なので skip。
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            CONCL="${{ github.event.workflow_run.conclusion }}"
+            echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
+            echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
+            if [ "$CONCL" = "success" ] && [ "$DOW" -ge 6 ]; then
+              echo "type=predict" >> $GITHUB_OUTPUT
+              echo "📬 fetch完了トリガー → predict (土日朝、fetch直後に即予測)"
+            else
+              echo "type=skip" >> $GITHUB_OUTPUT
+              echo "📭 workflow_run 対象外 (DOW=$DOW/平日 or concl=$CONCL) → skip"
+            fi
+            exit 0
+          fi
 
           # ── dispatch からの直接モード指定 (watchdog/race_day_runner/手動) ──
           if [ "$MODE" != "" ] && [ "$MODE" != "auto" ]; then
