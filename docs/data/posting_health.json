@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-20T12:51:58.883436+09:00",
+  "generated_at": "2026-06-20T16:42:21.245920+09:00",
   "today": "2026-06-20 (Sat)",
   "weekday": 5,
   "slots": {
@@ -55,12 +55,12 @@
       "expected": "10:15 JST",
       "deadline": "10:50 JST",
       "recent_success": {
-        "created_at": "2026-06-20T10:23:53+09:00",
-        "title": "post_predict",
-        "event": "workflow_dispatch",
-        "delay_minutes": 9
+        "created_at": "2026-06-20T13:46:57+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 212
       },
-      "delay_minutes": 9,
+      "delay_minutes": 212,
       "workflow": "auto_post_x.yml"
     },
     "results": {
