@@ -109,6 +109,30 @@ def export_predictions(date_str=None):
                 should_bet = bool(cached["should_bet"])
                 bet_reason = cached["bet_reason"] or ""
 
+                # 🆕 #90: 書き出し時に馬名を horses 正本で上書きし文字化けを根絶。
+                #   cache(predictions_json/all_bets_json) には予測時(#85/#90修正前)の化け名
+                #   スナップショットが残りうる (runner が古い cache を再 export する) ため、
+                #   export 側で常に正す = JSON は cache の状態に関わらず常にクリーン。
+                _FFFD = chr(65533)
+                name_by_num = {}
+                for rr in conn.execute(
+                    "SELECT res.horse_number AS n, hh.horse_name AS nm FROM results res "
+                    "JOIN horses hh ON hh.horse_id = res.horse_id WHERE res.race_id = ?",
+                    (race_id,)).fetchall():
+                    if rr['nm'] and _FFFD not in rr['nm']:
+                        name_by_num[rr['n']] = rr['nm']
+                for h in horses:
+                    n = h.get('horse_number')
+                    if n in name_by_num and (_FFFD in str(h.get('horse_name') or '') or not h.get('horse_name')):
+                        h['horse_name'] = name_by_num[n]
+                if isinstance(all_bets, dict):
+                    for _bt, _bets in all_bets.items():
+                        for _b in (_bets or []):
+                            _nums = _b.get('horse_numbers') or []
+                            _nms = [name_by_num.get(x) for x in _nums]
+                            if _nums and all(_nms):
+                                _b['horse_name'] = "-".join(_nms)
+
                 # 結果データ取得
                 res_rows = conn.execute("""
                     SELECT r.horse_number, r.finish_position, r.finish_time,
