@@ -1221,13 +1221,19 @@ def cmd_results(args):
             incomplete = []
             for t in targets:
                 row = conn.execute(
-                    "SELECT COUNT(*) c, SUM(CASE WHEN finish_position > 0 THEN 1 ELSE 0 END) d "
+                    "SELECT COUNT(*) c, SUM(CASE WHEN finish_position > 0 THEN 1 ELSE 0 END) d, "
+                    "SUM(CASE WHEN finish_position = 1 THEN 1 ELSE 0 END) w "
                     "FROM results WHERE race_id = ?", (t['race_id'],)
                 ).fetchone()
                 total = row['c'] or 0
                 done = row['d'] or 0
-                # 除外/中止1頭まで許容 (全頭確定が原則)
-                if total == 0 or done < total - 1:
+                has_winner = (row['w'] or 0) >= 1
+                # 🆕 #91: 出走取消/除外は finish_position=0 のまま残るため「全頭確定 (done≧total-1)」
+                #   を要求すると取消2頭以上で結果報告が永久ブロックされる
+                #   (2026-06-21 阪神1R 14/16=取消2頭 で結果が一晩未投稿)。collect はレース単位で
+                #   全着順を一括保存するので、1着が存在すれば そのレースは確定済 = 残り finish=0 は取消。
+                #   よって「1着が居れば完走」と判定 (取消は何頭でも許容)。
+                if total == 0 or not has_winner:
                     incomplete.append((t, total, done))
 
         if targets and incomplete:
@@ -1237,6 +1243,13 @@ def cmd_results(args):
                       f"{(t.get('race_name') or '')[:14]} ({done}/{total})")
             print(f"   (予想した全レース確定後に一括報告する設計)")
             print(f"   バイパス: 環境変数 ALLOW_PARTIAL_RESULTS=1")
+            # 🆕 #91: lock は完走チェック『前』に取得済 → skip のまま放置すると偽 lock が残り、
+            #   後続の results run が「投稿済」と誤認して永久に投稿できない。skip 時は lock を解放。
+            try:
+                clear_post_slot('results')
+                print("   ↩️ 未完走スキップのため results lock を解放 (次回再試行可能に)")
+            except Exception as _e:
+                print(f"   ⚠️ lock 解放失敗: {_e}")
             return
 
     def medal(fin):
