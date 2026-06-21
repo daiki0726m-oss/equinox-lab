@@ -21,6 +21,13 @@ on:
     - cron: '0 0 * * 6,0'      # 9:00 JST
     - cron: '30 0 * * 6,0'     # 9:30 JST
     - cron: '0 1 * * 6,0'      # 10:00 JST
+    # 🆕 #89: 朝の backup 帯 (8:30-10:00) が GitHub Actions cron skip で丸ごと不発だと
+    #   一日中 collect ゼロ → 結果がリアルタイム反映されない事故 (2026-06-21 実発生)。
+    #   昼以降にも保険 cron を分散。collect は当日全完走レースを毎回拾うので、
+    #   遅い起動でも「それまでに終わったレース」を一括収集できる (取りこぼし無し)。
+    - cron: '0 2 * * 6,0'      # 11:00 JST
+    - cron: '0 4 * * 6,0'      # 13:00 JST
+    - cron: '0 6 * * 6,0'      # 15:00 JST
   workflow_dispatch:
     inputs:
       end_hour:
