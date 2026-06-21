@@ -1013,11 +1013,19 @@ class NetkeibaScraper:
                 )
 
             for r in horse_records:
-                # 馬マスター
+                # 馬マスター。#90: INSERT OR IGNORE だと #85 修正前(EUC-JP)に登録された
+                # 文字化け馬名 (U+FFFD 含む) が上書きされず残る → 化け名なら正しい名で自己修復。
                 if r.get("horse_id"):
                     conn.execute("""
-                        INSERT OR IGNORE INTO horses (horse_id, horse_name, sex)
+                        INSERT INTO horses (horse_id, horse_name, sex)
                         VALUES (?, ?, ?)
+                        ON CONFLICT(horse_id) DO UPDATE SET
+                            horse_name = CASE
+                                WHEN (horses.horse_name IS NULL OR horses.horse_name = ''
+                                      OR horses.horse_name LIKE '%'||CHAR(65533)||'%')
+                                     AND excluded.horse_name != ''
+                                     AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
+                                THEN excluded.horse_name ELSE horses.horse_name END
                     """, (r["horse_id"], r.get("horse_name", ""), r.get("sex", "")))
 
                 # 騎手マスター

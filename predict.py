@@ -295,9 +295,17 @@ def cmd_predict(args):
                         )
                     for e in entries:
                         if e.get("horse_id"):
+                            # #90: 化け名(U+FFFD)なら正しい名で自己修復 (OR IGNOREだと残存)
                             conn.execute("""
-                                INSERT OR IGNORE INTO horses (horse_id, horse_name, sex)
+                                INSERT INTO horses (horse_id, horse_name, sex)
                                 VALUES (?, ?, ?)
+                                ON CONFLICT(horse_id) DO UPDATE SET
+                                    horse_name = CASE
+                                        WHEN (horses.horse_name IS NULL OR horses.horse_name = ''
+                                              OR horses.horse_name LIKE '%'||CHAR(65533)||'%')
+                                             AND excluded.horse_name != ''
+                                             AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
+                                        THEN excluded.horse_name ELSE horses.horse_name END
                             """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", "")))
                         if e.get("jockey_id"):
                             conn.execute("""
