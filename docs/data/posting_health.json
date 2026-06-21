@@ -1,12 +1,15 @@
 {
-  "generated_at": "2026-06-22T06:49:34.320682+09:00",
+  "generated_at": "2026-06-22T07:59:22.965895+09:00",
   "today": "2026-06-22 (Mon)",
   "weekday": 0,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "future",
+      "status": "ok",
       "expected": "07:30 JST",
+      "actual": "2026-06-22T07:49:58+09:00",
+      "delay_minutes": 20,
+      "event": "workflow_dispatch",
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
@@ -47,11 +50,11 @@
     },
     "fetch_monday": {
       "slot": "fetch_monday",
-      "status": "missing",
+      "status": "ok_delayed",
       "expected": "06:00 JST",
-      "deadline": "09:00 JST",
-      "fallback_mode": "auto",
-      "action": "gh workflow run auto_post_x.yml --ref main -f mode=auto",
+      "actual": "2026-06-22T07:17:41+09:00",
+      "delay_minutes": 78,
+      "event": "schedule",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_wednesday": {
@@ -80,12 +83,12 @@
     }
   },
   "summary": {
-    "ok": 0,
-    "missing": 1,
-    "future": 3,
+    "ok": 1,
+    "missing": 0,
+    "future": 2,
     "not_today": 8,
     "missed": 0,
-    "ok_delayed": 0,
+    "ok_delayed": 1,
     "ok_late": 0
   },
   "missed_slots": []
