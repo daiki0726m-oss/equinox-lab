@@ -720,7 +720,7 @@ def sec_dangerous_favorites(
         f"""
         SELECT
             COUNT(*) AS n,
-            SUM(CASE WHEN res.finish_position >= 5 THEN 1 ELSE 0 END) AS flop
+            SUM(CASE WHEN res.finish_position >= 4 THEN 1 ELSE 0 END) AS flop
         FROM races r
         JOIN results res ON r.race_id = res.race_id AND res.popularity = 1
         WHERE {base_where}
@@ -736,16 +736,19 @@ def sec_dangerous_favorites(
     if n < 3:
         return (title, [f"サンプル{n}件のみ (信頼性判定不可)"], n)
 
-    flop_pct = 100 * flop / n
+    # #93: 馬券圏外は「4着以下」(複勝=3着までが配当圏)。複勝率を主軸に「だから何」を解消。
+    flop_pct = 100 * flop / n          # 4着以下 = 馬券圏外 (複勝にならなかった)
+    hit3_pct = 100 * (n - flop) / n    # 3着内 = 複勝圏内 = 1人気の信頼度
     lines = [
-        f"⚠️1人気が飛んだ (5着以下): {flop_pct:.0f}% ({n}走中{flop}回)",
+        f"⚠️1人気の複勝率 {hit3_pct:.0f}%・馬券圏外(4着以下) {flop_pct:.0f}% ({n}走中{flop}回)",
     ]
-    if flop_pct >= 30:
-        lines.append("→ 1人気軸は危険、相手探し優先")
-    elif flop_pct >= 15:
-        lines.append("→ 1人気の質を見極める必要あり")
+    # 行動指針: 複勝率で「軸にできるか/相手をどう構えるか」を具体的に示す。
+    if hit3_pct >= 65:
+        lines.append("→ 1人気が堅実なコース。軸に据えてOK、相手を絞れる")
+    elif hit3_pct >= 50:
+        lines.append("→ 標準的。1人気は軸にしつつ相手は広めに取る")
     else:
-        lines.append("→ 1人気は信頼度高")
+        lines.append("→ 1人気が不安定なコース。単勝・1人気1点は危険、相手を厚く/穴も一考")
 
     # 飛んだ1人気馬の前走着順 + 種牡馬 を抽出して「共通点」を分析
     cur.execute(
@@ -754,7 +757,7 @@ def sec_dangerous_favorites(
         FROM races r
         JOIN results res ON r.race_id = res.race_id AND res.popularity = 1
         JOIN horses h ON res.horse_id = h.horse_id
-        WHERE {base_where} AND res.finish_position >= 5
+        WHERE {base_where} AND res.finish_position >= 4
         ORDER BY r.race_date DESC
         """,
         params,
@@ -802,7 +805,7 @@ def sec_dangerous_favorites(
         all_records.append({
             "pos": pos, "sire": sire,
             "prev_pos": prev_row[0] if prev_row else None,
-            "flopped": pos >= 5,
+            "flopped": pos >= 4,
         })
 
     # 母集団との比較で「特異な凡走パターン」を発見 (因果ではなく相関)

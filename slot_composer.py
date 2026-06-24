@@ -1012,22 +1012,13 @@ def _morning_sec_dangerous(conn, ctx):
         grade=ctx["grade"], years=6)
     if not (lines and n >= 3):
         return None, n
-    flop_line = next((l for l in lines if "飛んだ" in l), None)
+    # #93: セクションの「複勝率行」+「行動指針(→)」をそのまま使う (脆い regex 抽出を廃止)。
+    flop_line = next((l for l in lines if "複勝率" in l or "馬券圏外" in l), None)
     if not flop_line:
         return None, n
-    block = [flop_line]
-    m = re.search(r"(\d+)%\s*\((\d+)/(\d+)\)", flop_line)
-    if m:
-        pct = int(m.group(1))
-        if pct <= 15:
-            block.append("→ 1番人気は信頼度高")
-        elif pct <= 30:
-            block.append("→ 1番人気の質を見極めること")
-        else:
-            block.append("→ 1番人気軸は危険、相手探し優先")
+    action_line = next((l for l in lines if l.startswith("→")), None)
     example = next((l for l in lines if l.startswith("🚨")), None)
-    if example:
-        block.append(example)
+    block = [x for x in (flop_line, action_line, example) if x]
     return _make_section("【1番人気の信頼性】", block), n
 
 
@@ -1380,22 +1371,12 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
     )
     samples["danger"] = n2
     if lines2 and n2 >= 3:
-        # 飛び率を抽出して堅め/危険を判定
-        flop_line = next((l for l in lines2 if "飛んだ" in l), None)
-        if flop_line:
-            flop_m = _re.search(r"(\d+)%\s*\((\d+)/(\d+)\)", flop_line)
-            if flop_m:
-                flop_pct = int(flop_m.group(1))
-                flop_cnt = int(flop_m.group(2))
-                total_n = int(flop_m.group(3))
-                hit_pct = 100 - flop_pct  # 4着以内に来た割合
-                if flop_pct <= 20:
-                    insight = f"✅複勝圏 {hit_pct}% ({total_n-flop_cnt}/{total_n}) → 1人気は信頼可"
-                elif flop_pct <= 30:
-                    insight = f"⚠️5着以下 {flop_pct}% ({total_n}走中{flop_cnt}回) → 1人気の質を見極めること"
-                else:
-                    insight = f"🚨5着以下 {flop_pct}% ({total_n}走中{flop_cnt}回) → 1人気軸は危険、相手探し"
-                sections.append(f"【1人気の信頼性】\n{insight}")
+        # #93: セクションの「複勝率行」+「行動指針(→)」をそのまま使う (脆い regex 抽出を廃止)。
+        flop_line = next((l for l in lines2 if "複勝率" in l or "馬券圏外" in l), None)
+        action_line = next((l for l in lines2 if l.startswith("→")), None)
+        body = [x for x in (flop_line, action_line) if x]
+        if body:
+            sections.append(_make_section("【1人気の信頼性】", body))
 
     cta = "→ 火朝に血統深掘り🔔"
 
@@ -1558,25 +1539,15 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
     )
     samples["danger"] = n1
     if lines1 and n1 >= 3:
-        # 飛び率 + 例外事例 + 結論
-        flop_line = next((l for l in lines1 if "飛んだ" in l), None)
+        # #93: セクションが返す「複勝率行」+「行動指針(→)」+「事例(🚨)」をそのまま使う。
+        #   旧コードは regex で (Y/Z) 形式を期待していたが実際は (N走中M回) で不一致 →
+        #   行動指針が落ちて「数字だけ・だから何」になっていた。
+        flop_line = next((l for l in lines1 if "複勝率" in l or "馬券圏外" in l), None)
+        action_line = next((l for l in lines1 if l.startswith("→")), None)
         examples = [l for l in lines1 if l.startswith("🚨")][:2]
-        block = []
-        if flop_line:
-            block.append(flop_line)
-        # 含意 (堅め or 警戒)
-        if flop_line:
-            m = _re.search(r"(\d+)%\s*\((\d+)/(\d+)\)", flop_line)
-            if m:
-                pct = int(m.group(1))
-                if pct <= 20:
-                    block.append(f"→ 1人気は基本信頼可、例外時のみ警戒")
-                elif pct <= 30:
-                    block.append(f"→ 1人気は飛び事例の特徴に注意")
-                else:
-                    block.append(f"→ 1人気軸は危険、相手探し優先")
-        block.extend(examples)
-        sections.append(_make_section("【1人気の信頼性 (過去6年)】", block))
+        block = [x for x in (flop_line, action_line) if x] + examples
+        if block:
+            sections.append(_make_section("【1人気の信頼性 (過去6年)】", block))
 
     # Section 2: 異常年
     t2, lines2, n2 = sec_outlier_year(conn, race_name, years=6)
