@@ -1079,7 +1079,7 @@ _MORNING_ROTATION = {
             ("jockey", _morning_sec_jockey),
             ("pace", _morning_sec_pace),
         ],
-        "cta": "→ 木朝は枠順とコース適性を配信🔔",
+        "cta": "→ 木朝に追い切り評価とコース適性を配信🔔",
     },
     3: {  # 木: コース適性の注目馬 + 枠順 (通常は build_thu_morning_post / fallback)
         "emoji": "📋", "theme": "コース適性の注目馬",
@@ -1444,7 +1444,7 @@ def build_tue_evening_post(race: dict, conn) -> Tuple[str, dict]:
     if lines2 and n2 > 0:
         sections.append(_make_section("【ローテ傾向】", lines2[:3]))
 
-    cta = "→ 木朝に出走確定+血統を配信🔔"
+    cta = "→ 木朝に追い切り評価を配信🔔"
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1586,7 +1586,7 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
         if outliers:
             sections.append(_make_section("【過去の波乱事例】", outliers[:2]))
 
-    cta = "→ 木朝に出走確定+血統を配信🔔"
+    cta = "→ 木朝に追い切り評価を配信🔔"
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
