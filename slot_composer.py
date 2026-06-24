@@ -1012,13 +1012,14 @@ def _morning_sec_dangerous(conn, ctx):
         grade=ctx["grade"], years=6)
     if not (lines and n >= 3):
         return None, n
-    # #93: セクションの「複勝率行」+「行動指針(→)」をそのまま使う (脆い regex 抽出を廃止)。
+    # #94: 複勝率 + 非自明な前走パターン(※) + 具体行動指針(→) を出す (自明な一般論は廃止)。
     flop_line = next((l for l in lines if "複勝率" in l or "馬券圏外" in l), None)
     if not flop_line:
         return None, n
+    insight_lines = [l for l in lines if l.startswith("※")]
     action_line = next((l for l in lines if l.startswith("→")), None)
     example = next((l for l in lines if l.startswith("🚨")), None)
-    block = [x for x in (flop_line, action_line, example) if x]
+    block = [x for x in ([flop_line] + insight_lines + [action_line, example]) if x]
     return _make_section("【1番人気の信頼性】", block), n
 
 
@@ -1371,10 +1372,11 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
     )
     samples["danger"] = n2
     if lines2 and n2 >= 3:
-        # #93: セクションの「複勝率行」+「行動指針(→)」をそのまま使う (脆い regex 抽出を廃止)。
+        # #94: 複勝率 + 非自明な前走パターン(※) + 具体行動指針(→) を出す (自明な一般論は廃止)。
         flop_line = next((l for l in lines2 if "複勝率" in l or "馬券圏外" in l), None)
+        insight_lines = [l for l in lines2 if l.startswith("※")]
         action_line = next((l for l in lines2 if l.startswith("→")), None)
-        body = [x for x in (flop_line, action_line) if x]
+        body = [x for x in ([flop_line] + insight_lines + [action_line]) if x]
         if body:
             sections.append(_make_section("【1人気の信頼性】", body))
 
@@ -1542,10 +1544,13 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
         # #93: セクションが返す「複勝率行」+「行動指針(→)」+「事例(🚨)」をそのまま使う。
         #   旧コードは regex で (Y/Z) 形式を期待していたが実際は (N走中M回) で不一致 →
         #   行動指針が落ちて「数字だけ・だから何」になっていた。
+        # #94: 自明な一般論でなく、母集団比較で見つけた『非自明な前走パターン(※)』+
+        #   その具体行動指針(→該当1人気は割引)を主役に。複勝率→insight→事例の順。
         flop_line = next((l for l in lines1 if "複勝率" in l or "馬券圏外" in l), None)
+        insight_lines = [l for l in lines1 if l.startswith("※")]
         action_line = next((l for l in lines1 if l.startswith("→")), None)
         examples = [l for l in lines1 if l.startswith("🚨")][:2]
-        block = [x for x in (flop_line, action_line) if x] + examples
+        block = [x for x in ([flop_line] + insight_lines + [action_line]) if x] + examples
         if block:
             sections.append(_make_section("【1人気の信頼性 (過去6年)】", block))
 
