@@ -19,6 +19,8 @@ STYLE = (
     'h2{font-size:1.2rem;margin-top:2rem;border-left:4px solid #2a6;padding-left:.5rem}'
     'h3{font-size:1.05rem}li{margin:.15rem 0}hr{border:none;border-top:1px dashed #aaa;margin:1.6rem 0}'
     'strong{color:#1a5}'
+    'blockquote{background:#eef7f0;border-left:4px solid #2a6;margin:1rem 0;'
+    'padding:.7rem 1rem;border-radius:0 6px 6px 0;color:#1c4a30}'
     '.notice{background:#fff6d8;border:1px solid #e6c200;padding:.6rem .8rem;'
     'border-radius:6px;font-size:.85rem}'
 )
@@ -31,33 +33,42 @@ def _inline(s: str) -> str:
 
 
 def md_to_body(md: str) -> str:
-    out, in_ul = [], False
+    out, in_ul, in_bq = [], False, False
 
-    def close_ul():
-        nonlocal in_ul
+    def close_blocks():
+        nonlocal in_ul, in_bq
         if in_ul:
-            out.append("</ul>")
-            in_ul = False
+            out.append("</ul>"); in_ul = False
+        if in_bq:
+            out.append("</blockquote>"); in_bq = False
 
     for raw in md.split("\n"):
         st = raw.rstrip()
         if st.startswith("### "):
-            close_ul(); out.append(f"<h3>{_inline(st[4:])}</h3>")
+            close_blocks(); out.append(f"<h3>{_inline(st[4:])}</h3>")
         elif st.startswith("## "):
-            close_ul(); out.append(f"<h2>{_inline(st[3:])}</h2>")
+            close_blocks(); out.append(f"<h2>{_inline(st[3:])}</h2>")
         elif st.startswith("# "):
-            close_ul(); out.append(f"<h1>{_inline(st[2:])}</h1>")
+            close_blocks(); out.append(f"<h1>{_inline(st[2:])}</h1>")
         elif st.strip() == "---":
-            close_ul(); out.append("<hr>")
+            close_blocks(); out.append("<hr>")
+        elif st.startswith("> "):
+            if in_ul:
+                out.append("</ul>"); in_ul = False
+            if not in_bq:
+                out.append("<blockquote>"); in_bq = True
+            out.append(f"<p>{_inline(st[2:])}</p>")
         elif st.startswith("- "):
+            if in_bq:
+                out.append("</blockquote>"); in_bq = False
             if not in_ul:
                 out.append("<ul>"); in_ul = True
             out.append(f"<li>{_inline(st[2:])}</li>")
         elif st.strip() == "":
-            close_ul()
+            close_blocks()
         else:
-            close_ul(); out.append(f"<p>{_inline(st)}</p>")
-    close_ul()
+            close_blocks(); out.append(f"<p>{_inline(st)}</p>")
+    close_blocks()
     return "\n".join(out)
 
 
