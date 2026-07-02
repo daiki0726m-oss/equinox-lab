@@ -17,8 +17,36 @@ docs/POST_TEMPLATE_DESIGN.md に従う Phase 1 実装。
 """
 
 from __future__ import annotations
+import re
 from typing import Tuple, List, Optional
 from datetime import datetime
+
+
+def _clean_name(name: str, max_len: int = 12) -> str:
+    """#97 (D1): 種牡馬/母父名の表示整形の共通ヘルパー。
+
+    旧来の `sire.split("(")[0][:7]` のような裸スライスは
+    「キタサンブラッ」(尻切れ) や「アニマルキングダムAnimal Kingdom」(連結英字残り)
+    を生んでいた。整形手順:
+      (a) "(米)" 等の括弧以降を除去
+      (b) カナ名直後に連結された英字綴り (netkeiba の日英併記) を除去
+          ※ 純英字名 (Frankel 等) は消さない — カナ直後の英字だけが対象
+      (c) それでも max_len 超なら切り詰め (最終手段)
+    """
+    if not name:
+        return ""
+    n = name.split("(")[0].strip()
+    n = re.sub(r"(?<=[ぁ-ゖァ-ヴー])[A-Za-z0-9 .'\-]+$", "", n).strip()
+    # 切り詰めは表示幅 (全角=1 / 半角=0.5) で数える — 英字は半角で安価 (#80) なので
+    # 「Dubai Destination」等の純英字名を文字数で不当に切らない。
+    width = 0.0
+    out = []
+    for ch in n:
+        width += 1.0 if ord(ch) > 127 else 0.5
+        if width > max_len:
+            return "".join(out)
+        out.append(ch)
+    return n
 
 
 def _get_entries(conn, race_id: str) -> list:
@@ -211,7 +239,9 @@ def sec_pop_trust_trend(
     if win_pct >= 40:
         lines.append("→ 1番人気軸が王道")
     elif win_pct < 25:
-        lines.append("→ 1番人気を疑え、相手探し")
+        # #97: 旧「→ 1番人気を疑え、相手探し」は複勝率の言い換え一般論 (#94違反)。
+        # 非自明な洞察が無いなら行動指針行は出さない (数値+scopeで十分)
+        pass
     else:
         lines.append("→ 1番人気の質を見極めるレース")
     return (title, lines, n)
@@ -295,7 +325,8 @@ def sec_sire_course_cross(
             names = [e["horse_name"] for e in matched[:2]]
             match_str = f" → 該当: {' '.join(names)}"
         # 競馬標準の着度数 [1-2-3-着外] 表記 (#55)
-        lines.append(f"{m}{sire} {_chakudosu(p1, p2, p3, runs)} 複勝{pct:.0f}%{match_str}")
+        # #97 (D1): DB 生名は「アニマルキングダムAnimal Kingdom(米)」形式 → 表示は整形
+        lines.append(f"{m}{_clean_name(sire, 12)} {_chakudosu(p1, p2, p3, runs)} 複勝{pct:.0f}%{match_str}")
     # 該当馬付きが1件も無く出走馬データはあった場合 → セクション自体を出さない
     if has_entries and not lines:
         return (title, [], 0)
@@ -382,6 +413,8 @@ def sec_prev_race_pattern(
             lines.append(f"🏆{prev_name}: {cnt}頭")
 
     # 出走馬の中で「top_prev_name 経由」の馬を特定
+    # #97 (C2): 該当ゼロ時の判定を保持し、下の行動指針と矛盾しないようにする
+    matched_any = None  # None = 出走馬情報なし (判定不能)
     if race_id:
         entries = _get_entries(conn, race_id)
         if entries:
@@ -407,11 +440,18 @@ def sec_prev_race_pattern(
                     matched_horses.append(e["horse_name"])
             if matched_horses:
                 lines.append(f"  → 該当出走馬: {' '.join(matched_horses[:3])}")
+                matched_any = True
             else:
-                lines.append(f"  → 該当出走馬なし ({top_prev_name}組ゼロ)")
+                # #97 (C2): 「該当出走馬なし (◯◯組ゼロ)」は内部メッセージ的で fact_check の
+                #   ブロック語彙でもある → 読者に価値のある洞察 (主流ローテ不在=波乱含み) に置換。
+                # #97: 「波乱含み」の因果断定はしない — 番組改編 (例: CBC賞は2024年から
+                # 8月開催に移動) で該当が構造的にゼロの場合、分析でなく日程の産物のため。
+                lines.append(f"  → 例年の主流ローテ({top_prev_name}組)からの参戦は今年なし")
+                matched_any = False
 
-    # 行動指針
-    if coverage_pct >= 75:
+    # 行動指針 — #97 (C2): 該当馬ゼロなのに「今年も◯◯経由馬を軸候補に」は自己矛盾する
+    #   ため、該当馬がいる (or 出走馬未確定で判定不能な) 時だけ出す。
+    if coverage_pct >= 75 and matched_any is not False:
         lines.append(f"→ 今年も {top_prev_name}経由馬を軸候補に")
 
     return (title, lines, n)
@@ -547,6 +587,10 @@ def sec_pace_decisive(
         lines.append("→ 末脚決着型コース、上り注目")
     elif top3_pct < 40:
         lines.append("→ 末脚優位性低、前残り重視")
+    else:
+        # #97 (B5/C3): 40-60% の中間帯は従来解釈行なし (数字だけで「だから何」) だった →
+        #   「拮抗」の解釈を明示して見出し (末脚優位性) との自己矛盾も防ぐ。
+        lines.append("→ 2走に1走止まり、末脚だけでは決まらない (位置取り重要)")
     return (title, lines, n)
 
 
@@ -929,28 +973,39 @@ def sec_pattern_discovery(
         )
 
     # 出走馬の血統 × 枠順 でクロスマッチ (race_id 指定時)
+    entries = _get_entries(conn, race_id) if race_id else []
     entries_by_sire = {}
-    if race_id:
-        entries = _get_entries(conn, race_id)
-        for e in entries:
-            s = (e.get("sire") or "").split("(")[0].strip()
-            if s:
-                entries_by_sire.setdefault(s, []).append(e)
+    for e in entries:
+        s = (e.get("sire") or "").split("(")[0].strip()
+        if s:
+            entries_by_sire.setdefault(s, []).append(e)
 
+    # #97 (C2): 出走馬との突合を「注記」でなく「フィルタ」にする。
+    #   該当出走馬ゼロのパターン行を出すのは絶対ルール (今週レース起点、CLAUDE.md
+    #   2026-06-04) 違反 — 出走しない血統の統計は誤誘導なので行ごと出さない。
+    #   出走馬データが取れない時 (race_id 無し等) は従来通り全パターン表示。
     lines = []
+    has_entries = bool(entries)
     for sire, band, runs, top3, p1, p2, p3 in rows:
         pct = 100 * top3 / runs
         sire_clean = sire.split("(")[0].strip()
+        matched = entries_by_sire.get(sire_clean, [])
+        if has_entries and not matched:
+            continue  # 該当出走馬なし → この行は表示しない (#97 C2)
         match_str = ""
-        if entries_by_sire and sire_clean in entries_by_sire:
-            names = [e["horse_name"] for e in entries_by_sire[sire_clean]]
+        if matched:
+            names = [e["horse_name"] for e in matched]
             if len(names) <= 2:
                 match_str = f" → 該当: {' '.join(names)}"
             else:
                 match_str = f" → 該当: {names[0]}他{len(names)-1}頭"
         # 競馬標準の着度数 [1-2-3-着外] 表記 (#55)
-        lines.append(f"🔮 {sire}×{band} {_chakudosu(p1, p2, p3, runs)} 複勝{pct:.0f}%{match_str}")
-    return (title, lines, n)
+        # #97 (D1): 種牡馬の表示名は整形 (連結英字/括弧を除去)
+        lines.append(f"🔮 {_clean_name(sire, 12)}×{band} {_chakudosu(p1, p2, p3, runs)} 複勝{pct:.0f}%{match_str}")
+    # 全パターンが該当ゼロ → セクション自体を出さない (#97 C2)
+    if has_entries and not lines:
+        return (title, [], 0)
+    return (title, lines, len(lines) if has_entries else n)
 
 
 # ─────────────────────────────────────────────────────────
@@ -1299,7 +1354,7 @@ def sec_entry_pedigree_match(
     # 出典 + 客観値を行頭に
     lines = ["※父産駒の当コース複勝率 (過去6年)"]
     for pct, hn, name, sire, runs, top3 in matches[:top]:
-        sire_short = sire.split("(")[0][:10]  # "(米)" 等を削る、長め確保
+        sire_short = _clean_name(sire, 12)  # #97 (D1): 尻切れ/連結英字を共通ヘルパーで整形
         lines.append(f"🩸{hn}番 {name} — 父{sire_short}産駒 {pct:.0f}%複勝 ({top3}/{runs}件)")
     return (title, lines, len(matches))
 
@@ -1410,8 +1465,9 @@ def sec_pedigree_deep(
                                          surface=surface, min_dist=min_dist) if damsire else (0, 0)
         rows.append({
             # #80: 母父の英字名が中途半端に切れる問題 → 名前の長さを確保 (英字は1幅で安価)
-            "name": name, "hn": hn, "sire": sire.split("(")[0][:12],
-            "damsire": damsire.split("(")[0][:14],
+            # #97 (D1): 裸スライスをやめ、連結英字除去つきの _clean_name に統一
+            "name": name, "hn": hn, "sire": _clean_name(sire, 12),
+            "damsire": _clean_name(damsire, 14),
             "sc": (100 * sc_top3 / sc_runs) if sc_runs >= 3 else None, "sc_n": sc_runs,
             "dw": (100 * dw_top3 / dw_runs) if dw_runs >= min_runs else None, "dw_n": dw_runs,
             "ds": (100 * ds_top3 / ds_runs) if ds_runs >= min_runs else None, "ds_n": ds_runs,
@@ -1432,7 +1488,8 @@ def sec_pedigree_deep(
     # 💡隠し味は3行目で、最終tweet(ハッシュタグ込)位置でのみ稀に trim され得る (許容)。
     # venue/surface は post header に既出なので title からは省いて短縮。
     # #86: %の意味 (複勝率/3着内率) を legend で明示 (「なんの%か分からん」対策)。
-    title = "【血統深層・父+母父まで】\n（数字＝複勝率／3着内率）"
+    # #97 (B2/D3): 主語 (父・母父産駒の率) を明示し、「／」は誤読するので「複勝率(3着内率)」に。
+    title = "【血統深層・父+母父まで】\n（%＝父・母父産駒の複勝率(3着内率)）"
     lines = []
     # #80: メインは「父の当コースデータがある馬」に限定 → 父抜け(母父だけ)を防ぐ。
     #   母父だけが際立つ馬は下の「隠し味」枠で拾うので情報は落とさない。
@@ -1520,6 +1577,89 @@ def _score_entries_by_course(conn, race_id, venue, surface, distance, years=6):
     return scored
 
 
+def _notable_form(conn, race_id, top=3, show_number=True):
+    """#97 (C1): mode="form" — 直近フォーム (SI平均 + 直近複勝率) で注目馬を選ぶ。
+
+    月朝・月昼・月夜・火夜・水夜がすべて combined (鞍上コース適性) の同一TOP3を
+    反復していた問題への切り口追加。コース適性 (combined/jockey/blood) と独立の
+    「馬自身の近況」軸なので、同じレースでも別の馬・別の根拠が出る。
+
+    データ: predictions_cache の si_avg / top3_rate (直近10走複勝率) を優先。
+    キャッシュ未生成の平日は results から直近10走の複勝率を直接計算する。
+    """
+    cur = conn.cursor()
+    entries = _get_entries(conn, race_id)
+    title_base = f"【直近フォーム注目馬TOP{top}】"
+    if not entries:
+        return (title_base, [], 0)
+
+    # AI予測キャッシュがあれば si_avg / top3_rate をそのまま使う
+    cache = {}
+    cur.execute("SELECT predictions_json FROM predictions_cache WHERE race_id = ?", (race_id,))
+    row = cur.fetchone()
+    if row and row[0]:
+        try:
+            import json as _json
+            for p in _json.loads(row[0]):
+                cache[p.get("horse_name", "")] = p
+        except Exception:
+            pass
+
+    # 直近走の temporal filter 用にレース日を取得 (未来レースなら実質フィルタなし)
+    cur.execute("SELECT race_date FROM races WHERE race_id = ?", (race_id,))
+    rd = cur.fetchone()
+    race_date = (rd[0] if rd and rd[0] else "") or "9999-12-31"
+
+    scored = []
+    for e in entries:
+        name = e.get("horse_name", "")
+        hn = e.get("horse_number") or 0
+        hid = e.get("horse_id")
+        if not name:
+            continue
+        p = cache.get(name) or {}
+        si = p.get("si_avg", 0) or 0
+        rate = p.get("top3_rate", None)
+        last_pos = None
+        if rate is None and hid:
+            # キャッシュ無し (平日) は results から直近10走の複勝率を計算
+            cur.execute(
+                """SELECT res2.finish_position FROM results res2
+                   JOIN races r2 ON res2.race_id = r2.race_id
+                   WHERE res2.horse_id = ? AND r2.race_date < ?
+                     AND res2.finish_position > 0
+                   ORDER BY r2.race_date DESC LIMIT 10""",
+                (hid, race_date))
+            recent = [r[0] for r in cur.fetchall()]
+            if len(recent) >= 2:  # 1走だけでは「フォーム」と呼べない
+                rate = 100.0 * sum(1 for fp in recent if fp <= 3) / len(recent)
+                last_pos = recent[0]
+        if rate is None:
+            continue
+        scored.append({"name": name, "hn": hn, "si": si, "rate": rate,
+                       "last": last_pos, "_score": (si or 0) + (rate or 0)})
+    scored.sort(key=lambda x: -x["_score"])
+    if not scored:
+        return (title_base, [], 0)
+
+    has_si = any(h["si"] > 0 for h in scored[:top])
+    legend = ("（SI=スピード指数・%＝直近成績(最大10走)の複勝率）" if has_si
+              else "（%＝直近成績(最大10走)の複勝率(3着内率)）")
+    title = f"{title_base}\n{legend}"
+    medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+    lines = []
+    for i, h in enumerate(scored[:top]):
+        num = f"{h['hn']}番 " if (show_number and h.get("hn")) else ""
+        seg = []
+        if h["si"] > 0:
+            seg.append(f"SI{h['si']:.0f}")
+        seg.append(f"直近複勝{h['rate']:.0f}%")
+        if h["last"]:
+            seg.append(f"前走{h['last']}着")
+        lines.append(f"{medals[i]} {num}{h['name']}: {'・'.join(seg)}")
+    return (title, lines, len(scored))
+
+
 def sec_notable_horses(
     conn, race_id, venue, surface, distance,
     mode: str = "combined", top: int = 3, years: int = 6,
@@ -1536,37 +1676,44 @@ def sec_notable_horses(
       - "combined": 父産駒+鞍上の総合コース適性 (月の主軸)
       - "blood"   : 父産駒コース複勝率で上位 (火 = 血統テーマ)
       - "jockey"  : 鞍上コース複勝率で上位 (水 = 騎手テーマ)
+      - "form"    : 直近フォーム SI+直近複勝率 (#97 C1: 月昼/水夜 = 反復解消の新切り口)
     show_number: 枠順抽選後 True で「12番 馬名」、抽選前 False で「馬名」のみ
                  (JRA 金11時抽選前に馬番を出すのはルール違反のため呼び出し側で制御)。
     """
+    # #97 (C1): form はコース適性でなく「馬の近況」軸なので専用ヘルパーへ
+    if mode == "form":
+        return _notable_form(conn, race_id, top=top, show_number=show_number)
+
     scored = _score_entries_by_course(conn, race_id, venue, surface, distance, years)
     if not scored:
         return ("【今週の注目馬】", [], 0)
 
     # タイトルは簡潔に (コース詳細はヘッダーと各馬の行に既出 = 冗長を避け馬を多く載せる, #53)
+    # #97 (B2): 凡例は「誰の率か」(騎=騎手/母父=母父産駒) を明示。「複勝率／3着内率」の
+    #   スラッシュは「50%が馬の複勝率」と誤読させたので「複勝率(3着内率)」表記に統一。
     if mode == "blood":
         # #87: 血統テーマの slot (火曜のみ) は『母父』を主役に (ユーザー:「父はいらない、
         #   母父だけでもいい」)。父は母父データが無い時のフォールバックでのみ表示。
         pool = [h for h in scored if h["dam_pct"] > 0 or h["sire_pct"] > 0]
         pool.sort(key=lambda x: (-x["dam_pct"], -x["dam_n"], -x["sire_pct"]))
         title = (f"【母父まで見る血統注目馬】{venue}{surface}{distance}m\n"
-                 f"（数字＝母父産駒の当コース複勝率／3着内率。深い血統の妙味）")
+                 f"（%＝母父産駒の当コース複勝率(3着内率)）")
         def fmt(h):
             if h["dam_n"] > 0:
-                return f"母父{h['damsire'][:18]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%"
+                return f"母父{_clean_name(h['damsire'], 18)}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%"
             if h["sire_n"] > 0:  # 母父データ無し時のみ父で代替
-                return f"父{h['sire'][:12]}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%"
+                return f"父{_clean_name(h['sire'], 12)}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%"
             return "血統データ不足"
     elif mode == "jockey":
         pool = [h for h in scored if h["jockey_pct"] > 0]
         pool.sort(key=lambda x: (-x["jockey_pct"], -x["jockey_n"]))
         title = (f"【鞍上で狙う注目馬】{venue}{surface}{distance}m\n"
-                 f"（数字＝当コースの複勝率／3着内率）")
+                 f"（騎=騎手・母父=母父産駒の当コース複勝率(3着内率)）")
         def fmt(h):
             # #87: 父は出さない。母父は際立つ時(45%+)だけ妙味で添える。
             tail = ""
             if h["dam_n"] > 0 and h["dam_pct"] >= 45:
-                tail = f"・母父{h['damsire'][:14]}{h['dam_pct']:.0f}%"
+                tail = f"・母父{_clean_name(h['damsire'], 14)}{h['dam_pct']:.0f}%"
             return f"騎{h['jockey']}{h['jockey_pct']:.0f}%{tail}"
     else:  # combined
         # #87: 総合枠は『鞍上(コース実績)』を主役に。父は出さない (ユーザー要望)。
@@ -1576,22 +1723,41 @@ def sec_notable_horses(
         pool = [h for h in scored if h["_score"] > 0]
         pool.sort(key=lambda x: -x["_score"])
         title = (f"【今週の注目馬TOP{top}】{venue}{surface}{distance}m\n"
-                 f"（数字＝当コースの複勝率／3着内率）")
+                 f"（騎=騎手・母父=母父産駒の当コース複勝率(3着内率)）")
         def fmt(h):
             parts = []
             if h["jockey_pct"] >= 30:
                 parts.append(f"騎{h['jockey']}{h['jockey_pct']:.0f}%")
             if h["dam_n"] > 0 and h["dam_pct"] >= 45:
-                parts.append(f"母父{h['damsire'][:14]}{h['dam_pct']:.0f}%")
+                parts.append(f"母父{_clean_name(h['damsire'], 14)}{h['dam_pct']:.0f}%")
             return "・".join(parts) if parts else "コース実績上位"
 
     if not pool:
         return (title, [], 0)
+    picked = pool[:top]
+
+    # #97 (m7): 表示順は「読者に見える数値」の降順に並べ替える。
+    # 選定は合成スコア (鞍上+母父+父) のままだが、表示が騎手%だけの時に
+    # 「1️⃣50% > 2️⃣54%」と順位が逆転して見え、根拠非表示の不信感を生んでいた。
+    def _display_pct(h):
+        return max(h.get("jockey_pct", 0) or 0,
+                   h.get("dam_pct", 0) or 0,
+                   h.get("sire_pct", 0) or 0)
+    if mode in ("combined", "jockey"):
+        picked = sorted(picked, key=_display_pct, reverse=True)
+
     medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
     lines = []
-    for i, h in enumerate(pool[:top]):
+    for i, h in enumerate(picked):
         num = f"{h['hn']}番 " if (show_number and h.get("hn")) else ""
         lines.append(f"{medals[i]} {num}{h['name']}: {fmt(h)}")
+
+    # #97 (m5): 凡例は実際に出た軸だけを説明する (母父行ゼロなのに凡例が母父を
+    # 定義していると「母父はどこ?」と混乱させるノイズになる)。
+    body = "\n".join(lines)
+    if mode in ("combined", "jockey") and "母父" not in body:
+        title = title.replace("（騎=騎手・母父=母父産駒の当コース複勝率(3着内率)）",
+                              "（騎=騎手の当コース複勝率(3着内率)）")
     return (title, lines, len(pool))
 
 
@@ -1671,8 +1837,10 @@ def sec_handpicked_top(
     scored.sort(key=lambda x: -x["score"])
     # #86: ユーザー指摘「何の%か分からない / 父だけ」を解消 → legend で『当コースの複勝率
     #   (3着内率)』と明示し、父だけでなく母父も必ず出す。
+    # #97 (B2): 「数字＝当コースの複勝率」だけでは「騎松山50%」が馬の複勝率と誤読される
+    #   → 率の主語 (騎=騎手/母父=母父産駒) を明示。スラッシュ表記も「複勝率(3着内率)」に。
     title = (f"【コース適性TOP{top}】{venue}{surface}{distance}m\n"
-             f"（数字＝当コースの複勝率／3着内率・過去{years}年）")
+             f"（騎=騎手・母父=母父産駒の当コース複勝率(3着内率)）")
     if not scored:
         return (title, ["該当馬データ不足"], 0)
 
@@ -1686,7 +1854,8 @@ def sec_handpicked_top(
             parts.append(f"騎{h['jockey']}{h['jockey_pct']:.0f}%")
         # 母父は『本当に際立つ時(45%+)』だけ深い妙味として添える (毎回血統を出さない)。
         if h["dam_n"] > 0 and h["dam_pct"] >= 45:
-            parts.append(f"母父{h['damsire'][:18]}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%")
+            # #97 (D1): 裸スライス → _clean_name (連結英字除去つき)
+            parts.append(f"母父{_clean_name(h['damsire'], 18)}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%")
         facts_str = "・".join(parts) if parts else f"コース適性スコア{h['score']:.0f}"
         lines.append(f"{medals[i]} {h['hn']}番 {h['name']}: {facts_str}")
     return (title, lines, len(scored))
@@ -1707,7 +1876,7 @@ def sec_attention_top(
     - 父産駒の当該コース複勝率 (DB 集計)
 
     include_marks=False: 「1️⃣ 2️⃣ 3️⃣」表記 (注目馬として)
-    include_marks=True: 「◎ ○ ▲」表記 (確定買い目)
+    include_marks=True: 「◎ ○ ▲」表記 (最終印。#97: 買い目はXに出さない #71)
 
     例:
         1️⃣ スターアニス (SI93、AI勝率18% / 父エピファネイア 当コース40%)
@@ -1790,7 +1959,9 @@ def sec_attention_top(
                 runs, top3 = ss
                 pct = 100 * top3 / runs
                 if pct >= 30:  # 30% 以上のみ意味あり
-                    sire_short = sire.split("(")[0][:7]
+                    # #97 (D1): [:7] 裸スライスが「キタサンブラッ」等の尻切れを生んでいた
+                    #   → 共通ヘルパー _clean_name (max 12字、連結英字除去) に統一。
+                    sire_short = _clean_name(sire, 12)
                     second_fact = f"父{sire_short}産駒{pct:.0f}%"
 
         if not second_fact and si > 0:

@@ -200,6 +200,9 @@ def init_db(db_path=None):
         if 'posted_at' not in cols:
             conn.execute("ALTER TABLE predictions_cache ADD COLUMN posted_at TIMESTAMP NULL")
             print("🔧 predictions_cache: posted_at カラム追加")
+        if "posted_marks_json" not in cols:
+            conn.execute("ALTER TABLE predictions_cache ADD COLUMN posted_marks_json TEXT")
+            print("🔧 predictions_cache: posted_marks_json カラム追加 (#97: 投稿した印のスナップショット)")
     print("✅ データベース初期化完了")
 
 

@@ -1576,12 +1576,13 @@ def build_universal_fallback(race, stats, conn, today_d, hashtags_fn, slot='week
         parts.extend(sub_lines)
     parts.append("")
     # 行動指針 (slotで変える)
+    # #97 (D4): CTA は「🔔 」始まりに統一 (行動指針の「→」と記号衝突するため)
     if slot_idx == 0:
-        parts.append("→ 土曜朝に印付き完全予想🔔")
+        parts.append("🔔 土曜朝に印付き完全予想")
     elif slot_idx == 1:
-        parts.append("→ 今夜AI注目馬TOP3、土曜朝に印付き完全予想🔔")
+        parts.append("🔔 今夜AI注目馬TOP3、土曜朝に印付き完全予想")
     else:
-        parts.append("→ 土曜朝に印付き完全予想を配信🔔")
+        parts.append("🔔 土曜朝に印付き完全予想を配信")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -2002,7 +2003,7 @@ def build_mon_morning(graded_races, today_d, hashtags_fn, conn=None):
         parts.append(f"・{wd}曜 {r.get('race_name','')}({grade}) {r.get('venue','')}{r.get('distance','')}m")
 
     parts.append(f"\n🎯 AI最注目:{top.get('race_name','')}({top.get('grade','')})")
-    parts.append("火-木で深層分析配信🔔")
+    parts.append("🔔 火-木で深層分析を配信")  # #97 (D4)
     parts.append('')
     parts.append(hashtags_fn(top))
     return '\n'.join(parts)
@@ -2046,7 +2047,7 @@ def build_mon_weekday(race, stats, entries, sires, today_d, hashtags_fn):
             for s in cs[:2]:
                 names = '・'.join(s['entries'][:1])
                 parts.append(f"🧬{names}(父{s['name']}・複勝{s['top3']}%)")
-    parts.append("\n→ 今夜AI注目馬TOP3配信🔔")
+    parts.append("\n🔔 今夜AI注目馬TOP3を配信")  # #97 (D4)
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -2172,7 +2173,7 @@ def build_tue_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
             for i, sp in enumerate(spots[:2]):
                 parts.append(f"{marks[i]} {_format_spotlight_line(sp, assigned=assigned)}")
             parts.append("")
-        parts.append("→ 木曜夜に最終予想、土曜朝に印付き完全予想配信🔔")
+        parts.append("🔔 木曜夜に最終予想、土曜朝に印付き完全予想を配信")  # #97 (D4)
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -2418,7 +2419,9 @@ def build_thu_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
     else:
         parts.append("(出走馬データ取得中)")
 
-    parts.append("\n→ 金曜:オッズ妙味の過小評価馬を発表")
+    # #97 (A5): 金曜に「オッズ妙味の過小評価馬」を発表する slot は現行スケジュールに
+    #   存在しない (金昼は AI注目馬3頭 #53) → 実態に合わせた予告に修正。
+    parts.append("\n🔔 金曜はAI注目馬を配信")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -2448,8 +2451,9 @@ def build_thu_evening(race, conn, entries, sires, damsires, today_d, hashtags_fn
         parts.append("【詳細分析記事】")
         parts.append(f"▶ {note_url}")
     else:
-        parts.append("→ 明日金曜:過小評価馬発見")
-        parts.append("→ 土曜朝に印付き完全予想配信🔔")
+        # #97 (A5): 「過小評価馬発見」slot は存在しない → 実在する配信の予告に修正。
+        parts.append("🔔 金曜はAI注目馬を配信")
+        parts.append("🔔 土曜朝に印付き完全予想を配信")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -2608,7 +2612,7 @@ def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
             parts.append(f"⭐{_h(num, name, assigned)}(score{sp.get('score',0)})")
         parts.append("")
 
-    parts.append("→ 11時頃の枠順抽選後、12:30に評価更新🔔")
+    parts.append("🔔 11時頃の枠順抽選後、12:30に評価更新")  # #97 (D4)
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -2619,7 +2623,7 @@ def build_fri_morning(race, conn, entries, sires, damsires, today_d, hashtags_fn
 def build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn):
     """金曜昼:枠順抽選後(11時以降)の注目馬3頭と評価根拠のみ。
 
-    印・買い目は土曜朝の正式AI予測まで保留(役割重複を避ける)。
+    印は土曜朝の正式AI予測まで保留(役割重複を避ける)。買い目はXに出さない (#71/#97)。
     """
     if not race:
         return None
@@ -2652,7 +2656,8 @@ def build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
     else:
         return None  # entries無いなら投稿しない(中身なし防止)
 
-    parts.append("\n→ 印・買い目は明朝のAI完全予想🔔")
+    # #97 (A5): 「買い目」はXに投稿されない (ダッシュボード限定 #71) → 印のみ予告。
+    parts.append("\n🔔 印(◎○▲△×注)は明朝のAI完全予想で")
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -2672,8 +2677,10 @@ def build_fri_evening(graded_races, today_d, hashtags_fn):
         if rd and rd.weekday() == 5:  # 土曜
             parts.append(f"・{r.get('race_name','')}({r.get('grade','')}) {r.get('venue','')}")
     parts.append("")
-    parts.append("⏰ 土曜朝7:00-10:15に印付き完全予想を配信")
-    parts.append("印:◎○▲△×注 + 推奨買い目")
+    # #97 (A5): X投稿は10:15の post_predict のみ (7時はXに出ない) + 買い目はXに
+    #   出さない (ダッシュボード限定 #71) → 実態に合わせて修正。
+    parts.append("⏰ 土曜朝10:15頃に印付き完全予想を配信")
+    parts.append("印:◎○▲△×注 を全レース分")
     parts.append("")
     parts.append("(日曜分は別途配信)")
     parts.append("")

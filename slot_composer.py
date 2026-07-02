@@ -39,6 +39,7 @@ from post_sections import (
     sec_attention_top,
     sec_handpicked_top,
     sec_notable_horses,
+    _clean_name,  # #97 (D1): 種牡馬/母父名の尻切れ・連結英字を共通ヘルパーで整形
 )
 
 
@@ -188,26 +189,55 @@ def _paginate_single_section(header: str, section: str, cta: str, hashtags: str,
     cont = "→ 続く🧵"
     footer_max = max(_x_len(cont), _x_len(cta) + 1 + _x_len(hashtags))
 
-    def _prefix_len(idx: int) -> int:
-        # N 未確定なので最大桁の "(max/max)" で上限見積り (実 render では同等以下)
-        head = header if idx == 0 else f"🧵 ({max_tweets}/{max_tweets})"
-        pre = f"{head}\n\n{title}" if title else head
-        return _x_len(pre)
+    def _build_pages(hdr: str) -> list:
+        """greedy: 各ページ = prefix + 行群 + footer が budget 以内になるよう詰める"""
+        def _prefix_len(idx: int) -> int:
+            # N 未確定なので最大桁の "(max/max)" で上限見積り (実 render では同等以下)
+            head = hdr if idx == 0 else f"🧵 ({max_tweets}/{max_tweets})"
+            pre = f"{head}\n\n{title}" if title else head
+            return _x_len(pre)
 
-    # greedy: 各ページ = prefix + 行群 + footer が budget 以内になるよう詰める
-    pages = [[]]
-    for ln in data:
-        idx = len(pages) - 1
-        trial = pages[idx] + [ln]
-        size = _prefix_len(idx) + 1 + _x_len("\n".join(trial)) + 2 + footer_max
-        if size <= budget or not pages[idx]:
-            pages[idx].append(ln)
-        else:
-            if len(pages) >= max_tweets:
-                break  # ページ上限 → 残り行は諦め (従来 trim 相当の打ち切り)
-            pages.append([ln])
+        pages = [[]]
+        for ln in data:
+            idx = len(pages) - 1
+            trial = pages[idx] + [ln]
+            size = _prefix_len(idx) + 1 + _x_len("\n".join(trial)) + 2 + footer_max
+            if size <= budget or not pages[idx]:
+                pages[idx].append(ln)
+            else:
+                if len(pages) >= max_tweets:
+                    break  # ページ上限 → 残り行は諦め (従来 trim 相当の打ち切り)
+                pages.append([ln])
+        return pages
+
+    pages = _build_pages(header)
+
+    # #97 (D3): header 内の lede (💥行) が予算を圧迫して 1 ページ目が「1頭だけ」の薄い
+    # tweet になる場合、lede を最終ページ末尾へ回して 1 ページ目に項目 2つ以上を確保する。
+    trailing_lede = None
+    if pages and len(pages[0]) < 2 and "💥" in header:
+        hdr_lines = header.split("\n")
+        lede_line = next((l for l in hdr_lines if l.startswith("💥")), None)
+        if lede_line:
+            base_header = "\n".join(
+                l for l in hdr_lines if not l.startswith("💥")).rstrip()
+            repages = _build_pages(base_header)
+            if repages and len(repages[0]) > len(pages[0]):
+                header = base_header
+                pages = repages
+                trailing_lede = lede_line
 
     if len(pages) <= 1:
+        if trailing_lede and pages and len(pages[0]) >= 2:
+            # lede を外したら 1 tweet に収まった → lede を末尾に戻せるなら戻し、
+            # 溢れるなら lede を落として項目数を優先する。
+            body = "\n".join(pages[0])
+            prefix = f"{header}\n\n{title}" if title else header
+            footer = f"{cta}\n{hashtags}" if hashtags else cta
+            tw = f"{prefix}\n{body}\n\n{trailing_lede}\n\n{footer}"
+            if _x_len(tw) > budget:
+                tw = f"{prefix}\n{body}\n\n{footer}"
+            return [tw]
         return None  # 1 ページに収まる (= ここに来ない想定だが念のため) → 従来へ
 
     total = len(pages)
@@ -218,7 +248,14 @@ def _paginate_single_section(header: str, section: str, cta: str, hashtags: str,
         prefix = f"{head}\n\n{title}" if title else head
         footer = (f"{cta}\n{hashtags}" if hashtags else cta) if is_last else cont
         body = "\n".join(pg)
-        tweets.append(f"{prefix}\n{body}\n\n{footer}")
+        if is_last and trailing_lede:
+            # #97 (D3): 退避した lede を最終ページに再掲 (溢れる時だけ諦める)
+            tw = f"{prefix}\n{body}\n\n{trailing_lede}\n\n{footer}"
+            if _x_len(tw) > budget:
+                tw = f"{prefix}\n{body}\n\n{footer}"
+            tweets.append(tw)
+        else:
+            tweets.append(f"{prefix}\n{body}\n\n{footer}")
     return tweets
 
 
@@ -530,7 +567,10 @@ def _lede_pattern_count(conn, venue, surface, distance, race_id=None, years=6, m
     (出走馬がいない種牡馬のパターンを出して誤誘導しないため。CLAUDE.md 絶対ルール)
 
     Returns:
-        (count, best_pct, best_sample_total_top3, best_sample_n) or None
+        (count, best_pct, best_sample_total_top3, best_sample_n,
+         best_sire, best_waku_band, matched_horse_names) or None
+        # #97 (C5): 「該当1件(最高60%)」だけでは何のパターンか・どの馬か分からない
+        #   宙ぶらりん lede だったため、最良パターンの中身 (種牡馬×枠) と該当馬名も返す。
     """
     if not venue or not surface or not distance:
         return None
@@ -538,18 +578,22 @@ def _lede_pattern_count(conn, venue, surface, distance, race_id=None, years=6, m
         cur = conn.cursor()
         from_date = f"{datetime.now().year - years}-01-01"
 
-        # 今週の出走馬の父 (race_id 指定時のみ)
+        # 今週の出走馬の父 (race_id 指定時のみ)。#97 (C5): 馬名も引いて lede で実名表示する。
         entry_sires = None
+        entry_names_by_sire = {}
         if race_id:
             rows = cur.execute(
                 """
-                SELECT DISTINCT h.sire FROM results res
+                SELECT h.sire, h.horse_name FROM results res
                 JOIN horses h ON res.horse_id = h.horse_id
                 WHERE res.race_id = ? AND h.sire IS NOT NULL AND h.sire != ''
                 """,
                 (race_id,),
             ).fetchall()
             entry_sires = {r[0] for r in rows if r[0]}
+            for s, hn in rows:
+                if s and hn:
+                    entry_names_by_sire.setdefault(s, []).append(hn)
             if not entry_sires:
                 return None  # 出走馬未確定 or 血統未登録 → lede 出さない
 
@@ -585,9 +629,10 @@ def _lede_pattern_count(conn, venue, surface, distance, race_id=None, years=6, m
         if not rows:
             return None
         cnt = len(rows)
-        _, _, n0, t0 = rows[0]
+        best_sire, best_band, n0, t0 = rows[0]
         best_pct = 100.0 * t0 / n0
-        return (cnt, best_pct, t0, n0)
+        matched_names = entry_names_by_sire.get(best_sire, [])
+        return (cnt, best_pct, t0, n0, best_sire, best_band, matched_names)
     except Exception:
         return None
 
@@ -702,7 +747,8 @@ def _build_morning_lede(dow, conn, race):
             tag = "1人気健闘も鉄板ならず"
         else:
             tag = "飛ばないが勝ち切らない"
-        return f"💥 過去{total}年・1番人気は ({w}-{p}-{s}-{o}) — {tag}"
+        # #97 (B4): 着度数の括弧は競馬標準の [w-p-s-out] 形式に統一 (#55)
+        return f"💥 過去{total}年・1番人気は [{w}-{p}-{s}-{o}] — {tag}"
 
     # 火: 種牡馬複勝50%超の数 (※ 今週出走馬の父にいる種牡馬のみ集計)
     if dow == 1:
@@ -731,15 +777,18 @@ def _build_morning_lede(dow, conn, race):
         if not result:
             return None
         w, p, s, o, total = result
-        if w >= 2:
-            tag = "伏兵の主役"
-        elif w + p + s >= total * 0.5:
-            tag = "ヒモには必須"
-        elif w + p + s == 0:
-            tag = "完全な脇役"
+        # #97 (B4): 旧分岐は (0-1-0-5)=複勝率17% でも「侮れない一頭」と逆の結論を出していた。
+        #   複勝率 (w+p+s)/total で単調に判定し直す。「一頭」のような特定馬を示唆する語は
+        #   使わない (枠順抽選前は誰のことか決まらないため)。
+        top3_rate = (w + p + s) / total if total else 0.0
+        if top3_rate >= 0.5:
+            tag = "伏兵が主役のコース"
+        elif top3_rate >= 0.25:
+            tag = "年次により好走あり"
         else:
-            tag = "侮れない一頭"
-        return f"💥 過去{total}年・4番人気は ({w}-{p}-{s}-{o}) — {tag}"
+            tag = "過信禁物 — 人気ほど信頼できない帯"
+        # 着度数の括弧は競馬標準の [w-p-s-out] 形式に統一 (#55)
+        return f"💥 過去{total}年・4番人気は [{w}-{p}-{s}-{o}] — {tag}"
 
     # 金: パターン発掘数 (※ 今週出走馬の父が該当するパターンのみ集計)
     if dow == 4:
@@ -747,8 +796,14 @@ def _build_morning_lede(dow, conn, race):
         result = _lede_pattern_count(conn, venue, surface, distance, race_id=race_id, years=6, threshold=55.0)
         if not result:
             return None
-        cnt, best_pct, t0, n0 = result
-        return f"💥 出走馬該当パターン{cnt}件 (最高{best_pct:.0f}%)"
+        # #97 (C5): 旧「該当パターン1件(最高60%)」は中身も馬名も無い宙ぶらりん lede
+        #   だった → パターンの中身 (種牡馬×枠) と該当馬名を実名で示す。
+        cnt, best_pct, t0, n0, sire, band, names = result
+        if not names:
+            return f"💥 出走馬該当パターン{cnt}件 (最高{best_pct:.0f}%)"  # 念のための旧形式
+        name_str = " ".join(names[:2])
+        extra = f" (他{cnt-1}パターン)" if cnt > 1 else ""
+        return f"💥 {_clean_name(sire, 10)}×{band}に該当: {name_str} — 過去複勝{best_pct:.0f}%{extra}"
 
     # 土: 過去最高配当 or 大波乱年 (race_name 必須)
     if dow == 5:
@@ -766,13 +821,16 @@ def _build_morning_lede(dow, conn, race):
         if not result:
             return None
         pct, top3, n = result
-        if pct >= 70:
-            tag = "上がり最速がほぼ着順"
-        elif pct >= 50:
+        # #97 (B5/C3): 旧コードは判定を raw 値・表示を丸め値で行い「50% — 前残り注意」の
+        #   自己矛盾が出ていた → 丸め後の値で判定し、45-55% は「拮抗」の3分岐に。
+        pct_r = round(pct)
+        if pct_r >= 55:
             tag = "末脚優位コース"
+        elif pct_r <= 45:
+            tag = "前残り傾向"
         else:
-            tag = "前残り注意"
-        return f"💥 上がり3F最速馬の複勝率 {pct:.0f}% — {tag}"
+            tag = "末脚と前残りが拮抗 — 位置取り重要"
+        return f"💥 上がり3F最速馬の複勝率 {pct_r}% — {tag}"
 
     return None
 
@@ -823,7 +881,7 @@ def _morning_sec_notable_jockey(conn, ctx):
     return _morning_sec_notable(conn, ctx, "jockey")
 
 
-def _notable_lead(conn, race, mode="combined", today=None):
+def _notable_lead(conn, race, mode="combined", today=None, top=3):
     """昼/夜ビルダー共通: 今週の出走馬から注目馬セクション文字列を返す (#53)。
 
     枠順抽選前は馬番を伏せる。出走馬さえ確定していれば実名+数値根拠が出るので、
@@ -834,7 +892,7 @@ def _notable_lead(conn, race, mode="combined", today=None):
     title, lines, n = sec_notable_horses(
         conn, race.get("race_id", ""), race.get("venue", ""),
         race.get("surface", ""), race.get("distance", 0),
-        mode=mode, top=3, show_number=drawn)
+        mode=mode, top=top, show_number=drawn)  # #97 (C1): top を可変に (火夜は2頭)
     if lines and n > 0:
         return _make_section(title, lines)
     return None
@@ -847,13 +905,29 @@ def _morning_sec_historical(conn, ctx):
     return None, n
 
 
+def _pop_scope(ctx_or_race) -> str:
+    """#97 (B3): 1人気系セクションの母集団 (コース×グレード×期間) を短く明示する。
+
+    sec_pop_trust_trend / sec_dangerous_favorites のタイトルにあった scope
+    (例: 小倉芝1200m・G3・過去6年) を消費側が独自タイトルで落としていたため、
+    「12走中6回」がどの母集団の数字か読者に分からなかった。共通で組み立てる。
+    """
+    venue = ctx_or_race.get("venue", "") or ""
+    surface = ctx_or_race.get("surface", "") or ""
+    distance = ctx_or_race.get("distance", 0) or 0
+    grade = ctx_or_race.get("grade") or ""
+    core = f"{venue}{surface}{distance}m" if (venue and surface and distance) else "当コース"
+    return f"{core}{grade}・過去6年"
+
+
 def _morning_sec_pop_trust(conn, ctx):
     _t, lines, n = sec_pop_trust_trend(
         conn, ctx["venue"], ctx["surface"], ctx["distance"],
         grade=ctx["grade"], years=6)
     if lines and n >= 3:
         relevant = [l for l in lines if "複勝率" in l or "→" in l]
-        return _make_section("【1人気の信頼度】", relevant[:2]), n
+        # #97 (B3): 母集団 scope をタイトルに復元 (「12走中6回」の分母がどこか明示)
+        return _make_section(f"【1人気の信頼度】{_pop_scope(ctx)}", relevant[:2]), n
     return None, n
 
 
@@ -922,18 +996,30 @@ def _morning_sec_pattern(conn, ctx):
         pass
 
     # lines をパース → 馬中心に集約 (同一馬は最も複勝率の高いパターン1つだけ)
-    # 想定 line 形式: "🔮 {sire}×{waku_label} 複勝{pct}% ({n}走中{top3}複) → 該当: {horse} [{horse}...]"
+    # #97 (C5関連): sec_pattern_discovery の行は #55 で着度数形式
+    #   "🔮 {sire}×{waku} [1-2-3-着外] 複勝{pct}% → 該当: {horse}..." に変わったが、
+    #   この regex が旧 "複勝{pct}% (N/M)" 形式のまま一度も match せず、金朝の
+    #   【父×コース複勝率TOP】セクションが #55 以降 silent に消えていた
+    #   (lede だけ出る宙ぶらりん状態)。現行形式に追従して復活させる。
     horse_best = {}  # horse_name → (pct, sire, waku_label, top3, n_runs)
     for line in lines:
-        m = _re.search(r"🔮\s*([^×]+)×([^ ]+)\s+複勝(\d+)%\s+\((\d+)/(\d+)\).*?該当:\s*(.+?)$", line)
+        m = _re.search(
+            r"🔮\s*([^×]+)×([^ ]+)\s+\[(\d+)-(\d+)-(\d+)-(\d+)\]\s+複勝(\d+)%.*?該当:\s*(.+?)$",
+            line)
         if not m:
             continue
-        sire, waku, pct, t3, nr, horses = m.groups()
+        sire, waku, w1, p2, s3, out, pct, horses = m.groups()
         try:
-            pct_i, t3_i, nr_i = int(pct), int(t3), int(nr)
+            pct_i = int(pct)
+            t3_i = int(w1) + int(p2) + int(s3)
+            nr_i = t3_i + int(out)
         except ValueError:
             continue
         for hn in horses.strip().split():
+            # #97: 「{馬名}他2頭」圧縮表記の "他N頭" を馬名から剥がす (馬名破損防止)
+            hn = _re.sub(r"他\d+頭$", "", hn)
+            if not hn:
+                continue
             prev = horse_best.get(hn)
             if prev is None or pct_i > prev[0]:
                 horse_best[hn] = (pct_i, sire.strip(), waku.strip(), t3_i, nr_i)
@@ -949,13 +1035,13 @@ def _morning_sec_pattern(conn, ctx):
     out_lines = []
     for i, (horse, (pct, sire, waku, t3, nr)) in enumerate(top_horses):
         m = medals[i] if i < len(medals) else "🏅"
-        # 種牡馬名から外国表記を除去
-        sire_clean = sire.split("(")[0].strip()
-        # 末尾の英字 (例: "ドレフォンDrefong") も除去
-        import re as _re_sire
-        sire_clean = _re_sire.sub(r"[A-Za-z]+$", "", sire_clean).strip()
-        waku_str = f" {waku}" if draw_done else ""
-        out_lines.append(f"{m}{horse} {pct}% {sire_clean}{waku_str}")
+        # #97 (D1): 旧処理は `[A-Za-z]+$` を無条件除去し純英字名 (Frankel 等) が空になる
+        #   バグがあった → カナ直後の連結英字だけ除去する共通ヘルパー _clean_name に統一。
+        sire_clean = _clean_name(sire, 12)
+        waku_str = f"×{waku}" if draw_done else ""
+        # #97 (m8): 「馬名 60% 父名」は 60% が誰の率か読めない語順だった。
+        # 他セクションと同じ「父産駒% → 該当: 馬名」に統一 (主語=父産駒を明確に)。
+        out_lines.append(f"{m}{sire_clean}産駒{waku_str} 複勝{pct}% → 該当: {horse}")
 
     return _make_section("【父×コース複勝率TOP】", out_lines), len(out_lines)
 
@@ -978,11 +1064,28 @@ def _morning_sec_jockey(conn, ctx):
     return None, n
 
 
+def _pace_heading(lines) -> str:
+    """#97 (B5/C3): 末脚セクションの見出しを中身 (複勝率) と連動させる。
+
+    固定見出し【末脚優位性】のまま「複勝率38% → 前残り重視」を出すと見出しと本文が
+    自己矛盾するため、丸め後の複勝率で 末脚優位/前残り/拮抗 に振り分ける。
+    """
+    m = re.search(r"複勝率\s*(\d+)%", " ".join(lines or []))
+    if not m:
+        return "【末脚vs前残り】"
+    pct = int(m.group(1))
+    if pct >= 55:
+        return "【末脚優位性】"
+    if pct <= 45:
+        return "【前残り傾向】"
+    return "【末脚vs前残り】"
+
+
 def _morning_sec_pace(conn, ctx):
     _t, lines, n = sec_pace_decisive(
         conn, ctx["venue"], ctx["surface"], ctx["distance"], years=6)
     if lines and n >= 10:
-        return _make_section("【末脚の優位性】", lines[:3]), n
+        return _make_section(_pace_heading(lines), lines[:3]), n  # #97 (B5): 見出しを判定連動に
     return None, n
 
 
@@ -1020,7 +1123,8 @@ def _morning_sec_dangerous(conn, ctx):
     action_line = next((l for l in lines if l.startswith("→")), None)
     example = next((l for l in lines if l.startswith("🚨")), None)
     block = [x for x in ([flop_line] + insight_lines + [action_line, example]) if x]
-    return _make_section("【1番人気の信頼性】", block), n
+    # #97 (B3): 母集団 scope をタイトルに復元
+    return _make_section(f"【1番人気の信頼性】{_pop_scope(ctx)}", block), n
 
 
 def _morning_sec_outlier(conn, ctx):
@@ -1053,7 +1157,8 @@ _MORNING_ROTATION = {
             ("historical", _morning_sec_historical),
             ("pop_trust", _morning_sec_pop_trust),
         ],
-        "cta": "→ 火朝は血統で狙える注目馬を配信🔔",
+        # #97 (D4): CTA は「🔔 」始まりに統一 (行動指針の「→」と記号衝突するため)
+        "cta": "🔔 火朝は血統で狙える注目馬を配信",
     },
     1: {  # 火: 血統で狙う注目馬 (CLAUDE.md 平日 slot 表)
         "emoji": "🩸", "theme": "血統で狙う注目馬",
@@ -1062,7 +1167,7 @@ _MORNING_ROTATION = {
             ("pattern", _morning_sec_pattern),
             ("age", _morning_sec_age),
         ],
-        "cta": "→ 水朝は鞍上で狙える注目馬を配信🔔",
+        "cta": "🔔 水朝は鞍上で狙える注目馬を配信",  # #97 (D4)
     },
     2: {  # 水: 鞍上で狙う注目馬 (通常は build_wed_morning_post / これは fallback)
         "emoji": "🏇", "theme": "鞍上で狙う注目馬",
@@ -1071,7 +1176,7 @@ _MORNING_ROTATION = {
             ("jockey", _morning_sec_jockey),
             ("pace", _morning_sec_pace),
         ],
-        "cta": "→ 木朝に追い切り評価とコース適性を配信🔔",
+        "cta": "🔔 木朝は追い切り・コース適性で最終チェック",  # #97 (A3/D4): 追い切り未着時はコース適性 fallback (#50) があるため傘CTAに
     },
     3: {  # 木: コース適性の注目馬 + 枠順 (通常は build_thu_morning_post / fallback)
         "emoji": "📋", "theme": "コース適性の注目馬",
@@ -1079,7 +1184,7 @@ _MORNING_ROTATION = {
             ("notable", _morning_sec_notable_combined),
             ("post_pos", _morning_sec_post_pos),
         ],
-        "cta": "→ 金朝はAI独自パターンを配信🔔",
+        "cta": "🔔 金朝はAI独自パターンを配信",  # #97 (D4)
     },
     4: {  # 金: AI独自パターン分析 (通常は build_fri_morning_post / fallback)
         "emoji": "🔮", "theme": "AI独自パターン分析",
@@ -1087,7 +1192,9 @@ _MORNING_ROTATION = {
             ("pattern", _morning_sec_pattern),
             ("notable", _morning_sec_notable_blood),
         ],
-        "cta": "→ 土朝は本番直前データを配信🔔",
+        # #97 (A4): 「土朝は本番直前データ」slot は存在しない (土朝morning は投稿されない)
+        # → 実在する配信 (post_predict 10:15 の AI印) だけを予告する。
+        "cta": "🔔 レース当日の朝10時すぎにAI印の最終予想",  # #97: 対象レースが翌日の場合の誤案内防止
     },
     5: {  # 土: 本番直前データ (1番人気の信頼性 + 枠順)
         "emoji": "🎯", "theme": "本番直前データ",
@@ -1095,7 +1202,8 @@ _MORNING_ROTATION = {
             ("danger", _morning_sec_dangerous),
             ("post_pos", _morning_sec_post_pos),
         ],
-        "cta": "→ 本日10時にAI最終予想+買い目を発表🔔",
+        # #97 (A2): 「買い目」はXに出ない (ダッシュボード限定 #71) ので予告しない。印のみ。
+        "cta": "🔔 レース当日の朝10時すぎにAI印の最終予想を発表",  # #97: 題材が翌日レースでも正しい表現
     },
     6: {  # 日: 波乱とコース傾向 (波乱年 + 種牡馬 + 末脚)
         "emoji": "⚠️", "theme": "波乱とコース傾向",
@@ -1104,7 +1212,8 @@ _MORNING_ROTATION = {
             ("sires", _morning_sec_sires_detailed),
             ("pace", _morning_sec_pace),
         ],
-        "cta": "→ 本日10時にAI最終予想+買い目を発表🔔",
+        # #97 (A2): 「買い目」はXに出ない (ダッシュボード限定 #71) ので予告しない。印のみ。
+        "cta": "🔔 本日10時すぎにAI印の最終予想を発表",
     },
 }
 
@@ -1227,10 +1336,11 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     import re as _re
 
     # 🆕 #81: 月昼と火昼で同じ「総合TOP3」が出て反復していた → 曜日で切り口を変える。
-    #   月(0)=総合 / 火(1)=血統(父) / その他=総合。これで連日の昼が別物になる。
+    # #97 (C1): さらに月朝(combined)と月昼が同一TOP3で反復していたため、
+    #   月昼は「直近フォーム (SI+直近複勝率)」の form モードに変更。火(1)=血統(母父) は維持。
     from datetime import timezone as _tz, timedelta as _td2
     _dow = (datetime.now(_tz.utc) + _td2(hours=9)).weekday()
-    _mode = "blood" if _dow == 1 else "combined"
+    _mode = "blood" if _dow == 1 else "form"
     nb = _notable_lead(conn, race, mode=_mode)
     if nb:
         sections.append(nb)
@@ -1284,7 +1394,11 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
             bw, bp = best_m.groups()
             ww, wp = worst_m.groups()
             diff_pt = float(bp) - float(wp)
-            extras.append(f"枠順: ⭐{bw}枠{bp}% / ⚠️{ww}枠{wp}% ({diff_pt:.0f}pt差)")
+            # #97 (D間連): 「⭐7枠21.9%」が何の%か不明 + 数字だけで結論なし (#1 最悪パターン)
+            #   → 「複勝率」を明示し、土朝版 (_morning_sec_post_pos) と同じ判定行を添える。
+            extras.append(
+                f"枠順: ⭐{bw}枠 複勝率{bp}% / ⚠️{ww}枠{wp}%\n"
+                f"→ {diff_pt:.0f}pt差、枠の有利不利は{'大' if diff_pt >= 10 else '小さめ'}")
 
     t3, lines3, n3 = sec_outlier_year(conn, race_name, years=6)
     samples["outliers"] = n3
@@ -1322,7 +1436,7 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     for e in extras:
         sections.append(e)
 
-    cta = "→ 今夜AI注目要素🔔"
+    cta = "🔔 今夜AI注目要素を配信"  # #97 (D4): CTA は「🔔 」始まりに統一
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1350,7 +1464,9 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
     import re as _re
 
     # 🆕 #53: 先頭に「今週の注目馬」(実名+データ) を必ず置く
-    nb = _notable_lead(conn, race, mode="combined")
+    # #97 (C1): 月朝/月昼/月夜がすべて combined で同一TOP3を反復していた →
+    #   月夜は「鞍上」切り口 (jockey) に変更し、1日の中で 朝=総合/昼=フォーム/夜=鞍上 と分散。
+    nb = _notable_lead(conn, race, mode="jockey")
     if nb:
         sections.append(nb)
 
@@ -1364,7 +1480,10 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
             if pct_m and int(pct_m.group(1)) >= 70:
                 sections.append(f"{complot_line.strip()}\n→ 上がり順位がほぼ着順に直結")
             else:
-                sections.append(complot_line)
+                # #97 (B5): 数字1行だけで解釈なし (#1 最悪パターン) だった →
+                #   sec_pace_decisive が返す解釈行 (→) をそのまま保持する。
+                interp = next((l for l in lines1 if l.startswith("→")), None)
+                sections.append(f"{complot_line.strip()}\n{interp}" if interp else complot_line)
 
     # Section 2: 1人気の信頼性 — 飛び率 + 含意 (堅め/危険 判定付き)
     t2, lines2, n2 = sec_dangerous_favorites(
@@ -1378,9 +1497,10 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
         action_line = next((l for l in lines2 if l.startswith("→")), None)
         body = [x for x in ([flop_line] + insight_lines + [action_line]) if x]
         if body:
-            sections.append(_make_section("【1人気の信頼性】", body))
+            # #97 (B3): 母集団 scope (コース×グレード×期間) をタイトルに復元
+            sections.append(_make_section(f"【1人気の信頼性】{_pop_scope(race)}", body))
 
-    cta = "→ 火朝に血統深掘り🔔"
+    cta = "🔔 火朝に血統深掘りを配信"  # #97 (D4)
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1405,7 +1525,9 @@ def build_tue_evening_post(race: dict, conn) -> Tuple[str, dict]:
     header = f"📊 {day} {label}\n注目馬と勝ち馬の傾向"
 
     # 🆕 #53: 先頭に「今週の注目馬」(実名+データ) を必ず置く
-    nb = _notable_lead(conn, race, mode="combined")
+    # #97 (C1): combined は維持しつつ頭数を2に絞る (他 slot の combined TOP3 との
+    #   全文一致を避け、本題の前走パターン/ローテに文字数を譲る)。
+    nb = _notable_lead(conn, race, mode="combined", top=2)
     if nb:
         sections.append(nb)
 
@@ -1427,7 +1549,9 @@ def build_tue_evening_post(race: dict, conn) -> Tuple[str, dict]:
     if lines2 and n2 > 0:
         sections.append(_make_section("【ローテ傾向】", lines2[:3]))
 
-    cta = "→ 木朝に追い切り評価を配信🔔"
+    # #97 (A3/D4): 予告先の木朝は追い切り未着時にコース適性へ fallback する (#50) ため、
+    # 「追い切り評価を配信」と断言せず両方を傘にした表現に。記号も 🔔 始まりに統一。
+    cta = "🔔 木朝は追い切り・コース適性で最終チェック"
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1474,9 +1598,11 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
     t2, lines2, n2 = sec_pace_decisive(conn, venue, surface, distance, years=6)
     samples["pace"] = n2
     if lines2 and n2 >= 10:
-        sections.append(_make_section("【末脚優位性】", lines2[:2]))
+        # #97 (B5/C3): 固定【末脚優位性】は複勝率50%以下でも「優位性」と自己矛盾していた
+        #   → 判定連動の動的見出し (末脚優位性/前残り傾向/末脚vs前残り) に。
+        sections.append(_make_section(_pace_heading(lines2), lines2[:2]))
         if theme is None:
-            theme = "末脚の優位性"
+            theme = "末脚と前残りの傾向"
 
     # フォールバック: 騎手も末脚も薄いコース → 歴代勝ち馬 → コース実績種牡馬 で埋める (#50)。
     if not [s for s in sections if s]:
@@ -1502,7 +1628,7 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
     lede = _build_morning_lede(2, conn, race)
     if lede:
         header += f"\n\n{lede}"
-    cta = "→ 今夜は危険な1人気を配信🔔"
+    cta = "🔔 今夜は危険な1人気を配信"  # #97 (D4)
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1530,7 +1656,9 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
     header = f"⚠️ {day} {label}\n注目馬と人気馬の落とし穴"
 
     # 🆕 #53: 先頭に「今週の注目馬」(実名+データ) を必ず置く
-    nb = _notable_lead(conn, race, mode="combined")
+    # #97 (C1): 月朝・月昼・月夜・火夜と同じ combined TOP3 の反復を解消 →
+    #   水夜は「直近フォーム (SI+直近複勝率)」の form モードに。
+    nb = _notable_lead(conn, race, mode="form")
     if nb:
         sections.append(nb)
     import re as _re
@@ -1552,7 +1680,8 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
         examples = [l for l in lines1 if l.startswith("🚨")][:2]
         block = [x for x in ([flop_line] + insight_lines + [action_line]) if x] + examples
         if block:
-            sections.append(_make_section("【1人気の信頼性 (過去6年)】", block))
+            # #97 (B3): 母集団 scope (コース×グレード×期間) をタイトルに復元
+            sections.append(_make_section(f"【1人気の信頼性】{_pop_scope(race)}", block))
 
     # Section 2: 異常年
     t2, lines2, n2 = sec_outlier_year(conn, race_name, years=6)
@@ -1562,7 +1691,9 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
         if outliers:
             sections.append(_make_section("【過去の波乱事例】", outliers[:2]))
 
-    cta = "→ 木朝に追い切り評価を配信🔔"
+    # #97 (A3/D4): 予告先の木朝は追い切り未着時にコース適性へ fallback する (#50) ため、
+    # 「追い切り評価を配信」と断言せず両方を傘にした表現に。記号も 🔔 始まりに統一。
+    cta = "🔔 木朝は追い切り・コース適性で最終チェック"
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1656,9 +1787,15 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     header = f"🔮 {day} {label}\n{theme}"
     # 🆕 強い見出し (金朝固定 dow=4)
     lede = _build_morning_lede(4, conn, race)
+    # #97 (m9): lede (💥パターン該当馬) と Section 1 が同一パターン1件を二度見せる
+    # 重複を防ぐ — Section 1 が1行だけで、その馬が lede にも出ている場合は lede を省く
+    # (Section 側の方が構造化されており情報が多い)。
+    if lede and sections and n1 == 1 and horses_in_sec1:
+        if any(h and h in lede for h in horses_in_sec1):
+            lede = None
     if lede:
         header += f"\n\n{lede}"
-    cta = "→ 今夜は翌朝の確定予想告知🔔"
+    cta = "🔔 今夜は翌朝の配信予定を告知"  # #97 (D4)
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1718,7 +1855,7 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         header += f"\n\n{lede}"
 
     # CTA は木朝 slot 用 (#52: 水昼→木朝へ移動。netkeibaの追い切り評価は木以降公開のため)
-    cta = "→ 木昼に注目馬TOP3🔔"
+    cta = "🔔 木昼に注目馬TOP3を配信"  # #97 (D4)
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1820,7 +1957,7 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
     if lede:
         header += f"\n\n{lede}"
     # CTA は水昼 slot 用 (#52: 木朝→水昼へ移動。出走馬未確定でも歴代→コース適性 fallback)
-    cta = "→ 今夜は危険な1人気を配信🔔"
+    cta = "🔔 今夜は危険な1人気を配信"  # #97 (D4)
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1870,14 +2007,27 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         samples["source"] = "attention"
         theme = "AI注目馬TOP3"
     else:
-        t2, lines2, n2 = sec_handpicked_top(
-            conn, race_id, venue, surface, distance, top=3, years=6
-        )
+        # #97 (C1): 旧フォールバックは sec_handpicked_top で、木朝 (wed_weekday builder の
+        #   同じ handpicked fallback) とバイト同一の投稿になっていた → 木昼は
+        #   「直近フォーム (SI+直近複勝率)」の form モードで切り口を変える。
+        drawn = _is_post_position_drawn(race)
+        t2, lines2, n2 = sec_notable_horses(
+            conn, race_id, venue, surface, distance, mode="form", top=3,
+            show_number=drawn)
         if lines2 and n2 > 0:
-            cleaned = _strip_horse_number_from_lines(lines2, race)
-            sections.append(_make_section(t2, cleaned[:4]))
-            theme = "コース適性 注目馬TOP"
-        samples["source"] = "handpicked"
+            sections.append(_make_section(t2, lines2[:4]))
+            theme = "直近フォーム注目馬"
+            samples["source"] = "form"
+        else:
+            # form データが無い (全頭キャリア浅い等) 時のみ従来の handpicked を安全網に
+            t2, lines2, n2 = sec_handpicked_top(
+                conn, race_id, venue, surface, distance, top=3, years=6
+            )
+            if lines2 and n2 > 0:
+                cleaned = _strip_horse_number_from_lines(lines2, race)
+                sections.append(_make_section(t2, cleaned[:4]))
+                theme = "コース適性 注目馬TOP"
+            samples["source"] = "handpicked"
 
     # Section 2: 補助 — 過去6年で「コース好相性パターン」
     t_pat, lines_pat, n_pat = sec_pattern_discovery(
@@ -1894,7 +2044,7 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"🎯 {day} {label}\n{theme}"
-    cta = "→ 今夜AI最終予想🔔"  # #79: note は手動のため告知しない
+    cta = "🔔 今夜も注目馬の最終チェックを配信"  # #79: note は手動のため告知しない / #97 (D4)
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1926,21 +2076,34 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
         samples["source"] = "attention"
         theme = "最終予想 注目馬3頭"
     else:
-        t2, lines2, n2 = sec_handpicked_top(
-            conn, race_id, venue, surface, distance, top=3, years=6
+        # #97 (C1): fallback を handpicked→form に変更。旧実装は木朝 (同じ handpicked)
+        # とバイト単位で同一のTOP3を同日2回投稿し、X duplicate 拒否 (#48) リスクもあった。
+        t2, lines2, n2 = sec_notable_horses(
+            conn, race_id, venue, surface, distance, mode="form", top=3,
+            show_number=_is_post_position_drawn(race),
         )
         if lines2 and n2 > 0:
             cleaned = _strip_horse_number_from_lines(lines2, race)
-            sections.append(_make_section(t2, cleaned[:4]))
-            theme = "コース適性 注目馬TOP"
-        samples["source"] = "handpicked"
+            sections.append(_make_section(t2, cleaned[:5]))
+            theme = "直近フォーム 注目馬"
+            samples["source"] = "form"
+        else:
+            t2, lines2, n2 = sec_handpicked_top(
+                conn, race_id, venue, surface, distance, top=3, years=6
+            )
+            if lines2 and n2 > 0:
+                cleaned = _strip_horse_number_from_lines(lines2, race)
+                sections.append(_make_section(t2, cleaned[:4]))
+                theme = "コース適性 注目馬TOP"
+            samples["source"] = "handpicked"
 
     # 中身ゼロ (注目馬が全く取れない) は投稿しない (#50: ヘッダー+CTA 空投稿禁止)
     if not [s for s in sections if s]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"🌟 {day} {label}\n{theme}"
-    cta = "→ 土朝に印+買い目🔔"  # #79 note削除 / #81 短縮し3頭目を確保
+    # #97 (A2): 「買い目」はXに投稿されない (ダッシュボード限定 #71) → 印だけを予告。
+    cta = "🔔 レース当日の朝10時すぎに印の最終予想"  # #79 note削除 / #81 短縮し3頭目を確保
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -1973,9 +2136,16 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         theme = "AI注目馬TOP3"
     else:
         # 2) 無ければ出走予定馬 × コース統計でTOP3抽出 (内部メッセージ無し)
-        t2, lines2, n2 = sec_handpicked_top(
-            conn, race_id, venue, surface, distance, top=3, years=6
+        # #97 (C1): fallback を blood に変更 — 木朝(handpicked)・木夜(form)と
+        # 同一TOP3が3スロット連続する反復を解消 (金曜は血統切り口)。
+        t2, lines2, n2 = sec_notable_horses(
+            conn, race_id, venue, surface, distance, mode="blood", top=3,
+            show_number=_is_post_position_drawn(race),
         )
+        if not (lines2 and n2 > 0):
+            t2, lines2, n2 = sec_handpicked_top(
+                conn, race_id, venue, surface, distance, top=3, years=6
+            )
         if lines2 and n2 > 0:
             cleaned = _strip_horse_number_from_lines(lines2, race)
             sections.append(_make_section(t2, cleaned[:4]))
@@ -1997,7 +2167,7 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"🎯 {day} {label}\n{theme}"
-    cta = "→ 土朝に印 (◎○▲) と買い目🔔"
+    cta = "🔔 レース当日の朝10時すぎに印 (◎○▲) の最終予想"  # #97 (A2): 買い目はXに出ないので予告しない
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
@@ -2020,7 +2190,7 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
     distance = race.get("distance", 0)
     race_id = race.get("race_id", "")
 
-    header = f"🔔 {day} {label}\n明朝AI予想 配信予定"
+    header = f"📣 {day} {label}\n週末AI予想 配信予定"  # #97: 対象が日曜レースなら「明朝」は誤り + 🔔二重回避
 
     # 最有力 (TOP1 のみ) — AI 予測あれば優先、なければ handpicked
     t1, lines1, n1 = sec_attention_top(conn, race_id, top=1, include_marks=False)
@@ -2045,9 +2215,12 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
     if top_line:
         sections.append(f"【最有力候補】\n{top_line}")
 
-    sections.append("【配信予定】\n🌅 朝7時 — 印別最終予想\n🎯 朝10時 — 確定買い目")
+    # #97 (A1): 旧「朝7時 印別最終予想 / 朝10時 確定買い目」は二重の嘘だった —
+    #   朝7時のX投稿は存在せず (7時は predict cron のみ)、買い目はXに出ない
+    #   (ダッシュボード限定 #71)。実在する配信 (odds_flash 9:30 / post_predict 10:15) に修正。
+    sections.append("【配信予定】(レース当日の朝)\n🌅 9:30 — オッズ確定・最終見解\n🎯 10:15 — 注目レースのAI印(◎○▲△×注)を一挙公開")  # #97: 実投稿は品質ゲート付き厳選(~14R)なので「全レース分」と約束しない
 
-    cta = "→ お楽しみに🔥"
+    cta = "🔔 週末をお楽しみに🔥"  # #97 (D4)
 
     hashtags = _hashtags(race)
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)

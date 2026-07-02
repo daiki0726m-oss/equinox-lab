@@ -541,7 +541,7 @@ def _fetch_predictions_from_pages(date_str):
                         'horse_name': h.get('horse_name', ''),
                         'mark': h.get('mark', ''),
                         'pred_win_pct': h.get('pred_win_pct', 0),
-                        # #36: 表示用シャープ化勝率も引き継ぐ (旧cacheは未定義→pred_win_pct継承)
+                        # #95: 表示用シャープ化勝率も引き継ぐ (旧cacheは未定義→pred_win_pct継承)
                         'pred_win_display_pct': h.get('pred_win_display_pct', h.get('pred_win_pct', 0)),
                         'pred_top3_pct': h.get('pred_top3_pct', 0),
                         'odds_win': h.get('odds_win', 0),
@@ -693,8 +693,11 @@ def cmd_predict(args):
             # 「◎ 5番 馬名」形式で fact_check の馬名/馬番検出を確実に通す
             t1 += f"  ◎ {honmei.get('horse_number',0)}番 {honmei.get('horse_name','?')}\n"
 
-    if s_races:
-        t1 += f"\n🔥 AI高信頼レース: {len(s_races)}件\n"
+    # #97: 高信頼カウントは 11R を含む全対象レースで数える (スレッド内の⭐/🔥の
+    # 実数と一致させる — 旧実装は 11R を除外しており「6件」なのに⭐が7個等のズレ)
+    _high_conf_n = sum(1 for r in target_races if r['confidence'] in ('S', 'A'))
+    if _high_conf_n:
+        t1 += f"\n🔥 AI高信頼レース: {_high_conf_n}件\n"
 
     t1 += f"\nAI印は🧵↓で事前公開\n"
     t1 += f"{data_credit(short=True)}\n"
@@ -702,6 +705,17 @@ def cmd_predict(args):
 
     # ── ツイート2以降: 各レースの印 ──
     bet_tweets = []
+    # #97: 実際に投稿した印のスナップショット (結果投稿はこれだけを読む)。
+    # 旧実装は結果側が cache/JSON の「現在の印」を読み直すため、日中に cache が
+    # 再生成されると朝の予想と別の印で採点される事故が起きた (6/28 函館記念で実発生)。
+    _posted_marks = {}
+    # 信頼度の読者向けラベル (「信頼度D」の無説明配信をやめる)
+    _conf_label = {'S': '鉄板級', 'A': '有力', 'B': '標準', 'C': '混戦', 'D': '大混戦'}
+    try:
+        from volatility import compute_race_upset_history as _upset_hist
+    except Exception:
+        _upset_hist = None
+
     for race in target_races:
         preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
 
@@ -724,13 +738,35 @@ def cmd_predict(args):
         is_main = "メイン" if race['race_number'] == 11 else ""
 
         t = f"{conf_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}\n"
-        t += f"信頼度{race['confidence']} {is_main}\n\n"
+        t += f"信頼度{race['confidence']}({_conf_label.get(race['confidence'], '')}) {is_main}\n\n"
 
         # 印（全て表示)— 「{mark} {番号}番 {馬名}」形式で fact_check に確実に通す
         for mk in ['◎', '○', '▲', '△', '×', '注']:
             p = marks.get(mk)
             if p:
                 t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
+
+        # #97: 同名レースの歴史的荒れ度 (#96) を配信に載せる — D=混戦を「弱み」でなく
+        # 「荒れ狙いの材料」として提示する (システム最良の差別化素材が未配線だった)
+        if _upset_hist is not None:
+            try:
+                _rd = race.get('race_date') or f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+                uh = _upset_hist(race.get('race_name', ''), _rd)
+                if uh and uh['label'] == '荒れやすい':
+                    t += f"\n⚡過去{uh['n']}年は荒れ傾向 (勝ち馬平均{uh['avg_win_pop']:.0f}人気)\n"
+                elif uh and uh['label'] == '堅い':
+                    t += f"\n🔒過去{uh['n']}年は堅め (勝ち馬平均{uh['avg_win_pop']:.0f}人気)\n"
+            except Exception:
+                pass
+
+        # 投稿する印を記録 (dry-run でも収集、保存は投稿成功時のみ)
+        rid = race.get('race_id')
+        if rid:
+            _posted_marks[rid] = [
+                {'mark': mk, 'horse_number': marks[mk].get('horse_number', 0),
+                 'horse_name': marks[mk].get('horse_name', '')}
+                for mk in ['◎', '○', '▲', '△', '×', '注'] if marks.get(mk)
+            ]
 
         bet_tweets.append(t)
 
@@ -775,8 +811,13 @@ def cmd_predict(args):
             for r in target_races:
                 rid = r.get('race_id')
                 if rid:
-                    conn.execute("UPDATE predictions_cache SET posted_at = ? WHERE race_id = ?", (_ts, rid))
-        print(f"📌 投稿済みレースを記録: {len(target_races)}件 (結果投稿はこのレースのみ対象)")
+                    # #97: 実際に投稿した印のスナップショットも保存 — 結果投稿は
+                    # この snapshot を正として読む (cache再生成による朝夕の印乖離を根絶)
+                    conn.execute(
+                        "UPDATE predictions_cache SET posted_at = ?, posted_marks_json = ? "
+                        "WHERE race_id = ?",
+                        (_ts, json.dumps(_posted_marks.get(rid, []), ensure_ascii=False), rid))
+        print(f"📌 投稿済みレース+印を記録: {len(target_races)}件 (結果投稿はこの印のみ採点)")
 
     # 投稿成功 → 予測キャッシュを seal(以降 --force でも上書き不可)
     # これで結果配信時に「投稿時の予測」と異なる予測を参照する事故を防ぐ
@@ -1021,9 +1062,25 @@ def _build_results_jsonmarks_dbfinish(date_str):
     if not flat_races:
         return []
 
-    # 対象レース = 予想投稿したのと同じ選定 (11R 全会場 + S/A)。seal 非依存。
-    target = _select_target_races(flat_races)
-    target_ids = {r.get('race_id') for r in target}
+    # #97: 対象レース = 実際に予想投稿したレース (posted_at 記録) を最優先。
+    # 旧実装は _select_target_races の再計算で、cache が日中に変わると
+    # 「予想14レース → 結果11レース」のような取りこぼしが起きた (#39/#46 の残穴)。
+    target_ids = set()
+    try:
+        with get_db() as _c:
+            _hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            rows = _c.execute(
+                "SELECT pc.race_id FROM predictions_cache pc "
+                "JOIN races ra ON ra.race_id = pc.race_id "
+                "WHERE (ra.race_date = ? OR ra.race_date = ?) AND pc.posted_at IS NOT NULL",
+                (date_str, _hyphen)).fetchall()
+            target_ids = {r[0] for r in rows}
+    except Exception:
+        target_ids = set()
+    if not target_ids:
+        # 記録が無い (seal消失等) 場合のみ再計算にフォールバック (#61)
+        target = _select_target_races(flat_races)
+        target_ids = {r.get('race_id') for r in target}
 
     race_data = []
     mark_order = ['◎', '○', '▲', '△', '×', '注']
@@ -1047,17 +1104,38 @@ def _build_results_jsonmarks_dbfinish(date_str):
                 continue
 
             marked = []
-            horses = race.get('horses', [])
-            for m in mark_order:
-                h = next((x for x in horses if x.get('mark') == m), None)
-                if not h:
-                    continue
-                marked.append({
-                    'mark': m,
-                    'horse_number': h.get('horse_number', 0),
-                    'horse_name': h.get('horse_name', ''),
-                    'finish': finish_map.get(h.get('horse_number', 0)),
-                })
+            # #97: 投稿時の印スナップショット (posted_marks_json) を最優先。
+            # JSON/cache の「現在の印」は日中の再生成で朝の投稿とズレることがある
+            # (6/28 函館記念で◎○が入替わったまま採点する事故が実発生)。
+            snap_row = conn.execute(
+                "SELECT posted_marks_json FROM predictions_cache WHERE race_id = ?",
+                (rid,)).fetchone()
+            snap = []
+            if snap_row and snap_row[0]:
+                try:
+                    snap = json.loads(snap_row[0]) or []
+                except Exception:
+                    snap = []
+            if snap:
+                for s in snap:
+                    marked.append({
+                        'mark': s.get('mark', ''),
+                        'horse_number': s.get('horse_number', 0),
+                        'horse_name': s.get('horse_name', ''),
+                        'finish': finish_map.get(s.get('horse_number', 0)),
+                    })
+            else:
+                horses = race.get('horses', [])
+                for m in mark_order:
+                    h = next((x for x in horses if x.get('mark') == m), None)
+                    if not h:
+                        continue
+                    marked.append({
+                        'mark': m,
+                        'horse_number': h.get('horse_number', 0),
+                        'horse_name': h.get('horse_name', ''),
+                        'finish': finish_map.get(h.get('horse_number', 0)),
+                    })
             if marked:
                 race_data.append({
                     'venue': race.get('venue', ''),
@@ -1131,17 +1209,36 @@ def _build_results_from_db(date_str, date_hyphen):
                     continue
 
                 marked = []
-                for m in mark_order:
-                    horse = next((p for p in preds if p.get('mark') == m), None)
-                    if not horse:
-                        continue
-                    fin = finish_map.get(horse.get('horse_number', 0))
-                    marked.append({
-                        'mark': m,
-                        'horse_number': horse.get('horse_number', 0),
-                        'horse_name': horse.get('horse_name', ''),
-                        'finish': fin,
-                    })
+                # #97: 投稿時の印スナップショット優先 (JSON path と同じ理由)
+                snap_row = conn.execute(
+                    "SELECT posted_marks_json FROM predictions_cache WHERE race_id = ?",
+                    (race_id,)).fetchone()
+                snap = []
+                if snap_row and snap_row[0]:
+                    try:
+                        snap = json.loads(snap_row[0]) or []
+                    except Exception:
+                        snap = []
+                if snap:
+                    for s in snap:
+                        marked.append({
+                            'mark': s.get('mark', ''),
+                            'horse_number': s.get('horse_number', 0),
+                            'horse_name': s.get('horse_name', ''),
+                            'finish': finish_map.get(s.get('horse_number', 0)),
+                        })
+                else:
+                    for m in mark_order:
+                        horse = next((p for p in preds if p.get('mark') == m), None)
+                        if not horse:
+                            continue
+                        fin = finish_map.get(horse.get('horse_number', 0))
+                        marked.append({
+                            'mark': m,
+                            'horse_number': horse.get('horse_number', 0),
+                            'horse_name': horse.get('horse_name', ''),
+                            'finish': fin,
+                        })
 
                 race_data.append({
                     'venue': race.get('venue', ''),
@@ -1295,13 +1392,16 @@ def cmd_results(args):
             mdl = medal(m['finish'])
             # 馬名を10文字でtruncate
             name_disp = m['horse_name'][:10]
-            t += f"{m['mark']} {m['horse_number']:>2}番 {name_disp:10} {fmt_finish(m['finish'])} {mdl}\n"
+            # #97: 固定幅パディング廃止 — X はプロポーショナルфォントで縦は揃わず、
+            # 空白が字数 (280) を浪費して超過事故を起こしていた (実測286字)
+            _mdl_sfx = f" {mdl}" if mdl else ""
+            t += f"{m['mark']} {m['horse_number']}番 {name_disp} → {fmt_finish(m['finish'])}{_mdl_sfx}\n"
             if m['finish'] and m['finish'] <= 3:
                 n_in_top3 += 1
 
         t += f"\n🎯 印{n_in_top3}頭が3着以内"
-        if not is_last_race:
-            t += "\n🧵続く"
+        # #97: この後に必ず集計 tweet が続くため、最終レースにも継続マーカーを付ける
+        t += "\n🧵続く"
         tweets.append(t)
 
     # 締めツイート
@@ -2722,9 +2822,9 @@ def generate_weekend_preview():
         t2 += "\n"
 
     # ツイート3: 配信案内
-    t3 = "🔔 明日朝8時に詳細予想を配信\n\n"
+    t3 = "🔔 明日朝10時すぎにAI印の最終予想を配信\n\n"
     t3 += "各レースの◎○▲△と\n"
-    t3 += "買い目まで公開します\n\n"
+    t3 += "◎○▲△×注 の印を全レース分公開\n\n"
     t3 += "フォロー&通知ONで\n"
     t3 += "見逃さないようにしてください👀"
 
@@ -2847,7 +2947,7 @@ def cmd_answer_check(args):
     t3 = ""
     if is_saturday:
         t3 = "🔔 明日もAI予想を配信\n\n"
-        t3 += "朝7時に全レース予想を投稿\n"
+        t3 += "朝10時すぎにAI印の最終予想を投稿\n"
         t3 += "フォロー&通知ONで見逃さない👀"
     else:
         t3 = "🔔 来週も毎日配信\n\n"
@@ -3208,7 +3308,7 @@ def generate_note_promo():
         main_races = [n for n in upcoming_race_names if any(g in n for g in ['G', '杯', '記念', 'S', 'ステークス'])]
         if main_races:
             t3 += f"📢 今週末は {main_races[0]} 🔥\n"
-            t3 += "AI予想は土日朝7時に配信します\n\n"
+            t3 += "AI予想は土日朝10時すぎに配信します\n\n"
 
     t3 += "フォローして見逃さないでください！"
 
@@ -3327,6 +3427,15 @@ def fact_check_tweet(tweet_text, require_horse=True):
                    re.search(r'\d+\s*/\s*\d+\s*勝', tweet_text)
     if bad_fraction:
         issues.append(f"🚫 禁止された分数表記「{bad_fraction.group(0)}」(N勝/M は使わない → 「過去N年でX勝」等に)")
+        critical = True
+
+    # 🚫 #97: 「該当馬なし/該当出走馬なし」系の内部メッセージは投稿禁止。
+    # 絶対ルール (2026-06-04)「該当馬がいないパターン情報は出さない」+ #49 の
+    # ブロック語彙「該当馬なし」の変種 (該当出走馬なし 等) がすり抜けて実投稿された
+    # ため、regex で機械ブロック (#54 と同じ思想: 気をつけるでなく物理的に不可能に)。
+    nashi = re.search(r'該当[^\n]{0,6}馬なし', tweet_text)
+    if nashi:
+        issues.append(f"🚫 内部メッセージ「{nashi.group(0)}」が投稿に混入 (該当ゼロならセクション自体を出さない)")
         critical = True
 
     # ── v9 「中身なし」検出 — データ薄い slot は投稿ブロック ──
@@ -3490,24 +3599,38 @@ def cmd_odds_flash(args):
         venue = race['venue']
         grade = f" [{race['grade']}]" if race['grade'] else ""
 
-        # AI勝率順でTOP3
-        top3 = sorted(preds, key=lambda x: x.get('pred_win_pct', 0), reverse=True)[:3]
+        # #97: TOP3 の軸を「印 (◎○▲)」に統一。
+        # 旧実装は AI勝率(pred_win)順で、45分後の post_predict の印 (複勝率軸 #77) と
+        # 別の馬を「最終見解🥇」として出す不一致が 6/27-28 に3レース中2レースで発生。
+        # さらにソート=温度1 / 表示=温度3 のチャネル混在で「🥈の勝率が🥇より高い」
+        # 矛盾表示も実投稿に出ていた (#95 取り残し)。印順に統一して両方を同時に解消。
+        _mark_pri = {'◎': 0, '○': 1, '▲': 2}
+        top3 = sorted(
+            (p for p in preds if p.get('mark') in _mark_pri),
+            key=lambda x: _mark_pri[x['mark']])[:3]
+        if len(top3) < 3:
+            # 印が無い旧cache → 表示チャネルの勝率順 (ソートと表示の軸を一致させる)
+            top3 = sorted(
+                preds,
+                key=lambda x: x.get('pred_win_display_pct') or x.get('pred_win_pct', 0),
+                reverse=True)[:3]
 
         tweet = f"📊 オッズ確定！最終見解\n\n"
         tweet += f"{venue}11R {rname}{grade}\n\n"
 
-        medals = ['🥇', '🥈', '🥉']
+        _fallback_medals = ['🥇', '🥈', '🥉']
         for i, p in enumerate(top3):
-            # #36: 表示は温度×3 のシャープ化勝率 (エンタメ)、EV計算には使わない
+            mk = p.get('mark') or _fallback_medals[i]
+            # #95: 表示は温度×3 のシャープ化勝率 (エンタメ)、EV計算には使わない
             win_pct = p.get('pred_win_display_pct') or p.get('pred_win_pct', 0)
             odds = p.get('odds_win', 0)
             name = p.get('horse_name', '?')
             pop = p.get('popularity', '?')
-            tweet += f"{medals[i]} {name}\n"
+            tweet += f"{mk} {name}\n"
             tweet += f"  AI勝率{win_pct}% / {odds}倍({pop}人気)\n"
 
         # 妙味判定: AI勝率が高いのにオッズが高い馬
-        # #36: EV は意思決定用の温度1勝率 (pred_win_pct) で計算 (display だと約2倍過大)
+        # #95: EV は意思決定用の温度1勝率 (pred_win_pct) で計算 (display だと約2倍過大)
         for p in top3:
             win_pct = p.get('pred_win_pct', 0)
             odds = p.get('odds_win', 0)
@@ -3523,7 +3646,8 @@ def cmd_odds_flash(args):
         # ファクトチェック
         print(f"\n📊 ファクトチェック: {venue} {rname}")
         for i, p in enumerate(top3):
-            print(f"  {medals[i]} {p.get('horse_name','?')}: "
+            _mk = p.get('mark') or _fallback_medals[i]
+            print(f"  {_mk} {p.get('horse_name','?')}: "
                   f"AI勝率{p.get('pred_win_pct',0)}% / "
                   f"オッズ{p.get('odds_win',0)}倍 / "
                   f"{p.get('popularity','?')}人気")
