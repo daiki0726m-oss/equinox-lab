@@ -13,6 +13,11 @@ on:
     - cron: '0 22 * * 4'
     # 土曜 6:30 JST (UTC 金曜 21:30) — 当日朝の最終
     - cron: '30 21 * * 5'
+    # 🆕 #95 followup: 日曜 22:00 JST (UTC 13:00) — 歴史在庫の消化モード
+    # auto_pedigree は「今日から先の出走馬」しか見ないため、過去年の血統欠落
+    # (2020-2025 で 17-44% 充足) が永遠に残っていた。週1で 2020-01-01 起点の
+    # 一括補完を回し、在庫 (~26,000頭) を数ヶ月かけて自動消化する。
+    - cron: '0 13 * * 0'
   workflow_dispatch:
     inputs:
       days:
@@ -25,6 +30,11 @@ on:
         required: false
         default: '1500'
         type: string
+      from_date:
+        description: '対象開始日 YYYY-MM-DD (指定すると歴史モード、days より優先)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -36,7 +46,7 @@ concurrency:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 150   # #95: 歴史モード (max=4000) を収容
     steps:
       - uses: actions/checkout@v4
 
@@ -71,8 +81,19 @@ jobs:
         run: |
           DAYS="${{ github.event.inputs.days || '14' }}"
           MAX="${{ github.event.inputs.max_horses || '1500' }}"
-          echo "🧬 days=$DAYS max=$MAX で実行..."
-          python3 scripts/auto_pedigree.py --days "$DAYS" --max "$MAX"
+          FROM="${{ github.event.inputs.from_date || '' }}"
+          # 日曜 cron は歴史在庫消化モード (#95 followup)
+          if [ "${{ github.event.schedule }}" = "0 13 * * 0" ]; then
+            FROM="2020-01-01"
+            MAX="4000"
+          fi
+          if [ -n "$FROM" ]; then
+            echo "🧬 歴史モード: from=$FROM max=$MAX で実行..."
+            python3 scripts/auto_pedigree.py --from "$FROM" --days "$DAYS" --max "$MAX"
+          else
+            echo "🧬 days=$DAYS max=$MAX で実行..."
+            python3 scripts/auto_pedigree.py --days "$DAYS" --max "$MAX"
+          fi
 
       - name: Save DB cache
         uses: actions/cache/save@v4
