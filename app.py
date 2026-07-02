@@ -324,6 +324,8 @@ def api_predict(race_id):
                 "horse_number": hn,
                 "horse_name": r_info.get("horse_name", ""),
                 "pred_win": float(row["pred_win_norm"]),
+                # #95: 表示用シャープ化勝率 (温度×3)。UI の「AI勝率」はこちらを優先
+                "pred_win_display": float(row.get("pred_win_display", row["pred_win_norm"])),
                 "pred_top3": float(row["pred_top3_norm"] / 3),
                 "odds_win": odds_win,
                 "odds_place": max(odds_win * 0.3, 1.1) if odds_win else 1.5,
@@ -572,6 +574,9 @@ def api_predict_date(date_str):
                     # キー正規化（pred_win_pct→pred_win等）
                     if 'pred_win' not in h and 'pred_win_pct' in h:
                         h['pred_win'] = h['pred_win_pct']
+                    # #95: 表示チャネル正規化 (旧cacheは display 無し → pred_win に落ちる)
+                    if 'pred_win_display' not in h:
+                        h['pred_win_display'] = h.get('pred_win_display_pct') or h.get('pred_win') or h.get('pred_win_pct', 0)
                     if 'pred_top3' not in h and 'pred_top3_pct' in h:
                         h['pred_top3'] = h['pred_top3_pct']
                     db_r = odds_map.get(h['horse_number'])
@@ -777,6 +782,7 @@ def api_predict_date(date_str):
                         "jockey_name": jockey_name,
                         "trainer_name": trainer_name,
                         "pred_win": round(pred_win * 100, 1),
+                        "pred_win_display": round(float(row.get("pred_win_display", row["pred_win_norm"])) * 100, 1),
                         "pred_top3": round(pred_top3 * 100, 1),
                         "rank_score": round(float(row.get("rank_score", 0)), 2),
                         "si_avg": round(float(row.get("si_avg", 0)), 1),

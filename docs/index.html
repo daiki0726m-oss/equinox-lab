@@ -1116,14 +1116,17 @@ function renderSummary(data) {
 // ─── Scale bets to budget ───
 function scaleBets(bets, budget) {
   if (!bets || bets.length === 0) return [];
-  const originalTotal = bets.reduce((s, b) => s + (b.amount || 100), 0);
+  // #95: amount=0 は sb=0 ゼロ化ガードの結果 (参考表示) — 100円に復活させない
+  const base = (b) => (typeof b.amount === 'number' ? b.amount : 100);
+  const originalTotal = bets.reduce((s, b) => s + base(b), 0);
   if (originalTotal === 0) return bets;
 
   const ratio = budget / originalTotal;
-  return bets.map(b => ({
-    ...b,
-    amount: Math.max(100, Math.round((b.amount || 100) * ratio / 100) * 100),
-  }));
+  return bets.map(b => {
+    const a = base(b);
+    if (a === 0) return { ...b };
+    return { ...b, amount: Math.max(100, Math.round(a * ratio / 100) * 100) };
+  });
 }
 
 // ─── Check if bet hit ───
@@ -1465,7 +1468,8 @@ function renderHorseRow(h) {
   // Win rate / Top3 rate color coding
   const wr = h.win_rate || 0;
   const t3r = h.top3_rate || 0;
-  const predWin = h.pred_win_pct || 0;
+  // #95: 表示は温度×3 のシャープ化勝率 (pred_win_display_pct)、無ければ従来値
+  const predWin = h.pred_win_display_pct || h.pred_win_pct || 0;
   const predTop3 = h.pred_top3_pct || 0;
   const wrClass = wr >= 20 ? 'hot' : '';
   const t3rClass = t3r >= 40 ? 'hot' : '';

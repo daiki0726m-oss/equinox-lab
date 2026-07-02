@@ -14,7 +14,10 @@ concurrency:
 jobs:
   retrain:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      issues: write
 
     steps:
       - uses: actions/checkout@v4
@@ -33,27 +36,34 @@ jobs:
         run: |
           pip install lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
 
-      - name: Check model age
+      # #95 (2026-07-02): 旧実装は models/*.pkl の mtime で経過日数を判定していたが、
+      # actions/checkout は mtime を保存しない (常に checkout 時刻 = 経過0日) ため、
+      # scheduled 実行では retrain が永遠にスキップされ、モデルが 2026-05-17 のまま
+      # 6週間以上サイレント停止していた。GitHub API の最終コミット日時で判定する
+      # (fetch-depth:0 のフル履歴 fetch は重いのでAPI照会、レビュー指摘)。
+      - name: Check model age (last commit via API, not mtime)
         id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          AGE=$(python -c "
-          import os
-          from datetime import datetime
-          p = 'models/model_rank.pkl'
-          if os.path.exists(p):
-              days = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(p))).days
-              print(days)
-          else:
-              print(999)
-          ")
+          LAST_ISO=$(gh api "repos/$GITHUB_REPOSITORY/commits?path=models/model_rank.pkl&per_page=1" \
+            --jq '.[0].commit.committer.date' 2>/dev/null || echo "")
+          if [ -z "$LAST_ISO" ]; then
+            AGE=999
+          else
+            LAST_TS=$(date -d "$LAST_ISO" +%s)
+            NOW_TS=$(date +%s)
+            AGE=$(( (NOW_TS - LAST_TS) / 86400 ))
+          fi
           echo "age=$AGE" >> $GITHUB_OUTPUT
-          echo "📊 モデル経過日数: ${AGE}日"
+          echo "📊 モデル経過日数 (最終コミットから): ${AGE}日"
 
-      - name: Collect recent data
-        if: steps.check.outputs.age >= 7 || github.event_name == 'workflow_dispatch'
-        run: |
-          echo "📥 直近3ヶ月のデータを収集..."
-          python predict.py collect --months 3 || echo "⚠️ 収集完了（一部エラーあり）"
+      # #95: 旧 `collect --months 3` は predict.py collect に存在しない引数で常に
+      # エラー終了し `|| echo` で握り潰されていた。そもそも学習データ (keiba.db) は
+      # 日次の fetch/race_day_runner/results 系 workflow が常時最新化して git に
+      # push しており、retrain 前の一括再収集は冗長 (実際、collect が一度も成功して
+      # いない期間も学習は正常だった)。毎週 ~1000R のフルスクレイプは 60分 timeout
+      # 超過とブロックの温床 (レビュー指摘) のため、collect ステップは廃止した。
 
       - name: Retrain model
         if: steps.check.outputs.age >= 7 || github.event_name == 'workflow_dispatch'
@@ -62,13 +72,34 @@ jobs:
           python predict.py train
           echo "✅ モデル再学習完了"
 
-      - name: Commit updated model
+      # #95: 週次 ROI モニタ (segments 監視: trio-focus band / whitelist / 注) を配線。
+      # これまでどの workflow からも呼ばれておらず降格 flag が発火し得なかった (レビュー指摘)。
+      - name: ROI weekly monitor
+        id: roimon
+        if: always() && steps.check.outputs.age != ''
+        run: |
+          python3 scripts/roi_weekly_monitor.py --weeks 12 --output docs/data/roi_weekly.json > /tmp/roi_report.md || true
+          tail -30 /tmp/roi_report.md || true
+          FLAGS=$(python3 -c "
+          import json
+          try:
+              d = json.load(open('docs/data/roi_weekly.json'))
+              segs = d.get('segments') or {}
+              flags = [k for k, s in segs.items() if s.get('flag')]
+              print(','.join(flags))
+          except Exception:
+              print('')
+          ")
+          echo "flags=$FLAGS" >> $GITHUB_OUTPUT
+          if [ -n "$FLAGS" ]; then echo "🔻 segment flag: $FLAGS"; fi
+
+      - name: Commit updated model + monitor
         if: steps.check.outputs.age >= 7 || github.event_name == 'workflow_dispatch'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           bash scripts/db_pack.sh
-          git add models/ keiba.db.gz
+          git add models/ keiba.db.gz docs/data/roi_weekly.json
           if git diff --staged --quiet; then
             echo "📭 変更なし"
           else
@@ -77,13 +108,52 @@ jobs:
             # GITHUB_REF_NAME を rebase 対象に。デフォルトは main。
             BRANCH="${GITHUB_REF_NAME:-main}"
             # 他workflowが先にpushしている可能性に備え、rebaseしてからpush(最大3回リトライ)
+            PUSHED=0
             for i in 1 2 3; do
               git pull --rebase --autostash -X theirs origin "$BRANCH" || true
               if git push origin "HEAD:$BRANCH"; then
                 echo "🚀 モデルをデプロイ完了 (試行$i, branch=$BRANCH)"
+                PUSHED=1
                 break
               fi
               echo "⚠️ push失敗 → rebaseしてリトライ ($i, branch=$BRANCH)"
               sleep 5
             done
+            # #95: push 全滅を握り潰さない (旧実装は成功扱いで沈黙、レビュー指摘)
+            if [ "$PUSHED" != "1" ]; then
+              echo "❌ push が3回とも失敗 — モデルは origin に届いていない"
+              exit 1
+            fi
           fi
+
+      # #95: retrain の沈黙停止を二度と起こさないための可視化 (#34 SLO 思想の retrain 適用)。
+      # (a) job 失敗 (timeout の cancelled 含む、レビュー指摘) → Issue
+      # (b) schedule 実行で「retrain 条件を満たさないのにモデルが14日以上古い」= 判定系の
+      #     再故障 (mtime バグの再来など) → Issue (コメントだけで未実装だった、レビュー指摘)
+      - name: 🔔 Notify on failure / cancelled / stale
+        if: failure() || cancelled() || (github.event_name == 'schedule' && steps.check.outputs.age >= 14 && steps.check.outputs.age != 999)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            KIND="stale"
+            TITLE="🧠 weekly_retrain 停滞疑い (モデル${{ steps.check.outputs.age }}日更新なし) $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+          else
+            KIND="failure"
+            TITLE="🧠 weekly_retrain 失敗 $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+          fi
+          EXISTING=$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+          if [ "$EXISTING" != "0" ]; then
+            echo "ℹ️ 既存 Issue あり → スキップ"
+            exit 0
+          fi
+          BODY="weekly_retrain の $KIND を検知しました。モデルが陳腐化すると予測劣化が silent に進行します (#95 で6週間停止の前科あり)。
+
+Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+モデル経過日数: ${{ steps.check.outputs.age }}日
+segment flags: ${{ steps.roimon.outputs.flags }}
+
+確認事項: train のエラー / push の競合 / age 判定 (API) の失敗"
+          gh issue create --title "$TITLE" --body "$BODY" --label "slo-violation" 2>&1 || \
+            gh issue create --title "$TITLE" --body "$BODY" 2>&1 || \
+            echo "⚠️ Issue 作成失敗"

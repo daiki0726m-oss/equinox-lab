@@ -71,7 +71,8 @@ def get_race_predictions(date_str, model, strategy):
                 # キー正規化（pred_win_pct→pred_win 等、フォーマット差吸収）
                 for h in horses:
                     if 'pred_win' not in h and 'pred_win_pct' in h:
-                        h['pred_win'] = h['pred_win_pct']
+                        # #95: 記事表示と confidence 判定 (温度×3閾値ペア) は表示チャネル優先
+                        h['pred_win'] = h.get('pred_win_display_pct') or h['pred_win_pct']
                     if 'pred_top3' not in h and 'pred_top3_pct' in h:
                         h['pred_top3'] = h['pred_top3_pct']
 
@@ -259,6 +260,8 @@ def get_race_predictions(date_str, model, strategy):
                         break
 
                 pred_win = float(row["pred_win_norm"])
+                # #95: 表示は温度×3 チャネル (無ければ温度1 にフォールバック)
+                pred_win_disp = float(row.get("pred_win_display", row["pred_win_norm"]))
                 pred_top3 = float(row["pred_top3_norm"] / 3)
 
                 if odds_win <= 0 and pred_win > 0:
@@ -271,7 +274,7 @@ def get_race_predictions(date_str, model, strategy):
                     "horse_number": hn,
                     "horse_name": horse_name,
                     "jockey_name": jockey_name,
-                    "pred_win": round(pred_win * 100, 1),
+                    "pred_win": round(pred_win_disp * 100, 1),
                     "pred_top3": round(pred_top3 * 100, 1),
                     "si_avg": round(float(row.get("si_avg", 0)), 1),
                     "odds_win": odds_win,

@@ -541,6 +541,8 @@ def _fetch_predictions_from_pages(date_str):
                         'horse_name': h.get('horse_name', ''),
                         'mark': h.get('mark', ''),
                         'pred_win_pct': h.get('pred_win_pct', 0),
+                        # #36: 表示用シャープ化勝率も引き継ぐ (旧cacheは未定義→pred_win_pct継承)
+                        'pred_win_display_pct': h.get('pred_win_display_pct', h.get('pred_win_pct', 0)),
                         'pred_top3_pct': h.get('pred_top3_pct', 0),
                         'odds_win': h.get('odds_win', 0),
                         'popularity': h.get('popularity', 0),
@@ -2610,7 +2612,7 @@ def generate_horse_spotlight():
             t += f"📅 {rd.month}/{rd.day}({dow})\n\n"
 
             # ◎の馬の詳細
-            win_pct = top.get('pred_win_pct', top.get('pred_win', 0))
+            win_pct = top.get('pred_win_display_pct') or top.get('pred_win_pct', top.get('pred_win', 0))
             t += f"◎ {top.get('horse_name', '?')}\n"
             t += f" AI勝率: {win_pct:.1f}%\n"
             if top.get('reasons'):
@@ -2618,7 +2620,7 @@ def generate_horse_spotlight():
                     t += f" ✅ {r}\n"
 
             t += f"\n○ {rival.get('horse_name', '?')}\n"
-            rival_pct = rival.get('pred_win_pct', rival.get('pred_win', 0))
+            rival_pct = rival.get('pred_win_display_pct') or rival.get('pred_win_pct', rival.get('pred_win', 0))
             t += f" AI勝率: {rival_pct:.1f}%\n\n"
 
             gap = win_pct - rival_pct
@@ -3496,7 +3498,8 @@ def cmd_odds_flash(args):
 
         medals = ['🥇', '🥈', '🥉']
         for i, p in enumerate(top3):
-            win_pct = p.get('pred_win_pct', 0)
+            # #36: 表示は温度×3 のシャープ化勝率 (エンタメ)、EV計算には使わない
+            win_pct = p.get('pred_win_display_pct') or p.get('pred_win_pct', 0)
             odds = p.get('odds_win', 0)
             name = p.get('horse_name', '?')
             pop = p.get('popularity', '?')
@@ -3504,6 +3507,7 @@ def cmd_odds_flash(args):
             tweet += f"  AI勝率{win_pct}% / {odds}倍({pop}人気)\n"
 
         # 妙味判定: AI勝率が高いのにオッズが高い馬
+        # #36: EV は意思決定用の温度1勝率 (pred_win_pct) で計算 (display だと約2倍過大)
         for p in top3:
             win_pct = p.get('pred_win_pct', 0)
             odds = p.get('odds_win', 0)

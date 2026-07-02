@@ -143,7 +143,8 @@ def check_ml_output_sanity(conn, date_iso: str) -> tuple[int, list[str]]:
             continue
         if not preds:
             continue
-        max_pw = max((p.get("pred_win_pct") or 0) for p in preds)
+        # #95: flat 判定は表示チャネル優先 (12% 閾値は温度×3分布とペア、database.py と同一ロジック)
+        max_pw = max((p.get("pred_win_display_pct") or p.get("pred_win_pct") or 0) for p in preds)
         if max_pw < 12.0:
             n_flat += 1
             flat_details.append((r["race_id"], max_pw))

@@ -272,6 +272,9 @@ def evaluate(
     # confidence にするのが自然。妙味 (composite) は reason に併記して透明性を残す。
     # WIN_SHARPEN=3 適用後の ◎勝率分布に合わせた閾値:
     #   S ≥45% (圧倒的本命) / A ≥30% / B ≥20% / C ≥13% / D <13% (混戦)
+    # ★ #95 (2026-07-02): この閾値は温度×3 (シャープ化) の分布とペア。
+    # 呼び出し側は top_win_pct 等に必ず表示チャネル (pred_win_display / _pct) を
+    # 渡すこと。温度1 の値を入れると S/A/B がほぼ消滅する (144R 実測 49→7)。
     # この後 predict.py で volatility (未勝利 -2 等) 補正が入り、ノイズの多い
     # 未勝利戦の高勝率本命は適切に減格される。
     def _win_grade(w: float) -> str:
@@ -325,18 +328,22 @@ def evaluate_from_horses(
     if not horses_list:
         return evaluate(0.0, 1, 0.0, grade)
 
-    sorted_h = sorted(
-        horses_list,
-        key=lambda h: float(h.get(win_key, 0) or 0),
-        reverse=True,
-    )
+    # ★ #95 (2026-07-02): _win_grade 閾値は温度×3 (表示チャネル) の分布とペアなので、
+    # 表示用フィールド (pred_win_display_pct / pred_win_display) があれば優先する。
+    # 旧 cache (display フィールド無し = 温度×3 時代の pred_win_pct) はそのまま互換。
+    display_key = win_key.replace("pred_win", "pred_win_display")
+
+    def _win(h):
+        return float(h.get(display_key) or h.get(win_key, 0) or 0)
+
+    sorted_h = sorted(horses_list, key=_win, reverse=True)
     top1 = sorted_h[0]
     top2 = sorted_h[1] if len(sorted_h) >= 2 else top1
 
-    top1_win = float(top1.get(win_key, 0) or 0)
-    top2_win = float(top2.get(win_key, 0) or 0)
+    top1_win = _win(top1)
+    top2_win = _win(top2)
     top1_top3 = float(top1.get(top3_key, 0) or 0)
-    top3_sum = sum(float(h.get(win_key, 0) or 0) for h in sorted_h[:3])
+    top3_sum = sum(_win(h) for h in sorted_h[:3])
 
     pop = top1.get(pop_key, 0)
     try:
@@ -346,7 +353,7 @@ def evaluate_from_horses(
 
     top1_odds = float(top1.get(odds_key, 0) or 0)
 
-    return evaluate(
+    result = evaluate(
         top_win_pct=top1_win,
         n_horses=len(horses_list),
         top3_sum_pct=top3_sum,
@@ -356,6 +363,36 @@ def evaluate_from_horses(
         top_popularity=pop if pop > 0 else None,
         top_odds=top1_odds,
     )
+
+    # ── #95: predict.py 側の予測後補正と整合させる (再評価サイトの乖離防止) ──
+    # (1) jockey_trust: |jt|>=2 で ±1 (cache に jockey_trust があれば適用)
+    # (2) ◎オッズ過信帯: 5.0-7.9倍 (実オッズ = popularity>0 が代理シグナル) で -1
+    grades = ["S", "A", "B", "C", "D"]
+    conf = result["confidence"]
+    reason = result["reason"]
+    top_jt = 0
+    try:
+        top_jt = int(top1.get("jockey_trust", 0) or 0)
+    except (TypeError, ValueError):
+        top_jt = 0
+    if top_jt >= 2 and conf in ("A", "B", "C"):
+        conf = grades[max(0, grades.index(conf) - 1)]
+        reason = f"{reason} / 信頼騎手{top_jt:+d}"
+    elif top_jt <= -2 and conf in ("S", "A"):
+        conf = grades[min(len(grades) - 1, grades.index(conf) + 1)]
+        reason = f"{reason} / 不信騎手{top_jt:+d}"
+
+    axis = next((h for h in horses_list if h.get("mark") == "◎"), None)
+    if axis is not None:
+        axis_odds = float(axis.get(odds_key, 0) or 0)
+        axis_pop = axis.get(pop_key, 0) or 0
+        if axis_pop and 5.0 <= axis_odds < 8.0 and conf in ("S", "A", "B", "C"):
+            conf = grades[min(len(grades) - 1, grades.index(conf) + 1)]
+            reason = f"{reason} / ◎オッズ{axis_odds:.1f}倍は過信帯-1"
+
+    result["confidence"] = conf
+    result["reason"] = reason
+    return result
 
 
 # ─── 後方互換 (旧 API) ───

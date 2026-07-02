@@ -298,9 +298,14 @@ def is_slot_posted(slot_name, post_date=None):
 def _is_degenerate_predictions(predictions_json):
     """予測が degenerate (≒全頭均等) かを判定する。
 
-    判定基準: 全馬の pred_win_pct (%) の最大値が 12% 未満 = ML 出力が flat。
+    判定基準: 全馬の表示勝率 (%) の最大値が 12% 未満 = ML 出力が flat。
     16頭立てなら均等 6.25%、12% は均等 + 6pt 上乗せ程度で「ばらつき有」とみなせる閾値。
     18頭立てで均等 5.5% 〜 通常本命 22% の中央付近に 12% を置く。
+
+    #95 (2026-07-02): 12% 閾値は温度×3 (シャープ化) 時代の分布で設計されたため、
+    pred_win_display_pct (温度×3、表示用) を優先して判定する。温度1 の
+    pred_win_pct で判定すると 16頭立ての正常な本命 (~9.5%) まで flat 扱いになる。
+    旧 cache (display フィールド無し = 温度×3 の pred_win_pct) はそのまま使える。
 
     #41 (2026-06-07) seal lockout 対策:
     07:00 で flat prediction が seal される → 10:15 以降 --force でも修正不能になる事故が
@@ -315,7 +320,7 @@ def _is_degenerate_predictions(predictions_json):
         return False
     max_win_pct = 0.0
     for p in preds:
-        pw = p.get('pred_win_pct') or 0
+        pw = p.get('pred_win_display_pct') or p.get('pred_win_pct') or 0
         if pw > max_win_pct:
             max_win_pct = pw
     return max_win_pct < 12.0

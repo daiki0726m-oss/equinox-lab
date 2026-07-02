@@ -27,6 +27,12 @@ class BettingStrategy:
                              # 旧 1.2 は 100% 超 ROI 投資ガチ運用向け。0.8 は「夢とロマン」
                              # スタンスで買い目多めに提示する設定。X 投稿には買い目 detail
                              # は出ないので、内部のみ影響 (entertainment 寄りに調整)。
+    # ── MAX_EV band-pass (#95 2026-07-02 ROI監査) ──
+    # 「宣言 EV が高いほど実現 ROI が低い」逆相関を実測 (5-6月両月再現):
+    #   EV>=2.0 line の実 ROI = 5月 23.8% / 6月 16.4% (確率過大推定の穴馬に偏る)
+    #   EV<2.0 に band-pass するだけで全体 ROI +12〜13pt。
+    # EV フィルタ買い目は MIN_EV <= ev < MAX_EV のみ通す (honor bets は対象外)。
+    MAX_EV = 2.0
     MIN_BET = 100            # 最低賭け金(円)
     KELLY_FRACTION = 0.5     # ハーフケリー（旧0.25→攻めに変更）
 
@@ -72,6 +78,50 @@ class BettingStrategy:
             except Exception:
                 continue
         return None
+
+    @staticmethod
+    def get_axis_horse(predictions, sorted_preds=None):
+        """買い目の軸馬 = 表示上の ◎ (mark)。無ければ pred_win 1位にフォールバック。
+
+        #95 (2026-07-02 ROI監査): 旧実装は軸 = pred_win 1位で、印 v5 の ◎
+        (pred_top3 1位) と乖離し、◎相当馬が相手プールに混ざって「馬連 7-7」等の
+        同一馬ペア無効買い目が本番 cache に混入していた。軸は常に表示 ◎ と一致させる。
+        """
+        for p in predictions or []:
+            if p.get('mark') == '◎':
+                return p
+        if sorted_preds:
+            return sorted_preds[0]
+        if predictions:
+            return max(predictions, key=lambda x: x.get('pred_win', 0))
+        return None
+
+    def trio_focus_band(self, predictions, confidence, race_info=None):
+        """trio-focus band 判定 (#95 2026-07-02 ROI監査)。
+
+        ◎ 単勝オッズ 2.0-2.9倍 × confidence S/A/B は、三連複◎軸ながし (印相手) が
+        ROI 200% (n=100、5月182%/6月205%、単日除外でも161-163%) の検証済み利益層。
+        ワイド◎ながしも 119%。一方この帯の馬連◎ながしは 83% の損失層。
+        → 該当時: 馬連 honor を生成せず、三連複 honor を2倍額に、ワイドは維持。
+        実オッズがある場合のみ発火 (推定オッズは自己予測由来で循環参照になるため)。
+        この alpha は印相手 (穴馬スコア系) に由来 — 相手を人気順に替えると 200%→108%
+        に消えることを counterfactual で確認済み。印ロジック変更時は要再検証。
+
+        ★逆張りレビュー指摘 (#95 追補): band は should_bet=0 でも投資対象として残る
+        例外経路なので、should_bet_race の損失層ガード (未勝利/新馬 #28、障害 ML圏外)
+        を race_name で自前に再チェックする。これが無いと「4歳以上障害未勝利 ◎2.5倍
+        conf B」のような ML 圏外レースに trio 2倍額が残る (band 候補の47%が該当した)。
+        """
+        if confidence not in ("S", "A", "B"):
+            return False
+        race_name = (race_info or {}).get("race_name", "") if race_info else ""
+        if race_name and any(k in race_name for k in ("未勝利", "新馬", "障害", "ジャンプ")):
+            return False
+        axis = self.get_axis_horse(predictions)
+        if not axis or not axis.get('_has_real_odds'):
+            return False
+        odds = axis.get('odds_win') or 0
+        return 2.0 <= odds < 3.0
 
     def kelly_criterion(self, prob, odds):
         """ケリー基準で最適賭け比率を計算"""
@@ -132,6 +182,13 @@ class BettingStrategy:
         if race_name and ("未勝利" in race_name or "新馬" in race_name):
             return False, "未勝利・新馬は ML 信頼度低のため投資見送り (印・予想は表示)"
 
+        # 🆕 #95 (2026-07-02 ROI監査): 障害・ジャンプレースは投資見送り
+        # ML は平地レースで学習しており障害は学習データ外。6月に障害レース
+        # (京都ハイジャンプ等) へ S が付与され S=2.0x で最大額が張られた結果、
+        # S 層全体の ROI が 44.6% に汚染された (S<B<A の序列逆転 #10 の再来)。
+        if race_name and ("障害" in race_name or "ジャンプ" in race_name):
+            return False, "障害レースは ML 学習データ外のため投資見送り (印・予想は表示)"
+
         top_prob = max(p["pred_win"] for p in predictions)
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
 
@@ -152,26 +209,34 @@ class BettingStrategy:
             return False, f"上位3頭の合計勝率{top3_sum:.1%}で混戦"
 
         # 本命が堅すぎてオッズに旨味なし
-        top_horse = sorted_preds[0]
+        # #95 (2026-07-02): オッズ帯の判定は「表示上の ◎」(mark) で行う。
+        # 旧実装は pred_win 1位で判定しており、印 v5 の ◎ (pred_top3 1位) と乖離していた。
+        top_horse = self.get_axis_horse(predictions, sorted_preds) or sorted_preds[0]
         top_odds = top_horse.get("odds_win", 1) or 1
         if top_prob > 0.6 and top_odds < 1.5:
             return False, "本命が堅すぎてオッズに旨味なし"
 
         # 🆕 v12 (ROI最大化施策): ◎の単勝オッズ妙味バンド外は見送り
-        # 2026-05-27 entertainment モード: 上限 15.0倍 → 30.0倍 に拡大
-        # (大穴◎ race も「面白いレース」として推奨対象に。投稿対象 race が増える)
-        if top_odds > 0:
+        # #95 (2026-07-02): 上限 30.0 → 8.0 に引き締め。
+        # 実測 (5/10-6/28): ◎8.0倍以上 (n=17) は単勝/馬連/ワイド/三連複の全券種で
+        # ROI 0% (的中ゼロが2ヶ月連続)。5.0-7.9倍帯は confidence -1 降格 (predict.py 側)。
+        # ★オッズ帯チェックは実オッズがある場合のみ (#95 レビュー追補)。
+        # 推定オッズ = 0.8/pred_win は温度1で本命≈8.4倍となり、木金の事前予測が
+        # 一律「8倍以上」で誤遮断される (自己予測由来の循環参照)。実オッズ確定後の
+        # 土曜朝 predict で正しく再判定される。
+        axis_has_real_odds = bool(top_horse.get("_has_real_odds"))
+        if top_odds > 0 and axis_has_real_odds:
             if top_odds < 2.0:
                 return False, f"◎オッズ{top_odds:.1f}倍は配当妙味なし"
-            if top_odds > 30.0:
-                return False, f"◎オッズ{top_odds:.1f}倍は◎信頼度が低すぎ"
+            if top_odds >= 8.0:
+                return False, f"◎オッズ{top_odds:.1f}倍は◎信頼度が低すぎ (8倍以上は全券種ROI 0%)"
 
         # 🆕 v13 (2026-05-27 #30): 1勝戦の妙味中間オッズ帯は loss layer
         # analyze_a_tier_loss.py の結果: 1勝×A の ◎ オッズ別 ROI:
         #   1.x-2.4倍: 28.3% (n=102) / 2.5-3.9倍: 11.5% (n=26) ← 最底
         # 「やや本命だが堅くもない」中間帯が ROI 最悪。1勝戦で 2.5-3.9倍は見送り。
         race_name = (race_info or {}).get("race_name", "") if race_info else ""
-        if race_name and "1勝" in race_name:
+        if race_name and "1勝" in race_name and axis_has_real_odds:
             if 2.5 <= top_odds < 4.0:
                 return False, f"1勝戦×◎オッズ{top_odds:.1f}倍は妙味中間帯 (loss layer 11.5%)"
 
@@ -187,7 +252,8 @@ class BettingStrategy:
 
         return True, "OK"
 
-    def _honor_bets(self, sorted_preds, enabled, budget, predictions=None, line_amount=None):
+    def _honor_bets(self, sorted_preds, enabled, budget, predictions=None, line_amount=None,
+                    trio_focus=False):
         """印通り保証買い目を生成 — v3 (2026-05-27 confidence-aware)
 
         3-5月 7000R バックテストで判明した「最強の買い方」を主力化:
@@ -216,27 +282,40 @@ class BettingStrategy:
         spent = 0
         signatures = set()
 
-        def add(t, detail, hns, odds, prob, name):
+        if trio_focus:
+            # #95 trio-focus band: 三連複◎軸 10点を2倍額で全点確保 + ワイド維持。
+            # 馬連はこの帯で ROI 83% のため生成しない (下の 馬連 節で skip)。
+            # 予算をワイド5点 + 三連複10点×2倍 = 25×amt まで拡張して途中切れを防ぐ。
+            budget = max(budget, amt * 25)
+
+        def add(t, detail, hns, odds, prob, name, amount=None):
             nonlocal spent
+            amt_i = amount or amt
             sig = (t, tuple(sorted(hns)))
             if sig in signatures:
                 return
-            if spent + amt > budget:
+            if len(set(hns)) != len(hns):
+                # #95: 同一馬ペア (馬連 7-7 等) の無効買い目を構造的に遮断
+                return
+            if spent + amt_i > budget:
                 return
             # 2026-05-27 entertainment モード: honor_bets は EV 制限なしで全買い目生成
             # 「印通り 馬連 5点流し / 三連複 10点流し」の完全提示を維持する
             # (Phase α では EV>=MIN_EV を強制していたが、夢ロマン路線では妙味少ない印買い目も提示)
             ev_estimated = prob * odds
             signatures.add(sig)
-            spent += amt
+            spent += amt_i
             bets.append({
                 "type": t, "detail": detail, "horse_numbers": hns,
-                "amount": amt, "odds": round(odds, 1),
+                "amount": amt_i, "odds": round(odds, 1),
                 "ev": round(ev_estimated, 2), "prob": round(prob, 3),
                 "horse_name": name, "honor": True,
             })
 
-        p1 = sorted_preds[0]  # ◎
+        # 軸 = 表示上の ◎ (#95: 旧 pred_win 1位は印 v5 の ◎ と乖離していた)
+        p1 = self.get_axis_horse(predictions, sorted_preds)
+        if p1 is None:
+            return bets, 0
         center = p1["horse_number"]
         center_name = p1.get("horse_name", "")
 
@@ -254,13 +333,16 @@ class BettingStrategy:
         if len(partners) < 2:
             # フォールバック: ML 順 上位5
             partners = sorted_preds[1:6]
+        # #95: 軸馬が相手プールに混入しないよう明示的に除外 (同一馬ペア防止の二重防御)
+        partners = [p for p in partners if p["horse_number"] != center][:5]
 
         # 優先順は ROI 最大化観点で「馬連 → ワイド → 三連複」
         # データから: 馬連207% > 三連複174% > ワイド150% だが、
         # 馬連・ワイドは1人気軸で的中率が高くROIが安定 → 先に確保
 
         # ─── 主力1: 馬連 ◎-相手 流し (5点) ROI 207% ───
-        if "馬連" in enabled:
+        # trio_focus band 中は生成しない (帯内 馬連 ROI 83%、#95)
+        if "馬連" in enabled and not trio_focus:
             for partner in partners[:5]:
                 nums = sorted([center, partner["horse_number"]])
                 ow1 = p1.get("odds_win", 3) or 3
@@ -296,7 +378,9 @@ class BettingStrategy:
                            min(pair[1].get("pred_top3", 0.1) * 3, 0.55) * 0.5
                 est_prob = min(est_prob, 0.25)
                 names = f"{center_name}-{pair[0].get('horse_name','')}-{pair[1].get('horse_name','')}"
-                add("三連複", f"{nums[0]}-{nums[1]}-{nums[2]}", nums, est_odds, est_prob, names)
+                # trio_focus band 中は2倍額 (帯内 trio ROI 200%、#95)
+                add("三連複", f"{nums[0]}-{nums[1]}-{nums[2]}", nums, est_odds, est_prob, names,
+                    amount=(amt * 2 if trio_focus else None))
 
         return bets, spent
 
@@ -344,6 +428,15 @@ class BettingStrategy:
         # 勝率順でソート
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
 
+        # ── trio-focus band 判定 (#95 2026-07-02) ──
+        band = self.trio_focus_band(predictions, confidence, race_info=race_info)
+        if band:
+            print("  🎯 trio-focus band (◎2.0-2.9倍×S/A/B): 三連複◎軸2倍額 / 馬連なし / ワイド維持")
+            # _honor_bets 内部の band 予算拡張 (25×line_amount) と整合させる。
+            # これが無いと total_amount > budget になり、後続フォールバックの
+            # min(300, budget - total_amount) が負額 bet を生む (smoke test で検出)。
+            budget = max(budget, line_amount * 25)
+
         # ── 0. 印通り保証買い目 (EV 関係なく必ず含める) ──
         # v2 (2026-05-24): バックテスト結果から「最強の買い目」を主力化:
         #   - ◎軸三連複5頭流し (10点) ROI 174%
@@ -353,7 +446,8 @@ class BettingStrategy:
         # v3 (2026-05-27): line_amount を confidence で重み付け
         honor_list, honor_spent = self._honor_bets(sorted_preds, enabled, budget,
                                                     predictions=predictions,
-                                                    line_amount=line_amount)
+                                                    line_amount=line_amount,
+                                                    trio_focus=band)
         bets = list(honor_list)
         total_amount = honor_spent
         # honor で既に bet した signature を以後の EV bets で重複させない
@@ -367,7 +461,7 @@ class BettingStrategy:
         if "単勝" in enabled:
             for p in sorted_preds:
                 ev = p["pred_win"] * p["odds_win"]
-                if ev >= self.MIN_EV and p["odds_win"] >= 2.0 and p["pred_win"] >= 0.08:
+                if self.MIN_EV <= ev < self.MAX_EV and p["odds_win"] >= 2.0 and p["pred_win"] >= 0.08:
                     amount = self.calculate_bet_amount(p["pred_win"], p["odds_win"], budget)
                     if amount > 0 and total_amount + amount <= budget:
                         bets.append({
@@ -388,7 +482,7 @@ class BettingStrategy:
             for p in sorted_preds:
                 odds_place = p.get("odds_place", 1.5)
                 ev = p["pred_top3"] * odds_place
-                if ev >= self.MIN_EV and p["pred_top3"] >= 0.12:
+                if self.MIN_EV <= ev < self.MAX_EV and p["pred_top3"] >= 0.12:
                     amount = self.calculate_bet_amount(
                         p["pred_top3"], odds_place, budget - total_amount
                     )
@@ -417,8 +511,8 @@ class BettingStrategy:
                     (h1.get("odds_win", 5) + h2.get("odds_win", 5)) * 0.3, 1.5
                 )
                 ev = wide_prob * wide_odds
-                # Phase α: ワイド MIN_EV 厳格化 0.8 → 1.2
-                if ev >= self.MIN_EV:
+                # Phase α: ワイド MIN_EV 厳格化 0.8 → 1.2 / #95: MAX_EV band-pass
+                if self.MIN_EV <= ev < self.MAX_EV:
                     amount = self.calculate_bet_amount(wide_prob, wide_odds, budget - total_amount)
                     if amount > 0 and total_amount + amount <= budget:
                         bets.append({
@@ -442,8 +536,8 @@ class BettingStrategy:
                                h2["pred_win"] * t3_1) * 0.6
                 umaren_odds = max(h1.get("odds_win", 5) * h2.get("odds_win", 5) * 0.4, 3.0)
                 ev = umaren_prob * umaren_odds
-                # Phase α: 馬連 MIN_EV 厳格化 0.5 → 1.2
-                if ev >= self.MIN_EV:
+                # Phase α: 馬連 MIN_EV 厳格化 0.5 → 1.2 / #95: MAX_EV band-pass
+                if self.MIN_EV <= ev < self.MAX_EV:
                     amount = self.calculate_bet_amount(umaren_prob, umaren_odds, budget - total_amount)
                     if amount > 0 and total_amount + amount <= budget:
                         bets.append({
@@ -477,8 +571,8 @@ class BettingStrategy:
                         5.0
                     )
                     ev = trio_prob * trio_odds
-                    # Phase α: 三連複 MIN_EV 厳格化 0.8 → 1.2
-                    if ev >= self.MIN_EV:
+                    # Phase α: 三連複 MIN_EV 厳格化 0.8 → 1.2 / #95: MAX_EV band-pass
+                    if self.MIN_EV <= ev < self.MAX_EV:
                         amount = min(self.MIN_BET, budget - total_amount)
                         if amount >= self.MIN_BET and total_amount + amount <= budget:
                             bets.append({
@@ -517,8 +611,8 @@ class BettingStrategy:
                             30.0
                         )
                         ev = prob * odds
-                        # Phase α: 三連単 MIN_EV 厳格化 0.3 → 1.2
-                        if ev >= self.MIN_EV:
+                        # Phase α: 三連単 MIN_EV 厳格化 0.3 → 1.2 / #95: MAX_EV band-pass
+                        if self.MIN_EV <= ev < self.MAX_EV:
                             sanrentan_bets.append({
                                 "type": "三連単",
                                 "detail": f"{h1['horse_number']}→{h2['horse_number']}→{h3['horse_number']}",
@@ -543,7 +637,10 @@ class BettingStrategy:
             top3 = sorted_preds[2] if len(sorted_preds) >= 3 else top2
 
             # 単勝フォールバック
-            if "単勝" in enabled and "単勝" not in existing_types and top["pred_win"] >= 0.08:
+            # #95: remaining >= 100 ガード追加 (他のフォールバックには元からあるのに
+            # 単勝だけ欠けており、予算超過時に負額 bet を生んでいた)
+            if "単勝" in enabled and "単勝" not in existing_types and top["pred_win"] >= 0.08 \
+                    and budget - total_amount >= 100:
                 bets.append({
                     "type": "単勝", "detail": f"{top['horse_number']}",
                     "horse_numbers": [top["horse_number"]],
@@ -688,6 +785,8 @@ class BettingStrategy:
             "budget": budget,
             "remaining": budget - total_amount,
             "bet_count": len(bets),
+            # #95: trio-focus band 該当フラグ (sb=0 ゼロ化の例外判定と ROI モニタ用)
+            "trio_focus_band": band,
         }
 
     def format_recommendation(self, bets_result, race_info=None):

@@ -1324,7 +1324,7 @@ function renderHorseRow(h, showReasons) {
       </div>
     </div>
     <div class="horse-prob">
-      <div class="prob-value">${h.pred_win || 0}%</div>
+      <div class="prob-value">${h.pred_win_display_pct || h.pred_win_display || h.pred_win || 0}%</div>
       <div class="prob-label">勝率予想</div>
       <div class="rank-bar"><div class="rank-bar-fill" style="width:${rankPct}%"></div></div>
     </div>

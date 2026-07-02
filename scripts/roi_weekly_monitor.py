@@ -35,13 +35,21 @@ def get_week_start(date_str):
 
 
 def collect_weekly_stats(conn, weeks_back):
-    """過去 N 週分の予測 cache + results を週単位で集計"""
+    """過去 N 週分の予測 cache + results を週単位で集計。
+
+    戻り値: (by_week, segments)
+      segments = 監視対象セグメントの累積成績 (#95 2026-07-02 で追加):
+        - trio_focus_band: ◎2.0-2.9倍 × S/A/B の三連複◎軸 (実装した利益層の追跡)
+        - W1/W2: WHITELIST_SEGMENTS の単勝成績 (「n>=50 かつ ROI<80%」で降格 flag)
+        - chu_mark: 注印の複勝率 (妙味 longshot の健全性)
+    """
     today = datetime.now().date()
     start_date = (today - timedelta(weeks=weeks_back)).strftime("%Y-%m-%d")
 
     cur = conn.cursor()
     cur.execute("""
-        SELECT pc.race_id, r.race_date, pc.confidence, pc.predictions_json
+        SELECT pc.race_id, r.race_date, pc.confidence, pc.predictions_json,
+               r.race_name, r.venue, r.surface, r.distance
         FROM predictions_cache pc
         JOIN races r ON pc.race_id = r.race_id
         WHERE r.race_date >= ?
@@ -53,8 +61,14 @@ def collect_weekly_stats(conn, weeks_back):
     by_week = defaultdict(lambda: defaultdict(
         lambda: defaultdict(lambda: {"spend": 0, "return": 0, "hits": 0, "races": 0})
     ))
+    segments = {
+        "trio_focus_band": {"spend": 0, "return": 0, "hits": 0, "races": 0},
+        "W1_S_2勝_中距離_単勝": {"spend": 0, "return": 0, "hits": 0, "races": 0},
+        "W2_函館ダート_単勝": {"spend": 0, "return": 0, "hits": 0, "races": 0},
+        "chu_mark_複勝": {"n": 0, "top3_hits": 0},
+    }
 
-    for race_id, race_date, conf, preds_json in races:
+    for race_id, race_date, conf, preds_json, race_name, venue, surface, distance in races:
         try:
             preds = json.loads(preds_json)
         except (json.JSONDecodeError, TypeError):
@@ -62,7 +76,25 @@ def collect_weekly_stats(conn, weeks_back):
         if not preds:
             continue
         sorted_p = sorted(preds, key=lambda x: -x.get("pred_win_pct", 0))
-        top6 = [p.get("horse_number") for p in sorted_p[:6]]
+        # 軸 = 表示上の ◎、相手 = 印 (○▲△×注) を優先 (#95: 本番の honor 買い目と
+        # 同じ構造をシミュレートする。旧実装の pred_win 順相手は実際の買い目と乖離)。
+        axis_p = next((p for p in preds if p.get("mark") == "◎"), None)
+        _mark_pri = {'○': 1, '▲': 2, '△': 3, '×': 4, '注': 5}
+        mark_partners = sorted(
+            (p for p in preds if p.get("mark") in _mark_pri),
+            key=lambda p: _mark_pri[p["mark"]])
+        if axis_p is not None and axis_p.get("horse_number") and len(mark_partners) >= 2:
+            axis_hn = axis_p.get("horse_number")
+            partner_hns = [p.get("horse_number") for p in mark_partners
+                           if p.get("horse_number") and p.get("horse_number") != axis_hn][:5]
+            top6 = [axis_hn] + partner_hns
+        elif axis_p is not None and axis_p.get("horse_number"):
+            others_p = [p for p in sorted_p
+                        if p.get("horse_number") != axis_p.get("horse_number")][:5]
+            top6 = [axis_p.get("horse_number")] + [p.get("horse_number") for p in others_p]
+        else:
+            axis_p = sorted_p[0] if sorted_p else None
+            top6 = [p.get("horse_number") for p in sorted_p[:6]]
         if not all(top6[:5]):
             continue
 
@@ -96,7 +128,7 @@ def collect_weekly_stats(conn, weeks_back):
         for o in others:
             bk["spend"] += 100
             if {top1, o} == {win_h, p2_h}:
-                key = "-".join(sorted(str(x) for x in [top1, o]))
+                key = "-".join(str(x) for x in sorted([top1, o]))
                 amt = payouts["馬連"].get(key, 0)
                 bk["return"] += amt
                 if amt > 0:
@@ -108,7 +140,7 @@ def collect_weekly_stats(conn, weeks_back):
         for o in others:
             bk["spend"] += 100
             if top1 in top3_set and o in top3_set:
-                key = "-".join(sorted(str(x) for x in [top1, o]))
+                key = "-".join(str(x) for x in sorted([top1, o]))
                 amt = payouts["ワイド"].get(key, 0)
                 bk["return"] += amt
                 if amt > 0:
@@ -117,16 +149,57 @@ def collect_weekly_stats(conn, weeks_back):
         # 三連複 ◎軸 (10点)
         bk = by_week[week][conf]["三連複"]
         bk["races"] += 1
+        trio_spend = trio_return = 0
         for a, b in combinations(others, 2):
             bk["spend"] += 100
+            trio_spend += 100
             if {top1, a, b} == top3_set:
-                key = "-".join(sorted(str(x) for x in [top1, a, b]))
+                key = "-".join(str(x) for x in sorted([top1, a, b]))
                 amt = payouts["三連複"].get(key, 0)
                 bk["return"] += amt
+                trio_return += amt
                 if amt > 0:
                     bk["hits"] += 1
 
-    return dict(by_week)
+        # ── セグメント監視 (#95 2026-07-02) ──
+        axis_odds = (axis_p.get("odds_win") or 0) if axis_p else 0
+
+        # (1) trio-focus band: ◎2.0-2.9倍 × S/A/B → 三連複◎軸の追跡
+        # #95 レビュー追補: 本番 band (betting.trio_focus_band) と同じく
+        # 未勝利/新馬/障害/ジャンプは除外 (損失層ガードの迂回防止と母集団整合)
+        _rn = race_name or ""
+        _band_ok = not any(k in _rn for k in ("未勝利", "新馬", "障害", "ジャンプ"))
+        if conf in ("S", "A", "B") and 2.0 <= axis_odds < 3.0 and _band_ok:
+            seg = segments["trio_focus_band"]
+            seg["races"] += 1
+            seg["spend"] += trio_spend
+            seg["return"] += trio_return
+            if trio_return > 0:
+                seg["hits"] += 1
+
+        # (2) WHITELIST segments: 単勝◎ 100円 (rolling で生死を監視)
+        rn = race_name or ""
+        w1 = (conf == "S" and "2勝" in rn and 1800 <= (distance or 0) <= 2199)
+        w2 = ((venue or "") == "函館" and (surface or "") == "ダート")
+        for seg_key, hit_flag in (("W1_S_2勝_中距離_単勝", w1), ("W2_函館ダート_単勝", w2)):
+            if not hit_flag:
+                continue
+            seg = segments[seg_key]
+            seg["races"] += 1
+            seg["spend"] += 100
+            amt = payouts["単勝"].get(str(top1), 0) if top1 == win_h else 0
+            seg["return"] += amt
+            if amt > 0:
+                seg["hits"] += 1
+
+        # (3) 注印の複勝率 (妙味 longshot 健全性: 設計値 ~11% / 複勝期待回収135円)
+        chu = next((p for p in preds if p.get("mark") == "注"), None)
+        if chu and chu.get("horse_number"):
+            segments["chu_mark_複勝"]["n"] += 1
+            if chu["horse_number"] in top3_set:
+                segments["chu_mark_複勝"]["top3_hits"] += 1
+
+    return dict(by_week), segments
 
 
 def aggregate_week(week_data):
@@ -247,6 +320,25 @@ def format_markdown(report):
         d = report['rolling'][w].get('三連複', {})
         lines.append(f"| {w} | {d.get('spend', 0):,} | {d.get('return', 0):,} | {d.get('roi_pct', 0)}% |")
 
+    # ── セグメント監視 (#95) ──
+    segs = report.get('segments') or {}
+    if segs:
+        lines.append("")
+        lines.append("## セグメント監視 (#95: band / whitelist / 注)")
+        lines.append("")
+        lines.append("| segment | races | spend | return | ROI% | flag |")
+        lines.append("|---|---|---|---|---|---|")
+        for key, seg in segs.items():
+            if "spend" in seg:
+                lines.append(f"| {key} | {seg.get('races', 0)} | {seg.get('spend', 0):,} "
+                             f"| {seg.get('return', 0):,} | {seg.get('roi_pct', 0)}% "
+                             f"| {seg.get('flag', '')} |")
+        chu = segs.get("chu_mark_複勝", {})
+        if chu.get("n"):
+            lines.append("")
+            lines.append(f"- 注印 複勝率: {chu.get('top3_rate_pct', 0)}% "
+                         f"({chu['top3_hits']}/{chu['n']}、設計値 ~11% / 複勝期待回収135円)")
+
     return "\n".join(lines)
 
 
@@ -260,11 +352,20 @@ def main():
     args = ap.parse_args()
 
     conn = sqlite3.connect(args.db)
-    raw = collect_weekly_stats(conn, args.weeks)
+    raw, segments = collect_weekly_stats(conn, args.weeks)
     weekly = {w: aggregate_week(wd) for w, wd in raw.items()}
     rolling = compute_rolling_average(weekly, window=4)
     anomalies = detect_anomalies(weekly)
     conn.close()
+
+    # ── セグメント flag 判定 (#95): n>=50 かつ ROI<80% → 降格レビュー ──
+    for key, seg in segments.items():
+        if "spend" in seg and seg["spend"] > 0:
+            seg["roi_pct"] = round(100 * seg["return"] / seg["spend"], 1)
+            seg["flag"] = ("🔻 要降格レビュー (n>=50 & ROI<80%)"
+                           if seg["races"] >= 50 and seg["roi_pct"] < 80 else "")
+        elif key == "chu_mark_複勝" and seg["n"] > 0:
+            seg["top3_rate_pct"] = round(100 * seg["top3_hits"] / seg["n"], 1)
 
     today = datetime.now().date()
     report = {
@@ -276,6 +377,7 @@ def main():
         "weekly": weekly,
         "rolling_4w": rolling,
         "anomalies": anomalies,
+        "segments": segments,
     }
 
     # JSON 書き込み

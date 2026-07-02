@@ -1752,7 +1752,8 @@ def sec_attention_top(
     for i, h in enumerate(sorted_h):
         name = h.get("horse_name", "?")
         hn = h.get("horse_number") or 0
-        pred_win = h.get("pred_win_pct", 0) or 0
+        # #36: 表示は温度×3 のシャープ化勝率を優先 (エンタメ用、意思決定には不使用)
+        pred_win = h.get("pred_win_display_pct") or h.get("pred_win_pct", 0) or 0
         si = h.get("si_avg", 0) or 0
         top3_rate = h.get("top3_rate", 0) or 0  # 直近10R 複勝率
         mark = legacy_marks[i] if include_marks else rank_marks[i]

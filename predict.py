@@ -441,52 +441,23 @@ def cmd_predict(args):
                 grade = workout_map.get(hn)
                 if grade and grade in WORKOUT_BOOST and WORKOUT_BOOST[grade] != 1.0:
                     pred_df.at[idx, 'pred_win_norm'] *= WORKOUT_BOOST[grade]
+                    pred_df.at[idx, 'pred_win_display'] *= WORKOUT_BOOST[grade]
                     pred_df.at[idx, 'pred_top3_norm'] *= WORKOUT_BOOST[grade]
-            # 再正規化 (合計 1.0 を維持)
+            # 再正規化 (合計 1.0 を維持) — 意思決定/表示の両チャネル
             total_win = pred_df['pred_win_norm'].sum()
             if total_win > 0:
                 pred_df['pred_win_norm'] = pred_df['pred_win_norm'] / total_win
+            total_disp = pred_df['pred_win_display'].sum()
+            if total_disp > 0:
+                pred_df['pred_win_display'] = pred_df['pred_win_display'] / total_disp
             print(f"  💪 追い切り補正: {len(workout_map)}頭分 (A:+10% / C:-7%)")
 
-        # ── 馬体重変化補正 (Phase α #31: 2026-05-27) ──
-        # 競馬専門家の経験則: 馬体重 ±6kg 以上 は調子変動の signal、ML model に
-        # 入っていないので post-prediction 補正。
-        #   ±2 以内: 1.00 (理想)
-        #   ±3〜5:  0.97 (やや変動)
-        #   ±6〜9:  0.90 (大幅変動、警戒)
-        #   ±10+:   0.80 (異常変動、危険)
-        # この補正は post-ML なので「絶対能力」ではなく「当日コンディション」を反映
-        weight_change_map = {}
-        for r in results:
-            hn = r.get("horse_number") if hasattr(r, 'get') else r["horse_number"]
-            wc = r.get("weight_change") if hasattr(r, 'get') else r["weight_change"]
-            if hn and wc is not None and wc != 0:
-                weight_change_map[int(hn)] = wc
-
-        def wc_factor(wc):
-            if wc is None: return 1.0
-            absw = abs(wc)
-            if absw <= 2: return 1.00
-            if absw <= 5: return 0.97
-            if absw <= 9: return 0.90
-            return 0.80
-
-        if weight_change_map:
-            adjusted = 0
-            for idx in pred_df.index:
-                hn = int(pred_df.at[idx, 'horse_number'])
-                wc = weight_change_map.get(hn)
-                if wc is not None:
-                    factor = wc_factor(wc)
-                    if factor != 1.0:
-                        pred_df.at[idx, 'pred_win_norm'] *= factor
-                        pred_df.at[idx, 'pred_top3_norm'] *= factor
-                        adjusted += 1
-            total_win = pred_df['pred_win_norm'].sum()
-            if total_win > 0:
-                pred_df['pred_win_norm'] = pred_df['pred_win_norm'] / total_win
-            if adjusted > 0:
-                print(f"  ⚖️ 馬体重変化補正: {adjusted}頭 (±6kg+ -10%, ±10kg+ -20%)")
+        # ── 馬体重変化補正: 廃止 (#95 2026-07-02 ROI監査) ──
+        # 旧 Phase α (#31) は「weight_change は ML model に入っていない」前提で
+        # post-prediction 乗算していたが、実際は ml/features.py L103 で
+        # weight_change/20 が52特徴量に含まれており **二重減点** だった。
+        # (#32 の実測でも Phase α 全適用は baseline 比 -3.9pt と逆効果を確認済み)
+        # ML の学習済み係数に任せ、post-hoc 乗算は行わない。
 
         # ── 馬場バイアス補正 (Phase α #32, Track 1 完成版: 2026-05-27) ──
         # 同日 R9+ で同 venue の R1-R8 結果から馬場バイアス (内伸び/外伸び) を推定。
@@ -522,11 +493,15 @@ def cmd_predict(args):
                                 elif pp <= 3: factor = 0.92
                             if factor != 1.0:
                                 pred_df.at[idx, 'pred_win_norm'] *= factor
+                                pred_df.at[idx, 'pred_win_display'] *= factor
                                 pred_df.at[idx, 'pred_top3_norm'] *= factor
                                 adj_count += 1
                         total_win = pred_df['pred_win_norm'].sum()
                         if total_win > 0:
                             pred_df['pred_win_norm'] = pred_df['pred_win_norm'] / total_win
+                        total_disp = pred_df['pred_win_display'].sum()
+                        if total_disp > 0:
+                            pred_df['pred_win_display'] = pred_df['pred_win_display'] / total_disp
                         if adj_count > 0:
                             print(f"  🏁 馬場バイアス補正: {fb} bias, {adj_count}頭調整 (内 {bias['details']['inside_rate']*100:.0f}% / 外 {bias['details']['outside_rate']*100:.0f}%)")
             except Exception as e:
@@ -551,7 +526,7 @@ def cmd_predict(args):
                     break
 
             print(f"{int(row['horse_number']):>4} {horse_name:<12} "
-                  f"{row['pred_win_norm']:>6.1%} {row['pred_top3_norm']/3:>6.1%} "
+                  f"{row['pred_win_norm']:>6.1%} {row['pred_top3']:>6.1%} "
                   f"{row.get('si_avg', 0):>6.1f}")
 
             # 推奨馬券生成用データ
@@ -609,8 +584,16 @@ def cmd_predict(args):
             predictions.append({
                 "horse_number": int(row["horse_number"]),
                 "horse_name": horse_name,
+                # pred_win = 意思決定用 (温度1)。EV/Kelly/should_bet/confidence が使う。
                 "pred_win": row["pred_win_norm"],
+                # pred_win_display = 表示専用 (温度×3、本命明確化)。投稿/UI の「AI勝率」。
+                "pred_win_display": float(row.get("pred_win_display", row["pred_win_norm"])),
+                # pred_top3 = レース内シェア (合計~1.0)。confidence/betting の
+                # チューニング済みスケール — 変更禁止 (#95)。
                 "pred_top3": row["pred_top3_norm"] / 3,
+                # pred_top3_abs = 校正済みの真の複勝確率 P(3着内) (レース合計~3.0)。
+                # 表示と将来の place系EV再チューニング用 (#95 で追加、データ蓄積中)。
+                "pred_top3_abs": float(row.get("pred_top3", 0) or 0),
                 "rank_score": round(float(row.get("rank_score", 0)), 3),
                 "odds_win": odds_win,
                 "odds_place": odds_place,
@@ -629,6 +612,30 @@ def cmd_predict(args):
                 # 能力モデル (オッズ非依存) 勝率 — 記事の AI独自評価 / ◎2軸化に使用 (#72)
                 "ability_score": round(float(row.get("_ability_score", 0) or 0), 4),
             })
+
+        # ── 人気順 (popularity) を先に確定して各馬に付与 (#95 2026-07-02) ──
+        # 旧実装では popularity_map の計算が穴予兆/jockey_trust の後にあり、
+        # predictions dict に 'popularity' キーが無いまま compute_jockey_trust(pop=0) が
+        # 呼ばれ、騎手信頼補正と confidence の top_popularity 入力が常時ゼロの死にコードだった。
+        # 人気順: 実オッズがある場合のみ使用（推定オッズは循環参照になるため除外）
+        has_real_odds = any(p.get("_has_real_odds") for p in predictions)
+        if race_id in _api_odds_cache:
+            api_pop = _api_odds_cache[race_id]
+            popularity_map = {}
+            for p in predictions:
+                hn = p["horse_number"]
+                if hn in api_pop and api_pop[hn].get("popularity", 0) > 0:
+                    popularity_map[hn] = api_pop[hn]["popularity"]
+                else:
+                    popularity_map[hn] = 0
+            has_real_odds = True  # APIデータがある = 実オッズあり
+        elif has_real_odds:
+            by_odds = sorted(predictions, key=lambda x: x.get("odds_win", 999))
+            popularity_map = {p["horse_number"]: i+1 for i, p in enumerate(by_odds)}
+        else:
+            popularity_map = {p["horse_number"]: 0 for p in predictions}
+        for p in predictions:
+            p["popularity"] = popularity_map.get(p["horse_number"], 0)
 
         # ── 穴予兆スコア (anasanee_score) と波乱度 (race_volatility) を計算 ──
         # 過去 11265R 統計を元に、前走凡走 + 距離変更 + 脚質 + 血統 等から
@@ -669,25 +676,7 @@ def cmd_predict(args):
             # 複合スコア: 勝率50% + rank_score25% + SI25%
             return win * 0.50 + rank * 0.25 + si * 0.25
         sorted_preds = sorted(predictions, key=_sort_key, reverse=True)
-        # 人気順: 実オッズがある場合のみ使用（推定オッズは循環参照になるため除外）
-        has_real_odds = any(p.get("_has_real_odds") for p in sorted_preds)
-
-        # FIX: APIキャッシュにpopularityがある場合はそれを使用
-        if race_id in _api_odds_cache:
-            api_pop = _api_odds_cache[race_id]
-            popularity_map = {}
-            for p in sorted_preds:
-                hn = p["horse_number"]
-                if hn in api_pop and api_pop[hn].get("popularity", 0) > 0:
-                    popularity_map[hn] = api_pop[hn]["popularity"]
-                else:
-                    popularity_map[hn] = 0
-            has_real_odds = True  # APIデータがある = 実オッズあり
-        elif has_real_odds:
-            by_odds = sorted(sorted_preds, key=lambda x: x.get("odds_win", 999))
-            popularity_map = {p["horse_number"]: i+1 for i, p in enumerate(by_odds)}
-        else:
-            popularity_map = {p["horse_number"]: 0 for p in sorted_preds}
+        # popularity_map / has_real_odds は predictions 構築直後に確定済み (#95)
 
         # NEW: Contrarian 補正 — 「市場が見落としている過小評価馬」を加点
         # 「ほぼ全レース1人気が本命」を避け、AI が見抜いた人気外妙味を◎候補に。
@@ -872,8 +861,14 @@ def cmd_predict(args):
             "horse_number": p["horse_number"],
             "horse_name": p["horse_name"],
             "mark": p.get("mark", ""),
+            # pred_win_pct = 意思決定用 (温度1、confidence 再評価/分析と整合)
             "pred_win_pct": round(p["pred_win"] * 100, 1),
+            # pred_win_display_pct = 表示用 (温度×3、投稿/UI の「AI勝率」はこちら)
+            "pred_win_display_pct": round(p.get("pred_win_display", p["pred_win"]) * 100, 1),
+            # pred_top3_pct = レース内シェア (歴史的スケール、既存の読み手と互換)
             "pred_top3_pct": round(p["pred_top3"] * 100, 1),
+            # pred_top3_abs_pct = 校正済みの真の複勝確率 (#95 で追加、再チューニング用)
+            "pred_top3_abs_pct": round(p.get("pred_top3_abs", 0) * 100, 1),
             "rank_score": p.get("rank_score", 0),
             "odds_win": round(p.get("odds_win", 0), 1),
             "popularity": popularity_map.get(p["horse_number"], 0),
@@ -889,6 +884,8 @@ def cmd_predict(args):
             "top3_rate": p.get("top3_rate", 0),
             "anasanee_score": p.get("anasanee_score", 0),
             "anasanee_reasons": p.get("anasanee_reasons", []),
+            # #95: 再評価サイト (evaluate_from_horses) が騎手信頼補正を再現できるよう保存
+            "jockey_trust": p.get("jockey_trust", 0),
             "reasons": p.get("reasons", []),
         } for p in sorted_preds], ensure_ascii=False)
 
@@ -906,11 +903,19 @@ def cmd_predict(args):
         n_horses = len(sorted_preds) if sorted_preds else 1
         top1 = sorted_preds[0] if sorted_preds else {}
         top2 = sorted_preds[1] if len(sorted_preds) >= 2 else top1
-        top_win = top1.get("pred_win", 0) * 100
-        top2_win = top2.get("pred_win", 0) * 100
+        # ★ #95: confidence の勝率入力は【表示チャネル (温度×3)】を使う。
+        # confidence.py の _win_grade 閾値 (S≥45/A≥30/B≥20/C≥13) は 2026-05-30 に
+        # 「WIN_SHARPEN=3 適用後の◎勝率分布」に合わせて再調整されたもの。
+        # 温度1 の pred_win を入れると S/A/B がほぼ消滅する (逆張りレビューで
+        # 6/20-6/29 144R 実測: S+A+B 49→7)。閾値とペアの分布を入れるのが正。
+        # EV/Kelly/should_bet は温度1 (pred_win) のまま — それぞれの調整時代に整合。
+        def _disp_pct(p):
+            return p.get("pred_win_display", p.get("pred_win", 0)) * 100
+        top_win = _disp_pct(top1)
+        top2_win = _disp_pct(top2)
         # ◎の複勝率 (pred_top3 がなければ pred_win*2.2 で推定)
         top_top3 = top1.get("pred_top3", 0) * 100 if top1.get("pred_top3") is not None else None
-        top3_sum = sum(p.get("pred_win", 0) * 100 for p in sorted_preds[:3])
+        top3_sum = sum(_disp_pct(p) for p in sorted_preds[:3])
         top_pop = top1.get("popularity")
         try:
             top_pop = int(top_pop) if top_pop else None
@@ -954,6 +959,18 @@ def cmd_predict(args):
             confidence = grades[min(len(grades) - 1, grades.index(confidence) + 1)]
             conf_reason = f"{conf_reason} / 不信騎手{top_jt:+d}"
 
+        # ── ◎オッズ過信帯の降格 (#95 2026-07-02 ROI監査) ──
+        # 5/10-6/28 実測: ◎5.0-9.9倍 = 4着以下62.8%・単勝ROI 44.9% (n=43)。
+        # 「市場と大きく乖離した◎」はモデルの過信ゾーン。8.0倍以上は
+        # should_bet_race 側で遮断 (上限 30→8)、5.0-7.9倍は 1段降格に留める (n<100)。
+        _mk_axis = next((p for p in sorted_preds if p.get('mark') == '◎'), None)
+        _axis_odds = (_mk_axis.get('odds_win') or 0) if _mk_axis else 0
+        if _mk_axis and _mk_axis.get('_has_real_odds') and 5.0 <= _axis_odds < 8.0 \
+                and confidence in ("S", "A", "B", "C"):
+            grades = ["S", "A", "B", "C", "D"]
+            confidence = grades[min(len(grades) - 1, grades.index(confidence) + 1)]
+            conf_reason = f"{conf_reason} / ◎オッズ{_axis_odds:.1f}倍は過信帯-1"
+
         # 🆕 v13 (2026-05-26): confidence-aware should_bet 判定 (旧 v12 の二重評価を一本化)
         # confidence が確定した時点で 1 回だけ should_bet 判定する。
         # C/D は backtest ROI 75-80% の損失層なので明示的に should_bet=0。
@@ -972,6 +989,27 @@ def cmd_predict(args):
             predictions, confidence=confidence,
             race_info=race_info, strict_whitelist=use_whitelist
         )
+
+        # ── #95 (2026-07-02): should_bet=0 の買い目は金額 0 の参考表示に強制 ──
+        # 旧実装は「ガード判定」と「買い目生成」が独立で、sb=0 レースにも金額付き
+        # 買い目が残り、6月実投資額の 77% (ROI 68% の損失層) がガードを素通りしていた。
+        # 例外: trio-focus band (◎2.0-2.9倍 × S/A/B、実測 trio ROI 200% / 単日除外161%)
+        #       該当レースは sb=0 でも三連複/ワイドの honor 買い目を投資対象として残す。
+        trio_band = bets_result.get('trio_focus_band', False)
+        if not should_bet:
+            _zeroed = 0
+            for b in bets_result.get('bets', []):
+                if trio_band and b.get('honor') and b.get('type') in ('三連複', 'ワイド'):
+                    continue
+                if b.get('amount'):
+                    b['amount'] = 0
+                    _zeroed += 1
+            bets_result['total_amount'] = sum(b.get('amount', 0) for b in bets_result.get('bets', []))
+            if trio_band:
+                reason = f"{reason} (trio-focus band: 三連複/ワイドのみ投資)"
+            if _zeroed:
+                print(f"  🛡️ sb=0 のため {_zeroed} 点の金額を 0 に強制 (参考表示のみ)")
+
         bets_by_type = {}
         for b in bets_result.get('bets', []):
             bt = b.get('type', '単勝')
