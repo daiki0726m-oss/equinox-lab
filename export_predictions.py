@@ -268,6 +268,16 @@ def export_predictions(date_str=None):
                 else:
                     race_tendency = "普通（中穴狙い可）"
 
+                # #96: 同名レースの歴史的荒れ度
+                try:
+                    from volatility import compute_race_upset_history
+                    upset_hist = compute_race_upset_history(
+                        race_info.get("race_name", "") or "",
+                        race_info.get("race_date", "") or race_date_hyphen,
+                    )
+                except Exception:
+                    upset_hist = None
+
                 all_races.append({
                     "race_id": race_id,
                     "venue": race_info.get("venue", ""),
@@ -288,6 +298,8 @@ def export_predictions(date_str=None):
                     "myomi": myomi,
                     "max_ev": round(max_ev, 1),
                     "race_tendency": race_tendency,
+                    # #96: 同名レースの歴史的荒れ度 (temporal-safe、out-of-time検証済)
+                    "upset_hist": upset_hist,
                     "has_results": has_results,
                     "payouts": race_payouts if has_results else [],
                     "prediction_locked": datetime.now(JST).hour >= 10,

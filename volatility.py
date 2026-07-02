@@ -144,7 +144,97 @@ def compute_race_volatility(race_info: dict) -> dict:
             conf_adjust += penalty
             factors.append(f"1勝×{'+'.join(loss_factors)}({penalty})")
 
-    return {"score": score, "factors": factors, "conf_adjust": conf_adjust}
+    # ── 同名レースの歴史的荒れ度 (#96 2026-07-02) ───────────────
+    # 「函館記念は荒れる」のようなレース固有の荒れ傾向を過去エディションから判定。
+    # out-of-time 検証済み (2020-23ラベル→2024-25検証 1,480ed):
+    #   荒れやすい: 勝ち馬平均3.93人気 / 二桁人気3着内28.7%
+    #   堅い:       同3.00人気 / 15.6% (1.8倍差で持続性あり)
+    # ここでは表示・参考情報 (factors → conf_reason → 投稿/記事/UI)。
+    # conf_adjust には現段階で影響させない (ROI 影響は要バックテスト、#95 教訓)。
+    upset = compute_race_upset_history(
+        race_info.get("race_name", "") or "",
+        race_info.get("race_date", "") or "",
+    )
+    if upset:
+        factors.append(upset["factor"])
+
+    return {"score": score, "factors": factors, "conf_adjust": conf_adjust,
+            "upset_hist": upset}
+
+
+# ───────────────────────────────────────────────
+# A2. 同名レースの歴史的荒れ度 (#96)
+# ───────────────────────────────────────────────
+
+# 汎用レース名 (毎週同名で開催されるクラス戦) はレース固有性が無いので対象外
+_GENERIC_NAME_KEYWORDS = ("未勝利", "新馬", "1勝クラス", "2勝クラス", "3勝クラス",
+                          "１勝クラス", "２勝クラス", "３勝クラス", "障害", "ジャンプ")
+
+
+def compute_race_upset_history(race_name: str, race_date: str,
+                               min_editions: int = 3, max_editions: int = 6):
+    """同名レースの過去エディションから荒れ度を判定する (temporal-safe)。
+
+    Returns: None (判定不能) または
+      {label: '荒れやすい'|'標準'|'堅い', n, avg_win_pop, big_rate, fav3_rate,
+       factor: conf_reason 用の短文, editions: [(year, win_pop), ...]}
+
+    閾値は out-of-time 持続性検証 (2020-23ラベル→2024-25検証, n=1480) 由来:
+      荒れやすい = 勝ち馬平均人気 >=5.0 or 二桁人気3着内率 >=50%
+      堅い       = 勝ち馬平均人気 <=2.5 and 二桁人気3着内率 <=25%
+    race_date より前のエディションのみ参照 (temporal leakage なし)。
+    """
+    if not race_name or not race_date:
+        return None
+    if any(k in race_name for k in _GENERIC_NAME_KEYWORDS):
+        return None
+    try:
+        with get_db() as conn:
+            rows = conn.execute("""
+                SELECT substr(r.race_date,1,4) AS y,
+                       MAX(CASE WHEN res.finish_position=1 THEN res.popularity END) AS win_pop,
+                       MAX(CASE WHEN res.finish_position IN (1,2,3)
+                                 AND res.popularity>=10 THEN 1 ELSE 0 END) AS has_biglong,
+                       MAX(CASE WHEN res.finish_position IN (1,2,3)
+                                 AND res.popularity=1 THEN 1 ELSE 0 END) AS fav_in3
+                FROM races r JOIN results res ON res.race_id = r.race_id
+                WHERE r.race_name = ? AND r.race_date < ?
+                  AND res.finish_position > 0 AND res.popularity > 0
+                GROUP BY r.race_id
+                ORDER BY r.race_date DESC
+                LIMIT ?
+            """, (race_name, race_date, max_editions)).fetchall()
+    except Exception:
+        return None
+
+    eds = [(r["y"], r["win_pop"], r["has_biglong"], r["fav_in3"])
+           for r in rows if r["win_pop"]]
+    n = len(eds)
+    if n < min_editions:
+        return None
+    avg_pop = sum(e[1] for e in eds) / n
+    big_rate = sum(e[2] for e in eds) / n
+    fav3_rate = sum(e[3] for e in eds) / n
+    if avg_pop >= 5.0 or big_rate >= 0.5:
+        label = "荒れやすい"
+        icon = "⚡"
+    elif avg_pop <= 2.5 and big_rate <= 0.25:
+        label = "堅い"
+        icon = "🔒"
+    else:
+        label = "標準"
+        icon = ""
+    factor = (f"{icon}同レース過去{n}年: 勝ち馬平均{avg_pop:.1f}人気"
+              f"・二桁人気馬券内{big_rate*100:.0f}% = {label}")
+    return {
+        "label": label,
+        "n": n,
+        "avg_win_pop": round(avg_pop, 2),
+        "big_rate": round(big_rate, 3),
+        "fav3_rate": round(fav3_rate, 3),
+        "factor": factor,
+        "editions": [(e[0], e[1]) for e in eds],
+    }
 
 
 # ───────────────────────────────────────────────

@@ -297,6 +297,8 @@ body {
   transition: transform var(--transition);
 }
 .race-card.open .toggle-icon { transform: rotate(180deg); }
+.upset-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: #7a2e0e; color: #ffb98a; margin-left: 4px; white-space: nowrap; }
+.upset-badge.katai { background: #0e3a5c; color: #9fd0f5; }
 .result-badge {
   font-size: 10px; font-weight: 600;
   padding: 2px 8px; border-radius: var(--radius-pill);
@@ -1253,6 +1255,13 @@ function createRaceCard(race) {
 
   let badges = '';
   if (hasResults) badges += `<span class="result-badge">✅ 確定</span>`;
+  // #96: 同名レースの歴史的荒れ度 (過去エディション実績、標準は非表示)
+  const uh = race.upset_hist;
+  if (uh && uh.label === '荒れやすい') {
+    badges += `<span class="upset-badge" title="過去${uh.n}年: 勝ち馬平均${uh.avg_win_pop}人気 / 二桁人気馬券内${Math.round(uh.big_rate*100)}%">⚡荒れ</span>`;
+  } else if (uh && uh.label === '堅い') {
+    badges += `<span class="upset-badge katai" title="過去${uh.n}年: 勝ち馬平均${uh.avg_win_pop}人気 / 二桁人気馬券内${Math.round(uh.big_rate*100)}%">🔒堅</span>`;
+  }
 
   // 意思決定 UI 設計 (2026-05-25):
   //  - 信頼度アルファベット (S/A/B/C/D) を conf-badge で 1 バッジ表示
