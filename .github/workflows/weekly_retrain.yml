@@ -147,13 +147,14 @@ jobs:
             echo "ℹ️ 既存 Issue あり → スキップ"
             exit 0
           fi
-          BODY="weekly_retrain の $KIND を検知しました。モデルが陳腐化すると予測劣化が silent に進行します (#95 で6週間停止の前科あり)。
-
-Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-モデル経過日数: ${{ steps.check.outputs.age }}日
-segment flags: ${{ steps.roimon.outputs.flags }}
-
-確認事項: train のエラー / push の競合 / age 判定 (API) の失敗"
+          BODY=$(printf '%s\n' \
+            "weekly_retrain の $KIND を検知しました。モデルが陳腐化すると予測劣化が silent に進行します (#95 で6週間停止の前科あり)。" \
+            "" \
+            "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "モデル経過日数: ${{ steps.check.outputs.age }}日" \
+            "segment flags: ${{ steps.roimon.outputs.flags }}" \
+            "" \
+            "確認事項: train のエラー / push の競合 / age 判定 (API) の失敗")
           gh issue create --title "$TITLE" --body "$BODY" --label "slo-violation" 2>&1 || \
             gh issue create --title "$TITLE" --body "$BODY" 2>&1 || \
             echo "⚠️ Issue 作成失敗"
