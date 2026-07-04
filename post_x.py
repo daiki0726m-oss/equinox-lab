@@ -759,6 +759,21 @@ def cmd_predict(args):
             except Exception:
                 pass
 
+        # #98: AI独自視点 (人気非依存の能力モデル #72) — 印は市場込みが最強 (捕捉率、
+        # #98バックテスト) だが「人気の写し」批判に応えるため、能力上位なのに人気薄の馬を
+        # コンテンツとして1行提示 (印・投資には影響しない表示専用チャネル)
+        try:
+            _by_ab = sorted((q for q in preds if (q.get('ability_score') or 0) > 0),
+                            key=lambda q: -(q.get('ability_score') or 0))
+            if _by_ab:
+                _ab_top = _by_ab[0]
+                _ab_pop = _ab_top.get('popularity') or 0
+                if _ab_pop >= 5:
+                    t += (f"\n💡AI能力値の最上位は {_ab_top.get('horse_name','?')}"
+                          f" (市場{_ab_pop}人気) — 妙味あり\n")
+        except Exception:
+            pass
+
         # 投稿する印を記録 (dry-run でも収集、保存は投稿成功時のみ)
         rid = race.get('race_id')
         if rid:

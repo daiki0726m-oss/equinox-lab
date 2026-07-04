@@ -882,6 +882,9 @@ def cmd_predict(args):
             "cat_weather": p.get("cat_weather", 0),
             "win_rate": p.get("win_rate", 0),
             "top3_rate": p.get("top3_rate", 0),
+            # #98: 能力モデル (オッズ非依存 #72) を配信コンテンツに使うため cache に保存。
+            # 印には使わない (#73/#98 バックテスト: 印に混ぜると捕捉率が半減)
+            "ability_score": p.get("ability_score", 0),
             "anasanee_score": p.get("anasanee_score", 0),
             "anasanee_reasons": p.get("anasanee_reasons", []),
             # #95: 再評価サイト (evaluate_from_horses) が騎手信頼補正を再現できるよう保存
