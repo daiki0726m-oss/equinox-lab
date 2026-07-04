@@ -779,7 +779,11 @@ def cmd_predict(args):
         if rid:
             _posted_marks[rid] = [
                 {'mark': mk, 'horse_number': marks[mk].get('horse_number', 0),
-                 'horse_name': marks[mk].get('horse_name', '')}
+                 'horse_name': marks[mk].get('horse_name', ''),
+                 # #99: 投稿時点のオッズ/人気を不変記録 (事後の refresh で汚染されない
+                 # 検証用スナップショット — バックテストの look-ahead 汚染の再発防止)
+                 'odds_win_at_post': marks[mk].get('odds_win', 0),
+                 'popularity_at_post': marks[mk].get('popularity', 0)}
                 for mk in ['◎', '○', '▲', '△', '×', '注'] if marks.get(mk)
             ]
 

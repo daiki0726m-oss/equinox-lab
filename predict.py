@@ -812,7 +812,29 @@ def cmd_predict(args):
                     ana_scored[i][1]['mark'] = mk
         else:
             # ── 捕捉枠 ◎○▲△× = 複勝率(pred_top3) 上位5頭 ──
-            by_top3 = sorted(sorted_preds, key=lambda p: p.get('pred_top3', 0) or 0, reverse=True)
+            # ── #99: 印ランキングの市場ブレンド ──
+            # #98 実測: pred_top3 単独の印は単純人気top5に完全捕捉率で -5.2pt 劣後
+            # (◎≠1人気時の◎複勝44% vs 見送った1人気69% = 市場から離れた判断が弱い)。
+            # score = w×市場シェア(1/odds正規化) + (1-w)×モデルシェア(pred_top3正規化)。
+            # #99 検証結果: 「w=0.6が最良」に見えた cache 検証は refresh_odds の最終オッズ
+            # 上書き (look-ahead) 汚染だったと反証された。クリーン層では w 間の差はノイズ
+            # (歴史側±0.7pt)。優位の証明が無い以上 default は 0.0 (現行=モデル単独) を維持し、
+            # refresh_odds 凍結後の posted_marks (真の投稿時点記録) が4-8週貯まったら再判定。
+            # 実オッズが8割未満の馬しか無い時 (木金の事前予測等) は市場側を使わない (w=0)。
+            _blend_w = float(os.environ.get('MARKS_BLEND_W', '0.0'))
+            _inv = {p['horse_number']: 1.0 / p['odds_win'] for p in sorted_preds
+                    if p.get('_has_real_odds') and (p.get('odds_win') or 0) > 0}
+            _inv_sum = sum(_inv.values())
+            _has_market = _inv_sum > 0 and len(_inv) >= len(sorted_preds) * 0.8
+            _t3_sum = sum((p.get('pred_top3') or 0) for p in sorted_preds) or 1.0
+
+            def _mark_rank_key(p):
+                _w = _blend_w if _has_market else 0.0
+                _mkt = (_inv.get(p['horse_number'], 0.0) / _inv_sum) if _has_market else 0.0
+                _mod = (p.get('pred_top3') or 0) / _t3_sum
+                return _w * _mkt + (1.0 - _w) * _mod
+
+            by_top3 = sorted(sorted_preds, key=_mark_rank_key, reverse=True)
             capture5 = by_top3[:5]
             for i, mk in enumerate(['◎', '○', '▲', '△', '×']):
                 if i < len(capture5):
