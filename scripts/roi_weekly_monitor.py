@@ -66,6 +66,10 @@ def collect_weekly_stats(conn, weeks_back):
         "W1_S_2勝_中距離_単勝": {"spend": 0, "return": 0, "hits": 0, "races": 0},
         "W2_函館ダート_単勝": {"spend": 0, "return": 0, "hits": 0, "races": 0},
         "chu_mark_複勝": {"n": 0, "top3_hits": 0},
+        # #100: 観察のみ (賭けない)。C2 20-50帯 (seed依存で78-102%) と実測132% (n=81)
+        # だった 7-20帯 の注単勝を追跡し、n>=300 で再判定する
+        "chu_単勝_7-20倍": {"spend": 0, "return": 0, "hits": 0, "races": 0},
+        "chu_単勝_20-50倍": {"spend": 0, "return": 0, "hits": 0, "races": 0},
     }
 
     for race_id, race_date, conf, preds_json, race_name, venue, surface, distance in races:
@@ -192,12 +196,27 @@ def collect_weekly_stats(conn, weeks_back):
             if amt > 0:
                 seg["hits"] += 1
 
-        # (3) 注印の複勝率 (妙味 longshot 健全性: 設計値 ~11% / 複勝期待回収135円)
+        # (3) 注印の複勝率 (妙味 longshot 健全性。#100 OOS検証: 複勝~71%/単勝~78% が実力値)
         chu = next((p for p in preds if p.get("mark") == "注"), None)
         if chu and chu.get("horse_number"):
             segments["chu_mark_複勝"]["n"] += 1
             if chu["horse_number"] in top3_set:
                 segments["chu_mark_複勝"]["top3_hits"] += 1
+            # #100: 注の単勝オッズ帯別トラッキング (観察のみ)
+            chu_odds = chu.get("odds_win") or 0
+            band_key = None
+            if 7 <= chu_odds < 20:
+                band_key = "chu_単勝_7-20倍"
+            elif 20 <= chu_odds < 50:
+                band_key = "chu_単勝_20-50倍"
+            if band_key:
+                seg = segments[band_key]
+                seg["races"] += 1
+                seg["spend"] += 100
+                amt = payouts["単勝"].get(str(chu["horse_number"]), 0) if chu["horse_number"] == win_h else 0
+                seg["return"] += amt
+                if amt > 0:
+                    seg["hits"] += 1
 
     return dict(by_week), segments
 

@@ -741,10 +741,15 @@ def cmd_predict(args):
         t += f"信頼度{race['confidence']}({_conf_label.get(race['confidence'], '')}) {is_main}\n\n"
 
         # 印（全て表示)— 「{mark} {番号}番 {馬名}」形式で fact_check に確実に通す
+        # #100: 注 (妙味longshot) はオッズを併記 — 「夢の配当枠」であることを
+        # 数字で示す (回収期待は主張しない: OOS検証で単勝78%/複勝71% #100)
         for mk in ['◎', '○', '▲', '△', '×', '注']:
             p = marks.get(mk)
             if p:
-                t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
+                if mk == '注' and (p.get('odds_win') or 0) >= 7:
+                    t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}（単{p.get('odds_win'):.0f}倍）\n"
+                else:
+                    t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
 
         # #97: 同名レースの歴史的荒れ度 (#96) を配信に載せる — D=混戦を「弱み」でなく
         # 「荒れ狙いの材料」として提示する (システム最良の差別化素材が未配線だった)
