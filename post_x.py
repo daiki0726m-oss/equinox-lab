@@ -120,6 +120,58 @@ def load_threads_client():
     return {"user_id": user_id, "access_token": access_token}
 
 
+def _chunk_tweets_for_threads(tweets, limit=500):
+    """#103: X の tweet 列を Threads 上限 (500字・単純文字数) で再チャンクする。
+    tweet 境界でのみ結合し、X 用の継続マーカー行は落とす。"""
+    chunks, cur = [], ""
+    for t in tweets:
+        t_clean = "\n".join(
+            l for l in t.split("\n")
+            if l.strip() not in ("🧵続く", "→ 続く🧵", "🧵 続く")
+        ).strip()
+        if not t_clean:
+            continue
+        cand = (cur + "\n\n" + t_clean) if cur else t_clean
+        if len(cand) <= limit:
+            cur = cand
+        else:
+            if cur:
+                chunks.append(cur)
+            while len(t_clean) > limit:  # 単体500超の安全弁 (通常起きない)
+                chunks.append(t_clean[:limit])
+                t_clean = t_clean[limit:]
+            cur = t_clean
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def post_threads_thread(threads_client, tweets, dry_run=False):
+    """#103: Threads へ本物のスレッド (reply chain) として投稿する。
+
+    旧実装 (adapt_text_for_threads) は X の全 tweet を1投稿に結合して 497字で
+    切り捨てており、予想スレッド (15 tweets ≈ 2,000字超) の9割が Threads に
+    届いていなかった (ユーザー指摘 2026-07-06)。
+    """
+    if not threads_client:
+        return []
+    if isinstance(tweets, str):
+        tweets = [tweets]
+    chunks = _chunk_tweets_for_threads(tweets)
+    ids = []
+    prev = None
+    for ch in chunks:
+        pid = post_to_threads(threads_client, ch, dry_run=dry_run, reply_to_id=prev)
+        if not pid:
+            print(f"  ⚠️ Threads chain 中断 ({len(ids)}/{len(chunks)} 投稿済)")
+            break
+        ids.append(pid)
+        prev = pid if pid != "threads-dry-run" else None
+    if ids and not dry_run:
+        print(f"  ✅ Threads スレッド投稿完了 ({len(ids)}/{len(chunks)}件)")
+    return ids
+
+
 def adapt_text_for_threads(tweets):
     """X用のスレッド（複数ツイート）をThreads用の1投稿に変換
     
@@ -139,7 +191,7 @@ def adapt_text_for_threads(tweets):
     return combined
 
 
-def post_to_threads(threads_client, text, dry_run=False):
+def post_to_threads(threads_client, text, dry_run=False, reply_to_id=None):
     """Threads APIで投稿する
     
     Threads Publishing APIの2ステップ:
@@ -153,7 +205,8 @@ def post_to_threads(threads_client, text, dry_run=False):
     access_token = threads_client["access_token"]
     
     if dry_run:
-        print(f"\n🧵 Threads プレビュー ({len(text)}文字):")
+        _rp = f" (reply→{reply_to_id})" if reply_to_id else ""
+        print(f"\n🧵 Threads プレビュー ({len(text)}文字){_rp}:")
         print(f"{'─'*40}")
         print(text)
         print(f"{'─'*40}")
@@ -162,11 +215,15 @@ def post_to_threads(threads_client, text, dry_run=False):
     try:
         # Step 1: Create media container
         create_url = f"https://graph.threads.net/v1.0/{user_id}/threads"
-        create_data = urllib.parse.urlencode({
+        _params = {
             "media_type": "TEXT",
             "text": text,
             "access_token": access_token,
-        }).encode("utf-8")
+        }
+        # #103: reply chain (Threads API は reply_to_id でスレッド化できる)
+        if reply_to_id:
+            _params["reply_to_id"] = reply_to_id
+        create_data = urllib.parse.urlencode(_params).encode("utf-8")
         
         req = urllib.request.Request(create_url, data=create_data, method="POST")
         with urllib.request.urlopen(req) as resp:
@@ -494,10 +551,9 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                     print(f"     確認: https://developer.x.com/en/portal/dashboard")
                 break
 
-    # Threads にも同時投稿（複数ツイートを1投稿に結合）
+    # Threads にも同時投稿 — #103: 1投稿に潰さず 500字チャンクの reply chain で全文送る
     if threads_client:
-        threads_text = adapt_text_for_threads(tweets)
-        post_to_threads(threads_client, threads_text, dry_run=dry_run)
+        post_threads_thread(threads_client, tweets, dry_run=dry_run)
 
     return tweet_ids
 
