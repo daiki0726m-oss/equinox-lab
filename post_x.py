@@ -758,9 +758,25 @@ def cmd_predict(args):
                 _rd = race.get('race_date') or f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
                 uh = _upset_hist(race.get('race_name', ''), _rd)
                 if uh and uh['label'] == '荒れやすい':
-                    t += f"\n⚡過去{uh['n']}年は荒れ傾向 (勝ち馬平均{uh['avg_win_pop']:.0f}人気)\n"
+                    # #102: ⚡は「表示だけ」でなく行動の含意まで出す (荒れ=分布の尻尾が
+                    # 太る、であって1人気が最弱ではない → 軸は維持しつつカバーを広げる)。
+                    # このレース固有の実測 (二桁人気馬券内率) を根拠に添える (#94: 一般論禁止)。
+                    t += (f"\n⚡過去{uh['n']}年は荒れ傾向: 勝ち馬平均{uh['avg_win_pop']:.0f}人気"
+                          f"・二桁人気の馬券内{uh['big_rate']*100:.0f}%\n"
+                          f"→ 人気サイド1点勝負は過去傾向に反する。広めのカバーを\n")
+                    # ⚡限定: 2頭目の妙味穴 (印外・オッズ7倍+で 複勝率÷市場率 が最大) を
+                    # 「穴注意」として追加表示 — 捕捉印 (◎○▲△×) は不変、夢枠の増設のみ
+                    _marked = {m.get('horse_number') for m in marks.values()}
+                    _cands = [q for q in preds
+                              if q.get('horse_number') not in _marked
+                              and (q.get('odds_win') or 0) >= 7]
+                    if _cands:
+                        _v = max(_cands, key=lambda q: (q.get('pred_top3_pct') or 0) * (q.get('odds_win') or 0))
+                        if (_v.get('pred_top3_pct') or 0) > 0:
+                            t += f"穴注意: {_v.get('horse_name','?')}（単{_v.get('odds_win'):.0f}倍）\n"
                 elif uh and uh['label'] == '堅い':
-                    t += f"\n🔒過去{uh['n']}年は堅め (勝ち馬平均{uh['avg_win_pop']:.0f}人気)\n"
+                    t += (f"\n🔒過去{uh['n']}年は堅め (勝ち馬平均{uh['avg_win_pop']:.0f}人気"
+                          f"・二桁人気の馬券内{uh['big_rate']*100:.0f}%)\n")
             except Exception:
                 pass
 
