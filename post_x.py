@@ -842,6 +842,21 @@ def cmd_predict(args):
                         "WHERE race_id = ?",
                         (_ts, json.dumps(_posted_marks.get(rid, []), ensure_ascii=False), rid))
         print(f"📌 投稿済みレース+印を記録: {len(target_races)}件 (結果投稿はこの印のみ採点)")
+        # #101: DB (keiba.db.gz) は並行 workflow の -X theirs push で clobber され得る
+        # (7/5 実発生: 10:23 に書いた posted_at/posted_marks が runner の push で消失)。
+        # #70 の教訓通り「テキストの per-day JSON」を正本にする — text ファイルは
+        # git rebase でクリーンに共存し、他 workflow に上書きされない。
+        try:
+            _sidecar = {r.get('race_id'): _posted_marks.get(r.get('race_id'), [])
+                        for r in target_races if r.get('race_id')}
+            _sc_path = os.path.join("docs", "data", f"posted_marks_{date_str}.json")
+            os.makedirs(os.path.dirname(_sc_path), exist_ok=True)
+            with open(_sc_path, "w", encoding="utf-8") as _f:
+                json.dump({"date": date_str, "posted_at": _ts, "races": _sidecar},
+                          _f, ensure_ascii=False, indent=1)
+            print(f"📌 サイドカー保存: {_sc_path} (clobber耐性の正本)")
+        except Exception as _e:
+            print(f"⚠️ サイドカー保存失敗(非致命): {_e}")
 
     # 投稿成功 → 予測キャッシュを seal(以降 --force でも上書き不可)
     # これで結果配信時に「投稿時の予測」と異なる予測を参照する事故を防ぐ
@@ -851,6 +866,29 @@ def cmd_predict(args):
             seal_predictions_for_date(date_str)
         except Exception as e:
             print(f"⚠️ seal失敗(非致命): {e}")
+
+
+def _load_sidecar_marks(date_str, race_id):
+    """#101: 投稿印サイドカー (docs/data/posted_marks_YYYYMMDD.json) から該当レースの印を読む。
+    ローカル → GitHub raw の順。無ければ [] (呼び出し側が DB → cache にフォールバック)。"""
+    data = None
+    path = os.path.join("docs", "data", f"posted_marks_{date_str}.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            import requests as _rq
+            r = _rq.get(f"https://raw.githubusercontent.com/daiki0726m-oss/equinox-lab/main/docs/data/posted_marks_{date_str}.json", timeout=10)
+            data = r.json() if r.status_code == 200 else None
+        except Exception:
+            data = None
+    if not data:
+        return []
+    return (data.get("races") or {}).get(race_id) or []
 
 
 def _race_key(r):
@@ -1131,15 +1169,16 @@ def _build_results_jsonmarks_dbfinish(date_str):
             # #97: 投稿時の印スナップショット (posted_marks_json) を最優先。
             # JSON/cache の「現在の印」は日中の再生成で朝の投稿とズレることがある
             # (6/28 函館記念で◎○が入替わったまま採点する事故が実発生)。
-            snap_row = conn.execute(
-                "SELECT posted_marks_json FROM predictions_cache WHERE race_id = ?",
-                (rid,)).fetchone()
-            snap = []
-            if snap_row and snap_row[0]:
-                try:
-                    snap = json.loads(snap_row[0]) or []
-                except Exception:
-                    snap = []
+            snap = _load_sidecar_marks(date_str, rid)
+            if not snap:
+                snap_row = conn.execute(
+                    "SELECT posted_marks_json FROM predictions_cache WHERE race_id = ?",
+                    (rid,)).fetchone()
+                if snap_row and snap_row[0]:
+                    try:
+                        snap = json.loads(snap_row[0]) or []
+                    except Exception:
+                        snap = []
             if snap:
                 for s in snap:
                     marked.append({
@@ -1234,15 +1273,16 @@ def _build_results_from_db(date_str, date_hyphen):
 
                 marked = []
                 # #97: 投稿時の印スナップショット優先 (JSON path と同じ理由)
-                snap_row = conn.execute(
-                    "SELECT posted_marks_json FROM predictions_cache WHERE race_id = ?",
-                    (race_id,)).fetchone()
-                snap = []
-                if snap_row and snap_row[0]:
-                    try:
-                        snap = json.loads(snap_row[0]) or []
-                    except Exception:
-                        snap = []
+                snap = _load_sidecar_marks(date_str, race_id)
+                if not snap:
+                    snap_row = conn.execute(
+                        "SELECT posted_marks_json FROM predictions_cache WHERE race_id = ?",
+                        (race_id,)).fetchone()
+                    if snap_row and snap_row[0]:
+                        try:
+                            snap = json.loads(snap_row[0]) or []
+                        except Exception:
+                            snap = []
                 if snap:
                     for s in snap:
                         marked.append({
