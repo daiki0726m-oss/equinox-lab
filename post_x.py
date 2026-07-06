@@ -751,21 +751,21 @@ def cmd_predict(args):
                 else:
                     t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
 
-        # #97: 同名レースの歴史的荒れ度 (#96) を配信に載せる — D=混戦を「弱み」でなく
-        # 「荒れ狙いの材料」として提示する (システム最良の差別化素材が未配線だった)
+        # ── #102: 追加情報 (⚡荒れ度/穴注意/💡能力) は X の280字予算内で優先度順に追記 ──
+        # (無条件追記だと6印+⚡2行+穴+💡で350字超になり X が投稿拒否する — 実測350字)
+        def _xw(s):
+            return sum(2 if ord(ch) > 127 else 1 for ch in s)
+        _extras = []
         if _upset_hist is not None:
             try:
                 _rd = race.get('race_date') or f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
                 uh = _upset_hist(race.get('race_name', ''), _rd)
                 if uh and uh['label'] == '荒れやすい':
-                    # #102: ⚡は「表示だけ」でなく行動の含意まで出す (荒れ=分布の尻尾が
-                    # 太る、であって1人気が最弱ではない → 軸は維持しつつカバーを広げる)。
-                    # このレース固有の実測 (二桁人気馬券内率) を根拠に添える (#94: 一般論禁止)。
-                    t += (f"\n⚡過去{uh['n']}年は荒れ傾向: 勝ち馬平均{uh['avg_win_pop']:.0f}人気"
-                          f"・二桁人気の馬券内{uh['big_rate']*100:.0f}%\n"
-                          f"→ 人気サイド1点勝負は過去傾向に反する。広めのカバーを\n")
-                    # ⚡限定: 2頭目の妙味穴 (印外・オッズ7倍+で 複勝率÷市場率 が最大) を
-                    # 「穴注意」として追加表示 — 捕捉印 (◎○▲△×) は不変、夢枠の増設のみ
+                    # 荒れ=分布の尻尾が太る (1人気が最弱ではない #96/#100) → 軸は維持し
+                    # カバーを広げるのが正しい含意。レース固有の実測を根拠に添える (#94)。
+                    _extras.append(
+                        f"\n⚡過去{uh['n']}年は荒れ傾向 (勝ち馬平均{uh['avg_win_pop']:.0f}人気"
+                        f"・二桁人気馬券内{uh['big_rate']*100:.0f}%) → 広めのカバーを\n")
                     _marked = {m.get('horse_number') for m in marks.values()}
                     _cands = [q for q in preds
                               if q.get('horse_number') not in _marked
@@ -773,16 +773,12 @@ def cmd_predict(args):
                     if _cands:
                         _v = max(_cands, key=lambda q: (q.get('pred_top3_pct') or 0) * (q.get('odds_win') or 0))
                         if (_v.get('pred_top3_pct') or 0) > 0:
-                            t += f"穴注意: {_v.get('horse_name','?')}（単{_v.get('odds_win'):.0f}倍）\n"
+                            _extras.append(f"穴注意: {_v.get('horse_name','?')}（単{_v.get('odds_win'):.0f}倍）\n")
                 elif uh and uh['label'] == '堅い':
-                    t += (f"\n🔒過去{uh['n']}年は堅め (勝ち馬平均{uh['avg_win_pop']:.0f}人気"
-                          f"・二桁人気の馬券内{uh['big_rate']*100:.0f}%)\n")
+                    _extras.append(f"\n🔒過去{uh['n']}年は堅め (勝ち馬平均{uh['avg_win_pop']:.0f}人気)\n")
             except Exception:
                 pass
-
-        # #98: AI独自視点 (人気非依存の能力モデル #72) — 印は市場込みが最強 (捕捉率、
-        # #98バックテスト) だが「人気の写し」批判に応えるため、能力上位なのに人気薄の馬を
-        # コンテンツとして1行提示 (印・投資には影響しない表示専用チャネル)
+        # #98: AI独自視点 (人気非依存の能力モデル) — 能力上位なのに人気薄の時のみ
         try:
             _by_ab = sorted((q for q in preds if (q.get('ability_score') or 0) > 0),
                             key=lambda q: -(q.get('ability_score') or 0))
@@ -790,10 +786,13 @@ def cmd_predict(args):
                 _ab_top = _by_ab[0]
                 _ab_pop = _ab_top.get('popularity') or 0
                 if _ab_pop >= 5:
-                    t += (f"\n💡AI能力値の最上位は {_ab_top.get('horse_name','?')}"
-                          f" (市場{_ab_pop}人気) — 妙味あり\n")
+                    _extras.append(f"\n💡AI能力値の最上位は {_ab_top.get('horse_name','?')}"
+                                   f" (市場{_ab_pop}人気) — 妙味あり\n")
         except Exception:
             pass
+        for _ex in _extras:
+            if _xw(t) + _xw(_ex) <= 272:  # ハッシュタグ等の余白を8字残す
+                t += _ex
 
         # 投稿する印を記録 (dry-run でも収集、保存は投稿成功時のみ)
         rid = race.get('race_id')
