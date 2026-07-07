@@ -1700,7 +1700,9 @@ def sec_notable_horses(
                  f"（%＝母父産駒の当コース複勝率(3着内率)）")
         def fmt(h):
             if h["dam_n"] > 0:
-                return f"母父{_clean_name(h['damsire'], 18)}{_scope_tag(h['dam_scope'])}{h['dam_pct']:.0f}%"
+                # #104: 「母父Starspangledbanner(芝2000m)60%」は名前・範囲・%が密着して
+                # スマホで読みにくい → 「母父名 60% (範囲)」の語順に (範囲は補足なので末尾)
+                return f"母父{_clean_name(h['damsire'], 14)} {h['dam_pct']:.0f}%{_scope_tag(h['dam_scope'])}"
             if h["sire_n"] > 0:  # 母父データ無し時のみ父で代替
                 return f"父{_clean_name(h['sire'], 12)}{_scope_tag(h['sire_scope'])}{h['sire_pct']:.0f}%"
             return "血統データ不足"

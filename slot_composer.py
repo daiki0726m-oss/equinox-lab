@@ -1030,18 +1030,26 @@ def _morning_sec_pattern(conn, ctx):
     # 複勝率順に上位3頭 (1馬1行)
     top_horses = sorted(horse_best.items(), key=lambda kv: -kv[1][0])[:3]
 
-    # 圧縮表記: 3頭が1 tweet (280字以内) に収まるよう各行40字以下
+    # #104: 同一種牡馬×同率の馬は1行にマージ (「🥇サトノ産駒67%→A / 🥈サトノ産駒67%→B」
+    # の重複行が“薄い”と指摘された。同じ根拠は1行で該当馬を並べる)
+    grouped = {}   # (sire, waku, pct) → [horses]
+    order = []
+    for horse, (pct, sire, waku, t3, nr) in top_horses:
+        key = (sire, waku if draw_done else "", pct)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(horse)
+
     medals = ["🥇", "🥈", "🥉"]
     out_lines = []
-    for i, (horse, (pct, sire, waku, t3, nr)) in enumerate(top_horses):
+    for i, key in enumerate(order):
+        sire, waku, pct = key
         m = medals[i] if i < len(medals) else "🏅"
-        # #97 (D1): 旧処理は `[A-Za-z]+$` を無条件除去し純英字名 (Frankel 等) が空になる
-        #   バグがあった → カナ直後の連結英字だけ除去する共通ヘルパー _clean_name に統一。
         sire_clean = _clean_name(sire, 12)
-        waku_str = f"×{waku}" if draw_done else ""
-        # #97 (m8): 「馬名 60% 父名」は 60% が誰の率か読めない語順だった。
-        # 他セクションと同じ「父産駒% → 該当: 馬名」に統一 (主語=父産駒を明確に)。
-        out_lines.append(f"{m}{sire_clean}産駒{waku_str} 複勝{pct}% → 該当: {horse}")
+        waku_str = f"×{waku}" if waku else ""
+        horses_str = "・".join(grouped[key][:3])
+        out_lines.append(f"{m}{sire_clean}産駒{waku_str} 複勝{pct}% → 該当: {horses_str}")
 
     return _make_section("【父×コース複勝率TOP】", out_lines), len(out_lines)
 

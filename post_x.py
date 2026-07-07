@@ -20,6 +20,7 @@ import argparse
 import sys
 import os
 import json
+import re
 import random
 import time
 import urllib.request
@@ -128,6 +129,7 @@ def _chunk_tweets_for_threads(tweets, limit=500):
         t_clean = "\n".join(
             l for l in t.split("\n")
             if l.strip() not in ("🧵続く", "→ 続く🧵", "🧵 続く")
+            and not re.match(r"^🧵?\s*\(\d+/\d+\)\s*$", l.strip())  # #104: 「🧵 (2/2)」ページ番号は Threads では無意味
         ).strip()
         if not t_clean:
             continue
@@ -2327,6 +2329,16 @@ def get_todays_race(conn, slot=0):
               if detect_grade(r['race_name'], r.get('grade')) in ('G1', 'G2', 'G3')]
     if not graded:
         graded = all_races[:1]
+
+    # #104: 重賞が1-2件しかない週は OP/リステッド → その他特別 を足して最大3レースで
+    # ローテする。旧実装は重賞1件の週に全平日スロットが同一レース一色になり
+    # 「七夕賞ばっかりで内容が薄い」(2026-07-07 ユーザー指摘) 状態だった。
+    # graded[0] (最上位グレード) は先頭を維持 = 金曜のメイン固定はこれまで通り。
+    if len(graded) < 3:
+        _in = {r.get('race_id') for r in graded}
+        _extras = [r for r in all_races if r.get('race_id') not in _in]
+        _extras.sort(key=lambda r: 0 if (r.get('grade') or '') in ('OP', 'L', 'リステッド') else 1)
+        graded = graded + _extras[:3 - len(graded)]
 
     dow = now_jst().weekday()  # 0=月 ... 4=金
 
