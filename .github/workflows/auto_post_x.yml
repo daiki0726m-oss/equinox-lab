@@ -426,6 +426,16 @@ jobs:
           DATE="${{ steps.determine.outputs.date }}"
           echo "📊 予測データを静的JSONに書き出し..."
           python export_predictions.py "$DATE"
+          # #106: predict系のrunでexportが「レースなし」等で空振りした場合、
+          # 旧来はdeployが「変更なし」で静かにスキップし予想が丸ごと欠落した (7/11実発生)。
+          # JSONの実在をここで検査し、無ければ run を fail させて watchdog/Issueに露出させる。
+          TYPE="${{ steps.determine.outputs.type }}"
+          if [ "$TYPE" = "predict" ] || [ "$TYPE" = "post_predict" ] || [ "$TYPE" = "odds_flash" ]; then
+            if [ ! -f "docs/data/predictions_${DATE}.json" ]; then
+              echo "❌ export後に docs/data/predictions_${DATE}.json が存在しない — 予想の生成/検索に失敗している"
+              exit 1
+            fi
+          fi
 
       - name: Deploy to GitHub Pages
         if: contains(fromJSON('["predict","odds_flash","post_predict","hit_flash","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)

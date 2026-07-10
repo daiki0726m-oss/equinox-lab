@@ -48,7 +48,10 @@ def cmd_collect(args):
                              distance, surface, direction, weather, track_condition, horse_count, start_time)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, (
-                            rid, shutuba.get("race_date", ""),
+                            # #106: shutuba の日付パース失敗時に race_date="" で既存の正しい行を
+                            # 上書きし、export が「レースなし」で静かに全滅する事故 (7/11実発生)。
+                            # 収集日は args.date で確実に分かるので必ず fallback する。
+                            rid, shutuba.get("race_date") or f"{args.date[:4]}-{args.date[4:6]}-{args.date[6:8]}",
                             shutuba.get("venue", ""), shutuba.get("race_number", 0),
                             shutuba.get("race_name", ""), shutuba.get("grade", ""),
                             shutuba.get("distance", 0), shutuba.get("surface", ""),
