@@ -3,7 +3,8 @@ name: 🐦 Auto Post to X
 run-name: "${{ github.event.inputs.mode || 'cron' }}"
 
 on:
-  # ─── GASからの直接呼び出し（メイン） ───
+  # ─── 手動・watchdog・race_day_runner からの dispatch ───
+  # (旧設計の GAS トリガーは廃止済み — run 履歴に GAS 発火実績なし #57)
   workflow_dispatch:
     inputs:
       mode:
@@ -20,35 +21,75 @@ on:
           - weekly_review
           - refresh_odds
           - refresh_dashboard
-          - hit_flash
           - odds_flash
           - post_predict
           - morning
           - evening
-  # ─── cron フォールバック（GAS不発時のセーフティネット） ───
+          - diagnose
+      skip_guard:
+        description: '時間ガードをバイパス (緊急手動投稿用、cron遅延等で投稿漏れた時)'
+        required: false
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+      date_override:
+        description: '日付を指定 (YYYYMMDD、空なら今日)。前日の results を補完投稿する時用'
+        required: false
+        default: ''
+        type: string
+  # ─── cron スケジュール（メイントリガー。watchdog が30分毎の保険） ───
+  # 🆕 #56 (2026-06-10): 平日3スロットに冗長 cron を追加。GitHub Actions cron は
+  # 遅延 (1-4.5h) だけでなく完全スキップもある (#36)。posted_slots の atomic lock が
+  # origin に push される (#41+#56 Deploy fix) ため、多重発火しても2本目は lock を見て
+  # skip するだけ = 安全な冗長化。watchdog (実測~2h間隔) より速い自己復旧層になる。
   schedule:
     # 平日朝7:30 JST (UTC 22:30前日) → 日-木のUTC22:30 = 月-金のJST7:30
     - cron: '30 22 * * 0-4'
+    # 平日朝の冗長フォールバック 8:10 JST (UTC 23:10前日)
+    - cron: '10 23 * * 0-4'
     # 土日朝7:00 JST (UTC 22:00前日) → predict
     - cron: '0 22 * * 5,6'
+    # 土日朝の冗長フォールバック 7:40 JST (#61: 6/6 の predict cron 完全スキップ事故クラス対策。
+    # 平日 #56 と同パターン — posted_slots/seal は冪等なので多重発火は安全)
+    - cron: '40 22 * * 5,6'
     # 平日昼12:30 JST (UTC 3:30)
     - cron: '30 3 * * 1-5'
+    # 平日昼の冗長フォールバック 13:10 JST (UTC 4:10)
+    - cron: '10 4 * * 1-5'
     # 平日夜20:00 JST (UTC 11:00)
     - cron: '0 11 * * 1-5'
-    # ─── 土日の結果系（GAS不発対策） ───
-    # 土日 9:30 JST (UTC 0:30) → odds_flash（内部処理のみ）
+    # 平日夜の冗長フォールバック 20:40 JST (UTC 11:40)
+    - cron: '40 11 * * 1-5'
+    # ─── 土日の結果系 ───
+    # 土日 9:30 JST (UTC 0:30) → odds_flash（オッズ確定後のAI勝率TOP3を投稿。#79で実投稿化）
     - cron: '30 0 * * 6,0'
     # 土日 10:15 JST (UTC 1:15) → post_predict（確定予想投稿）
     - cron: '15 1 * * 6,0'
-    # 土日 15:30 JST (UTC 6:30) → hit_flash
-    - cron: '30 6 * * 6,0'
+    # (旧 15:30 hit_flash cron は #57 で削除 — cmd_results の完走ガードにより
+    #  15:30 時点では 11R 未発走で常にスキップされる構造的 no-op だった)
     # 土日 17:30 JST (UTC 8:30) → results
     - cron: '30 8 * * 6,0'
     # 土日 18:30 JST (UTC 9:30) → refresh_dashboard
     - cron: '30 9 * * 6,0'
+  # 🆕 #88: fetch_weekend_races 完了をトリガーに即 predict (土日のみ)。
+  #   7:00 の別 cron を待たず、fetch 直後 (~5:30-6:00) に予測を反映する。
+  #   data取得(fetch 5:00)→予測(7:00)の分断 + 二重 cron 遅延を解消する。
+  workflow_run:
+    workflows: ["📅 Fetch Weekend Races"]
+    types:
+      - completed
+
+# 🆕 #56 (2026-06-10): 同時多重発火の直列化。冗長 cron / watchdog / 手動 dispatch が
+# 重なっても、前の run が posted_slots lock を push し終えてから次の run が checkout する
+# ことを保証する (並走すると両方が「lock なし」の DB を見て二重投稿するレースが残るため)。
+concurrency:
+  group: auto-post-x
+  cancel-in-progress: false
 
 jobs:
-  # ─── 重複投稿防止: cron実行時、直近90分以内にGAS実行があればスキップ ───
+  # ─── 重複投稿防止: cron実行時、直近90分以内に同モードの dispatch 成功があればスキップ ───
   dedup:
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
@@ -74,12 +115,15 @@ jobs:
           SCHEDULE="${{ github.event.schedule }}"
           case "$SCHEDULE" in
             "30 22 * * 0-4")  EXPECTED_MODE="morning" ;;
+            "10 23 * * 0-4")  EXPECTED_MODE="morning" ;;   # 冗長フォールバック 8:10 JST
             "0 22 * * 5,6")   EXPECTED_MODE="predict" ;;
+            "40 22 * * 5,6")  EXPECTED_MODE="predict" ;;   # 冗長フォールバック 7:40 JST
             "30 3 * * 1-5")   EXPECTED_MODE="weekday" ;;
+            "10 4 * * 1-5")   EXPECTED_MODE="weekday" ;;   # 冗長フォールバック 13:10 JST
             "0 11 * * 1-5")   EXPECTED_MODE="evening" ;;
+            "40 11 * * 1-5")  EXPECTED_MODE="evening" ;;   # 冗長フォールバック 20:40 JST
             "30 0 * * 6,0")   EXPECTED_MODE="odds_flash" ;;
             "15 1 * * 6,0")   EXPECTED_MODE="post_predict" ;;
-            "30 6 * * 6,0")   EXPECTED_MODE="hit_flash" ;;
             "30 8 * * 6,0")   EXPECTED_MODE="results" ;;
             "30 9 * * 6,0")   EXPECTED_MODE="refresh_dashboard" ;;
             *)                EXPECTED_MODE="" ;;
@@ -129,6 +173,21 @@ jobs:
           key: keiba-db-${{ github.run_number }}
           restore-keys: |
             keiba-db-
+
+      # ── 🛡 git を source of truth に強制 ──
+      # 2026-05-24 オークス予測事故対応: cache が古いと git push 後の DB が反映されず、
+      # 朝の正しい予測 (◎スターアニス) が古い予測 (◎エンネ) で上書きされた。
+      # cache restore 後に git の DB を強制採用することで、git push 直後でも整合性確保。
+      - name: Force git DB (override stale cache)
+        run: |
+          # 🆕 #61: checkout SHA は run 作成時点で固定されるため、ほぼ同時 dispatch の
+          # 先行 run が push した posted_slots lock が見えない (stale checkout)。
+          # fetch + reset で「真の origin/main 最新」に進めてから DB を採用する。
+          git fetch origin "${GITHUB_REF_NAME:-main}" --depth 1
+          git reset --hard "origin/${GITHUB_REF_NAME:-main}"
+          git checkout HEAD -- keiba.db.gz
+          bash scripts/db_unpack.sh
+          echo "✅ keiba.db を git HEAD に復元 (stale cache を上書き)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -207,9 +266,33 @@ jobs:
 
           MODE="${{ github.event.inputs.mode }}"
           SCHEDULE="${{ github.event.schedule }}"
-          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE, SCHEDULE=$SCHEDULE"
+          # 🆕 date_override: 手動 trigger で「前日の results を補完投稿」する時に使用 (#37)
+          DATE_OVERRIDE="${{ github.event.inputs.date_override }}"
+          if [ -n "$DATE_OVERRIDE" ]; then
+            TODAY_YYYYMMDD="$DATE_OVERRIDE"
+            TODAY_HYPHEN="${DATE_OVERRIDE:0:4}-${DATE_OVERRIDE:4:2}-${DATE_OVERRIDE:6:2}"
+            echo "🗓 date_override 指定: $TODAY_YYYYMMDD"
+          fi
+          echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE, SCHEDULE=$SCHEDULE, DATE=$TODAY_YYYYMMDD"
 
-          # ── GASからの直接モード指定 ──
+          # ── 🆕 #88: fetch_weekend_races 完了トリガー → 即 predict (土日のみ) ──
+          # fetch (5:00) が終わった直後に予測を回し、7:00 cron を待たずに ~6時前に反映する。
+          # 平日の fetch (来週末レース登録) では予測不要 (レースは数日先) なので skip。
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            CONCL="${{ github.event.workflow_run.conclusion }}"
+            echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
+            echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
+            if [ "$CONCL" = "success" ] && [ "$DOW" -ge 6 ]; then
+              echo "type=predict" >> $GITHUB_OUTPUT
+              echo "📬 fetch完了トリガー → predict (土日朝、fetch直後に即予測)"
+            else
+              echo "type=skip" >> $GITHUB_OUTPUT
+              echo "📭 workflow_run 対象外 (DOW=$DOW/平日 or concl=$CONCL) → skip"
+            fi
+            exit 0
+          fi
+
+          # ── dispatch からの直接モード指定 (watchdog/race_day_runner/手動) ──
           if [ "$MODE" != "" ] && [ "$MODE" != "auto" ]; then
             echo "type=$MODE" >> $GITHUB_OUTPUT
             echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
@@ -222,12 +305,15 @@ jobs:
           # 各cronエントリに対して固定のtypeを返す
           case "$SCHEDULE" in
             "30 22 * * 0-4")  TYPE="morning" ;;         # 平日朝7:30 JST
+            "10 23 * * 0-4")  TYPE="morning" ;;         # 平日朝 冗長 8:10 JST
             "0 22 * * 5,6")   TYPE="predict" ;;         # 土日朝7:00 JST
+            "40 22 * * 5,6")  TYPE="predict" ;;         # 土日朝 冗長 7:40 JST
             "30 3 * * 1-5")   TYPE="weekday" ;;         # 平日昼12:30 JST
+            "10 4 * * 1-5")   TYPE="weekday" ;;         # 平日昼 冗長 13:10 JST
             "0 11 * * 1-5")   TYPE="evening" ;;         # 平日夜20:00 JST
+            "40 11 * * 1-5")  TYPE="evening" ;;         # 平日夜 冗長 20:40 JST
             "30 0 * * 6,0")   TYPE="odds_flash" ;;      # 土日 9:30 JST
             "15 1 * * 6,0")   TYPE="post_predict" ;;    # 土日10:15 JST
-            "30 6 * * 6,0")   TYPE="hit_flash" ;;       # 土日15:30 JST
             "30 8 * * 6,0")   TYPE="results" ;;         # 土日17:30 JST
             "30 9 * * 6,0")   TYPE="refresh_dashboard" ;; # 土日18:30 JST
             *)
@@ -247,7 +333,6 @@ jobs:
                   06|07|08) TYPE="predict" ;;
                   09)       TYPE="odds_flash" ;;
                   10)       TYPE="post_predict" ;;
-                  14|15|16) TYPE="hit_flash" ;;
                   17)       TYPE="results" ;;
                   18|19)    TYPE="refresh_dashboard" ;;
                   20)       TYPE="answer_check" ;;
@@ -269,10 +354,41 @@ jobs:
         if: steps.determine.outputs.type == 'predict'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
+          DATE_HYPHEN="${{ steps.determine.outputs.date_hyphen }}"
           JST_HOUR=$(TZ=Asia/Tokyo date +%H)
-          echo "📥 ${DATE} のデータをスクレイプ..."
-          python predict.py collect --date "$DATE"
-          
+
+          # 🛡 2026-05-30 fix: fetch_weekend_races が既に出走馬を入れている場合は
+          # collect (全レース再 scrape) を skip。これを怠ると weekend predict が
+          # scrape 段階で 15分+ stuck し、予測が生成されない事故が起きる (5/30 実例)。
+          RUNNERS=$(python -c "
+          from database import get_db
+          with get_db() as conn:
+              n = conn.execute('SELECT COUNT(*) FROM results res JOIN races r ON res.race_id=r.race_id WHERE r.race_date IN (?,?)', ('$DATE_HYPHEN','$DATE')).fetchone()[0]
+          print(n)
+          " 2>/dev/null || echo 0)
+          echo "📊 既存出走馬: ${RUNNERS}頭"
+
+          if [ "$RUNNERS" -ge 50 ]; then
+            echo "✅ 出走馬は fetch 済み (${RUNNERS}頭) → collect skip (stuck 防止)"
+          else
+            echo "📥 ${DATE} のデータをスクレイプ (timeout 300s)..."
+            timeout 300 python predict.py collect --date "$DATE" || echo "⚠️ collect timeout/失敗 → 既存データで続行"
+          fi
+
+          # 🆕 確定馬番リフレッシュ (#44): 枠順確定前の仮馬番(五十音順)を確定馬番に更新。
+          # 怠ると馬番と馬名がズレたまま予測・投稿される。軽量(scrape_shutubaのみ)で stuck しない。
+          echo "🏇 確定馬番を更新..."
+          timeout 180 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 既存データで続行"
+
+          # 🆕 #52 (2026-06-08): refresh_entries の直後に **必ず** refresh_odds を実行する。
+          # refresh_entries (scrape_shutuba) は出馬表ベースで odds を持たないため、
+          # FIX C の保全UPSERT前は results.odds を 0 で上書きしていた (= 全D化の主因)。
+          # FIX C 適用後も「初回 fetch でまだ odds 未取得」のレースは odds=0 のままなので、
+          # 予測の前に odds を埋めておくことが必須。model_rank は gain 92% が odds_log =
+          # odds=0 のまま predict すると rank_score がフラット化し全レース confidence=D になる。
+          echo "💹 オッズを取得 (予測前に必須 — odds=0 だと全D化する)..."
+          timeout 180 python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ取得失敗 → 既存データで続行"
+
           # 10時以降は予測を再実行しない（確定済み予測を保護）
           if [ "$JST_HOUR" -ge 10 ]; then
             echo "🔒 JST ${JST_HOUR}時: 10時以降のため予測をスキップ（確定済み）"
@@ -321,6 +437,9 @@ jobs:
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           JST_HOUR=$(TZ=Asia/Tokyo date +%H)
+          # 🆕 確定馬番リフレッシュ (#44): オッズ取得前に馬番を確定版に揃える
+          echo "🏇 確定馬番を更新..."
+          timeout 180 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 続行"
           echo "📡 ${DATE} の最新オッズを取得..."
           python refresh_odds.py --date "$DATE"
           
@@ -331,15 +450,6 @@ jobs:
             echo "🧠 オッズ反映後に再予測..."
             python predict.py predict --date "$DATE"
           fi
-
-      # 的中速報用の結果収集
-      - name: Collect results for hit_flash
-        if: steps.determine.outputs.type == 'hit_flash'
-        run: |
-          DATE="${{ steps.determine.outputs.date }}"
-          echo "📥 ${DATE} の結果を収集..."
-          python predict.py collect --date "$DATE"
-          python collect_payouts.py --date "$DATE"
 
       # 平日投稿の前に来週末のレースを事前登録
       - name: Fetch weekend races for weekday posts
@@ -381,6 +491,27 @@ jobs:
                   print(f'  ⚠️ {ds}: {e}')
           "
 
+      # 🛡 Pre-flight check: 投稿前にデータ完整性確認 + 自動修復
+      # 5/23-24 の事故 (R1-R8 欠落・出走馬未登録・予測キャッシュ空 等) の再発防止
+      # races件数 / 出走馬登録率 / 予測キャッシュ件数 を検査し、不足あれば auto-fix
+      - name: Pre-flight check (data integrity)
+        if: contains(fromJSON('["predict","post_predict","results","odds_flash","answer_check","refresh_dashboard","weekly_review"]'), steps.determine.outputs.type)
+        run: |
+          DATE="${{ steps.determine.outputs.date }}"
+          echo "🛡 Pre-flight check: $DATE"
+          # auto-fix モードで実行。致命的問題が残れば exit 2 でこのステップが失敗 → 投稿スキップ
+          # --ghost-api: 予測/投稿の限定スロットでのみ netkeiba API 照合で幽霊馬 (#43/#44) を検出・除去。
+          # (race_day_runner の10分 loop は API 連打回避のため無料の基準A(horse_id重複)のみ)
+          python3 scripts/preflight_check.py "$DATE" --auto-fix --ghost-api || {
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 2 ]; then
+              echo "❌ Pre-flight 致命的問題: 投稿スキップ"
+              exit 1
+            else
+              echo "⚠️ Pre-flight 警告レベル: 投稿続行"
+            fi
+          }
+
       - name: Post to X
         if: steps.determine.outputs.type != 'skip'
         env:
@@ -391,6 +522,13 @@ jobs:
           X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          # 緊急手動投稿用: skip_guard=1 のときだけ時間ガードをバイパス。
+          # それ以外 (cron 含む) は空文字 → post_x.py 側で not '' = True となりガード有効。
+          SKIP_PREDICT_GUARD: ${{ github.event.inputs.skip_guard == '1' && '1' || '' }}
+          # SKIP_TIME_GUARD: cmd_morning/weekday/evening/odds_flash の時間ガードも同時にバイパス。
+          # 旧版は SKIP_PREDICT_GUARD のみ渡しており、手動 trigger でも cmd_morning の
+          # SKIP_TIME_GUARD が効かず時間ガードで skip される事故が起きた (#47)。
+          SKIP_TIME_GUARD: ${{ github.event.inputs.skip_guard == '1' && '1' || '' }}
         run: |
           TYPE="${{ steps.determine.outputs.type }}"
           DATE="${{ steps.determine.outputs.date }}"
@@ -402,57 +540,82 @@ jobs:
           elif [ "$TYPE" = "predict" ]; then
             echo "⏳ 7:00予測完了。X投稿は10:15のpost_predict後に実行します"
           elif [ "$TYPE" = "odds_flash" ]; then
-            echo "📡 オッズ更新完了。X投稿は10:15のpost_predictで実行します"
+            # #79: 旧版は echo だけで odds_flash を一度も投稿していなかった (土日9:30枠が空)。
+            # cmd_odds_flash を実際に呼ぶ。post_predict (10:15) とは別物 (オッズ確定後の最終見解)。
+            python post_x.py odds_flash --date "$DATE"
           elif [ "$TYPE" = "post_predict" ]; then
             python post_x.py predict --date "$DATE"
           elif [ "$TYPE" = "results" ]; then
+            # 投稿対象レース全部が完走するまで自動スキップ (ガードは post_x.py 側)
             python post_x.py results --date "$DATE"
           elif [ "$TYPE" = "answer_check" ]; then
             python post_x.py answer_check --date "$DATE"
           elif [ "$TYPE" = "weekly_review" ]; then
             python post_x.py weekly_review
-          elif [ "$TYPE" = "hit_flash" ]; then
-            python post_x.py hit_flash --date "$DATE"
           elif [ "$TYPE" = "morning" ]; then
             python post_x.py morning
           elif [ "$TYPE" = "evening" ]; then
             python post_x.py evening
+          elif [ "$TYPE" = "diagnose" ]; then
+            # X API 診断モード — 書き込みせず、認証/rate limit/token を非破壊チェック
+            python3 scripts/x_diagnose.py || echo "(診断スクリプト終了コード ≠ 0)"
           fi
 
       # ── 静的予測サイト更新（GitHub Pages） ──
       - name: Export predictions to static JSON
-        if: contains(fromJSON('["predict","odds_flash","post_predict","hit_flash","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
+        if: contains(fromJSON('["predict","odds_flash","post_predict","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           echo "📊 予測データを静的JSONに書き出し..."
           python export_predictions.py "$DATE"
-          # #106: predict系のrunでexportが「レースなし」等で空振りした場合、
-          # 旧来はdeployが「変更なし」で静かにスキップし予想が丸ごと欠落した (7/11実発生)。
-          # JSONの実在をここで検査し、無ければ run を fail させて watchdog/Issueに露出させる。
+          # #106: predict系で export が「レースなし」等で空振りしたら fail させて見える化
           TYPE="${{ steps.determine.outputs.type }}"
           if [ "$TYPE" = "predict" ] || [ "$TYPE" = "post_predict" ] || [ "$TYPE" = "odds_flash" ]; then
             if [ ! -f "docs/data/predictions_${DATE}.json" ]; then
-              echo "❌ export後に docs/data/predictions_${DATE}.json が存在しない — 予想の生成/検索に失敗している"
+              echo "❌ export後に predictions_${DATE}.json が存在しない"
               exit 1
             fi
           fi
 
       - name: Deploy to GitHub Pages
-        if: contains(fromJSON('["predict","odds_flash","post_predict","hit_flash","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
+        # 🆕 #56 (2026-06-10): morning/weekday/evening を if に追加。
+        # #41 は step 内の case 文に平日3スロットを足したが、step レベルの if が旧リストの
+        # ままで平日は Deploy ごと skip → posted_slots lock が origin に push されず、
+        # 後続 cron が「lock なし」DB で再投稿可能になっていた (6/9 夜に実発生、
+        # post_history の文面ハッシュ重複検出が偶然防いだだけ)。
+        if: contains(fromJSON('["predict","odds_flash","post_predict","refresh_dashboard","results","answer_check","weekly_review","morning","weekday","evening"]'), steps.determine.outputs.type)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # docs/data/のJSONのみをデプロイ（predict.htmlはindex.htmlが本体）
           git add docs/data/
-          # keiba.dbはcacheで管理するためgitには含めない
+          # 🔒 #41 (2026-06-07): 全 post 系で keiba.db を push する
+          # 理由: posted_slots テーブルに記録した atomic lock 状態を、後続の cron/watchdog
+          # /手動 trigger に確実に引き継ぐため。これがないと「checkout 直後の DB に lock なし」
+          # → lock 取得 → 二重投稿 が発生する (5/23, 6/7 で実際に発生)。
+          case "${{ steps.determine.outputs.type }}" in
+            morning|weekday|evening|predict|post_predict|odds_flash|results)
+              bash scripts/db_pack.sh
+              git add keiba.db.gz
+              echo "🔒 keiba.db を add (atomic lock 状態を後続 trigger に引き継ぎ)"
+              ;;
+          esac
           if git diff --staged --quiet; then
             echo "📭 変更なし - デプロイスキップ"
           else
             git commit -m "📊 Update predictions $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-            # 並行workflow対策: rebase+retry
+            # 並行workflow対策: rebase+retry。compet は -X theirs (リモート優先) で自動解決し
+            # unmerged(U) を作業ツリーに残さない。失敗時は rebase --abort で残骸を確実に除去する。
+            # (#36: U 残留のまま後続 Save post history が commit を試みて exit 128 で死ぬ事故を防止)
+            # 🆕 #52 (2026-06-08): --autostash 必須。commit 後も 100MB keiba.db が WAL flush で
+            #   unstaged に戻り、autostash 無しの rebase は「you have unstaged changes」で即死する。
+            #   → 6/6 は predict 成功・export 成功・commit 成功なのに push が3回とも死に、
+            #   予測JSONが origin に届かず朝404 が継続した (他の全 workflow は autostash 有りで生存)。
             for i in 1 2 3; do
-              git pull --rebase --autostash origin main || true
-              if git push; then echo "🚀 デプロイ完了 (試行$i)"; break; fi
+              if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
+                echo "🚀 デプロイ完了 (試行$i)"; break
+              fi
+              git rebase --abort 2>/dev/null || true
               echo "⚠️ push失敗→リトライ($i)"; sleep 5
             done
           fi
@@ -464,13 +627,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if [ -f docs/data/.post_history.json ]; then
-            git add docs/data/.post_history.json
+            # Deploy step が if 条件で skip された type でも予測JSONの未コミット変更を一緒に取り込み、
+            # U(unmerged) を作らないよう docs/data/ 全体を add する
+            git add docs/data/
             if ! git diff --staged --quiet; then
               git commit -m "📝 Update post history $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
-              # 並行workflow対策: rebase+retry
+              # compet は -X theirs (リモート優先) で自動解決し U を残さない。失敗時は rebase --abort で除去 (#36)
+              # 🆕 #52 (2026-06-08): --autostash 必須 (上の Deploy step と同理由。keiba.db WAL対策)
               for i in 1 2 3; do
-                git pull --rebase --autostash origin main || true
-                if git push; then echo "✅ 投稿履歴を保存 (試行$i)"; break; fi
+                if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
+                  echo "✅ 投稿履歴を保存 (試行$i)"; break
+                fi
+                git rebase --abort 2>/dev/null || true
                 echo "⚠️ push失敗→リトライ($i)"; sleep 5
               done
             fi

@@ -33,7 +33,18 @@ class NetkeibaScraper:
         time.sleep(self.REQUEST_INTERVAL)
         try:
             resp = self.session.get(url, timeout=30)
-            resp.encoding = encoding or resp.apparent_encoding
+            # 🆕 #84: サーバが Content-Type で charset を宣言していれば最優先で採用する。
+            #   netkeiba は 2026 に EUC-JP → UTF-8 へ移行。旧コードは呼び出し側の
+            #   encoding='EUC-JP' を強制していたため出馬表が文字化けし、<title> の
+            #   「YYYY年M月D日」が壊れて race_date が空 → 週末レースが全日付クエリで
+            #   不可視 → 過去レースを誤投稿する事故になった (6/17 函館スプリントS=6/13)。
+            #   宣言が無い時のみ呼び出し側 hint → chardet にフォールバック。
+            ct = resp.headers.get("Content-Type", "")
+            m = re.search(r"charset=([\w-]+)", ct, re.I)
+            if m:
+                resp.encoding = m.group(1)
+            else:
+                resp.encoding = encoding or resp.apparent_encoding
             if resp.status_code == 200:
                 return resp
             print(f"⚠️ HTTP {resp.status_code}: {url}")
@@ -120,6 +131,19 @@ class NetkeibaScraper:
         race_data["payouts"] = payouts
 
         return race_data
+
+    def scrape_race_result_archive(self, race_id):
+        """db.netkeiba.com のアーカイブページから結果を取得 (#65)。
+
+        race.netkeiba.com の result.html は過去レースで「通過」列を持たないが、
+        db.netkeiba.com/race/<id>/ には通過・上りが常設。通過順 backfill 用。
+        """
+        url = f"https://db.netkeiba.com/race/{race_id}/"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return None
+        soup = BeautifulSoup(resp.text, "lxml")
+        return {"race_id": race_id, "results": self._parse_result_table(soup, race_id)}
 
     def _parse_race_info(self, soup, race_id):
         """レース基本情報をパース"""
@@ -267,7 +291,7 @@ class NetkeibaScraper:
             h = h.strip()
             if not h:
                 continue
-            if h in ("着順", "着") or (h.endswith("着") and h != "着差"):
+            if h in ("着順", "着", "入線") or (h.endswith("着") and h != "着差"):
                 cmap.setdefault("finish_position", i)
             elif h in ("枠", "枠番"):
                 cmap.setdefault("post_position", i)
@@ -289,7 +313,7 @@ class NetkeibaScraper:
                 cmap.setdefault("popularity", i)
             elif h in ("単勝", "オッズ", "単勝オッズ"):
                 cmap.setdefault("odds", i)
-            elif "上がり" in h or "上り" in h or h == "後3F":
+            elif ("上がり" in h or "上り" in h or h == "後3F") and "指数" not in h:
                 cmap.setdefault("last_3f", i)
             elif h in ("通過", "通過順", "通過順位"):
                 cmap.setdefault("passing_order", i)
@@ -877,6 +901,7 @@ class NetkeibaScraper:
             return race_data
 
         rows = table.find_all("tr")[1:]
+        entry_idx = 0  # 月曜時点の仮馬番 (1-based)
         for row in rows:
             cols = row.find_all("td")
             if len(cols) < 8:
@@ -884,13 +909,27 @@ class NetkeibaScraper:
 
             entry = {"race_id": race_id}
             try:
-                entry["post_position"] = int(cols[0].get_text(strip=True) or 0)
-                entry["horse_number"] = int(cols[1].get_text(strip=True) or 0)
-                if entry["horse_number"] == 0:
-                    continue  # 馬番0は不正データ
+                # 枠順 (post_position): 抽選前は "--" / "-" → 0 として扱う
+                post_text = cols[0].get_text(strip=True)
+                entry["post_position"] = int(post_text) if post_text.isdigit() else 0
 
+                # 馬番 (horse_number): 抽選前 (空 or "--") → 仮の連番を振る
+                # UNIQUE(race_id, horse_number) 制約のため重複0を許容できない。
+                # 枠順抽選後に scraper が走り直して正式な馬番に置換される設計。
+                num_text = cols[1].get_text(strip=True)
+                if num_text.isdigit():
+                    entry["horse_number"] = int(num_text)
+                else:
+                    entry_idx += 1
+                    entry["horse_number"] = entry_idx  # 仮: 登録順の連番 (1, 2, 3, ...)
+                    entry["_provisional_number"] = True  # マーク (DBには入れない)
+
+                # 馬名 td (cols[3] = 馬名)
                 horse_tag = cols[3].find("a") if len(cols) > 3 else None
                 entry["horse_name"] = cols[3].get_text(strip=True) if len(cols) > 3 else ""
+                # 馬名空なら entry 不正 → skip
+                if not entry["horse_name"]:
+                    continue
                 entry["horse_id"] = ""
                 if horse_tag and horse_tag.get("href"):
                     h_match = re.search(r"/horse/(\w+)", horse_tag["href"])
@@ -949,17 +988,44 @@ class NetkeibaScraper:
                 race_data.get("distance", 0), race_data.get("surface", ""),
                 race_data.get("direction", ""), race_data.get("weather", ""),
                 race_data.get("track_condition", ""),
-                len(race_data.get("results", [])),
+                len(race_data.get("results", []) or race_data.get("entries", [])),
                 race_data.get("start_time", "")
             ))
 
             # 各馬の結果保存
-            for r in race_data.get("results", []):
-                # 馬マスター
+            # 互換: scrape_race は "results" キー、scrape_shutuba は "entries" キー
+            # 過去のバグで未来レースで出走馬が保存されない事象があり、
+            # entries も results として処理するよう統一 (2026-05-23 修正)
+            horse_records = race_data.get("results", []) or race_data.get("entries", [])
+
+            # 🆕 幽霊馬対策 (#43): 最新スクレイプの馬番に無い「結果未確定」レコードを削除。
+            # 枠順確定前の仮馬番 (出馬表の行数で 1..N 採番) が、確定後の正式馬番 (1..M,
+            # M<N) で上書きされず残存して「幽霊馬」(オッズ0・出走表に存在しない) になる
+            # 問題を根絶。確定済 (finish_position>0) は保護し、出走馬段階のみ最新スクレイプ
+            # で完全同期する。UNIQUE(race_id,horse_number) は同一馬の異馬番重複を防げない。
+            scraped_nums = [r.get("horse_number", 0) for r in horse_records if r.get("horse_number")]
+            if scraped_nums:
+                _ph = ",".join("?" * len(scraped_nums))
+                conn.execute(
+                    f"DELETE FROM results WHERE race_id = ? AND finish_position = 0 "
+                    f"AND horse_number NOT IN ({_ph})",
+                    (race_data["race_id"], *scraped_nums)
+                )
+
+            for r in horse_records:
+                # 馬マスター。#90: INSERT OR IGNORE だと #85 修正前(EUC-JP)に登録された
+                # 文字化け馬名 (U+FFFD 含む) が上書きされず残る → 化け名なら正しい名で自己修復。
                 if r.get("horse_id"):
                     conn.execute("""
-                        INSERT OR IGNORE INTO horses (horse_id, horse_name, sex)
+                        INSERT INTO horses (horse_id, horse_name, sex)
                         VALUES (?, ?, ?)
+                        ON CONFLICT(horse_id) DO UPDATE SET
+                            horse_name = CASE
+                                WHEN (horses.horse_name IS NULL OR horses.horse_name = ''
+                                      OR horses.horse_name LIKE '%'||CHAR(65533)||'%')
+                                     AND excluded.horse_name != ''
+                                     AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
+                                THEN excluded.horse_name ELSE horses.horse_name END
                     """, (r["horse_id"], r.get("horse_name", ""), r.get("sex", "")))
 
                 # 騎手マスター
@@ -977,13 +1043,37 @@ class NetkeibaScraper:
                     """, (r["trainer_id"], r.get("trainer_name", "")))
 
                 # 結果
+                # 🆕 #52 (2026-06-08): INSERT OR REPLACE → ON CONFLICT DO UPDATE (保全 UPSERT)。
+                # 旧 INSERT OR REPLACE は行を削除して再挿入するため、出馬表 scrape (scrape_shutuba
+                # =odds/weight を持たない) で save するたびに既存の odds/popularity/weight/着順 を
+                # 0 で上書きしていた。これが「予測時 odds=0 → rank_score フラット → 全レース D」
+                # (model_rank gain 92% が odds_log) と「馬体重補正 dead code」(#38) の主因。
+                # 対策: 各列「新値が非ゼロ/非空ならそれを採用、ゼロ/空なら既存値を保全」する。
+                # → 出馬表 save は既存 odds/weight を壊さず、結果 save は実値で正しく更新される。
+                # conflict key は results の UNIQUE(race_id, horse_number)。
                 conn.execute("""
-                    INSERT OR REPLACE INTO results
+                    INSERT INTO results
                     (race_id, horse_id, jockey_id, trainer_id,
                      post_position, horse_number, odds, popularity,
                      finish_position, finish_time, finish_time_seconds,
                      margin, last_3f, passing_order, weight, weight_change, impost)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(race_id, horse_number) DO UPDATE SET
+                        horse_id = CASE WHEN excluded.horse_id != '' THEN excluded.horse_id ELSE results.horse_id END,
+                        jockey_id = CASE WHEN excluded.jockey_id != '' THEN excluded.jockey_id ELSE results.jockey_id END,
+                        trainer_id = CASE WHEN excluded.trainer_id != '' THEN excluded.trainer_id ELSE results.trainer_id END,
+                        post_position = CASE WHEN excluded.post_position != 0 THEN excluded.post_position ELSE results.post_position END,
+                        odds = CASE WHEN excluded.odds != 0 THEN excluded.odds ELSE results.odds END,
+                        popularity = CASE WHEN excluded.popularity != 0 THEN excluded.popularity ELSE results.popularity END,
+                        finish_position = CASE WHEN excluded.finish_position != 0 THEN excluded.finish_position ELSE results.finish_position END,
+                        finish_time = CASE WHEN excluded.finish_time != '' THEN excluded.finish_time ELSE results.finish_time END,
+                        finish_time_seconds = CASE WHEN excluded.finish_time_seconds != 0 THEN excluded.finish_time_seconds ELSE results.finish_time_seconds END,
+                        margin = CASE WHEN excluded.margin != '' THEN excluded.margin ELSE results.margin END,
+                        last_3f = CASE WHEN excluded.last_3f != 0 THEN excluded.last_3f ELSE results.last_3f END,
+                        passing_order = CASE WHEN excluded.passing_order != '' THEN excluded.passing_order ELSE results.passing_order END,
+                        weight = CASE WHEN excluded.weight != 0 THEN excluded.weight ELSE results.weight END,
+                        weight_change = CASE WHEN excluded.weight_change != 0 THEN excluded.weight_change ELSE results.weight_change END,
+                        impost = CASE WHEN excluded.impost != 0 THEN excluded.impost ELSE results.impost END
                 """, (
                     race_data["race_id"], r.get("horse_id", ""),
                     r.get("jockey_id", ""), r.get("trainer_id", ""),

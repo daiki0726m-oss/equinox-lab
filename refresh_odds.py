@@ -162,12 +162,33 @@ def refresh_odds(date_str, update_track=True):
                 """, (o["odds_win"], o["popularity"], rid, horse_num))
 
             # predictions_cache を更新
+            # #99: seal 済み (posted_at = 投稿済みの予測) と発走済みレースは書き換えない。
+            # 旧実装は終日 (完走後も) 最終オッズで上書きし続けたため、cache の odds_win の
+            # 89.6% が最終オッズと一致 = 「投稿時点の予測の記録」が事後情報で汚染され、
+            # #98/#99 のバックテストが look-ahead で誤誘導される事故が実際に起きた。
+            # DB results のオッズ更新 (上) は継続 (集計・結果処理の正本)。cache は
+            # 「予測時点のスナップショット」として不変性を守る。
             cache = conn.execute(
-                "SELECT predictions_json FROM predictions_cache WHERE race_id = ?",
+                "SELECT predictions_json, posted_at FROM predictions_cache WHERE race_id = ?",
                 (rid,)
             ).fetchone()
 
-            if cache:
+            _sealed = bool(cache and cache['posted_at'])
+            _started = False
+            try:
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                _now = _dt.now(_tz(_td(hours=9)))
+                _today = _now.strftime('%Y-%m-%d')
+                _rd = str(race['race_date'] if 'race_date' in race.keys() else '')[:10]
+                _st = race['start_time'] if 'start_time' in race.keys() else None
+                if _rd and _today > _rd:
+                    _started = True          # 過去日のレースは常に発走済み
+                elif _rd and _today == _rd and _st and _now.strftime('%H:%M') >= str(_st):
+                    _started = True          # 当日で発走時刻を過ぎた
+            except Exception:
+                _started = False
+
+            if cache and not _sealed and not _started:
                 preds = json.loads(cache['predictions_json'])
                 for p in preds:
                     hn = p['horse_number']
@@ -179,6 +200,8 @@ def refresh_odds(date_str, update_track=True):
                     UPDATE predictions_cache SET predictions_json = ?
                     WHERE race_id = ?
                 """, (json.dumps(preds, ensure_ascii=False), rid))
+            elif cache:
+                pass  # sealed/発走済み → cache は凍結 (results 側のみ更新)
 
         updated += 1
         rn = race['race_number']

@@ -71,7 +71,8 @@ def get_race_predictions(date_str, model, strategy):
                 # キー正規化（pred_win_pct→pred_win 等、フォーマット差吸収）
                 for h in horses:
                     if 'pred_win' not in h and 'pred_win_pct' in h:
-                        h['pred_win'] = h['pred_win_pct']
+                        # #95: 記事表示と confidence 判定 (温度×3閾値ペア) は表示チャネル優先
+                        h['pred_win'] = h.get('pred_win_display_pct') or h['pred_win_pct']
                     if 'pred_top3' not in h and 'pred_top3_pct' in h:
                         h['pred_top3'] = h['pred_top3_pct']
 
@@ -104,22 +105,30 @@ def get_race_predictions(date_str, model, strategy):
                 myomi = ""  # 後で上書き
 
                 # 信頼度: confidence.py(共通モジュール)に委譲
+                # v4 (2026-05-25): top3_key と odds_key も明示指定し、
+                # ROI 期待値ベースで正しく評価されるようにする
                 from confidence import evaluate_from_horses
-                c = evaluate_from_horses(horses, grade=race_info.get('grade'),
-                                         win_key='pred_win')
+                c = evaluate_from_horses(
+                    horses,
+                    grade=race_info.get('grade'),
+                    win_key='pred_win',
+                    top3_key='pred_top3',
+                    odds_key='odds_win',
+                )
                 confidence = c['confidence']
 
                 # レース傾向
                 sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
                 top_p = sorted_probs[0] if sorted_probs else 0
                 gap = (top_p - sorted_probs[1]) if len(sorted_probs) > 1 else 0
-                if top_p >= 35 and gap >= 12:
+                # v3 (2026-05-17): gap 廃止、◎絶対値のみで判定
+                if top_p >= 18:
                     tendency = "堅い（本命突出）"
-                elif top_p >= 25 and gap >= 6:
+                elif top_p >= 14:
                     tendency = "やや堅い"
-                elif sum(sorted_probs[:3]) >= 55:
+                elif sum(sorted_probs[:3]) >= 35:
                     tendency = "上位拮抗"
-                elif top_p <= 12:
+                elif top_p <= 8:
                     tendency = "波乱含み"
                 else:
                     tendency = "普通"
@@ -251,6 +260,8 @@ def get_race_predictions(date_str, model, strategy):
                         break
 
                 pred_win = float(row["pred_win_norm"])
+                # #95: 表示は温度×3 チャネル (無ければ温度1 にフォールバック)
+                pred_win_disp = float(row.get("pred_win_display", row["pred_win_norm"]))
                 pred_top3 = float(row["pred_top3_norm"] / 3)
 
                 if odds_win <= 0 and pred_win > 0:
@@ -263,7 +274,7 @@ def get_race_predictions(date_str, model, strategy):
                     "horse_number": hn,
                     "horse_name": horse_name,
                     "jockey_name": jockey_name,
-                    "pred_win": round(pred_win * 100, 1),
+                    "pred_win": round(pred_win_disp * 100, 1),
                     "pred_top3": round(pred_top3 * 100, 1),
                     "si_avg": round(float(row.get("si_avg", 0)), 1),
                     "odds_win": odds_win,
@@ -305,19 +316,18 @@ def get_race_predictions(date_str, model, strategy):
                         if ev > max_ev:
                             max_ev = ev
 
-            # 信頼度（◎のpred_winベース）
-            honmei_h = next((h for h in sorted_horses if h.get('mark') == '◎'), None)
-            honmei_win = honmei_h['pred_win'] if honmei_h else 0
-            if honmei_win >= 50:
-                confidence = "S"
-            elif honmei_win >= 35:
-                confidence = "A"
-            elif honmei_win >= 22:
-                confidence = "B"
-            elif honmei_win >= 12:
-                confidence = "C"
-            else:
-                confidence = "D"
+            # 信頼度: confidence.py(共通モジュール)に委譲
+            # v4 (2026-05-25): 旧 hard-coded 閾値(50/35/22/12%)を撤廃。
+            # ROI 期待値ベース v4 ロジック (predict.py / cached path と同基準) に統一。
+            from confidence import evaluate_from_horses
+            c = evaluate_from_horses(
+                horses,
+                grade=race_info.get('grade'),
+                win_key='pred_win',
+                top3_key='pred_top3',
+                odds_key='odds_win',
+            )
+            confidence = c['confidence']
 
             # 妙味（EVベース）
             if max_ev >= 5.0:
@@ -329,17 +339,16 @@ def get_race_predictions(date_str, model, strategy):
             else:
                 myomi = ""
 
-            # レース傾向
+            # レース傾向 v3 (2026-05-17): gap 廃止、◎絶対値のみで判定
             sorted_probs = sorted([h["pred_win"] for h in horses], reverse=True)
             top_p = sorted_probs[0] if sorted_probs else 0
-            gap = (top_p - sorted_probs[1]) if len(sorted_probs) > 1 else 0
-            if top_p >= 35 and gap >= 12:
+            if top_p >= 18:
                 tendency = "堅い（本命突出）"
-            elif top_p >= 25 and gap >= 6:
+            elif top_p >= 14:
                 tendency = "やや堅い"
-            elif sum(sorted_probs[:3]) >= 55:
+            elif sum(sorted_probs[:3]) >= 35:
                 tendency = "上位拮抗"
-            elif top_p <= 12:
+            elif top_p <= 8:
                 tendency = "波乱含み"
             else:
                 tendency = "普通"

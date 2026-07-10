@@ -150,6 +150,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # #107: push 前のツリー健全性チェック — stale/破損 checkout から main を
+          # 上書きする事故防止 (7/11 に予測系コード一式が古い版に巻き戻る事故が発生)
+          if ! grep -q "trio_focus_band" strategy/betting.py 2>/dev/null; then
+            echo "🚨 checkout が stale (機能マーカー欠落) — push を中止して main を保護"
+            exit 1
+          fi
           git add docs/data/posting_health.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "no health change to commit"

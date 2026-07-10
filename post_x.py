@@ -20,6 +20,7 @@ import argparse
 import sys
 import os
 import json
+import re
 import random
 import time
 import urllib.request
@@ -39,7 +40,55 @@ def now_jst():
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from database import init_db, get_db
+from database import init_db, get_db, acquire_post_slot, release_post_slot, clear_post_slot
+
+
+# ─── 投稿スロット排他制御 (#41) ────────────────────────────────────
+# 1日1スロット1回の atomic lock。cron/watchdog/手動 のどこから何回 trigger
+# されても、同じ (post_date, slot_name) で 2 度目以降は skip される。
+# 失敗時は posted_slots 行を削除して再試行可能。
+def _acquire_or_exit(slot_name):
+    """各 cmd_* の冒頭で呼ぶ。lock 取れなければ exit 0 で正常終了。
+
+    DRY_RUN (--dry-run) 時は lock を取らずに通す (本番投稿しないため)。
+    SKIP_POST_LOCK=1 でも lock を完全 bypass (緊急復旧用)。
+    _POST_LOCK_DELEGATED=1 は internal 委譲時に set (cmd 間委譲で子の lock を取らせない)。
+    """
+    if os.environ.get('SKIP_POST_LOCK') == '1':
+        print(f"⚠️ SKIP_POST_LOCK=1 のため atomic lock を bypass ({slot_name})")
+        return
+    if os.environ.get('_POST_LOCK_DELEGATED') == '1':
+        # 親 cmd_* が既に別 slot で lock 取得済み、子は lock を取らない
+        print(f"↪️ delegated 内部委譲のため [{slot_name}] lock を skip")
+        return
+    # --dry-run は sys.argv で見る (acquire 前に呼ばれるため args 未パース)
+    if '--dry-run' in sys.argv:
+        # dry-run でも lock は試すが、取得しない (= skip 判定なし、ただ通す)
+        return
+    ok, prev = acquire_post_slot(
+        slot_name,
+        run_id=os.environ.get('GITHUB_RUN_ID'),
+        workflow_event=os.environ.get('GITHUB_EVENT_NAME'),
+    )
+    if not ok:
+        posted_at = prev.get('posted_at') if prev else '?'
+        run_id = prev.get('run_id') if prev else '?'
+        event = prev.get('workflow_event') if prev else '?'
+        success = prev.get('success', 1) if prev else 1
+        print(f"⏭️ 既に本日 [{slot_name}] 投稿済み (atomic lock skip)")
+        print(f"   posted_at={posted_at}  run_id={run_id}  event={event}  success={success}")
+        print(f"   再投稿したい場合: sqlite3 keiba.db \"DELETE FROM posted_slots WHERE post_date=date('now','+9 hours') AND slot_name='{slot_name}';\"")
+        sys.exit(0)
+    print(f"🔒 [{slot_name}] atomic lock 取得: {datetime.now(timezone(timedelta(hours=9))).strftime('%H:%M JST')}")
+
+
+def _release_on_failure(slot_name, exc):
+    """投稿失敗時の cleanup。lock 自体は残し success=0 マークのみ (二重投稿を防ぐ)。"""
+    try:
+        release_post_slot(slot_name, note=f"{type(exc).__name__}: {str(exc)[:100]}")
+        print(f"⚠️ [{slot_name}] 投稿失敗、lock を success=0 マーク (二重投稿はやはり防止)")
+    except Exception:
+        pass
 
 # X API (tweepy)
 try:
@@ -72,6 +121,59 @@ def load_threads_client():
     return {"user_id": user_id, "access_token": access_token}
 
 
+def _chunk_tweets_for_threads(tweets, limit=500):
+    """#103: X の tweet 列を Threads 上限 (500字・単純文字数) で再チャンクする。
+    tweet 境界でのみ結合し、X 用の継続マーカー行は落とす。"""
+    chunks, cur = [], ""
+    for t in tweets:
+        t_clean = "\n".join(
+            l for l in t.split("\n")
+            if l.strip() not in ("🧵続く", "→ 続く🧵", "🧵 続く")
+            and not re.match(r"^🧵?\s*\(\d+/\d+\)\s*$", l.strip())  # #104: 「🧵 (2/2)」ページ番号は Threads では無意味
+        ).strip()
+        if not t_clean:
+            continue
+        cand = (cur + "\n\n" + t_clean) if cur else t_clean
+        if len(cand) <= limit:
+            cur = cand
+        else:
+            if cur:
+                chunks.append(cur)
+            while len(t_clean) > limit:  # 単体500超の安全弁 (通常起きない)
+                chunks.append(t_clean[:limit])
+                t_clean = t_clean[limit:]
+            cur = t_clean
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def post_threads_thread(threads_client, tweets, dry_run=False):
+    """#103: Threads へ本物のスレッド (reply chain) として投稿する。
+
+    旧実装 (adapt_text_for_threads) は X の全 tweet を1投稿に結合して 497字で
+    切り捨てており、予想スレッド (15 tweets ≈ 2,000字超) の9割が Threads に
+    届いていなかった (ユーザー指摘 2026-07-06)。
+    """
+    if not threads_client:
+        return []
+    if isinstance(tweets, str):
+        tweets = [tweets]
+    chunks = _chunk_tweets_for_threads(tweets)
+    ids = []
+    prev = None
+    for ch in chunks:
+        pid = post_to_threads(threads_client, ch, dry_run=dry_run, reply_to_id=prev)
+        if not pid:
+            print(f"  ⚠️ Threads chain 中断 ({len(ids)}/{len(chunks)} 投稿済)")
+            break
+        ids.append(pid)
+        prev = pid if pid != "threads-dry-run" else None
+    if ids and not dry_run:
+        print(f"  ✅ Threads スレッド投稿完了 ({len(ids)}/{len(chunks)}件)")
+    return ids
+
+
 def adapt_text_for_threads(tweets):
     """X用のスレッド（複数ツイート）をThreads用の1投稿に変換
     
@@ -91,7 +193,7 @@ def adapt_text_for_threads(tweets):
     return combined
 
 
-def post_to_threads(threads_client, text, dry_run=False):
+def post_to_threads(threads_client, text, dry_run=False, reply_to_id=None):
     """Threads APIで投稿する
     
     Threads Publishing APIの2ステップ:
@@ -105,7 +207,8 @@ def post_to_threads(threads_client, text, dry_run=False):
     access_token = threads_client["access_token"]
     
     if dry_run:
-        print(f"\n🧵 Threads プレビュー ({len(text)}文字):")
+        _rp = f" (reply→{reply_to_id})" if reply_to_id else ""
+        print(f"\n🧵 Threads プレビュー ({len(text)}文字){_rp}:")
         print(f"{'─'*40}")
         print(text)
         print(f"{'─'*40}")
@@ -114,11 +217,15 @@ def post_to_threads(threads_client, text, dry_run=False):
     try:
         # Step 1: Create media container
         create_url = f"https://graph.threads.net/v1.0/{user_id}/threads"
-        create_data = urllib.parse.urlencode({
+        _params = {
             "media_type": "TEXT",
             "text": text,
             "access_token": access_token,
-        }).encode("utf-8")
+        }
+        # #103: reply chain (Threads API は reply_to_id でスレッド化できる)
+        if reply_to_id:
+            _params["reply_to_id"] = reply_to_id
+        create_data = urllib.parse.urlencode(_params).encode("utf-8")
         
         req = urllib.request.Request(create_url, data=create_data, method="POST")
         with urllib.request.urlopen(req) as resp:
@@ -195,6 +302,21 @@ def load_x_client():
     except Exception as e:
         print(f"  ℹ️ V1 API 初期化失敗(画像投稿無効): {e}")
         client._v1_api = None
+
+    # 🆕 Cloudflare bot 判定回避 (#47): create_tweet (write/POST) が 403 "Just a moment"
+    # (Cloudflare JS チャレンジ HTML) でブロックされる事象。read(GET)は通るが write(POST)が
+    # ブロックされる = tweepy デフォルトの User-Agent (python-requests) が bot 判定される。
+    # requests session にブラウザ風 UA を設定して通過を試みる。
+    try:
+        ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        if getattr(client, "session", None) is not None:
+            client.session.headers["User-Agent"] = ua
+        if getattr(client, "_v1_api", None) is not None and getattr(client._v1_api, "session", None) is not None:
+            client._v1_api.session.headers["User-Agent"] = ua
+    except Exception as e:
+        print(f"  ℹ️ User-Agent 設定スキップ: {e}")
+
     return client
 
 
@@ -207,11 +329,19 @@ def x_weighted_len(text):
 
 
 def _post_history_paths():
-    """投稿履歴ファイルパス(優先順)"""
+    """投稿履歴ファイルパス(優先順)
+
+    設計 (2026-05-25 明文化):
+    - docs/data/.post_history.json: git tracked (source of truth, CI が commit)
+    - .post_history.json (root): .gitignore 対象 (local 作業用バックアップ)
+
+    両方に書き込むのは、新規 clone 直後など docs/data/ が無い環境での
+    フォールバック動作のため。読み込みは docs/data/ 優先で converge する。
+    """
     repo_root = os.path.dirname(__file__)
     return [
-        os.path.join(repo_root, "docs", "data", ".post_history.json"),
-        os.path.join(repo_root, ".post_history.json"),
+        os.path.join(repo_root, "docs", "data", ".post_history.json"),  # primary
+        os.path.join(repo_root, ".post_history.json"),                   # local fallback
     ]
 
 
@@ -228,7 +358,8 @@ def _load_post_history():
 
 
 def _save_post_history(history):
-    """投稿履歴を保存(docs/data/ 配下 + ローカル fallback)"""
+    """投稿履歴を保存。docs/data/ を primary (git source of truth)、
+    ローカル fallback (.post_history.json) も同期書込で常に最新化。"""
     paths = _post_history_paths()
     primary = paths[0]
     try:
@@ -312,15 +443,41 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                             tweet_fields=["created_at"]
                         )
                         if recent and recent.data:
-                            # 先頭30文字で緩くマッチ（絵文字やスペースの差異を吸収）
-                            first_chunk = tweets[0][:30].strip()
-                            for t in recent.data:
-                                if first_chunk in t.text:
-                                    print(f"⚠️ 重複検出（X API）: 同じ内容が既に投稿済み → スキップ")
-                                    print(f"  既存ツイート: {t.text[:80]}...")
-                                    return []
+                            # 結果ツイート (📊 印別着順 系) はスレッド先頭が常に
+                            # 「📊 N/M AI予想 印別着順 + 📍京都11R...」で同じになる問題があった。
+                            # → 京都だけ投稿した hit_flash と、全 3R+集計 を投稿する results が
+                            #    tweets[0] / tweets[1] 一致で重複と誤判定されていた (PR #88 で修正)。
+                            # v3 (2026-05-25): 集計ツイートが見つからない場合の tweets[1] フォールバックを
+                            # 削除。tweets[1] は別レース構成で同じ内容になり得るため、旧バグ復活リスクあり。
+                            # → 集計ツイート未検出時は API 重複チェック自体をスキップし、
+                            #   local history dict (race:{id} キー) のみで重複判定する。
+                            check_tweet = None
+                            for t in tweets:
+                                if "集計" in t and ("◎の戦績" in t or "印馬の" in t):
+                                    check_tweet = t
+                                    break
+                            if check_tweet is None:
+                                # 集計ツイートなし = X API 重複チェック対象外。
+                                # 通常の morning/weekday/evening 投稿等はこちらに該当。
+                                # local history-based dedup (content_key / race:{id}) が継続して効く。
+                                pass
+                            else:
+                                first_chunk = check_tweet[:80].strip()
+                                if len(first_chunk) >= 30:
+                                    for t in recent.data:
+                                        if first_chunk in t.text:
+                                            print(f"⚠️ 重複検出（X API）: 同じ内容が既に投稿済み → スキップ")
+                                            print(f"  既存ツイート: {t.text[:80]}...")
+                                            return []
                 except Exception as api_err:
-                    print(f"  ℹ️ X API重複チェックスキップ: {api_err}")
+                    err_type = type(api_err).__name__
+                    detail = ""
+                    if hasattr(api_err, 'response') and api_err.response is not None:
+                        try:
+                            detail = f" | response: {api_err.response.text[:300]}"
+                        except Exception:
+                            pass
+                    print(f"  ℹ️ X API重複チェックスキップ [{err_type}]: {api_err}{detail}")
 
             # 投稿履歴を記録（古いエントリは削除: 7日超）
             history = {k: v for k, v in history.items()
@@ -372,13 +529,33 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                 parent_id = tid
                 print(f"  ✅ X投稿完了 (ID: {tid}, X:{wlen}文字)")
             except Exception as e:
-                print(f"  ❌ X投稿失敗: {e}")
+                # 詳細ロギング (2026-05-25): tweepy 例外から full response を抽出
+                # 旧: "X投稿失敗: 403 Forbidden" だけで原因不明だった
+                err_type = type(e).__name__
+                err_msg = str(e)
+                detail = ""
+                # tweepy.errors.HTTPException 系は response 属性を持つ
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        body = e.response.text[:500]
+                        detail = f" | response: {body}"
+                    except Exception:
+                        pass
+                # tweepy.errors.TweepyException の api_errors / api_codes も拾う
+                if hasattr(e, 'api_errors'):
+                    detail += f" | api_errors: {e.api_errors}"
+                if hasattr(e, 'api_codes'):
+                    detail += f" | api_codes: {e.api_codes}"
+                print(f"  ❌ X投稿失敗 [{err_type}]: {err_msg}{detail}")
+                # 403 の特殊ヒント
+                if "403" in err_msg or err_type == "Forbidden":
+                    print(f"     ヒント: X API tier 制限 / token 失効 / 重複コンテンツ / アカウント制限 のいずれか")
+                    print(f"     確認: https://developer.x.com/en/portal/dashboard")
                 break
 
-    # Threads にも同時投稿（複数ツイートを1投稿に結合）
+    # Threads にも同時投稿 — #103: 1投稿に潰さず 500字チャンクの reply chain で全文送る
     if threads_client:
-        threads_text = adapt_text_for_threads(tweets)
-        post_to_threads(threads_client, threads_text, dry_run=dry_run)
+        post_threads_thread(threads_client, tweets, dry_run=dry_run)
 
     return tweet_ids
 
@@ -422,6 +599,8 @@ def _fetch_predictions_from_pages(date_str):
                         'horse_name': h.get('horse_name', ''),
                         'mark': h.get('mark', ''),
                         'pred_win_pct': h.get('pred_win_pct', 0),
+                        # #95: 表示用シャープ化勝率も引き継ぐ (旧cacheは未定義→pred_win_pct継承)
+                        'pred_win_display_pct': h.get('pred_win_display_pct', h.get('pred_win_pct', 0)),
                         'pred_top3_pct': h.get('pred_top3_pct', 0),
                         'odds_win': h.get('odds_win', 0),
                         'popularity': h.get('popularity', 0),
@@ -430,6 +609,7 @@ def _fetch_predictions_from_pages(date_str):
                     })
 
                 # DB行と同じキー名のdictを作成
+                # v4 (2026-05-25): should_bet も伝播して投稿対象選定で利用
                 race_dict = {
                     'race_id': race.get('race_id', ''),
                     'race_name': race.get('race_name', ''),
@@ -441,8 +621,9 @@ def _fetch_predictions_from_pages(date_str):
                     'race_number': race.get('race_number', 0),
                     'start_time': race.get('start_time', ''),
                     'predictions_json': json.dumps(preds_list, ensure_ascii=False),
-                    'all_bets_json': '{}',
+                    'all_bets_json': json.dumps(race.get('all_bets', {}), ensure_ascii=False),
                     'confidence': race.get('confidence', 'C'),
+                    'should_bet': 1 if race.get('should_bet') else 0,
                 }
                 result.append(race_dict)
 
@@ -455,21 +636,51 @@ def _fetch_predictions_from_pages(date_str):
 
 # ─── レース当日: メインレース予想 ───
 def cmd_predict(args):
-    """レース前の買い目公開ツイート（11R + 信頼度S/A）"""
+    """レース前の買い目公開ツイート（11R + 信頼度S/A）
+
+    🛡 時間ガード (2026-05-23 追加):
+    post_predict は朝の予想公開専用。GAS や workflow_dispatch で誤発火された場合、
+    レース終了後に「予想」が投稿される事故が発生した (5/23 16:33 JST)。
+    対象日のメインレース(11R)の発走時刻を過ぎている場合は投稿せず即座にスキップ。
+
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の post_predict は何回 trigger されても 1 回のみ。
+    """
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
+
+    # ─── 🛡 ハード上限ガード (#69, 2026-06-15): 午後の予想再投稿を完全遮断 ───
+    # 6/14 宝塚記念で 15:05 JST (発走35分前) に予想5連スレッドが再投稿される事故。
+    # 真因: #45 で「11時以降全スキップ」を撤廃し「発走済みレースを個別除外」に変更
+    #   → 未発走の午後レース (宝塚 15:40) は除外されず、午後でも投稿されてしまった。
+    # atomic lock も #68 の gz-push 遅延で後続 run に見えず素通り。
+    # → post_predict は「朝のコンテンツ投下」専用。当日 12:00 JST を過ぎたら
+    #   ロック状態に依存せず即 exit。SKIP_TIME_GUARD=1 で緊急 override 可。
+    if (os.environ.get('SKIP_TIME_GUARD') != '1'
+            and now_jst().strftime("%Y%m%d") == date_str
+            and now_jst().hour >= 12):
+        print(f"⏭️ [post_predict] {now_jst().strftime('%H:%M JST')} は上限 12:00 を超過 "
+              f"→ 午後の予想再投稿を遮断 (#69)。override: SKIP_TIME_GUARD=1")
+        return
+
+    _acquire_or_exit('post_predict')
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
+    # ─── 🛡 時間ガード (#45 改): レース後の予想投稿を防ぐ ───
+    # 旧版は「当日11時以降は全スキップ」だったが粗すぎた (11時前でも午前の発走済み
+    # レースを投稿し、11時以降は未発走の午後レースも投稿不能になる)。
+    # → 時刻ベースの全体スキップを廃止し、後段で「発走済みレースを個別に除外」する
+    #   方式に変更 (下記 _not_started フィルタ)。これにより常に「未発走レースのみ」
+    #   を投稿し、過ぎたレースは出さない。
     all_races = []
 
-    # まずローカルDBから取得
+    # まずローカルDBから取得 (should_bet も含めて取得)
     with get_db() as conn:
         all_races = conn.execute("""
             SELECT ra.race_id, ra.race_name, ra.venue, ra.distance, ra.surface,
                    ra.track_condition, ra.grade, ra.race_number, ra.start_time,
-                   pc.predictions_json, pc.all_bets_json, pc.confidence
+                   pc.predictions_json, pc.all_bets_json, pc.confidence, pc.should_bet
             FROM races ra
             JOIN predictions_cache pc ON ra.race_id = pc.race_id
             WHERE (ra.race_date = ? OR ra.race_date = ?)
@@ -485,25 +696,34 @@ def cmd_predict(args):
         print(f"❌ {date_str} の予測データがありません")
         return
 
-    # 投稿対象: 11R（必ず） + 信頼度Sのレース（最大3件）
-    target_races = []
-    target_ids = set()
+    # DB由来 (sqlite3.Row) と JSON由来 (dict) が混在しうる。以降 .get()/[] を一貫して
+    # 使えるよう dict に統一する。
+    # (2026-05-30 #38: sqlite3.Row は .get() を持たず cmd_predict が AttributeError で
+    #  全 post_predict 投稿が落ちていた。dict 化で両経路を安全に統一)
+    all_races = [dict(r) for r in all_races]
 
-    # まず11Rを追加
-    for race in all_races:
-        if race['race_number'] == 11 and race['race_id'] not in target_ids:
-            target_races.append(race)
-            target_ids.add(race['race_id'])
-
-    # 信頼度Sのレース（11R以外、最大3件）
-    s_count = 0
-    for race in all_races:
-        if race['confidence'] == 'S' and race['race_id'] not in target_ids:
-            target_races.append(race)
-            target_ids.add(race['race_id'])
-            s_count += 1
-            if s_count >= 3:
-                break
+    # 投稿対象の選定は _select_target_races に集約 (#39: 予想と結果で同一ロジックを共有)。
+    # 対象 = 11R(全会場) + 注目 S/A(should_bet優先で最大3件)。post_predict は
+    # 「投資推奨」でなく「AI 注目馬コンテンツ」なので confidence S/A を選定基準にする。
+    target_races = _select_target_races(all_races)
+    # 🆕 発走済みレースを除外 (#45): 現在時刻を過ぎたレースは「過ぎたレース」として投稿しない。
+    # start_time(HH:MM)が現在時刻より前なら発走済み。当日のみ適用(過去日付の再投稿は対象外)。
+    if now_jst().strftime("%Y%m%d") == date_str:
+        _now = now_jst()
+        def _not_started(r):
+            st = (r.get("start_time") or "").strip()
+            if ":" not in st:
+                return True  # 発走時刻不明は安全側で残す
+            try:
+                hh, mm = map(int, st.split(":")[:2])
+                return (hh, mm) > (_now.hour, _now.minute)
+            except Exception:
+                return True
+        _b = len(target_races)
+        target_races = [r for r in target_races if _not_started(r)]
+        if _b != len(target_races):
+            print(f"⏭️ 発走済み {_b - len(target_races)}レースを除外 (過ぎたレースは投稿しない / 現在 {_now.strftime('%H:%M')})")
+    target_ids = {_race_key(r) for r in target_races}
 
     if not target_races:
         print(f"❌ 投稿対象レースがありません")
@@ -511,11 +731,11 @@ def cmd_predict(args):
 
     print(f"🏇 {date_label} 投稿対象: {len(target_races)}レース")
     print(f"   (11R: {sum(1 for r in target_races if r['race_number']==11)}件 / "
-          f"S: {sum(1 for r in target_races if r['confidence']=='S' and r['race_number']!=11)}件)\n")
+          f"注目(S/A): {sum(1 for r in target_races if r['confidence'] in ('S','A') and r['race_number']!=11)}件)\n")
 
     # ── ツイート1: サマリー ──
     main_races = [r for r in target_races if r['race_number'] == 11]
-    s_races = [r for r in target_races if r['confidence'] == 'S' and r['race_number'] != 11]
+    s_races = [r for r in target_races if r['confidence'] in ('S', 'A') and r['race_number'] != 11]
 
     t1 = f"🧠 AI競馬予想 {date_label}\n\n"
 
@@ -528,10 +748,14 @@ def cmd_predict(args):
         grade = f" [{race['grade']}]" if race['grade'] else ""
         t1 += f"📍{race['venue']}11R {race['race_name']}{grade}\n"
         if honmei:
-            t1 += f"  ◎{honmei.get('horse_name','?')}\n"
+            # 「◎ 5番 馬名」形式で fact_check の馬名/馬番検出を確実に通す
+            t1 += f"  ◎ {honmei.get('horse_number',0)}番 {honmei.get('horse_name','?')}\n"
 
-    if s_races:
-        t1 += f"\n🔥 AI高信頼レース: {len(s_races)}件\n"
+    # #97: 高信頼カウントは 11R を含む全対象レースで数える (スレッド内の⭐/🔥の
+    # 実数と一致させる — 旧実装は 11R を除外しており「6件」なのに⭐が7個等のズレ)
+    _high_conf_n = sum(1 for r in target_races if r['confidence'] in ('S', 'A'))
+    if _high_conf_n:
+        t1 += f"\n🔥 AI高信頼レース: {_high_conf_n}件\n"
 
     t1 += f"\nAI印は🧵↓で事前公開\n"
     t1 += f"{data_credit(short=True)}\n"
@@ -539,6 +763,17 @@ def cmd_predict(args):
 
     # ── ツイート2以降: 各レースの印 ──
     bet_tweets = []
+    # #97: 実際に投稿した印のスナップショット (結果投稿はこれだけを読む)。
+    # 旧実装は結果側が cache/JSON の「現在の印」を読み直すため、日中に cache が
+    # 再生成されると朝の予想と別の印で採点される事故が起きた (6/28 函館記念で実発生)。
+    _posted_marks = {}
+    # 信頼度の読者向けラベル (「信頼度D」の無説明配信をやめる)
+    _conf_label = {'S': '鉄板級', 'A': '有力', 'B': '標準', 'C': '混戦', 'D': '大混戦'}
+    try:
+        from volatility import compute_race_upset_history as _upset_hist
+    except Exception:
+        _upset_hist = None
+
     for race in target_races:
         preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
 
@@ -556,17 +791,79 @@ def cmd_predict(args):
                     marks[mk] = sorted_p[i]
 
         grade = f" [{race['grade']}]" if race['grade'] else ""
+        # 信頼度アルファベット表記に戻す (2026-05-24 v4)
         conf_emoji = "🔥" if race['confidence'] == 'S' else "⭐" if race['confidence'] == 'A' else "📊"
         is_main = "メイン" if race['race_number'] == 11 else ""
 
         t = f"{conf_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}\n"
-        t += f"信頼度{race['confidence']} {is_main}\n\n"
+        t += f"信頼度{race['confidence']}({_conf_label.get(race['confidence'], '')}) {is_main}\n\n"
 
-        # 印（全て表示）
+        # 印（全て表示)— 「{mark} {番号}番 {馬名}」形式で fact_check に確実に通す
+        # #100: 注 (妙味longshot) はオッズを併記 — 「夢の配当枠」であることを
+        # 数字で示す (回収期待は主張しない: OOS検証で単勝78%/複勝71% #100)
         for mk in ['◎', '○', '▲', '△', '×', '注']:
             p = marks.get(mk)
             if p:
-                t += f"{mk} {p.get('horse_number',0)}.{p.get('horse_name','?')}\n"
+                if mk == '注' and (p.get('odds_win') or 0) >= 7:
+                    t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}（単{p.get('odds_win'):.0f}倍）\n"
+                else:
+                    t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
+
+        # ── #102: 追加情報 (⚡荒れ度/穴注意/💡能力) は X の280字予算内で優先度順に追記 ──
+        # (無条件追記だと6印+⚡2行+穴+💡で350字超になり X が投稿拒否する — 実測350字)
+        def _xw(s):
+            return sum(2 if ord(ch) > 127 else 1 for ch in s)
+        _extras = []
+        if _upset_hist is not None:
+            try:
+                _rd = race.get('race_date') or f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+                uh = _upset_hist(race.get('race_name', ''), _rd)
+                if uh and uh['label'] == '荒れやすい':
+                    # 荒れ=分布の尻尾が太る (1人気が最弱ではない #96/#100) → 軸は維持し
+                    # カバーを広げるのが正しい含意。レース固有の実測を根拠に添える (#94)。
+                    _extras.append(
+                        f"\n⚡過去{uh['n']}年は荒れ傾向 (勝ち馬平均{uh['avg_win_pop']:.0f}人気"
+                        f"・二桁人気馬券内{uh['big_rate']*100:.0f}%) → 広めのカバーを\n")
+                    _marked = {m.get('horse_number') for m in marks.values()}
+                    _cands = [q for q in preds
+                              if q.get('horse_number') not in _marked
+                              and (q.get('odds_win') or 0) >= 7]
+                    if _cands:
+                        _v = max(_cands, key=lambda q: (q.get('pred_top3_pct') or 0) * (q.get('odds_win') or 0))
+                        if (_v.get('pred_top3_pct') or 0) > 0:
+                            _extras.append(f"穴注意: {_v.get('horse_name','?')}（単{_v.get('odds_win'):.0f}倍）\n")
+                elif uh and uh['label'] == '堅い':
+                    _extras.append(f"\n🔒過去{uh['n']}年は堅め (勝ち馬平均{uh['avg_win_pop']:.0f}人気)\n")
+            except Exception:
+                pass
+        # #98: AI独自視点 (人気非依存の能力モデル) — 能力上位なのに人気薄の時のみ
+        try:
+            _by_ab = sorted((q for q in preds if (q.get('ability_score') or 0) > 0),
+                            key=lambda q: -(q.get('ability_score') or 0))
+            if _by_ab:
+                _ab_top = _by_ab[0]
+                _ab_pop = _ab_top.get('popularity') or 0
+                if _ab_pop >= 5:
+                    _extras.append(f"\n💡AI能力値の最上位は {_ab_top.get('horse_name','?')}"
+                                   f" (市場{_ab_pop}人気) — 妙味あり\n")
+        except Exception:
+            pass
+        for _ex in _extras:
+            if _xw(t) + _xw(_ex) <= 272:  # ハッシュタグ等の余白を8字残す
+                t += _ex
+
+        # 投稿する印を記録 (dry-run でも収集、保存は投稿成功時のみ)
+        rid = race.get('race_id')
+        if rid:
+            _posted_marks[rid] = [
+                {'mark': mk, 'horse_number': marks[mk].get('horse_number', 0),
+                 'horse_name': marks[mk].get('horse_name', ''),
+                 # #99: 投稿時点のオッズ/人気を不変記録 (事後の refresh で汚染されない
+                 # 検証用スナップショット — バックテストの look-ahead 汚染の再発防止)
+                 'odds_win_at_post': marks[mk].get('odds_win', 0),
+                 'popularity_at_post': marks[mk].get('popularity', 0)}
+                for mk in ['◎', '○', '▲', '△', '×', '注'] if marks.get(mk)
+            ]
 
         bet_tweets.append(t)
 
@@ -601,6 +898,39 @@ def cmd_predict(args):
 
     post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
+    # 🆕 投稿したレースを記録 (#46): 結果投稿はこの posted_at のレースのみ報告する。
+    # 「予想投稿したレース = 結果投稿するレース」を物理保証。発走済み除外(#45)で予想を
+    # 絞った場合でも、結果が _select_target_races の再計算で予想していないレースまで
+    # 報告する事故を根絶する (target_races は発走済み除外後の実投稿レース)。
+    if not args.dry_run:
+        _ts = now_jst().isoformat()
+        with get_db() as conn:
+            for r in target_races:
+                rid = r.get('race_id')
+                if rid:
+                    # #97: 実際に投稿した印のスナップショットも保存 — 結果投稿は
+                    # この snapshot を正として読む (cache再生成による朝夕の印乖離を根絶)
+                    conn.execute(
+                        "UPDATE predictions_cache SET posted_at = ?, posted_marks_json = ? "
+                        "WHERE race_id = ?",
+                        (_ts, json.dumps(_posted_marks.get(rid, []), ensure_ascii=False), rid))
+        print(f"📌 投稿済みレース+印を記録: {len(target_races)}件 (結果投稿はこの印のみ採点)")
+        # #101: DB (keiba.db.gz) は並行 workflow の -X theirs push で clobber され得る
+        # (7/5 実発生: 10:23 に書いた posted_at/posted_marks が runner の push で消失)。
+        # #70 の教訓通り「テキストの per-day JSON」を正本にする — text ファイルは
+        # git rebase でクリーンに共存し、他 workflow に上書きされない。
+        try:
+            _sidecar = {r.get('race_id'): _posted_marks.get(r.get('race_id'), [])
+                        for r in target_races if r.get('race_id')}
+            _sc_path = os.path.join("docs", "data", f"posted_marks_{date_str}.json")
+            os.makedirs(os.path.dirname(_sc_path), exist_ok=True)
+            with open(_sc_path, "w", encoding="utf-8") as _f:
+                json.dump({"date": date_str, "posted_at": _ts, "races": _sidecar},
+                          _f, ensure_ascii=False, indent=1)
+            print(f"📌 サイドカー保存: {_sc_path} (clobber耐性の正本)")
+        except Exception as _e:
+            print(f"⚠️ サイドカー保存失敗(非致命): {_e}")
+
     # 投稿成功 → 予測キャッシュを seal(以降 --force でも上書き不可)
     # これで結果配信時に「投稿時の予測」と異なる予測を参照する事故を防ぐ
     if not args.dry_run:
@@ -609,6 +939,104 @@ def cmd_predict(args):
             seal_predictions_for_date(date_str)
         except Exception as e:
             print(f"⚠️ seal失敗(非致命): {e}")
+
+
+def _load_sidecar_marks(date_str, race_id):
+    """#101: 投稿印サイドカー (docs/data/posted_marks_YYYYMMDD.json) から該当レースの印を読む。
+    ローカル → GitHub raw の順。無ければ [] (呼び出し側が DB → cache にフォールバック)。"""
+    data = None
+    path = os.path.join("docs", "data", f"posted_marks_{date_str}.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            import requests as _rq
+            r = _rq.get(f"https://raw.githubusercontent.com/daiki0726m-oss/equinox-lab/main/docs/data/posted_marks_{date_str}.json", timeout=10)
+            data = r.json() if r.status_code == 200 else None
+        except Exception:
+            data = None
+    if not data:
+        return []
+    return (data.get("races") or {}).get(race_id) or []
+
+
+def _race_key(r):
+    """レース識別キー。race_id があれば優先、無ければ (venue, race_number)。"""
+    return r.get('race_id') or (r.get('venue'), r.get('race_number'))
+
+
+def _is_stakes_race(r):
+    """重賞 or 特別(OP/リステッド/名前が特別・S・杯・記念)か判定 (#71)。"""
+    import re as _re
+    g = (r.get('grade') or '').strip()
+    if g in ('G1', 'G2', 'G3', 'Ｇ１', 'Ｇ２', 'Ｇ３', 'OP', 'Ｌ', 'L', 'リステッド'):
+        return True
+    nm = r.get('race_name') or ''
+    # 「○○特別」「○○S/ステークス」「○○杯」「○○記念」= 特別競走
+    return bool(_re.search(r'特別|ステークス|ｽﾃｰｸｽ|[ァ-ヶー]S(\b|$|\()|杯|記念', nm))
+
+
+def _select_target_races(all_races, max_total=None):
+    """予想投稿・結果投稿で共通の対象レース選定 (#39 → #71 拡大)。
+
+    対象 (#71, 2026-06-15 ユーザー指示で「重賞・特別 + S/A/B」に拡大):
+      1. 全会場 11R
+      2. 重賞 (G1/G2/G3) — 全件
+      3. 特別・OP・リステッド — 全件 (_is_stakes_race)
+      4. 信頼度 S/A/B の注目レース — should_bet 優先・S>A>B 順で残り枠を埋める
+    予想(cmd_predict)と結果(cmd_results)で必ず同じレース集合を扱う単一の真実。
+
+    max_total: X 投稿数制限への安全弁。重賞・特別は must-have で必ず通すが、
+      S/A/B の追加分は合計が max_total を超えない範囲に絞る。
+      env POST_MAX_RACES で上書き可 (default 14)。0/None なら env or 14。
+    """
+    import os as _os
+    if max_total is None:
+        try:
+            max_total = int(_os.environ.get('POST_MAX_RACES', '14'))
+        except ValueError:
+            max_total = 14
+
+    selected = []
+    seen = set()
+
+    def _add(r):
+        k = _race_key(r)
+        if k not in seen:
+            selected.append(r)
+            seen.add(k)
+
+    # 1. 全会場 11R (メインレース)
+    for r in all_races:
+        if r.get('race_number') == 11:
+            _add(r)
+    # 2-3. 重賞・特別・OP — must-have (全件、cap 対象外)
+    for r in all_races:
+        if _is_stakes_race(r):
+            _add(r)
+    # 4. S/A/B 注目 — should_bet 優先・S>A>B、残り枠 (max_total まで) を埋める
+    #    ただし未勝利・新馬は除外 (#28: 未経験馬は ML が学習できず信頼度がノイズ。
+    #    重賞・特別の未勝利は存在しないので上の must-have には影響しない)。
+    _noise_class = ('未勝利', '新馬')
+    candidates = [
+        r for r in all_races
+        if _race_key(r) not in seen and r.get('confidence') in ('S', 'A', 'B')
+        and (r.get('grade') or '') not in _noise_class
+    ]
+    candidates.sort(key=lambda r: (
+        0 if r.get('should_bet') in (1, True) else 1,
+        {'S': 0, 'A': 1, 'B': 2}.get(r.get('confidence'), 3),
+    ))
+    for r in candidates:
+        if len(selected) >= max_total:
+            print(f"   ⚠️ 投稿上限 {max_total} 到達 → S/A/B 注目を {len(candidates) - candidates.index(r)} 件ドロップ (POST_MAX_RACES で調整可)")
+            break
+        _add(r)
+    return selected
 
 
 # ─── レース当日: 的中結果報告 ───
@@ -650,42 +1078,208 @@ def _build_results_from_json(date_str):
     race_data = []
     mark_order = ['◎', '○', '▲', '△', '×', '注']
 
+    # 🆕 結果投稿の対象 = 実際に予想投稿したレース (posted_at IS NOT NULL) のみ (#46)。
+    # DB から「投稿済み race_id」を取得し、JSON 側でそれだけをフィルタする。
+    # (発走済み除外で予想を絞った場合でも、予想していないレースの結果は報告しない)
+    posted_ids = set()
+    try:
+        with get_db() as conn:
+            posted_ids = {
+                row[0] for row in conn.execute(
+                    "SELECT pc.race_id FROM predictions_cache pc JOIN races ra ON pc.race_id = ra.race_id "
+                    "WHERE (ra.race_date = ? OR ra.race_date = ?) AND pc.posted_at IS NOT NULL",
+                    (date_str, f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}")
+                ).fetchall()
+            }
+    except Exception:
+        posted_ids = set()
+
+    flat_races = []
     for venue_name, races in venues.items():
         for race in races:
-            if race.get('race_number') != 11:
+            race = dict(race)
+            race.setdefault('venue', venue_name)
+            flat_races.append(race)
+
+    # 🆕 #61 seal消失フォールバック (DB builder と同一思想):
+    # posted_at が全消失していても posted_slots に post_predict 成功記録があれば
+    # 対象を _select_target_races で再計算する (結果投稿の全滅を防ぐ)。
+    if not posted_ids:
+        try:
+            from database import is_slot_posted
+            if is_slot_posted('post_predict', date_str):
+                print("⚠️ seal 消失だが posted_slots に記録あり → JSON 側で対象を再計算 (#61)")
+                posted_ids = {r.get('race_id') for r in _select_target_races(flat_races)}
+        except Exception:
+            pass
+
+    for race in flat_races:
+        if race.get('race_id') not in posted_ids:
+            continue
+        horses = race.get('horses', [])
+        # v3 (2026-05-17): ユーザー指摘「中途半端な状態で投稿しないで」への対応。
+        # 旧版は any() で「1頭でも確定なら投稿」→ 「?着」が並ぶ未完成投稿が発生。
+        # 新版は「全頭 finish 確定」かつ「1-3着がすべて確定」を必須とする。
+        # (除外/中止が複数あるレースは confirmed=horse_count - 失格 を許容)
+        finishes = [
+            h.get('finish', 0) or 0 for h in horses
+            if isinstance(h.get('finish'), int)
+        ]
+        top3_set = set(f for f in finishes if 1 <= f <= 3)
+        unconfirmed = sum(1 for h in horses
+                          if not isinstance(h.get('finish'), int) or h.get('finish', 0) < 1)
+        # 1-3着全部確定 + 未確定馬が 1 頭以下 (除外/中止許容) で初めて投稿
+        if len(top3_set) < 3 or unconfirmed > 1:
+            continue  # 中途半端は投稿しない
+
+        marked = []
+        for m in mark_order:
+            horse = next((h for h in horses if h.get('mark') == m), None)
+            if not horse:
                 continue
-            horses = race.get('horses', [])
-            # finish が 1 以上で確定しているか
-            has_finish = any(
-                isinstance(h.get('finish'), int) and h.get('finish', 0) >= 1
-                for h in horses
-            )
-            if not has_finish:
-                continue  # 未確定はスキップ
+            fin = horse.get('finish')
+            if not isinstance(fin, int) or fin < 1:
+                fin = None
+            marked.append({
+                'mark': m,
+                'horse_number': horse.get('horse_number', 0),
+                'horse_name': horse.get('horse_name', ''),
+                'finish': fin,
+            })
+
+        if marked:
+            race_data.append({
+                'venue': race.get('venue', ''),
+                'race_number': race.get('race_number', 11),
+                'race_name': race.get('race_name', ''),
+                'grade': race.get('grade') or '',
+                'marks': marked,
+            })
+
+    return race_data
+
+
+def _build_results_jsonmarks_dbfinish(date_str):
+    """#70 根本対策: 結果投稿の堅牢ビルダー。
+
+    設計: keiba.db.gz の単一バイナリ clobber で predictions_cache が消えても動くよう、
+      - **印 (◎○▲) は per-day JSON ファイルから** (git-tracked text、clobber されない)
+      - **着順は results テーブルから** (workflow の collect step が直前に新規収集)
+    両者を race_id + horse_number で結合する。predictions_cache / posted_at(seal) に
+    一切依存しない。6/14 宝塚の結果未投稿 (予測キャッシュ clobber) の再発を構造的に防ぐ。
+    """
+    import requests as req
+    local_path = os.path.join("docs", "data", f"predictions_{date_str}.json")
+    data = None
+    if os.path.exists(local_path):
+        try:
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"  ⚠️ ローカル JSON 読込失敗: {e}")
+    if data is None:
+        url = f"https://raw.githubusercontent.com/daiki0726m-oss/equinox-lab/main/docs/data/predictions_{date_str}.json"
+        try:
+            r = req.get(url, timeout=15)
+            data = r.json() if r.status_code == 200 else None
+        except Exception:
+            data = None
+    if not data:
+        return []
+
+    venues = data.get('venues', {}) if isinstance(data, dict) else {}
+    flat_races = []
+    for venue_name, races in venues.items():
+        for race in races:
+            race = dict(race)
+            race.setdefault('venue', venue_name)
+            flat_races.append(race)
+    if not flat_races:
+        return []
+
+    # #97: 対象レース = 実際に予想投稿したレース (posted_at 記録) を最優先。
+    # 旧実装は _select_target_races の再計算で、cache が日中に変わると
+    # 「予想14レース → 結果11レース」のような取りこぼしが起きた (#39/#46 の残穴)。
+    target_ids = set()
+    try:
+        with get_db() as _c:
+            _hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            rows = _c.execute(
+                "SELECT pc.race_id FROM predictions_cache pc "
+                "JOIN races ra ON ra.race_id = pc.race_id "
+                "WHERE (ra.race_date = ? OR ra.race_date = ?) AND pc.posted_at IS NOT NULL",
+                (date_str, _hyphen)).fetchall()
+            target_ids = {r[0] for r in rows}
+    except Exception:
+        target_ids = set()
+    if not target_ids:
+        # 記録が無い (seal消失等) 場合のみ再計算にフォールバック (#61)
+        target = _select_target_races(flat_races)
+        target_ids = {r.get('race_id') for r in target}
+
+    race_data = []
+    mark_order = ['◎', '○', '▲', '△', '×', '注']
+    with get_db() as conn:
+        for race in flat_races:
+            if race.get('race_id') not in target_ids:
+                continue
+            rid = race.get('race_id')
+            # 着順は results テーブル (新規収集済み) が source of truth
+            finish_map = {
+                row[0]: row[1] for row in conn.execute(
+                    "SELECT horse_number, finish_position FROM results "
+                    "WHERE race_id=? AND finish_position>0", (rid,)
+                ).fetchall()
+            }
+            if not finish_map:
+                continue  # まだ結果が収集されていない → スキップ (次 run で再試行)
+            # 全頭確定 + 1-3着が揃ってから投稿 (中途半端な "?着" を出さない)
+            top3 = set(f for f in finish_map.values() if 1 <= f <= 3)
+            if len(top3) < 3:
+                continue
 
             marked = []
-            for m in mark_order:
-                horse = next((h for h in horses if h.get('mark') == m), None)
-                if not horse:
-                    continue
-                fin = horse.get('finish')
-                if not isinstance(fin, int) or fin < 1:
-                    fin = None
-                marked.append({
-                    'mark': m,
-                    'horse_number': horse.get('horse_number', 0),
-                    'horse_name': horse.get('horse_name', ''),
-                    'finish': fin,
-                })
-
+            # #97: 投稿時の印スナップショット (posted_marks_json) を最優先。
+            # JSON/cache の「現在の印」は日中の再生成で朝の投稿とズレることがある
+            # (6/28 函館記念で◎○が入替わったまま採点する事故が実発生)。
+            snap = _load_sidecar_marks(date_str, rid)
+            if not snap:
+                snap_row = conn.execute(
+                    "SELECT posted_marks_json FROM predictions_cache WHERE race_id = ?",
+                    (rid,)).fetchone()
+                if snap_row and snap_row[0]:
+                    try:
+                        snap = json.loads(snap_row[0]) or []
+                    except Exception:
+                        snap = []
+            if snap:
+                for s in snap:
+                    marked.append({
+                        'mark': s.get('mark', ''),
+                        'horse_number': s.get('horse_number', 0),
+                        'horse_name': s.get('horse_name', ''),
+                        'finish': finish_map.get(s.get('horse_number', 0)),
+                    })
+            else:
+                horses = race.get('horses', [])
+                for m in mark_order:
+                    h = next((x for x in horses if x.get('mark') == m), None)
+                    if not h:
+                        continue
+                    marked.append({
+                        'mark': m,
+                        'horse_number': h.get('horse_number', 0),
+                        'horse_name': h.get('horse_name', ''),
+                        'finish': finish_map.get(h.get('horse_number', 0)),
+                    })
             if marked:
                 race_data.append({
-                    'venue': race.get('venue', venue_name),
+                    'venue': race.get('venue', ''),
+                    'race_number': race.get('race_number', 11),
                     'race_name': race.get('race_name', ''),
                     'grade': race.get('grade') or '',
                     'marks': marked,
                 })
-
     return race_data
 
 
@@ -696,26 +1290,49 @@ def _build_results_from_db(date_str, date_hyphen):
     race_data = []
     try:
         with get_db() as conn:
+            # 🆕 結果投稿の対象 = 実際に予想投稿したレース (posted_at IS NOT NULL) のみ (#46)。
+            # 旧版は _select_target_races の再計算だったが、発走済み除外(#45)で予想を絞った
+            # 場合に「予想していないレースの結果まで報告」する事故が起きた。実投稿の記録を正とする。
             races = conn.execute("""
-                SELECT ra.race_id, ra.race_name, ra.venue, ra.grade,
-                       pc.predictions_json
+                SELECT ra.race_id, ra.race_name, ra.venue, ra.grade, ra.race_number,
+                       pc.predictions_json, pc.confidence, pc.should_bet
                 FROM races ra
                 JOIN predictions_cache pc ON ra.race_id = pc.race_id
                 WHERE (ra.race_date = ? OR ra.race_date = ?)
-                AND ra.race_number = 11
-                ORDER BY ra.venue
+                  AND pc.posted_at IS NOT NULL
+                ORDER BY ra.venue, ra.race_number
             """, (date_str, date_hyphen)).fetchall()
+
+            # 🆕 #61 seal消失フォールバック (週末リハーサルで発見):
+            # posted_at (seal) は再predict/push競合/DB復元で消えることがある (6/7 で実際に消えた)。
+            # seal が無くても posted_slots (atomic lock) に post_predict 成功の記録があれば
+            # 「その日は予想を投稿した」事実は確実なので、対象レースを _select_target_races で
+            # 再計算して結果投稿の全滅 (silent skip) を防ぐ。
+            if not races:
+                from database import is_slot_posted
+                if is_slot_posted('post_predict', date_str):
+                    print("⚠️ seal (posted_at) 消失だが posted_slots に post_predict 成功記録あり"
+                          " → 対象レースを再計算 (#61 fallback)")
+                    all_rows = [dict(r) for r in conn.execute("""
+                        SELECT ra.race_id, ra.race_name, ra.venue, ra.grade, ra.race_number,
+                               pc.predictions_json, pc.confidence, pc.should_bet
+                        FROM races ra
+                        JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                        WHERE (ra.race_date = ? OR ra.race_date = ?)
+                        ORDER BY ra.venue, ra.race_number
+                    """, (date_str, date_hyphen)).fetchall()]
+                    races = _select_target_races(all_rows)
 
             if not races:
                 return []
 
-            for race in races:
-                # sqlite3.Row は dict 形式アクセスのみ。.get() は使えないので keys() ベースで安全に。
-                row_keys = race.keys() if hasattr(race, 'keys') else []
-                preds_raw = race['predictions_json'] if 'predictions_json' in row_keys else None
+            all_rows = [dict(r) for r in races]
+            mark_order = ['◎', '○', '▲', '△', '×', '注']
+            for race in all_rows:
+                preds_raw = race.get('predictions_json')
                 preds = json.loads(preds_raw) if preds_raw else []
 
-                race_id = race['race_id'] if 'race_id' in row_keys else None
+                race_id = race.get('race_id')
                 if not race_id:
                     continue
 
@@ -727,25 +1344,44 @@ def _build_results_from_db(date_str, date_hyphen):
                 if not finish_map:
                     continue
 
-                mark_order = ['◎', '○', '▲', '△', '×', '注']
                 marked = []
-                for m in mark_order:
-                    horse = next((p for p in preds if p.get('mark') == m), None)
-                    if not horse:
-                        continue
-                    fin = finish_map.get(horse.get('horse_number', 0))
-                    marked.append({
-                        'mark': m,
-                        'horse_number': horse.get('horse_number', 0),
-                        'horse_name': horse.get('horse_name', ''),
-                        'finish': fin,
-                    })
+                # #97: 投稿時の印スナップショット優先 (JSON path と同じ理由)
+                snap = _load_sidecar_marks(date_str, race_id)
+                if not snap:
+                    snap_row = conn.execute(
+                        "SELECT posted_marks_json FROM predictions_cache WHERE race_id = ?",
+                        (race_id,)).fetchone()
+                    if snap_row and snap_row[0]:
+                        try:
+                            snap = json.loads(snap_row[0]) or []
+                        except Exception:
+                            snap = []
+                if snap:
+                    for s in snap:
+                        marked.append({
+                            'mark': s.get('mark', ''),
+                            'horse_number': s.get('horse_number', 0),
+                            'horse_name': s.get('horse_name', ''),
+                            'finish': finish_map.get(s.get('horse_number', 0)),
+                        })
+                else:
+                    for m in mark_order:
+                        horse = next((p for p in preds if p.get('mark') == m), None)
+                        if not horse:
+                            continue
+                        fin = finish_map.get(horse.get('horse_number', 0))
+                        marked.append({
+                            'mark': m,
+                            'horse_number': horse.get('horse_number', 0),
+                            'horse_name': horse.get('horse_name', ''),
+                            'finish': fin,
+                        })
 
-                grade_val = race['grade'] if 'grade' in row_keys else ''
                 race_data.append({
-                    'venue': race['venue'] if 'venue' in row_keys else '',
-                    'race_name': race['race_name'] if 'race_name' in row_keys else '',
-                    'grade': grade_val or '',
+                    'venue': race.get('venue', ''),
+                    'race_number': race.get('race_number', 11),
+                    'race_name': race.get('race_name', ''),
+                    'grade': race.get('grade') or '',
                     'marks': marked,
                 })
     except Exception as e:
@@ -763,37 +1399,103 @@ def cmd_results(args):
     データソース優先順位 (root-cause-fix: cache@v4 が脆いので JSON-first):
       1. GitHub Pages の docs/data/predictions_YYYYMMDD.json (git-tracked, 永続)
       2. ローカル DB (predictions_cache + results) — ephemeral cache のフォールバック
+
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の results は何回 trigger されても 1 回のみ。
     """
+    _acquire_or_exit('results')
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-    # ── 1) JSON-first: 公開済み JSON から読む(永続・cache不要) ──
-    race_data = _build_results_from_json(date_str)
-    src = "JSON" if race_data else None
-
-    # ── 2) DB fallback: JSON が無い・古い場合 ──
+    # ── 着順は DB の results が source of truth (#41) ──
+    # JSON の finish は「結果確定後の再 export」が漏れると欠落し、印馬が "除外" と
+    # 誤表示される (実際 11R 以外は finish=None で全滅していた)。着順が確実な DB を
+    # 最優先にし、DB が空のとき (cache 事故等) のみ JSON にフォールバックする。
+    # #70 根本対策: JSON印 × DB着順 の堅牢ビルダーを最優先 (predictions_cache clobber 耐性)。
+    race_data = _build_results_jsonmarks_dbfinish(date_str)
+    src = "JSON印×DB着順" if race_data else None
+    # フォールバック: 旧 DB builder (predictions_cache 健在時) → 旧 JSON builder
     if not race_data:
         race_data = _build_results_from_db(date_str, date_hyphen)
         src = "DB" if race_data else None
+    if not race_data:
+        race_data = _build_results_from_json(date_str)
+        src = "JSON" if race_data else None
 
     if not race_data:
-        print(f"❌ {date_str} の予測データがありません(JSON/DB共に)")
+        # 🆕 #70: データ無しで return する前に lock を必ず解放する。
+        # 旧版は _acquire_or_exit で取った lock を解放せず return → success=1 のまま残り、
+        # 後でデータが揃っても「投稿済み」扱いで永久にスキップ (6/14 結果未投稿の主因)。
+        # データはまだ無い (収集が間に合っていない) だけなので、後続 run が再試行できるよう release。
+        clear_post_slot('results', post_date=date_str)
+        print(f"❌ {date_str} の予測データがありません(JSON/DB共に) → lock 削除して再試行可能に (#70)")
         return
     print(f"📥 結果ソース: {src}")
 
     # 結果未確定 (finish_map 空) のレースは _build_*_ 内ですでに除外済み
     if not race_data:
-        print(f"❌ {date_str} の結果がまだ出ていません")
+        clear_post_slot('results', post_date=date_str)
+        print(f"❌ {date_str} の結果がまだ出ていません → lock 削除 (#70)")
         return
+
+    # 🛡 完走待ちガード (#46: posted_at ベース):
+    # 実際に予想投稿したレース (posted_at IS NOT NULL) が全部完走するまで結果投稿を
+    # スキップ =「予想した全レースの結果が揃ってから一括報告」を保証。
+    # post_predict が投稿時に posted_at を記録するので、これが「投稿したレース」の正。
+    is_partial_ok = os.environ.get("ALLOW_PARTIAL_RESULTS", "0") == "1"
+    if not is_partial_ok:
+        with get_db() as conn:
+            targets = [dict(r) for r in conn.execute("""
+                SELECT ra.race_id, ra.venue, ra.race_number, ra.race_name
+                FROM races ra JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                WHERE (ra.race_date = ? OR ra.race_date = ?)
+                  AND pc.posted_at IS NOT NULL
+            """, (date_str, date_hyphen)).fetchall()]
+
+            incomplete = []
+            for t in targets:
+                row = conn.execute(
+                    "SELECT COUNT(*) c, SUM(CASE WHEN finish_position > 0 THEN 1 ELSE 0 END) d, "
+                    "SUM(CASE WHEN finish_position = 1 THEN 1 ELSE 0 END) w "
+                    "FROM results WHERE race_id = ?", (t['race_id'],)
+                ).fetchone()
+                total = row['c'] or 0
+                done = row['d'] or 0
+                has_winner = (row['w'] or 0) >= 1
+                # 🆕 #91: 出走取消/除外は finish_position=0 のまま残るため「全頭確定 (done≧total-1)」
+                #   を要求すると取消2頭以上で結果報告が永久ブロックされる
+                #   (2026-06-21 阪神1R 14/16=取消2頭 で結果が一晩未投稿)。collect はレース単位で
+                #   全着順を一括保存するので、1着が存在すれば そのレースは確定済 = 残り finish=0 は取消。
+                #   よって「1着が居れば完走」と判定 (取消は何頭でも許容)。
+                if total == 0 or not has_winner:
+                    incomplete.append((t, total, done))
+
+        if targets and incomplete:
+            print(f"⚠️ 予想 {len(targets)}レース中 {len(incomplete)}レース未完走 → 投稿スキップ")
+            for t, total, done in incomplete[:5]:
+                print(f"   未完走: {t.get('venue')}{t.get('race_number')}R "
+                      f"{(t.get('race_name') or '')[:14]} ({done}/{total})")
+            print(f"   (予想した全レース確定後に一括報告する設計)")
+            print(f"   バイパス: 環境変数 ALLOW_PARTIAL_RESULTS=1")
+            # 🆕 #91: lock は完走チェック『前』に取得済 → skip のまま放置すると偽 lock が残り、
+            #   後続の results run が「投稿済」と誤認して永久に投稿できない。skip 時は lock を解放。
+            try:
+                clear_post_slot('results')
+                print("   ↩️ 未完走スキップのため results lock を解放 (次回再試行可能に)")
+            except Exception as _e:
+                print(f"   ⚠️ lock 解放失敗: {_e}")
+            return
 
     def medal(fin):
         return {1: '🏆', 2: '🥈', 3: '🥉'}.get(fin, '')
 
     def fmt_finish(fin):
-        return f'{fin}着' if fin else '?着'
+        # v3 (2026-05-17): 「?着」表示を廃止 (中途半端表示を禁止)。
+        # 上記の has_finish フィルタで「全頭確定」レースのみ通過するため、
+        # ここで未確定 (0/None) になることは原則ない (除外/中止のみ)。
+        return f'{fin}着' if fin else '除外'
 
     # 集計
     n_races = len(race_data)
@@ -820,20 +1522,23 @@ def cmd_results(args):
         t = ""
         if is_first:
             t += f"📊 {date_label} AI予想 印別着順\n\n"
-        t += f"📍 {r['venue']}11R {r['race_name']}{grade_label}\n\n"
+        t += f"📍 {r['venue']}{r['race_number']}R {r['race_name']}{grade_label}\n\n"
 
         n_in_top3 = 0
         for m in r['marks']:
             mdl = medal(m['finish'])
             # 馬名を10文字でtruncate
             name_disp = m['horse_name'][:10]
-            t += f"{m['mark']} {m['horse_number']:>2}番 {name_disp:10} {fmt_finish(m['finish'])} {mdl}\n"
+            # #97: 固定幅パディング廃止 — X はプロポーショナルфォントで縦は揃わず、
+            # 空白が字数 (280) を浪費して超過事故を起こしていた (実測286字)
+            _mdl_sfx = f" {mdl}" if mdl else ""
+            t += f"{m['mark']} {m['horse_number']}番 {name_disp} → {fmt_finish(m['finish'])}{_mdl_sfx}\n"
             if m['finish'] and m['finish'] <= 3:
                 n_in_top3 += 1
 
         t += f"\n🎯 印{n_in_top3}頭が3着以内"
-        if not is_last_race:
-            t += "\n🧵続く"
+        # #97: この後に必ず集計 tweet が続くため、最終レースにも継続マーカーを付ける
+        t += "\n🧵続く"
         tweets.append(t)
 
     # 締めツイート
@@ -865,23 +1570,109 @@ def cmd_results(args):
 
 # ─── 平日コンテンツ ───
 
+def _resolve_slot_name(base_slot, today):
+    """曜日別の slot_composer 用 slot 名を解決。
+
+    base_slot = 'morning' / 'weekday' / 'evening' に対して、
+    曜日に応じた専用 builder があれば優先 (tue_evening, wed_*, thu_*, fri_*)。
+
+    マッピング:
+    - 月(0): morning, weekday, evening (汎用)
+    - 火(1): morning, weekday, tue_evening (前走パターン特化)
+    - 水(2): wed_morning, wed_weekday (追い切り), wed_evening (危険な人気馬)
+    - 木(3): thu_morning, thu_weekday (注目TOP3), thu_evening (最終予想)
+    - 金(4): fri_morning (パターン発掘), fri_weekday (注目馬), fri_evening (告知)
+    """
+    dow = today.weekday() if hasattr(today, 'weekday') else 0
+    table = {
+        # (dow, base_slot) → 専用 slot 名
+        (1, "evening"): "tue_evening",
+        (2, "morning"): "wed_morning",
+        (2, "weekday"): "wed_weekday",
+        (2, "evening"): "wed_evening",
+        (3, "morning"): "thu_morning",
+        (3, "weekday"): "thu_weekday",
+        (3, "evening"): "thu_evening",
+        (4, "morning"): "fri_morning",
+        (4, "weekday"): "fri_weekday",
+        (4, "evening"): "fri_evening",
+    }
+    return table.get((dow, base_slot), base_slot)
+
+
 def _build_weekday_post(slot, today):
     """slot='morning'|'weekday'|'evening' のツイートを生成。
 
-    weekday_engine.py に委譲し、course_stats / 騎手フィルタなど post_x の
-    既存ヘルパーを差し込む。
+    2026-05-26: 新 slot_composer (X スレッド対応、最大3 tweet) を優先試行。
+    曜日別の専用 builder (tue_evening, wed_*, thu_*, fri_*) があれば自動的に切替。
+    失敗時は旧 weekday_engine にフォールバック。
 
     Returns:
-        (tweet_str, race_id) のタプル。生成失敗時は (None, None)。
-        race_id は post_thread に渡して同レース連発を防ぐ。
+        (tweet_or_tweets, race_id) のタプル。tweet_or_tweets は str または list[str]。
+        post_tweet() は list なら自動的に thread 投稿する。
     """
+    today_d = today.date() if hasattr(today, 'date') else today
+
+    # 曜日別の slot 名に解決
+    resolved_slot = _resolve_slot_name(slot, today)
+    if resolved_slot != slot:
+        print(f"📅 曜日別 slot: {slot} → {resolved_slot}")
+
+    # ─── 新パス: slot_composer ───
+    if not os.environ.get("USE_OLD_COMPOSER"):
+        try:
+            from slot_composer import build_slot_post
+            from tweet_fact_check import db_fact_check
+
+            with get_db() as conn:
+                # base slot から race を取得 (resolved_slot は build_slot_post 側で使う)
+                slot_idx = {"morning": 0, "weekday": 1, "evening": 2}.get(slot, 0)
+                race_row = get_todays_race(conn, slot=slot_idx)
+                # 🛡 #83: 今週末の重賞が未登録なら、旧パスに落とさず即スキップ。
+                #   旧 weekday_engine も get_todays_race を使うが、ここで止めて
+                #   過去レース誤投稿の経路を完全に断つ (誤投稿より無投稿が安全)。
+                if not race_row:
+                    print("ℹ️ 今週末の重賞が未登録 → 過去レースは出さず投稿スキップ (#83)")
+                    return None, None
+                if race_row:
+                    race = dict(race_row) if hasattr(race_row, 'keys') else race_row
+                    if isinstance(race, dict) and race.get("race_name"):
+                        tweets, meta = build_slot_post(resolved_slot, race, conn)
+                        # 🆕 (#50): builder が中身ゼロで意図的にスキップ (tweets=None / 空) した場合は、
+                        # 旧パス (weekday_engine) にフォールバックすると同じ空投稿を復活させてしまうため、
+                        # ここで明示的に「投稿スキップ」として返す (ヘッダー+CTA だけの空投稿を出さない)。
+                        if not tweets:
+                            print(f"ℹ️ slot_composer が中身ゼロでスキップ判定 "
+                                  f"(slot={resolved_slot}, meta={meta.get('skipped', 'empty')}) → 投稿しない")
+                            return None, race.get("race_id")
+                        # tweets は list[str]。1要素なら通常投稿、複数ならスレッド投稿。
+                        # ファクトチェックは全 tweet で実行 (1つでも失敗で全体ブロック)
+                        all_passed = True
+                        for tw in (tweets if isinstance(tweets, list) else [tweets]):
+                            passed, issues = db_fact_check(tw)
+                            if not passed:
+                                all_passed = False
+                                print(f"⚠️ ファクトチェック失敗:")
+                                for i in issues:
+                                    print(f"   {i}")
+                                break
+                        if all_passed:
+                            n_tweets = len(tweets) if isinstance(tweets, list) else 1
+                            print(f"✅ slot_composer 採用 (x_len={meta['char_count']}, tweets={n_tweets}, sections={meta['sections_used']})")
+                            return tweets, race.get("race_id")
+                        else:
+                            print(f"⚠️ slot_composer 出力が fact_check ブロック → 旧パスへ")
+        except Exception as e:
+            print(f"⚠️ slot_composer エラー (旧パスへフォールバック): {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ─── 旧パス: weekday_engine (fallback) ───
     try:
         from weekday_engine import build_post_for_slot
     except Exception as e:
         print(f"⚠️ weekday_engine インポート失敗: {e}")
         return None, None
-
-    today_d = today.date() if hasattr(today, 'date') else today
 
     try:
         from course_stats import get_course_stats
@@ -912,7 +1703,24 @@ def _build_weekday_post(slot, today):
 
 
 def cmd_weekday(args):
-    """平日昼: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）"""
+    """平日昼: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）
+
+    🛡 時間ガード (2026-05-25 追加 / 同日 +1h 拡大):
+    cmd_weekday は 11:00-15:59 JST 専用。GitHub Actions cron が
+    1-3h 遅延発火するケースは正常運転として許容するが、夕方以降は
+    昼コンテンツとして不適切なのでスキップ (5/25 は 17:03 発火 → 正しくスキップ)。
+    SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
+
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の weekday は何回 trigger されても 1 回のみ。
+    """
+    _acquire_or_exit('weekday')
+    if not os.environ.get("SKIP_TIME_GUARD"):
+        now = now_jst()
+        if not (11 <= now.hour <= 15):
+            print(f"⚠️ cmd_weekday 時間ガード: {now.strftime('%H:%M JST')} は対象外 (11:00-15:59 のみ)")
+            print(f"   バイパスするには環境変数 SKIP_TIME_GUARD=1 を設定。")
+            return
+
     fetch_weekend_races()
     today = now_jst()
     dow = today.weekday()
@@ -934,90 +1742,10 @@ def cmd_weekday(args):
     post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client, race_id=race_id)
 
 
-def generate_weekly_summary():
-    """月曜: 先週末11Rの的中結果（3ツイート）"""
-    today = now_jst()
-    last_sun = today - timedelta(days=today.weekday() + 1)
-    last_sat = last_sun - timedelta(days=1)
-
-    sat_str = last_sat.strftime("%Y-%m-%d")
-    sun_str = last_sun.strftime("%Y-%m-%d")
-    dr = f"{last_sat.month}/{last_sat.day}-{last_sun.month}/{last_sun.day}"
-
-    try:
-        with get_db() as conn:
-            # 先週末11Rの予測と結果を照合
-            races_11r = conn.execute("""
-                SELECT ra.race_id, ra.race_name, ra.venue, ra.race_date,
-                       pc.predictions_json
-                FROM races ra
-                JOIN predictions_cache pc ON ra.race_id = pc.race_id
-                WHERE ra.race_date IN (?, ?)
-                AND ra.race_number = 11
-                ORDER BY ra.race_date, ra.venue
-            """, (sat_str, sun_str)).fetchall()
-
-            results_list = []
-            for race in races_11r:
-                preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
-                # AI◎の馬（1位）の着順を取得
-                if preds:
-                    top_horse = preds[0]
-                    horse_num = top_horse.get('horse_number', 0)
-                    # 実際の着順取得
-                    actual = conn.execute("""
-                        SELECT r.finish_position, r.odds FROM results r
-                        WHERE r.race_id = ? AND r.horse_number = ?
-                        AND r.finish_position > 0
-                    """, (race['race_id'], horse_num)).fetchone()
-
-                    results_list.append({
-                        'venue': race['venue'],
-                        'race_name': race['race_name'],
-                        'horse_name': top_horse.get('horse_name', '?'),
-                        'finish': actual['finish_position'] if actual else '?',
-                        'odds': actual['odds'] if actual else 0,
-                        'mark': top_horse.get('mark', '◎'),
-                    })
-    except:
-        results_list = []
-
-    if not results_list:
-        # データがない場合はコラムに切替
-        return None  # データ不足時はスキップ
-
-    # 的中数計算（3着以内を的中とする）
-    hits = sum(1 for r in results_list if isinstance(r['finish'], int) and r['finish'] <= 3)
-    total = len(results_list)
-    hit_rate = round(hits / total * 100) if total > 0 else 0
-
-    t1 = f"📊 先週末({dr}) AI予測の結果\n"
-    t1 += f"対象: メインレース(11R) {total}レース\n\n"
-    t1 += f"AI本命(◎)の複勝的中率: {hits}/{total} ({hit_rate}%)\n\n"
-    t1 += f"{data_credit(short=True)}\n"
-    t1 += "#競馬予想 #AI予想 🧵↓"
-
-    t2 = "📋 各レース結果\n\n"
-    for r in results_list:
-        if isinstance(r['finish'], int) and r['finish'] <= 3:
-            t2 += f"✅ {r['venue']} {r['race_name']}\n"
-            t2 += f" {r['horse_name']} → {r['finish']}着\n"
-        else:
-            pos = r['finish'] if r['finish'] != '?' else '?'
-            t2 += f"❌ {r['venue']} {r['race_name']}\n"
-            t2 += f" {r['horse_name']} → {pos}着\n"
-
-    t3 = "💡 来週に向けて\n\n"
-    if hit_rate >= 50:
-        t3 += f"複勝的中率{hit_rate}%は好調\n"
-        t3 += "引き続きデータを蓄積していきます\n\n"
-    else:
-        t3 += "的中率は改善の余地あり\n"
-        t3 += "モデルの精度向上に取り組みます\n\n"
-    t3 += "土日朝8時にメインレースAI予想を配信\n"
-    t3 += "フォロー&通知ONで見逃さない🔔"
-
-    return [t1, t2, t3]
+# (削除 2026-06-01) generate_weekly_summary は「月曜=先週末成績サマリー」用に
+# 作られたがどこからも呼ばれていないデッドコードだった。月曜の投稿は
+# _build_weekday_post('morning') による「来週末メインレースのコース分析」で確定
+# (ユーザー選択)。混乱防止のため削除。先週末の振り返りが必要になったら再実装する。
 
 
 def generate_jockey_ranking():
@@ -1397,7 +2125,18 @@ def fetch_weekend_races():
 
                         # 出走馬もresultsに仮登録（horse_number, horse_id, odds, popularity等）
                         # impost(斤量)もINSERTするように修正(features.pyがdtype要求するため必須)
-                        for entry in data.get('entries', []):
+                        entries = data.get('entries', [])
+                        # 🆕 幽霊馬対策 (#43): 最新スクレイプの馬番に無い結果未確定レコードを削除
+                        # (枠順確定前の仮馬番が確定後も残る「幽霊馬」を根絶。save_race_to_db と同じ)
+                        _snums = [e.get('horse_number', 0) for e in entries if e.get('horse_number')]
+                        if _snums:
+                            _ph = ",".join("?" * len(_snums))
+                            conn.execute(
+                                f"DELETE FROM results WHERE race_id = ? AND finish_position = 0 "
+                                f"AND horse_number NOT IN ({_ph})",
+                                (rid, *_snums)
+                            )
+                        for entry in entries:
                             if entry.get('horse_id'):
                                 conn.execute("""
                                     INSERT OR IGNORE INTO results
@@ -1408,10 +2147,17 @@ def fetch_weekend_races():
                                       entry.get('odds', 0), entry.get('popularity', 0),
                                       entry.get('post_position', 0),
                                       entry.get('impost', 57.0)))
-                                # horsesテーブルにも登録
+                                # horsesテーブルにも登録。#90: 化け名(U+FFFD)なら正しい名で自己修復。
                                 conn.execute("""
-                                    INSERT OR IGNORE INTO horses (horse_id, horse_name)
+                                    INSERT INTO horses (horse_id, horse_name)
                                     VALUES (?,?)
+                                    ON CONFLICT(horse_id) DO UPDATE SET
+                                        horse_name = CASE
+                                            WHEN (horses.horse_name IS NULL OR horses.horse_name = ''
+                                                  OR horses.horse_name LIKE '%'||CHAR(65533)||'%')
+                                                 AND excluded.horse_name != ''
+                                                 AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
+                                            THEN excluded.horse_name ELSE horses.horse_name END
                                 """, (entry['horse_id'], entry.get('horse_name', '')))
 
                         registered += 1
@@ -1424,8 +2170,15 @@ def fetch_weekend_races():
         print(f"✅ {registered}レース登録完了")
 
 
-def get_weekend_graded_races(conn):
-    """今週末の11Rを取得（なければ直近週末）。G1>G2>G3>OPでソート"""
+def get_weekend_graded_races(conn, allow_past=True):
+    """今週末の11Rを取得。G1>G2>G3>OPでソート。
+
+    allow_past=True (既定): 今週末レースが未登録なら直近の過去11Rにフォールバック
+        (結果反映/ダッシュボード等、過去レースを扱う文脈用)。
+    allow_past=False: 過去フォールバックを無効化 (#83)。朝/昼/夜の「今週の予告」
+        投稿が、今週末レース未登録時に先週のレースを掴んで投稿する事故を防ぐ。
+        2026-06-17 昼に函館スプリントS(6/13=先週)を今週予告として誤投稿した実害から導入。
+    """
     today = now_jst()
     dow = today.weekday()
     days_until_sat = (5 - dow) % 7
@@ -1449,8 +2202,10 @@ def get_weekend_graded_races(conn):
         ORDER BY race_date, venue
     """, (sat_str, sun_str)).fetchall()
 
-    # 来週末のレースがなければ直近の11Rを使う
-    if not result:
+    # 来週末のレースがなければ直近の11Rを使う (allow_past=True のときのみ)。
+    # allow_past=False の前方視点投稿では、過去レースを掴むくらいなら空を返して
+    # 呼び出し側にスキップさせる (#83: 先週レースの誤投稿防止)。
+    if not result and allow_past:
         result = conn.execute("""
             SELECT race_id, race_name, venue, surface, distance, grade, race_date, race_number
             FROM races
@@ -1557,8 +2312,16 @@ def get_todays_race(conn, slot=0):
     重賞2件: 同上(2巡で1サイクル)
     重賞1件: 全て同レース(同じレースだが日替りで content 変わる)
     金曜: メイン固定
+
+    🛡 #83: 前方視点の投稿 (朝/昼/夜) は過去レースを絶対に返さない。
+    get_weekend_graded_races の過去フォールバックが暴発すると先週のレースを
+    「今週の予告」として投稿してしまう (2026-06-17 昼に函館スプリントS=6/13 を
+    今週予告として誤投稿した実害)。allow_past=False + race_date>=today の二重防御で、
+    今週末レース未登録時は None を返してスキップさせる (誤投稿より無投稿が遥かにマシ)。
     """
-    all_races = get_weekend_graded_races(conn)
+    today_str = now_jst().strftime('%Y-%m-%d')
+    all_races = [r for r in get_weekend_graded_races(conn, allow_past=False)
+                 if (r['race_date'] or '') >= today_str]
     if not all_races:
         return None
 
@@ -1566,6 +2329,16 @@ def get_todays_race(conn, slot=0):
               if detect_grade(r['race_name'], r.get('grade')) in ('G1', 'G2', 'G3')]
     if not graded:
         graded = all_races[:1]
+
+    # #104: 重賞が1-2件しかない週は OP/リステッド → その他特別 を足して最大3レースで
+    # ローテする。旧実装は重賞1件の週に全平日スロットが同一レース一色になり
+    # 「七夕賞ばっかりで内容が薄い」(2026-07-07 ユーザー指摘) 状態だった。
+    # graded[0] (最上位グレード) は先頭を維持 = 金曜のメイン固定はこれまで通り。
+    if len(graded) < 3:
+        _in = {r.get('race_id') for r in graded}
+        _extras = [r for r in all_races if r.get('race_id') not in _in]
+        _extras.sort(key=lambda r: 0 if (r.get('grade') or '') in ('OP', 'L', 'リステッド') else 1)
+        graded = graded + _extras[:3 - len(graded)]
 
     dow = now_jst().weekday()  # 0=月 ... 4=金
 
@@ -2086,7 +2859,7 @@ def generate_horse_spotlight():
             t += f"📅 {rd.month}/{rd.day}({dow})\n\n"
 
             # ◎の馬の詳細
-            win_pct = top.get('pred_win_pct', top.get('pred_win', 0))
+            win_pct = top.get('pred_win_display_pct') or top.get('pred_win_pct', top.get('pred_win', 0))
             t += f"◎ {top.get('horse_name', '?')}\n"
             t += f" AI勝率: {win_pct:.1f}%\n"
             if top.get('reasons'):
@@ -2094,7 +2867,7 @@ def generate_horse_spotlight():
                     t += f" ✅ {r}\n"
 
             t += f"\n○ {rival.get('horse_name', '?')}\n"
-            rival_pct = rival.get('pred_win_pct', rival.get('pred_win', 0))
+            rival_pct = rival.get('pred_win_display_pct') or rival.get('pred_win_pct', rival.get('pred_win', 0))
             t += f" AI勝率: {rival_pct:.1f}%\n\n"
 
             gap = win_pct - rival_pct
@@ -2196,9 +2969,9 @@ def generate_weekend_preview():
         t2 += "\n"
 
     # ツイート3: 配信案内
-    t3 = "🔔 明日朝8時に詳細予想を配信\n\n"
+    t3 = "🔔 明日朝10時すぎにAI印の最終予想を配信\n\n"
     t3 += "各レースの◎○▲△と\n"
-    t3 += "買い目まで公開します\n\n"
+    t3 += "◎○▲△×注 の印を全レース分公開\n\n"
     t3 += "フォロー&通知ONで\n"
     t3 += "見逃さないようにしてください👀"
 
@@ -2321,7 +3094,7 @@ def cmd_answer_check(args):
     t3 = ""
     if is_saturday:
         t3 = "🔔 明日もAI予想を配信\n\n"
-        t3 += "朝7時に全レース予想を投稿\n"
+        t3 += "朝10時すぎにAI印の最終予想を投稿\n"
         t3 += "フォロー&通知ONで見逃さない👀"
     else:
         t3 = "🔔 来週も毎日配信\n\n"
@@ -2502,8 +3275,7 @@ def cmd_weekly_review(args):
     t3 += "火〜木 12:00: 重賞データ分析\n"
     t3 += "土日 7:00: 全レースAI予想\n"
     t3 += "土日 20:00: 結果報告\n\n"
-    t3 += "フォローして見逃さないでください🔔\n"
-    t3 += "noteで重賞の無料分析も公開中👇"
+    t3 += "フォローして見逃さないでください🔔"  # #79: note 自動言及を削除 (手動投稿のため)
 
     tweets = [t1, t2, t3]
 
@@ -2683,7 +3455,7 @@ def generate_note_promo():
         main_races = [n for n in upcoming_race_names if any(g in n for g in ['G', '杯', '記念', 'S', 'ステークス'])]
         if main_races:
             t3 += f"📢 今週末は {main_races[0]} 🔥\n"
-            t3 += "AI予想は土日朝7時に配信します\n\n"
+            t3 += "AI予想は土日朝10時すぎに配信します\n\n"
 
     t3 += "フォローして見逃さないでください！"
 
@@ -2692,10 +3464,47 @@ def generate_note_promo():
 
 
 # ─── ファクトチェック ───
-def fact_check_tweet(tweet_text):
+def fact_check_tweet_or_thread(tweet_or_thread):
+    """tweet (str) または thread (list[str]) を受け取り、全要素を fact_check する。
+
+    5/26 の slot_composer 導入で `_build_weekday_post` が list を返すようになったが、
+    cmd_morning/evening は string 前提で `fact_check_tweet(tweet)` を呼んでいた結果、
+    5/27 朝の morning cron が TypeError で失敗。
+    この helper で str/list 両方を統一的に処理する。
+    """
+    items = tweet_or_thread if isinstance(tweet_or_thread, list) else [tweet_or_thread]
+    # 🆕 #53: 「具体的な馬名ゼロ=中身なし」チェックはスレッド全体で評価する。
+    # X 上でスレッドは一体表示されるため、tweet1 に注目馬(実名)があれば、ローテ/枠等の
+    # 統計補足 tweet が単独で馬名を持たなくても全体としては中身がある。これを各 tweet
+    # 個別に要求すると、注目馬リード + 統計補足 の良い構成が補足 tweet で落ちてしまう。
+    import re as _re
+    joined = "\n".join(t for t in items if isinstance(t, str))
+    thread_has_horse = bool(
+        _re.search(r'\d{1,2}番\s*[ァ-ヴー]', joined) or
+        _re.search(r'[ァ-ヴー]{3,}\s*[:：]', joined) or       # 注目馬「馬名: 根拠」
+        _re.search(r'該当(出走馬)?:\s*[ァ-ヴー]', joined) or  # 「該当出走馬: 馬名」
+        _re.search(r'\d{4}\s+[ァ-ヴー]{3,}', joined)          # 「2025 馬名」歴代
+    )
+    for t in items:
+        if not isinstance(t, str):
+            print(f"⚠️ fact_check: 予期しない型 {type(t).__name__} → スキップ")
+            return False
+        # スレッド全体に馬名があれば個別 tweet の馬名要求を解除 (補足統計 tweet を通す)
+        if not fact_check_tweet(t, require_horse=not thread_has_horse):
+            return False
+    return True
+
+
+def fact_check_tweet(tweet_text, require_horse=True):
     """ツイートの数値データをDBと照合して検証する。
     数値が含まれるツイートの場合、DBからデータを再取得して一致を確認。
     不一致があればWarningを出す。
+
+    Args:
+        require_horse: True なら「具体的な馬名/馬番ゼロ = 中身なし」を致命的扱いにする。
+            スレッド投稿で全体には注目馬があるが補足 tweet 単独には馬名が無い場合、
+            呼び出し側 (fact_check_tweet_or_thread) が False を渡して個別 tweet の
+            馬名要求を解除する (#53)。
 
     Returns:
         True: チェック通過（投稿OK）
@@ -2754,6 +3563,28 @@ def fact_check_tweet(tweet_text):
             issues.append("🚫 投資0円の的中報告は不正です")
             critical = True
 
+    # 🚫 #54 (2026-06-09): 「N勝/M」分数表記の禁止 (ユーザー「絶対やめて」を機械化)
+    # 「2勝/5」「3勝/8」のような勝数を分母付き分数で書く表記はユーザーが繰り返し
+    # 禁止指示。CLAUDE.md #49 で sec_rotation/prev_race を採用見送りにしたが、
+    # builder 改修で復活した (#53)。「気をつける」では再発するので commit 前に
+    # ここで物理ブロックし、生成箇所を「過去N年でX勝」等の自然表記に直す。
+    # (「複勝率75%(15/20)」のような %+サンプル数の括弧表記は対象外 = 勝/負を直接
+    #  分数化したものだけを禁止)
+    bad_fraction = re.search(r'\d+\s*勝\s*/\s*\d+', tweet_text) or \
+                   re.search(r'\d+\s*/\s*\d+\s*勝', tweet_text)
+    if bad_fraction:
+        issues.append(f"🚫 禁止された分数表記「{bad_fraction.group(0)}」(N勝/M は使わない → 「過去N年でX勝」等に)")
+        critical = True
+
+    # 🚫 #97: 「該当馬なし/該当出走馬なし」系の内部メッセージは投稿禁止。
+    # 絶対ルール (2026-06-04)「該当馬がいないパターン情報は出さない」+ #49 の
+    # ブロック語彙「該当馬なし」の変種 (該当出走馬なし 等) がすり抜けて実投稿された
+    # ため、regex で機械ブロック (#54 と同じ思想: 気をつけるでなく物理的に不可能に)。
+    nashi = re.search(r'該当[^\n]{0,6}馬なし', tweet_text)
+    if nashi:
+        issues.append(f"🚫 内部メッセージ「{nashi.group(0)}」が投稿に混入 (該当ゼロならセクション自体を出さない)")
+        critical = True
+
     # ── v9 「中身なし」検出 — データ薄い slot は投稿ブロック ──
     # 「(○○データ収集中)」「該当なし」「(取得中)」等のプレースホルダー残存
     empty_patterns = [
@@ -2774,16 +3605,23 @@ def fact_check_tweet(tweet_text):
 
     # 投稿に具体的な馬名/馬番が1つも含まれない 「中身なし」検出
     # → 「{番号}番 {馬名}」or「⭐{番号}番」or「{年}年:{馬名}」のパターン
+    # 🆕 #53 (2026-06-08): 枠順抽選前の注目馬セクションは馬番を伏せ「1️⃣ ミステリーウェイ: 父…」
+    #   形式 (馬番なし) になる。従来の「数字+番+カナ」regex では検出できず誤ブロックしていた
+    #   (ユーザー「中身がない」の一因)。「カタカナ名(3字+) + コロン」= 注目馬の実名表記を追加。
     has_specific_horse = (
         re.search(r'\d{1,2}番\s*[ァ-ヴー]', tweet_text) or
         re.search(r'⭐\s*\d', tweet_text) or
         re.search(r'\d{4}\s+[ァ-ヴー]{3,}', tweet_text) or
-        re.search(r'\d{4}年:?\s*[ァ-ヴー]{3,}', tweet_text)
+        re.search(r'\d{4}年:?\s*[ァ-ヴー]{3,}', tweet_text) or
+        re.search(r'[ァ-ヴー]{3,}\s*[:：]', tweet_text)  # 注目馬「馬名: 根拠」形式
     )
     # ただし馬名不要な投稿カテゴリは許容 (universal_fallback の8テーマ + その他)
     # v9 universal_fallback で出る theme_title を網羅
     no_horse_ok_keywords = [
         'ラインナップ', '配信お知らせ', '配信予定',
+        # post_predict のフッター CTA (馬名なしが正常)
+        'AI予想印です', '結果は夕方に速報', '事前公開しています',
+        'レース前に事前公開',
         # v8 builder 由来
         '騎手コース適性', '騎手TOP', '父TOP', '母父TOP',
         # v9 universal_fallback の 8テーマ
@@ -2799,8 +3637,21 @@ def fact_check_tweet(tweet_text):
         '【勝ち馬パターン', '当コース', '【枠順', '【脚質',
         '【人気別', '【末脚', '【コース',
     ]
-    needs_horse = not any(kw in tweet_text for kw in no_horse_ok_keywords)
-    if needs_horse and not has_specific_horse:
+    # 🆕 データ系投稿 (コース傾向/血統/騎手ランキング等) は具体的な馬名が無くても統計が中身。
+    # %率・着度数[N-N-N-N]・成績表記・ランキングが複数あれば「中身あり」とみなす (#47)。
+    # キーワードのホワイトリスト (no_horse_ok_keywords) だけだと slot_composer の新セクション
+    # (historical/pop_trust/sires 等) で漏れて、データ豊富な投稿まで誤ブロックしていた。
+    _pct = len(re.findall(r'\d+(?:\.\d+)?\s*%', tweet_text))
+    _frac = bool(re.search(r'\(\s*\d+\s*/\s*\d+\s*\)', tweet_text))  # (15/20) サンプル数
+    has_data_substance = (
+        _pct >= 2 or                                              # 率データ2個以上
+        (_pct >= 1 and _frac) or                                  # 率+サンプル数 (複勝率75%(15/20))
+        re.search(r'\[\d+-\d+-\d+-\d+\]', tweet_text) or          # 着度数 [N-N-N-N]
+        re.search(r'\d+\.\d+\.\d+\.\d+', tweet_text) or           # 成績表記 N.N.N.N
+        len(re.findall(r'\d+位|TOP\s*\d|第\d', tweet_text)) >= 2  # ランキング
+    )
+    needs_horse = require_horse and not any(kw in tweet_text for kw in no_horse_ok_keywords)
+    if needs_horse and not has_specific_horse and not has_data_substance:
         issues.append("🚫 具体的な馬名/馬番が含まれない投稿(中身なし)")
         critical = True
 
@@ -2814,248 +3665,61 @@ def fact_check_tweet(tweet_text):
         # 5行未満なら情報量不足の可能性
         issues.append(f"⚠️ 本文の行数が少ない({len(body_lines)}行)、内容希薄の可能性")
 
+    # 既存 regex チェック結果
     if issues:
-        print("🔍 ファクトチェック結果:")
+        print("🔍 ファクトチェック結果 (regex):")
         for issue in issues:
             print(f"  {issue}")
         if critical:
             print("  🚫 致命的な問題があるため投稿をブロックします")
-        return not critical
-    else:
+            return False
+
+    # 🆕 DB クロスファクトチェック (2026-05-25 追加)
+    # 「過去6年」と書いて 2022/2023 がない、DB に存在しない馬名等を検出
+    try:
+        from tweet_fact_check import db_fact_check
+        passed_db, db_issues = db_fact_check(tweet_text)
+        if db_issues:
+            print("🔍 ファクトチェック結果 (DB クロス):")
+            for issue in db_issues:
+                print(f"  {issue}")
+        if not passed_db:
+            print("  🚫 DB 整合性エラーで投稿ブロック")
+            return False
+    except ImportError:
+        print("  ℹ️ tweet_fact_check 未導入 (skip)")
+    except Exception as e:
+        print(f"  ℹ️ DB ファクトチェック skip (エラー): {e}")
+
+    if not issues:
         print("✅ ファクトチェック通過")
-        return True
+    return True
 
 
-# ─── 的中速報ポスト ───
-def cmd_hit_flash(args):
-    """的中速報ツイート — cmd_results に委譲(印別着順、金額なし)。
-
-    旧実装は「投資/回収/ROI」を含む金額入りの的中速報だったが、
-    ユーザー要件に統一: 結果系の post は金額表示なし、印別着順のみ。
-    cmd_hit_flash と cmd_results の出力フォーマットを単一化することで、
-    cron schedule が hit_flash でも results でも同じ post が出るようになる。
-    """
-    print("ℹ️ hit_flash → results に委譲(金額なし・印別着順フォーマット)")
-    return cmd_results(args)
-
-
-def _legacy_cmd_hit_flash_DEPRECATED(args):  # noqa: N802
-    """旧 hit_flash 実装(金額/ROI 入り)。互換目的で参照可能だが呼ばない。"""
-    date_str = args.date
-    dt = datetime.strptime(date_str, "%Y%m%d")
-    weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
-    date_label = f"{dt.month}/{dt.day}({weekday})"
-    date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-
-    with get_db() as conn:
-        # 全レース対象（11Rだけでなく）
-        races = conn.execute("""
-            SELECT ra.race_id, ra.race_name, ra.venue, ra.grade, ra.race_number,
-                   pc.predictions_json, pc.all_bets_json, pc.confidence
-            FROM races ra
-            JOIN predictions_cache pc ON ra.race_id = pc.race_id
-            WHERE (ra.race_date = ? OR ra.race_date = ?)
-            ORDER BY ra.venue, ra.race_number
-        """, (date_str, date_hyphen)).fetchall()
-
-        if not races:
-            print(f"❌ {date_str} の予測データがありません")
-            return
-
-        total_invested = 0
-        total_payout = 0
-        total_bets = 0
-        total_hits = 0
-        hit_details = []  # 的中レース詳細
-        honmei_total = 0
-        honmei_win = 0
-        honmei_top3 = 0
-        races_analyzed = 0
-
-        for race in races:
-            preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
-            all_bets = json.loads(race['all_bets_json']) if race['all_bets_json'] else {}
-
-            # 着順取得
-            finishes = conn.execute("""
-                SELECT horse_number, finish_position, odds FROM results
-                WHERE race_id = ? AND finish_position > 0
-            """, (race['race_id'],)).fetchall()
-            finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
-
-            if not finish_map:
-                continue
-            races_analyzed += 1
-
-            # ◎成績
-            honmei = next((p for p in preds if p.get('mark') == '◎'), None)
-            if honmei:
-                hn = honmei['horse_number']
-                f = finish_map.get(hn, 99)
-                honmei_total += 1
-                if f == 1: honmei_win += 1
-                if f <= 3: honmei_top3 += 1
-
-            # 配当情報取得
-            payouts = conn.execute("""
-                SELECT bet_type, combination, payout_amount
-                FROM payouts WHERE race_id = ?
-            """, (race['race_id'],)).fetchall()
-            payout_map = {(p['bet_type'], p['combination']): p['payout_amount'] for p in payouts}
-
-            # 各券種の的中チェック（三連単はスキップ）
-            for bt, bt_bets in all_bets.items():
-                if bt == '三連単':
-                    continue  # 三連単は非公開
-
-                for b in bt_bets:
-                    amount = b.get('amount', 100)
-                    hns = b.get('horse_numbers', [])
-                    detail_str = b.get('detail', b.get('bet_detail', ''))
-                    total_bets += 1
-                    total_invested += amount
-
-                    is_hit = False
-                    actual_payout = 0
-
-                    if bt == '単勝' and len(hns) >= 1:
-                        if finish_map.get(hns[0], 99) == 1:
-                            is_hit = True
-                            actual_payout = payout_map.get(('単勝', str(hns[0])), 0)
-                    elif bt == '複勝' and len(hns) >= 1:
-                        if finish_map.get(hns[0], 99) <= 3:
-                            is_hit = True
-                            actual_payout = payout_map.get(('複勝', str(hns[0])), 0)
-                    elif bt == 'ワイド' and len(hns) >= 2:
-                        combo = '-'.join(str(h) for h in sorted(hns))
-                        if all(finish_map.get(h, 99) <= 3 for h in hns):
-                            is_hit = True
-                            actual_payout = payout_map.get(('ワイド', combo), 0)
-                    elif bt == '馬連' and len(hns) >= 2:
-                        combo = '-'.join(str(h) for h in sorted(hns))
-                        top2 = sorted([h for h, f in finish_map.items() if f <= 2])
-                        if sorted(hns) == top2:
-                            is_hit = True
-                            actual_payout = payout_map.get(('馬連', combo), 0)
-                    elif bt == '三連複' and len(hns) >= 3:
-                        combo = '-'.join(str(h) for h in sorted(hns[:3]))
-                        top3 = sorted([h for h, f in finish_map.items() if f <= 3])
-                        if sorted(hns[:3]) == top3:
-                            is_hit = True
-                            actual_payout = payout_map.get(('三連複', combo), 0)
-
-                    if is_hit and actual_payout > 0:
-                        payout_val = int(actual_payout * (amount / 100))
-                        total_payout += payout_val
-                        total_hits += 1
-                        hit_details.append({
-                            'venue': race['venue'],
-                            'race_number': race['race_number'],
-                            'race_name': race['race_name'],
-                            'grade': race['grade'] or '',
-                            'confidence': race['confidence'],
-                            'type': bt,
-                            'detail': detail_str,
-                            'invested': amount,
-                            'payout': payout_val,
-                            'roi': payout_val / amount * 100,
-                        })
-
-    # ── ツイート生成 ──
-    hit_rate = total_hits / total_bets * 100 if total_bets > 0 else 0
-    roi = total_payout / total_invested * 100 if total_invested > 0 else 0
-    profit = total_payout - total_invested
-    honmei_rate = honmei_top3 / honmei_total * 100 if honmei_total > 0 else 0
-
-    if hit_details:
-        # ── 的中あり → インパクト版 ──
-        # ベスト的中をハイライト
-        best = sorted(hit_details, key=lambda x: x['payout'], reverse=True)
-
-        tweet = f"🎯 AI競馬 {date_label} 的中速報\n\n"
-
-        # ベスト3的中
-        for i, h in enumerate(best[:3]):
-            emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
-            grade_str = f" [{h['grade']}]" if h['grade'] else ""
-            tweet += f"{emoji} {h['venue']}{h['race_number']}R{grade_str}\n"
-            tweet += f"  {h['type']} {h['detail']} → ¥{h['payout']:,}\n"
-
-        tweet += f"\n━━ 本日の成績 ━━\n"
-        tweet += f"◎複勝率: {honmei_rate:.0f}% ({honmei_top3}/{honmei_total})\n"
-        tweet += f"的中: {total_hits}/{total_bets}件\n"
-
-        # ROIに応じた表現
-        if roi >= 200:
-            tweet += f"💰 回収率: {roi:.0f}% 🔥🔥🔥\n"
-            tweet += f"収支: +{profit:,}円\n"
-        elif roi >= 100:
-            tweet += f"💰 回収率: {roi:.0f}% 📈\n"
-            tweet += f"収支: +{profit:,}円\n"
-        else:
-            tweet += f"回収率: {roi:.0f}%\n"
-            tweet += f"収支: {profit:,}円\n"
-
-        # CTA
-        tweet += f"\n買い目は今朝のツイートで事前公開済み📋\n"
-
-        # ハッシュタグ（ベストのレース名）
-        tweet += f"\n{data_credit(short=True)}\n"
-        tweet += "#AI競馬 #競馬予想"
-        if best[0]['grade']:
-            tag = best[0]['race_name'].replace(' ', '').replace('　', '')
-            tweet += f" #{tag}"
-
-    else:
-        # ── 的中なし ──
-        tweet = f"📊 AI競馬 {date_label} 結果\n\n"
-        tweet += f"◎複勝率: {honmei_rate:.0f}% ({honmei_top3}/{honmei_total})\n"
-        tweet += f"買い目的中: {total_hits}/{total_bets}件\n\n"
-
-        if honmei_rate >= 60:
-            tweet += "◎は安定していたものの買い目が裏目に。\n"
-            tweet += "配当研究を継続します💪\n"
-        else:
-            tweet += "展開が合わず不調の1日。\n"
-            tweet += "データを蓄積して精度向上に努めます💪\n"
-
-        tweet += f"\n次回も買い目を朝に事前公開します📋\n"
-        tweet += f"\n{data_credit(short=True)}\n"
-        tweet += "#AI競馬 #競馬予想"
-
-    # ファクトチェック
-    if not fact_check_tweet(tweet):
-        print("🚫 ファクトチェック不合格のため投稿を中止します")
-        return
-
-    print(f"\n📊 ファクトチェック詳細:")
-    print(f"  対象: {races_analyzed}レース")
-    print(f"  ◎成績: 勝率{honmei_win}/{honmei_total} 複勝率{honmei_top3}/{honmei_total}")
-    print(f"  的中: {total_hits}/{total_bets}")
-    print(f"  投資{total_invested:,}円 / 回収{total_payout:,}円 / ROI={roi:.1f}%")
-    if hit_details:
-        print(f"\n  🎯 ベスト的中:")
-        for h in sorted(hit_details, key=lambda x: x['payout'], reverse=True)[:5]:
-            print(f"    {h['venue']}{h['race_number']}R {h['type']} {h['detail']} → ¥{h['payout']:,} (ROI {h['roi']:.0f}%)")
-
-    client = None
-    threads_client = load_threads_client()
-    if not args.dry_run:
-        client = load_x_client()
-        if not client:
-            return
-
-    post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client)
+# (cmd_hit_flash は #57 で削除 — 完走ガードで常にスキップされる構造的 no-op だった。
+#  結果投稿は cmd_results (17:30) に一本化)
 
 
 # ─── オッズ確定＋最終見解 ───
 def cmd_odds_flash(args):
-    """オッズ確定後の最終見解ツイート"""
+    """オッズ確定後の最終見解ツイート
+
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の odds_flash は何回 trigger されても 1 回のみ。
+    """
+    _acquire_or_exit('odds_flash')
     date_str = args.date
     dt = datetime.strptime(date_str, "%Y%m%d")
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+    # 🛡 時間ガード: odds_flash は朝のオッズ確定後 (9:00-10:30 JST) 専用
+    # 午後の誤発火は無意味 (post_predict が後で本投稿するため)
+    if not os.environ.get("SKIP_TIME_GUARD"):
+        now = now_jst()
+        if now.strftime("%Y%m%d") == date_str and (now.hour < 9 or now.hour >= 11):
+            print(f"⚠️ odds_flash 時間ガード: {now.strftime('%H:%M JST')} は対象外 (9:00-10:30 のみ)")
+            return
 
     with get_db() as conn:
         races = conn.execute("""
@@ -3082,22 +3746,38 @@ def cmd_odds_flash(args):
         venue = race['venue']
         grade = f" [{race['grade']}]" if race['grade'] else ""
 
-        # AI勝率順でTOP3
-        top3 = sorted(preds, key=lambda x: x.get('pred_win_pct', 0), reverse=True)[:3]
+        # #97: TOP3 の軸を「印 (◎○▲)」に統一。
+        # 旧実装は AI勝率(pred_win)順で、45分後の post_predict の印 (複勝率軸 #77) と
+        # 別の馬を「最終見解🥇」として出す不一致が 6/27-28 に3レース中2レースで発生。
+        # さらにソート=温度1 / 表示=温度3 のチャネル混在で「🥈の勝率が🥇より高い」
+        # 矛盾表示も実投稿に出ていた (#95 取り残し)。印順に統一して両方を同時に解消。
+        _mark_pri = {'◎': 0, '○': 1, '▲': 2}
+        top3 = sorted(
+            (p for p in preds if p.get('mark') in _mark_pri),
+            key=lambda x: _mark_pri[x['mark']])[:3]
+        if len(top3) < 3:
+            # 印が無い旧cache → 表示チャネルの勝率順 (ソートと表示の軸を一致させる)
+            top3 = sorted(
+                preds,
+                key=lambda x: x.get('pred_win_display_pct') or x.get('pred_win_pct', 0),
+                reverse=True)[:3]
 
         tweet = f"📊 オッズ確定！最終見解\n\n"
         tweet += f"{venue}11R {rname}{grade}\n\n"
 
-        medals = ['🥇', '🥈', '🥉']
+        _fallback_medals = ['🥇', '🥈', '🥉']
         for i, p in enumerate(top3):
-            win_pct = p.get('pred_win_pct', 0)
+            mk = p.get('mark') or _fallback_medals[i]
+            # #95: 表示は温度×3 のシャープ化勝率 (エンタメ)、EV計算には使わない
+            win_pct = p.get('pred_win_display_pct') or p.get('pred_win_pct', 0)
             odds = p.get('odds_win', 0)
             name = p.get('horse_name', '?')
             pop = p.get('popularity', '?')
-            tweet += f"{medals[i]} {name}\n"
+            tweet += f"{mk} {name}\n"
             tweet += f"  AI勝率{win_pct}% / {odds}倍({pop}人気)\n"
 
         # 妙味判定: AI勝率が高いのにオッズが高い馬
+        # #95: EV は意思決定用の温度1勝率 (pred_win_pct) で計算 (display だと約2倍過大)
         for p in top3:
             win_pct = p.get('pred_win_pct', 0)
             odds = p.get('odds_win', 0)
@@ -3107,14 +3787,14 @@ def cmd_odds_flash(args):
                     tweet += f"\n💎 {p['horse_name']}は妙味あり！\n"
                     break
 
-        tweet += f"\n全レース予想はnoteで👇\n"
-        tweet += f"{NOTE_URL}\n"
-        tweet += f"#競馬予想 #AI予想"
+        # #79: note は手動投稿のため自動リンクを入れない (ユーザー指示)。
+        tweet += f"\n#競馬予想 #AI予想"
 
         # ファクトチェック
         print(f"\n📊 ファクトチェック: {venue} {rname}")
         for i, p in enumerate(top3):
-            print(f"  {medals[i]} {p.get('horse_name','?')}: "
+            _mk = p.get('mark') or _fallback_medals[i]
+            print(f"  {_mk} {p.get('horse_name','?')}: "
                   f"AI勝率{p.get('pred_win_pct',0)}% / "
                   f"オッズ{p.get('odds_win',0)}倍 / "
                   f"{p.get('popularity','?')}人気")
@@ -3142,7 +3822,25 @@ def cmd_odds_flash(args):
 
 # ─── 朝ツイート（平日7:30） ───
 def cmd_morning(args):
-    """平日朝: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）"""
+    """平日朝: 今週末メインレースのコース分析（曜日別テーマ・日付動的表現）
+
+    🛡 時間ガード (2026-05-25 追加 / 同日 +1h 拡大):
+    cmd_morning は 朝 7:00-11:59 JST 専用。GitHub Actions cron が
+    1h+ 遅延発火することが頻発 (5/25 朝は 1h, 昼は 4.5h 遅延) するため、
+    7:30 予定の cron が 8:30-9:30 に発火するケースは正常運転として許容。
+    ただし 12時超え (= 大幅遅延) は朝コンテンツとして不適切なのでスキップ。
+    SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
+
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の morning は何回 trigger されても 1 回のみ。
+    """
+    _acquire_or_exit('morning')
+    if not os.environ.get("SKIP_TIME_GUARD"):
+        now = now_jst()
+        if not (7 <= now.hour <= 11):
+            print(f"⚠️ cmd_morning 時間ガード: {now.strftime('%H:%M JST')} は対象外 (7:00-11:59 のみ)")
+            print(f"   バイパスするには環境変数 SKIP_TIME_GUARD=1 を設定。")
+            return
+
     fetch_weekend_races()
     today = now_jst()
     dow = today.weekday()
@@ -3154,7 +3852,8 @@ def cmd_morning(args):
         print("⚠️ 投稿コンテンツを生成できませんでした（レース未登録 or データ不足）→ 投稿スキップ")
         return
 
-    if not fact_check_tweet(tweet):
+    # 5/27 fix: thread (list[str]) も受け取れるよう helper を使う
+    if not fact_check_tweet_or_thread(tweet):
         print("🚫 ファクトチェック不合格のため投稿を中止します")
         return
 
@@ -3171,7 +3870,23 @@ def cmd_morning(args):
 
 # ─── 夜ツイート（平日20:00） ───
 def cmd_evening(args):
-    """平日夜: 今週末メインレースの総合プレビュー（曜日別テーマ・日付動的表現）"""
+    """平日夜: 今週末メインレースの総合プレビュー（曜日別テーマ・日付動的表現）
+
+    🛡 時間ガード (2026-05-25 追加 / 同日 +1h 拡大):
+    cmd_evening は 19:00-23:59 JST 専用。GitHub Actions cron が
+    1-3h 遅延発火するケースは正常運転として許容。
+    SKIP_TIME_GUARD=1 で意図的にバイパス可能(テスト用)。
+
+    🔒 atomic lock (#41, 2026-06-07): 同じ日の evening は何回 trigger されても 1 回のみ。
+    """
+    _acquire_or_exit('evening')
+    if not os.environ.get("SKIP_TIME_GUARD"):
+        now = now_jst()
+        if not (19 <= now.hour <= 23):
+            print(f"⚠️ cmd_evening 時間ガード: {now.strftime('%H:%M JST')} は対象外 (19:00-23:59 のみ)")
+            print(f"   バイパスするには環境変数 SKIP_TIME_GUARD=1 を設定。")
+            return
+
     fetch_weekend_races()
     today = now_jst()
     dow = today.weekday()
@@ -3183,7 +3898,8 @@ def cmd_evening(args):
         print("⚠️ 投稿コンテンツを生成できませんでした → 投稿スキップ")
         return
 
-    if not fact_check_tweet(tweet):
+    # 5/27 fix: thread (list[str]) も受け取れるよう helper を使う
+    if not fact_check_tweet_or_thread(tweet):
         print("🚫 ファクトチェック不合格のため投稿を中止します")
         return
 
@@ -3226,11 +3942,6 @@ def main():
     # weekly_review
     p_rev = subparsers.add_parser("weekly_review", help="週間ROIレビューを投稿")
     p_rev.add_argument("--dry-run", action="store_true", help="投稿せずプレビュー")
-
-    # hit_flash（的中速報）
-    p_hit = subparsers.add_parser("hit_flash", help="的中速報ポスト")
-    p_hit.add_argument("--date", required=True, help="対象日 (YYYYMMDD)")
-    p_hit.add_argument("--dry-run", action="store_true", help="投稿せずプレビュー")
 
     # odds_flash（オッズ確定＋最終見解）
     p_odds = subparsers.add_parser("odds_flash", help="オッズ確定＋最終見解")
@@ -3275,8 +3986,6 @@ def main():
         cmd_answer_check(args)
     elif args.command == "weekly_review":
         cmd_weekly_review(args)
-    elif args.command == "hit_flash":
-        cmd_hit_flash(args)
     elif args.command == "odds_flash":
         cmd_odds_flash(args)
     elif args.command == "morning":

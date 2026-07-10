@@ -1,14 +1,19 @@
-name: 🐕 Refresh Watchdog
+name: 🐕 Race Day Runner Watchdog
 
-# refresh_live が GitHub Actions cron 不調で fire しなかった場合に
-# 検知して強制 trigger するセーフティネット。
-# refresh_live 自体は 15分間隔の cron。watchdog は 5分間隔で監視し、
-# 直近成功 run が 18分以上前なら refresh_live を起動する。
+# #59 (2026-06-10): レース日の結果収集を race_day_runner に一本化したのに伴い、
+# 本 watchdog の監視対象を refresh_live (削除済) から race_day_runner に変更。
+#
+# race_day_runner は 8:30-19:00 JST の long-running loop (10分間隔)。
+# 起動 cron (8:30/8:50/9:00/9:30/10:00) が全部スキップされた場合や、
+# loop が途中で死んだ場合に、ここが検知して再起動する。
+# concurrency group (race-day-runner) があるため多重起動しても直列化され安全。
 
 on:
   schedule:
-    # 土日 JST 9:00-19:55 (UTC 0:00-10:55) 5分間隔
-    - cron: '*/5 0-10 * * 6,0'
+    # 土日 JST 8:45-18:45 (UTC 前日23:45 + 当日0-9時台) 15分間隔
+    # (runner の iter は10分間隔なので 5分監視は過剰。15分で十分)
+    - cron: '45 23 * * 5,6'
+    - cron: '0,15,30,45 0-9 * * 6,0'
   workflow_dispatch:
 
 permissions:
@@ -19,71 +24,36 @@ jobs:
   watch:
     runs-on: ubuntu-latest
     steps:
-      - name: Check refresh_live freshness
+      - name: Ensure race_day_runner is alive
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 時刻チェック: 土日のレース時間帯のみ動作
+          # 時刻ガード: 土日のレース時間帯のみ (8:30-18:30 JST)
           DOW=$(TZ=Asia/Tokyo date +%u)
           HOUR=$(TZ=Asia/Tokyo date +%H)
-          if [ "$DOW" -lt 6 ] || [ "$HOUR" -lt 9 ] || [ "$HOUR" -gt 19 ]; then
-            echo "⏭️ レース時間外 (DOW=$DOW HOUR=$HOUR)"
+          MIN=$(TZ=Asia/Tokyo date +%M)
+          HM=$((10#$HOUR * 100 + 10#$MIN))
+          if [ "$DOW" -lt 6 ] || [ "$HM" -lt 830 ] || [ "$HM" -gt 1830 ]; then
+            echo "⏭️ レース時間外 (DOW=$DOW ${HOUR}:${MIN} JST)"
             exit 0
           fi
 
-          # refresh_live の直近 run を確認
-          RECENT=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=10" \
-            --jq '[.workflow_runs[] | select(.name == "🔄 Live Dashboard Refresh") | .created_at] | .[0] // empty')
+          # race_day_runner に in_progress の run があるか確認
+          ACTIVE=$(gh api "repos/${{ github.repository }}/actions/runs?status=in_progress&per_page=20" \
+            --jq '[.workflow_runs[] | select(.name == "🏇 Race Day Runner")] | length')
 
-          if [ -z "$RECENT" ]; then
-            echo "📋 refresh_live実行履歴なし → 起動"
-            gh workflow run refresh_live.yml -R ${{ github.repository }}
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "✅ race_day_runner 稼働中 (${ACTIVE} run) → スキップ"
             exit 0
           fi
 
-          RECENT_TS=$(date -d "$RECENT" +%s)
-          NOW_TS=$(date +%s)
-          DIFF=$(( NOW_TS - RECENT_TS ))
-          DIFF_MIN=$(( DIFF / 60 ))
-          echo "📊 直近refresh_live: $RECENT (${DIFF_MIN}分前)"
-
-          # 18分以上経過していたら強制起動 (15分cron + 3分マージン)
-          if [ "$DIFF" -gt 1080 ]; then
-            echo "⚠️ ${DIFF_MIN}分経過 → refresh_live強制起動"
-            gh workflow run refresh_live.yml -R ${{ github.repository }}
-          else
-            echo "✅ 鮮度OK(${DIFF_MIN}分以内) → スキップ"
-          fi
-
-      - name: Check collect_results freshness (race day evening only)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # collect_results は 17:00/19:00/22:00 の cron。
-          # 17時以降に動いていなければ起動する。
-          HOUR=$(TZ=Asia/Tokyo date +%H)
-          if [ "$HOUR" -lt 17 ] || [ "$HOUR" -gt 23 ]; then
-            exit 0
-          fi
-          DOW=$(TZ=Asia/Tokyo date +%u)
-          if [ "$DOW" -lt 6 ]; then
+          # queued (concurrency 待ち) も稼働扱い
+          QUEUED=$(gh api "repos/${{ github.repository }}/actions/runs?status=queued&per_page=20" \
+            --jq '[.workflow_runs[] | select(.name == "🏇 Race Day Runner")] | length')
+          if [ "$QUEUED" -gt 0 ]; then
+            echo "✅ race_day_runner queue 待ち (${QUEUED} run) → スキップ"
             exit 0
           fi
 
-          RECENT=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=10" \
-            --jq '[.workflow_runs[] | select(.name == "📊 Collect Race Results" and .conclusion == "success") | .created_at] | .[0] // empty')
-
-          if [ -z "$RECENT" ]; then
-            echo "📋 collect_results実行履歴なし → 起動"
-            gh workflow run collect_results.yml -R ${{ github.repository }}
-            exit 0
-          fi
-
-          RECENT_TS=$(date -d "$RECENT" +%s)
-          NOW_TS=$(date +%s)
-          DIFF=$(( NOW_TS - RECENT_TS ))
-          # 60分以上経過なら起動
-          if [ "$DIFF" -gt 3600 ]; then
-            echo "⚠️ collect_results が60分以上前 → 強制起動"
-            gh workflow run collect_results.yml -R ${{ github.repository }}
-          fi
+          echo "🚨 race_day_runner が稼働していない → 再起動"
+          gh workflow run race_day_runner.yml -R ${{ github.repository }}

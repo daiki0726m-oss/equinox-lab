@@ -109,6 +109,30 @@ def export_predictions(date_str=None):
                 should_bet = bool(cached["should_bet"])
                 bet_reason = cached["bet_reason"] or ""
 
+                # 🆕 #90: 書き出し時に馬名を horses 正本で上書きし文字化けを根絶。
+                #   cache(predictions_json/all_bets_json) には予測時(#85/#90修正前)の化け名
+                #   スナップショットが残りうる (runner が古い cache を再 export する) ため、
+                #   export 側で常に正す = JSON は cache の状態に関わらず常にクリーン。
+                _FFFD = chr(65533)
+                name_by_num = {}
+                for rr in conn.execute(
+                    "SELECT res.horse_number AS n, hh.horse_name AS nm FROM results res "
+                    "JOIN horses hh ON hh.horse_id = res.horse_id WHERE res.race_id = ?",
+                    (race_id,)).fetchall():
+                    if rr['nm'] and _FFFD not in rr['nm']:
+                        name_by_num[rr['n']] = rr['nm']
+                for h in horses:
+                    n = h.get('horse_number')
+                    if n in name_by_num and (_FFFD in str(h.get('horse_name') or '') or not h.get('horse_name')):
+                        h['horse_name'] = name_by_num[n]
+                if isinstance(all_bets, dict):
+                    for _bt, _bets in all_bets.items():
+                        for _b in (_bets or []):
+                            _nums = _b.get('horse_numbers') or []
+                            _nms = [name_by_num.get(x) for x in _nums]
+                            if _nums and all(_nms):
+                                _b['horse_name'] = "-".join(_nms)
+
                 # 結果データ取得
                 res_rows = conn.execute("""
                     SELECT r.horse_number, r.finish_position, r.finish_time,
@@ -206,31 +230,53 @@ def export_predictions(date_str=None):
                     else:
                         max_ev = 2.5  # 普通
 
-                if max_ev >= 5.0:
-                    myomi = "💎★★★"
-                elif max_ev >= 2.5:
-                    myomi = "💎★★"
-                elif max_ev >= 1.5:
-                    myomi = "💎★"
-                else:
-                    myomi = ""
+                # 妙味判定 v2 (2026-05-17): 信頼度を考慮
+                # S/A (堅軸推奨) では ★★★ を出さない (堅軸 vs 大穴の矛盾解消)。
+                if confidence in ('S', 'A'):
+                    if max_ev >= 5.0: myomi = "💎★★"
+                    elif max_ev >= 3.0: myomi = "💎★"
+                    else: myomi = ""
+                elif confidence == 'B':
+                    if max_ev >= 5.0: myomi = "💎★★★"
+                    elif max_ev >= 2.5: myomi = "💎★★"
+                    elif max_ev >= 1.5: myomi = "💎★"
+                    else: myomi = ""
+                else:  # C/D
+                    if max_ev >= 4.0: myomi = "💎★★★"
+                    elif max_ev >= 2.0: myomi = "💎★★"
+                    elif max_ev >= 1.2: myomi = "💎★"
+                    else: myomi = ""
 
-                # レース傾向
-                sorted_probs = sorted([h.get("pred_win", 0) for h in horses], reverse=True)
+                # レース傾向 (pred_win_pct ベース: 0-100 範囲)
+                # 旧版は pred_win (0-1 範囲) を見ていたが、JSON には pred_win_pct のみ存在
+                # → top_prob 常に 0 で全レース「波乱含み」になっていた
+                sorted_probs = sorted([h.get("pred_win_pct", 0) for h in horses], reverse=True)
                 top_prob = sorted_probs[0] if sorted_probs else 0
                 second_prob = sorted_probs[1] if len(sorted_probs) > 1 else 0
                 gap = top_prob - second_prob
                 top3_total = sum(sorted_probs[:3])
-                if top_prob >= 35 and gap >= 12:
+                # v3 (2026-05-17): gap 廃止 — ◎の絶対値のみで判定。
+                # 「AI 20% > 18% なのに『やや堅い』になる」直感矛盾を解消。
+                if top_prob >= 18:
                     race_tendency = "堅い（本命突出）"
-                elif top_prob >= 25 and gap >= 6:
+                elif top_prob >= 14:
                     race_tendency = "やや堅い（軸馬明確）"
-                elif top3_total >= 55:
+                elif top3_total >= 35:
                     race_tendency = "上位拮抗（実力伯仲）"
-                elif top_prob <= 12:
+                elif top_prob <= 8:
                     race_tendency = "波乱含み（大混戦）"
                 else:
                     race_tendency = "普通（中穴狙い可）"
+
+                # #96: 同名レースの歴史的荒れ度
+                try:
+                    from volatility import compute_race_upset_history
+                    upset_hist = compute_race_upset_history(
+                        race_info.get("race_name", "") or "",
+                        race_info.get("race_date", "") or race_date_hyphen,
+                    )
+                except Exception:
+                    upset_hist = None
 
                 all_races.append({
                     "race_id": race_id,
@@ -252,6 +298,8 @@ def export_predictions(date_str=None):
                     "myomi": myomi,
                     "max_ev": round(max_ev, 1),
                     "race_tendency": race_tendency,
+                    # #96: 同名レースの歴史的荒れ度 (temporal-safe、out-of-time検証済)
+                    "upset_hist": upset_hist,
                     "has_results": has_results,
                     "payouts": race_payouts if has_results else [],
                     "prediction_locked": datetime.now(JST).hour >= 10,
@@ -265,18 +313,22 @@ def export_predictions(date_str=None):
                 continue
 
             # 妙味再計算（相対パーセンタイル、同値グループ均等分配）
+            # v2 (2026-05-17): 信頼度を考慮。S/A (堅軸推奨) は ★★★ を出さない
+            # (「予想固いのに大穴チャンス」と矛盾するため)。
             if len(all_races) >= 2:
                 # EVでソートし、各レースに順位を付与
                 sorted_races = sorted(all_races, key=lambda r: r["max_ev"])
                 n = len(sorted_races)
                 for i, r in enumerate(sorted_races):
                     pct = i / (n - 1) if n > 1 else 0.5
+                    conf = r.get('confidence', 'C')
+                    is_kataku = conf in ('S', 'A')  # 堅軸推奨レース
                     if pct >= 0.80:
-                        r["myomi"] = "💎★★★"
+                        r["myomi"] = "💎★★" if is_kataku else "💎★★★"
                     elif pct >= 0.50:
-                        r["myomi"] = "💎★★"
+                        r["myomi"] = "💎★" if is_kataku else "💎★★"
                     elif pct >= 0.20:
-                        r["myomi"] = "💎★"
+                        r["myomi"] = "" if is_kataku else "💎★"
                     else:
                         r["myomi"] = ""
 

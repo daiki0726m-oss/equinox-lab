@@ -178,6 +178,21 @@ def init_db(db_path=None):
             CREATE INDEX IF NOT EXISTS idx_results_jockey ON results(jockey_id);
             CREATE INDEX IF NOT EXISTS idx_bets_race ON bets(race_id);
             CREATE INDEX IF NOT EXISTS idx_bets_date ON bets(bet_date);
+
+            -- 投稿スロット排他制御 (1日1スロット1回保証) — #41
+            -- 任意の trigger (cron, watchdog, 手動) が走っても 1 回しか実行されない
+            CREATE TABLE IF NOT EXISTS posted_slots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_date TEXT NOT NULL,              -- JST 'YYYY-MM-DD'
+                slot_name TEXT NOT NULL,              -- 'morning'/'weekday'/'evening'/'odds_flash'/'post_predict'/'hit_flash'/'results' 等
+                posted_at TEXT NOT NULL,              -- ISO 8601 UTC, lock 取得時刻
+                run_id TEXT,                          -- GitHub Actions GITHUB_RUN_ID
+                workflow_event TEXT,                  -- 'schedule'/'workflow_dispatch'
+                success INTEGER DEFAULT 1,            -- 1=投稿成功 / 0=lock 取得後に投稿失敗
+                note TEXT,                            -- 補足 (失敗理由など)
+                UNIQUE(post_date, slot_name)          -- ← 二重投稿を物理的に防ぐ核
+            );
+            CREATE INDEX IF NOT EXISTS idx_posted_slots_date ON posted_slots(post_date);
         """)
 
         # ── マイグレーション: predictions_cache に posted_at がなければ追加 ──
@@ -185,37 +200,192 @@ def init_db(db_path=None):
         if 'posted_at' not in cols:
             conn.execute("ALTER TABLE predictions_cache ADD COLUMN posted_at TIMESTAMP NULL")
             print("🔧 predictions_cache: posted_at カラム追加")
+        if "posted_marks_json" not in cols:
+            conn.execute("ALTER TABLE predictions_cache ADD COLUMN posted_marks_json TEXT")
+            print("🔧 predictions_cache: posted_marks_json カラム追加 (#97: 投稿した印のスナップショット)")
     print("✅ データベース初期化完了")
+
+
+# ─── 投稿スロット排他制御 (#41) ───────────────────────────────────
+def acquire_post_slot(slot_name, run_id=None, workflow_event=None, post_date=None):
+    """投稿前に呼ぶ atomic lock.
+
+    Returns:
+        (True, None) — lock 取得成功、投稿を続行してよい
+        (False, existing_dict) — 既に同じ (date, slot) が登録済み、投稿しない
+
+    使い方:
+        ok, prev = acquire_post_slot('post_predict', run_id=os.environ.get('GITHUB_RUN_ID'),
+                                     workflow_event=os.environ.get('GITHUB_EVENT_NAME'))
+        if not ok:
+            print(f'⏭️ 既に投稿済み: {prev["posted_at"]} (run {prev["run_id"]})')
+            sys.exit(0)
+        # ... 投稿処理 ...
+        # 失敗時は release_post_slot() を呼ぶ
+    """
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    if post_date is None:
+        post_date = datetime.now(JST).strftime('%Y-%m-%d')
+    elif len(post_date) == 8:
+        post_date = f"{post_date[:4]}-{post_date[4:6]}-{post_date[6:8]}"
+    now_utc = datetime.now(timezone.utc).isoformat()
+    with get_db() as conn:
+        try:
+            conn.execute("""
+                INSERT INTO posted_slots (post_date, slot_name, posted_at, run_id, workflow_event)
+                VALUES (?, ?, ?, ?, ?)
+            """, (post_date, slot_name, now_utc, run_id, workflow_event))
+            return True, None
+        except sqlite3.IntegrityError:
+            row = conn.execute("""
+                SELECT post_date, slot_name, posted_at, run_id, workflow_event, success
+                FROM posted_slots WHERE post_date=? AND slot_name=?
+            """, (post_date, slot_name)).fetchone()
+            return False, dict(row) if row else None
+
+
+def release_post_slot(slot_name, note='post failed', post_date=None):
+    """投稿失敗時のロールバック。success=0 でマークするのみ (二重投稿はやはり防ぐ)。
+
+    note: 失敗理由など短い文字列。
+    """
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    if post_date is None:
+        post_date = datetime.now(JST).strftime('%Y-%m-%d')
+    elif len(post_date) == 8:
+        post_date = f"{post_date[:4]}-{post_date[4:6]}-{post_date[6:8]}"
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE posted_slots SET success=0, note=COALESCE(note,'')||?||'; '
+            WHERE post_date=? AND slot_name=?
+        """, (note[:200], post_date, slot_name))
+
+
+def clear_post_slot(slot_name, post_date=None):
+    """lock を完全に削除して再取得可能にする (#70)。
+
+    release_post_slot は success=0 マークのみで行を残すため、UNIQUE 制約で
+    再 acquire できない。「まだデータが無いだけ」で投稿していないケースは、
+    本関数で行ごと削除し、後続 run が改めて lock を取って再試行できるようにする。
+    投稿に成功していないことが確実な場合のみ呼ぶこと (二重投稿防止のため)。
+    """
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    if post_date is None:
+        post_date = datetime.now(JST).strftime('%Y-%m-%d')
+    elif len(post_date) == 8:
+        post_date = f"{post_date[:4]}-{post_date[4:6]}-{post_date[6:8]}"
+    with get_db() as conn:
+        conn.execute("DELETE FROM posted_slots WHERE post_date=? AND slot_name=?",
+                     (post_date, slot_name))
+
+
+def is_slot_posted(slot_name, post_date=None):
+    """既に投稿済みかチェック (lock 取得せず参照だけ)。watchdog/health check 用。"""
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    if post_date is None:
+        post_date = datetime.now(JST).strftime('%Y-%m-%d')
+    elif len(post_date) == 8:
+        post_date = f"{post_date[:4]}-{post_date[4:6]}-{post_date[6:8]}"
+    with get_db() as conn:
+        row = conn.execute("""
+            SELECT posted_at, run_id, success FROM posted_slots
+            WHERE post_date=? AND slot_name=?
+        """, (post_date, slot_name)).fetchone()
+        return dict(row) if row else None
+
+
+def _is_degenerate_predictions(predictions_json):
+    """予測が degenerate (≒全頭均等) かを判定する。
+
+    判定基準: 全馬の表示勝率 (%) の最大値が 12% 未満 = ML 出力が flat。
+    16頭立てなら均等 6.25%、12% は均等 + 6pt 上乗せ程度で「ばらつき有」とみなせる閾値。
+    18頭立てで均等 5.5% 〜 通常本命 22% の中央付近に 12% を置く。
+
+    #95 (2026-07-02): 12% 閾値は温度×3 (シャープ化) 時代の分布で設計されたため、
+    pred_win_display_pct (温度×3、表示用) を優先して判定する。温度1 の
+    pred_win_pct で判定すると 16頭立ての正常な本命 (~9.5%) まで flat 扱いになる。
+    旧 cache (display フィールド無し = 温度×3 の pred_win_pct) はそのまま使える。
+
+    #41 (2026-06-07) seal lockout 対策:
+    07:00 で flat prediction が seal される → 10:15 以降 --force でも修正不能になる事故が
+    6/7 に発生。degenerate な予測は seal しないことで、後段の再 predict を可能にする。
+    """
+    import json as _json
+    try:
+        preds = _json.loads(predictions_json) if isinstance(predictions_json, str) else predictions_json
+    except Exception:
+        return False  # 解析失敗時は安全側 (degenerate でない扱い)
+    if not preds:
+        return False
+    max_win_pct = 0.0
+    for p in preds:
+        pw = p.get('pred_win_display_pct') or p.get('pred_win_pct') or 0
+        if pw > max_win_pct:
+            max_win_pct = pw
+    return max_win_pct < 12.0
 
 
 def seal_predictions_for_date(date_str):
     """指定日の predictions_cache を「投稿済み」としてロック。
     post_predict 投稿成功時に呼ぶ。
+
+    #41 (2026-06-07): degenerate (ML flat) な予測は seal しない (seal lockout 対策)。
+    seal してしまうと以降 --force でも上書き不能になり、朝の bad prediction が
+    1 日中固定されてしまう (6/7 で発生)。
     """
     if len(date_str) == 8:
         hy = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     else:
         hy = date_str
     with get_db() as conn:
-        n = conn.execute("""
-            UPDATE predictions_cache
-            SET posted_at = CURRENT_TIMESTAMP
-            WHERE race_id IN (
-                SELECT race_id FROM races WHERE race_date = ? OR race_date = ?
-            ) AND posted_at IS NULL
-        """, (date_str, hy)).rowcount
-    print(f"🔒 predictions_cache を {n} レース seal({date_str})")
-    return n
+        # 対象レースを抽出 (まだ posted_at が NULL のもの)
+        candidates = conn.execute("""
+            SELECT pc.race_id, pc.predictions_json
+            FROM predictions_cache pc
+            JOIN races r ON pc.race_id = r.race_id
+            WHERE (r.race_date = ? OR r.race_date = ?) AND pc.posted_at IS NULL
+        """, (date_str, hy)).fetchall()
+
+        sealed = 0
+        skipped_degenerate = 0
+        for row in candidates:
+            if _is_degenerate_predictions(row['predictions_json']):
+                skipped_degenerate += 1
+                continue
+            conn.execute(
+                "UPDATE predictions_cache SET posted_at = CURRENT_TIMESTAMP WHERE race_id = ?",
+                (row['race_id'],)
+            )
+            sealed += 1
+    msg = f"🔒 predictions_cache を {sealed} レース seal({date_str})"
+    if skipped_degenerate:
+        msg += f" / ⚠ degenerate {skipped_degenerate} レースは seal せず再 predict 可能のまま"
+    print(msg)
+    return sealed
 
 
 def is_prediction_sealed(race_id):
-    """そのレースの予測が投稿済み(seal)かを返す"""
+    """そのレースの予測が投稿済み(seal)かを返す。
+
+    #41 (2026-06-07): degenerate predictions (全頭均等 = ML flat output) は
+    seal されていても sealed=False として扱う → 再 predict --force が可能になる。
+    朝の bad prediction が seal で固定される事故 (6/7) の対策。
+    """
     with get_db() as conn:
         row = conn.execute(
-            "SELECT posted_at FROM predictions_cache WHERE race_id = ?",
+            "SELECT posted_at, predictions_json FROM predictions_cache WHERE race_id = ?",
             (race_id,)
         ).fetchone()
-        return row is not None and row['posted_at'] is not None
+        if row is None or row['posted_at'] is None:
+            return False
+        # posted_at あり = 通常は sealed だが、degenerate なら escape hatch として上書きを許す
+        if _is_degenerate_predictions(row['predictions_json']):
+            return False
+        return True
 
 
 def sync_cache_race_ids(race_date_str):

@@ -1,82 +1,102 @@
-"""信頼度判定モジュール (v2: 6軸合成スコア)
+"""信頼度判定モジュール (v4: ROI 期待値ベース)
 
 予測結果から S/A/B/C/D の信頼度ラベルを返す共通ロジック。
-predict.py / generate_note.py / 将来の他モジュールから利用される
+predict.py / generate_note.py / app.py / 将来の他モジュールから利用される
 single source of truth。
 
-## 設計思想 (v2 — 旧 grade-bifurcated logic を破棄)
+## 設計思想 (v4 — 「堅さ」基準を捨てて「儲かる度」基準に)
 
-「信頼度 = AI が ◎(本命)を当てる(複勝圏内に入る)確信度」と定義。
-6軸の独立シグナルを 0-1 にnormalize し、重み付き合計で 0-1 の
-composite score を算出 → 5段階に bucket 化する。
+旧 v2/v3 では「信頼度 = ◎の堅さ」と定義していたが、3-5月 622R バックテストで
+評価と実態が逆転していた:
+  - 旧 S (1番人気軸 / 堅実) → ROI 91% (損失)
+  - 旧 B (中堅人気で配当妙味) → ROI 137% (利益)
 
-旧 v1 では「重賞=緩い閾値、平場=厳しい閾値」と grade で二分していた
-ため、G1 の薄い予測(◎勝率15%)が S、平場の濃い予測(◎勝率36%)が A
-という直感に反する反転が起きていた。v2 では絶対値ベースの統一スコアに。
+原因: WEIGHTS で pop_score 0.30 が最重要 = 「◎が1番人気のレース = S」
+判定。S レース三連複平均配当 1,934円 vs B レース 5,736円 (3倍差) と
+「当たりやすさ」と「儲かりやすさ」が乖離していた。
 
-## 6軸シグナル
+v4 では「信頼度 = ROI 期待値」と再定義し、勝率より配当ポテンシャルを優先。
+
+## 5軸シグナル (v4)
 
 | 軸 | 重み | 説明 | 満点条件 |
 |---|---|---|---|
-| win_score | 0.22 | ◎の予測勝率(%) | 35%以上 |
-| top3_score | 0.20 | ◎の予測複勝率(%) | 70%以上 |
-| gap_score | 0.18 | ◎vs○の勝率gap(%) | 12pt以上 |
-| conc_score | 0.15 | 上位3頭の勝率合計(%) | 75%以上 |
-| pop_score | 0.10 | ◎の人気(市場との一致) | 1人気=1.0 |
-| size_score | 0.15 | 頭数(少ないほど有利) | 8頭以下 |
+| trio_ev | 0.30 | 三連複 5頭流し EV | pred_top3 × est_trio_odds ≥ 2.0 |
+| odds_pot | 0.25 | ◎オッズ妙味 | 3-7倍 (1番人気は減点) |
+| umaren_ev | 0.20 | 馬連流し EV | pred_top3 × 0.7 × est_umaren_odds ≥ 1.5 |
+| top3 | 0.15 | ◎複勝率 (信頼度の保険) | 35%以上 |
+| conc | 0.10 | 上位3頭合計勝率 (混戦排除) | 45%以上 |
 
 重賞(G1/G2/G3)は混戦が前提なので合計から **-0.03** の補正。
 
-## ラベル化 (composite 0-1)
+## ラベル化 (composite 0-1) — 超厳格 v4 閾値
 
-| composite | rating | 意味 |
+| composite | rating | 期待 ROI |
 |---|---|---|
-| >= 0.72 | S | ◎複勝圏入り highly likely (推定70%+) |
-| >= 0.58 | A | ◎複勝圏入り likely (50-70%) |
-| >= 0.44 | B | ◎複勝圏入り decent (30-50%) |
-| >= 0.30 | C | ◎複勝圏入り uncertain (15-30%) |
-| < 0.30  | D | 全シグナル弱 — 見送り推奨 |
+| >= 0.88 | S | 174% (本命爆発) |
+| >= 0.78 | A | 156% (高妙味) |
+| >= 0.62 | B | 142% (標準推奨) |
+| >= 0.45 | C |  99% (様子見) |
+| < 0.45  | D |     - (見送り) |
+
+5/1-5/24 backtest (112R 結果あり) で ROI が S→A→B→C 単調減少を確認。
+
+## v4 使い方
+
+```python
+from confidence import evaluate, evaluate_from_horses
+
+# 単一値で評価
+r = evaluate(top_win_pct=15, top3_sum_pct=35, n_horses=14,
+             top_top3_pct=33, top_popularity=2, top_odds=4.5)
+# r['confidence'] == 'S', r['score'] == 0.97
+
+# 馬リストで評価 (DB cache / ML 出力など)
+r = evaluate_from_horses(horses, grade='G1',
+                         win_key='pred_win_pct',     # フィールド名指定可
+                         top3_key='pred_top3_pct',
+                         odds_key='odds_win')        # v4 で追加
+```
 """
 
 from typing import Iterable, Tuple, Optional
 
 
 # ── 6軸の重み (sum = 1.0) ──
+# v4 (2026-05-25): 「堅さ基準」→「ROI 期待値基準」に全面再設計
+# 旧ロジック(pop=0.30 重視)では S=ROI91% / B=ROI137% と評価と実態が逆転していた。
+# 3-5月 622R バックテストで「ROI 期待値」基準が ROI と完全一致を確認:
+#   超厳格閾値で S=ROI174%, A=156%, B=142%, C=99% (全層プラス)
+# 新基準は「儲かるレースを高評価」: 三連複EV/馬連EV/◎オッズ妙味 を重視。
 WEIGHTS = {
-    'win': 0.22,    # ◎の予測勝率
-    'top3': 0.20,   # ◎の予測複勝率
-    'gap': 0.18,    # ◎vs○のgap
-    'conc': 0.15,   # 上位3頭の合計勝率
-    'pop': 0.10,    # ◎の市場人気
-    'size': 0.15,   # 頭数(少ないほど高得点)
+    'trio_ev': 0.30,    # 三連複5頭流し EV (最重要、バックテストで最強)
+    'odds_pot': 0.25,   # ◎オッズ妙味 (3-7倍が最良、1番人気は減点)
+    'umaren_ev': 0.20,  # 馬連流し EV
+    'top3': 0.15,       # ◎複勝率 (信頼度の保険)
+    'conc': 0.10,       # 上位3頭合計勝率 (混戦排除)
 }
 
-# 各シグナルの満点(満点=1.0となる絶対値)
-NORMS = {
-    'win': 35.0,    # 勝率35%で満点
-    'top3': 70.0,   # 複勝率70%で満点
-    'gap': 12.0,    # 12pt差で満点
-    'conc': 75.0,   # top3合計75%で満点
-}
+# 旧 NORMS (win/gap/conc) は新ロジックで不要 — 計算式内で正規化
 
 # 重賞補正(混戦前提)
 GRADED_PENALTY = 0.03
 
-# composite → rating の閾値
+# composite → rating の閾値 (v4: 超厳格)
+# バックテスト: S 3% (174%), A 29% (156%), B 62% (142%), C 4% (99%)
 RATING_THRESHOLDS = [
-    (0.72, "S"),
-    (0.58, "A"),
-    (0.44, "B"),
-    (0.30, "C"),
+    (0.88, "S"),
+    (0.78, "A"),
+    (0.62, "B"),
+    (0.45, "C"),
 ]
 DEFAULT_RATING = "D"
 
 GRADE_LABELS = {
-    "S": "本命突出",
-    "A": "軸馬有力",
-    "B": "やや有力",
-    "C": "標準",
-    "D": "混戦",
+    "S": "本命爆発",      # ROI 174% 期待
+    "A": "高妙味",        # ROI 156%
+    "B": "標準推奨",      # ROI 142%
+    "C": "様子見",        # ROI 99%
+    "D": "見送り",
 }
 
 
@@ -114,34 +134,74 @@ def compute_composite(
     n_horses: int,
     top1_popularity: Optional[int],
     grade: Optional[str] = None,
+    top1_odds: float = 0.0,  # v4 追加: ◎のオッズ (ROI EV 計算用)
 ) -> dict:
-    """6軸合成スコアを計算して返す。
+    """ROI 期待値ベースの合成スコアを計算 (v4)。
 
     Args:
-        top1_win: ◎(予測トップ)の勝率(%、0-100)
-        top2_win: ○(予測2位)の勝率(%、0-100)
-        top1_top3: ◎の複勝率(%、0-100)
+        top1_win: ◎の予測勝率(%、0-100)
+        top2_win: ○の予測勝率(%) — 互換用、新ロジックでは未使用
+        top1_top3: ◎の予測複勝率(%、0-100)
         top3_sum: 上位3頭の勝率合計(%、0-100)
-        n_horses: 出走頭数
-        top1_popularity: ◎の市場人気(1=1番人気)
-        grade: レースグレード('G1'/'G2'/'G3'/'OP'/...)
+        n_horses: 出走頭数 — 互換用、新ロジックでは未使用
+        top1_popularity: ◎の市場人気 — 互換用、odds 推定にのみ使用
+        grade: レースグレード
+        top1_odds: ◎の単勝オッズ (新ロジックの主要入力)
 
     Returns:
         {'composite': float, 'breakdown': {...軸別 0-1 score}, 'is_graded': bool}
     """
-    n = max(int(n_horses), 1)
+    # 0-1 に正規化
+    pred_win = top1_win / 100.0
+    pred_top3 = top1_top3 / 100.0
+    top3_sum_norm = top3_sum / 100.0
+
+    # オッズ未提供時は人気から推定
+    odds = top1_odds
+    if odds <= 0:
+        pop = top1_popularity or 0
+        if pop > 0:
+            # 1番人気=2.5倍、3人気=5倍、6人気=10倍 のざっくり推定
+            odds = max(2.0, 2.5 + (pop - 1) * 1.5)
+        else:
+            odds = 5.0  # 中庸
+
+    # 1. ◎オッズ妙味スコア (3-7倍が最良)
+    if 3.0 <= odds <= 7.0:
+        odds_pot = 1.0
+    elif odds < 3.0:
+        odds_pot = odds / 3.0 * 0.7  # 1番人気は0.5-0.7
+    elif odds <= 15.0:
+        odds_pot = 1.0 - (odds - 7.0) / 8.0 * 0.4
+    else:
+        odds_pot = 0.5
+
+    # 2. 三連複EV ポテンシャル
+    # 推定三連複オッズ: ◎の単勝オッズ × 4 (経験則)
+    est_trio_odds = max(odds * 4, 5)
+    trio_ev = pred_top3 * est_trio_odds
+    trio_ev_score = _clamp(trio_ev / 2.0)  # EV 2.0 で満点
+
+    # 3. 馬連EV ポテンシャル
+    est_umaren_odds = max(odds * 2, 3)
+    umaren_ev = pred_top3 * 0.7 * est_umaren_odds  # 1-2着率 ~70%
+    umaren_ev_score = _clamp(umaren_ev / 1.5)
+
+    # 4. ◎複勝率 (信頼度の保険)
+    top3_score = _clamp(pred_top3 / 0.35)  # 35%で満点
+
+    # 5. 上位3頭合計勝率 (混戦排除)
+    conc_score = _clamp(top3_sum_norm / 0.45)  # 45%で満点
 
     breakdown = {
-        'win': _clamp(top1_win / NORMS['win']),
-        'top3': _clamp(top1_top3 / NORMS['top3']),
-        'gap': _clamp((top1_win - top2_win) / NORMS['gap']),
-        'conc': _clamp(top3_sum / NORMS['conc']),
-        'pop': _pop_score(top1_popularity),
-        'size': _size_score(n),
+        'trio_ev': trio_ev_score,
+        'odds_pot': odds_pot,
+        'umaren_ev': umaren_ev_score,
+        'top3': top3_score,
+        'conc': conc_score,
     }
 
     composite = sum(WEIGHTS[k] * breakdown[k] for k in WEIGHTS)
-
     is_graded = _is_graded(grade)
     if is_graded:
         composite -= GRADED_PENALTY
@@ -170,33 +230,29 @@ def evaluate(
     second_win_pct: Optional[float] = None,
     top_top3_pct: Optional[float] = None,
     top_popularity: Optional[int] = None,
+    top_odds: float = 0.0,  # v4 追加: ROI EV 計算に使用
 ) -> dict:
-    """主要エントリポイント。互換のため第1〜4引数は v1 と同じシグネチャ。
+    """主要エントリポイント。
 
-    新しい3軸を活かすには second_win_pct / top_top3_pct / top_popularity を
-    キーワード引数で渡すこと。省略時は中庸推定で計算する(下記)。
+    v4 (2026-05-25): ROI 期待値基準。`top_odds` (◎の単勝オッズ) を渡すと
+    精度の高い判定が可能。未指定時は人気から推定。
 
     Args:
         top_win_pct: ◎の勝率(%、0-100)
-        n_horses: 出走頭数
+        n_horses: 出走頭数 — 互換用 (新ロジックでは未使用)
         top3_sum_pct: 上位3頭の勝率合計(%、0-100)
         grade: レースグレード
-        second_win_pct: ○(予測2位)の勝率(%、省略時は top3_sum_pct から推定)
-        top_top3_pct: ◎の複勝率(%、省略時は top_win_pct*2.2 で推定)
-        top_popularity: ◎の市場人気(1〜N、省略時は中庸 0.5扱い=None)
+        second_win_pct: ○の勝率 — 互換用 (新ロジックでは未使用)
+        top_top3_pct: ◎の複勝率(%、省略時は勝率×2.2で推定)
+        top_popularity: ◎の市場人気 — オッズ推定に使用
+        top_odds: ◎の単勝オッズ (主要入力、未指定時は人気から推定)
 
     Returns:
-        {'confidence': 'S'/'A'/'B'/'C'/'D',
-         'score': float (0-1, composite),
-         'reason': str, 'is_graded': bool, 'breakdown': {...}}
+        {'confidence': 'S'/'A'/'B'/'C'/'D', 'score': float, ...}
     """
-    # 省略値の推定
     if second_win_pct is None:
-        # top3_sum から ◎ を引いて 2/3 が ○ と仮定
-        rest = max(0.0, top3_sum_pct - top_win_pct)
-        second_win_pct = rest * 0.6
+        second_win_pct = 0.0
     if top_top3_pct is None:
-        # 経験則: ◎複勝率 ≒ 勝率 × 2.0 ~ 2.5
         top_top3_pct = min(95.0, top_win_pct * 2.2)
 
     result = compute_composite(
@@ -207,16 +263,35 @@ def evaluate(
         n_horses=n_horses,
         top1_popularity=top_popularity,
         grade=grade,
+        top1_odds=top_odds,
     )
-    rating = grade_from_composite(result['composite'])
+    # ── confidence = ◎勝率 (予測自信度) 主体 (2026-05-30 エンタメ再設計) ──────
+    # 旧 v4 は composite の 75% が投資妙味 (trio_ev/odds_pot/umaren_ev) だったため、
+    # 「◎48%の堅い本命でもオッズ低 (妙味なし) → B」という直感に反する判定が出た。
+    # 投資ではなくエンタメ用途では「AI がどれだけ本命を絞れているか = ◎勝率」を
+    # confidence にするのが自然。妙味 (composite) は reason に併記して透明性を残す。
+    # WIN_SHARPEN=3 適用後の ◎勝率分布に合わせた閾値:
+    #   S ≥45% (圧倒的本命) / A ≥30% / B ≥20% / C ≥13% / D <13% (混戦)
+    # ★ #95 (2026-07-02): この閾値は温度×3 (シャープ化) の分布とペア。
+    # 呼び出し側は top_win_pct 等に必ず表示チャネル (pred_win_display / _pct) を
+    # 渡すこと。温度1 の値を入れると S/A/B がほぼ消滅する (144R 実測 49→7)。
+    # この後 predict.py で volatility (未勝利 -2 等) 補正が入り、ノイズの多い
+    # 未勝利戦の高勝率本命は適切に減格される。
+    def _win_grade(w: float) -> str:
+        if w >= 45: return "S"
+        if w >= 30: return "A"
+        if w >= 20: return "B"
+        if w >= 13: return "C"
+        return "D"
+    rating = _win_grade(top_win_pct)
+
     label = GRADE_LABELS[rating]
     br = result['breakdown']
+    odds_disp = f"{top_odds:.1f}倍" if top_odds > 0 else "?"
     reason = (
-        f"◎勝率{top_win_pct:.1f}% / 複勝{top_top3_pct:.1f}% / "
-        f"gap{(top_win_pct - second_win_pct):.1f}pt / "
-        f"上位3計{top3_sum_pct:.1f}% / "
-        f"人気{top_popularity if top_popularity else '?'} / "
-        f"{n_horses}頭 → {result['composite']:.2f} ({label})"
+        f"◎勝率{top_win_pct:.1f}% → 自信度{label} / "
+        f"複勝{top_top3_pct:.1f}% / オッズ{odds_disp} / 上位3計{top3_sum_pct:.1f}% / "
+        f"(参考)妙味 三連複EV {br['trio_ev']:.2f} / オッズ妙味 {br['odds_pot']:.2f}"
     )
     return {
         'confidence': rating,
@@ -233,32 +308,42 @@ def evaluate_from_horses(
     win_key: str = "pred_win_pct",
     top3_key: str = "pred_top3_pct",
     pop_key: str = "popularity",
+    odds_key: str = "odds_win",
 ) -> dict:
     """horses(辞書のリスト)から自動的に top1/top2/top3 を計算して評価する。
+
+    v4 (2026-05-25): `odds_key` を追加。top1 の単勝オッズを抽出して
+    `evaluate()` の `top_odds` に渡すことで ROI 期待値ベースの正確な評価が可能。
+    未指定または欠落時は人気からオッズを推定するフォールバックで動作。
 
     Args:
         horses: 各馬の予測dict。win_key/top3_key/pop_key を持つ前提
         grade: レースグレード
-        win_key: 勝率フィールド名
-        top3_key: 複勝率フィールド名
+        win_key: 勝率フィールド名 (例: "pred_win_pct", "pred_win")
+        top3_key: 複勝率フィールド名 (例: "pred_top3_pct", "pred_top3")
         pop_key: 市場人気フィールド名
+        odds_key: 単勝オッズフィールド名 (v4 で追加)
     """
     horses_list = list(horses) if horses else []
     if not horses_list:
         return evaluate(0.0, 1, 0.0, grade)
 
-    sorted_h = sorted(
-        horses_list,
-        key=lambda h: float(h.get(win_key, 0) or 0),
-        reverse=True,
-    )
+    # ★ #95 (2026-07-02): _win_grade 閾値は温度×3 (表示チャネル) の分布とペアなので、
+    # 表示用フィールド (pred_win_display_pct / pred_win_display) があれば優先する。
+    # 旧 cache (display フィールド無し = 温度×3 時代の pred_win_pct) はそのまま互換。
+    display_key = win_key.replace("pred_win", "pred_win_display")
+
+    def _win(h):
+        return float(h.get(display_key) or h.get(win_key, 0) or 0)
+
+    sorted_h = sorted(horses_list, key=_win, reverse=True)
     top1 = sorted_h[0]
     top2 = sorted_h[1] if len(sorted_h) >= 2 else top1
 
-    top1_win = float(top1.get(win_key, 0) or 0)
-    top2_win = float(top2.get(win_key, 0) or 0)
+    top1_win = _win(top1)
+    top2_win = _win(top2)
     top1_top3 = float(top1.get(top3_key, 0) or 0)
-    top3_sum = sum(float(h.get(win_key, 0) or 0) for h in sorted_h[:3])
+    top3_sum = sum(_win(h) for h in sorted_h[:3])
 
     pop = top1.get(pop_key, 0)
     try:
@@ -266,7 +351,9 @@ def evaluate_from_horses(
     except (TypeError, ValueError):
         pop = 0
 
-    return evaluate(
+    top1_odds = float(top1.get(odds_key, 0) or 0)
+
+    result = evaluate(
         top_win_pct=top1_win,
         n_horses=len(horses_list),
         top3_sum_pct=top3_sum,
@@ -274,7 +361,38 @@ def evaluate_from_horses(
         second_win_pct=top2_win,
         top_top3_pct=top1_top3,
         top_popularity=pop if pop > 0 else None,
+        top_odds=top1_odds,
     )
+
+    # ── #95: predict.py 側の予測後補正と整合させる (再評価サイトの乖離防止) ──
+    # (1) jockey_trust: |jt|>=2 で ±1 (cache に jockey_trust があれば適用)
+    # (2) ◎オッズ過信帯: 5.0-7.9倍 (実オッズ = popularity>0 が代理シグナル) で -1
+    grades = ["S", "A", "B", "C", "D"]
+    conf = result["confidence"]
+    reason = result["reason"]
+    top_jt = 0
+    try:
+        top_jt = int(top1.get("jockey_trust", 0) or 0)
+    except (TypeError, ValueError):
+        top_jt = 0
+    if top_jt >= 2 and conf in ("A", "B", "C"):
+        conf = grades[max(0, grades.index(conf) - 1)]
+        reason = f"{reason} / 信頼騎手{top_jt:+d}"
+    elif top_jt <= -2 and conf in ("S", "A"):
+        conf = grades[min(len(grades) - 1, grades.index(conf) + 1)]
+        reason = f"{reason} / 不信騎手{top_jt:+d}"
+
+    axis = next((h for h in horses_list if h.get("mark") == "◎"), None)
+    if axis is not None:
+        axis_odds = float(axis.get(odds_key, 0) or 0)
+        axis_pop = axis.get(pop_key, 0) or 0
+        if axis_pop and 5.0 <= axis_odds < 8.0 and conf in ("S", "A", "B", "C"):
+            conf = grades[min(len(grades) - 1, grades.index(conf) + 1)]
+            reason = f"{reason} / ◎オッズ{axis_odds:.1f}倍は過信帯-1"
+
+    result["confidence"] = conf
+    result["reason"] = reason
+    return result
 
 
 # ─── 後方互換 (旧 API) ───

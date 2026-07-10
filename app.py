@@ -324,6 +324,8 @@ def api_predict(race_id):
                 "horse_number": hn,
                 "horse_name": r_info.get("horse_name", ""),
                 "pred_win": float(row["pred_win_norm"]),
+                # #95: 表示用シャープ化勝率 (温度×3)。UI の「AI勝率」はこちらを優先
+                "pred_win_display": float(row.get("pred_win_display", row["pred_win_norm"])),
                 "pred_top3": float(row["pred_top3_norm"] / 3),
                 "odds_win": odds_win,
                 "odds_place": max(odds_win * 0.3, 1.1) if odds_win else 1.5,
@@ -572,6 +574,9 @@ def api_predict_date(date_str):
                     # キー正規化（pred_win_pct→pred_win等）
                     if 'pred_win' not in h and 'pred_win_pct' in h:
                         h['pred_win'] = h['pred_win_pct']
+                    # #95: 表示チャネル正規化 (旧cacheは display 無し → pred_win に落ちる)
+                    if 'pred_win_display' not in h:
+                        h['pred_win_display'] = h.get('pred_win_display_pct') or h.get('pred_win') or h.get('pred_win_pct', 0)
                     if 'pred_top3' not in h and 'pred_top3_pct' in h:
                         h['pred_top3'] = h['pred_top3_pct']
                     db_r = odds_map.get(h['horse_number'])
@@ -598,14 +603,25 @@ def api_predict_date(date_str):
                         ev = b.get("ev", 0)
                         if ev > max_ev:
                             max_ev = ev
-                if max_ev >= 5.0:
-                    myomi = "💎★★★"
-                elif max_ev >= 2.5:
-                    myomi = "💎★★"
-                elif max_ev >= 1.5:
-                    myomi = "💎★"
-                else:
-                    myomi = ""
+                # 妙味判定 v2 (2026-05-17): 信頼度を考慮
+                # 旧版は max_ev のみで判定 → S レース (堅軸推奨) でも ★★★ になり
+                # 「予想固いのに大穴チャンス」と矛盾していた。
+                # 新版は信頼度 S/A では ★★★ を出さない (堅軸 vs 大穴の矛盾解消)。
+                conf_for_myomi = locals().get('confidence', 'C')
+                if conf_for_myomi in ('S', 'A'):
+                    if max_ev >= 5.0: myomi = "💎★★"
+                    elif max_ev >= 3.0: myomi = "💎★"
+                    else: myomi = ""
+                elif conf_for_myomi == 'B':
+                    if max_ev >= 5.0: myomi = "💎★★★"
+                    elif max_ev >= 2.5: myomi = "💎★★"
+                    elif max_ev >= 1.5: myomi = "💎★"
+                    else: myomi = ""
+                else:  # C/D
+                    if max_ev >= 4.0: myomi = "💎★★★"
+                    elif max_ev >= 2.0: myomi = "💎★★"
+                    elif max_ev >= 1.2: myomi = "💎★"
+                    else: myomi = ""
             else:
                 # ── 出馬表確保 ──
                 with get_db() as conn:
@@ -766,6 +782,7 @@ def api_predict_date(date_str):
                         "jockey_name": jockey_name,
                         "trainer_name": trainer_name,
                         "pred_win": round(pred_win * 100, 1),
+                        "pred_win_display": round(float(row.get("pred_win_display", row["pred_win_norm"])) * 100, 1),
                         "pred_top3": round(pred_top3 * 100, 1),
                         "rank_score": round(float(row.get("rank_score", 0)), 2),
                         "si_avg": round(float(row.get("si_avg", 0)), 1),
@@ -852,20 +869,21 @@ def api_predict_date(date_str):
                     for bt in strategy.ALL_BET_TYPES:
                         all_bets[bt] = []
 
-                # ── 信頼度（◎の予測勝率ベース — predict.pyのバックテスト検証済み閾値に統一）──
+                # ── 信頼度: confidence.py(共通モジュール)に委譲 ──
+                # v4 (2026-05-25): 旧 hard-coded 閾値(30/20/15/10%)を撤廃。
+                # ROI 期待値ベース v4 ロジック (predict.py / generate_note.py と同基準) に統一。
+                from confidence import evaluate_from_horses
+                _conf = evaluate_from_horses(
+                    horses,
+                    grade=race_info.get('grade'),
+                    win_key='pred_win',
+                    top3_key='pred_top3',
+                    odds_key='odds_win',
+                )
+                confidence = _conf['confidence']
+                conf_reason = _conf['reason']
                 honmei = next((h for h in horses if h.get('mark') == '◎'), None)
                 honmei_win = honmei['pred_win'] if honmei else 0
-
-                if honmei_win >= 30:
-                    confidence, conf_reason = "S", f"◎の勝率 {honmei_win:.1f}% → バックテスト実勝率64%/複勝率100%"
-                elif honmei_win >= 20:
-                    confidence, conf_reason = "A", f"◎の勝率 {honmei_win:.1f}% → バックテスト実勝率39%/複勝率83%"
-                elif honmei_win >= 15:
-                    confidence, conf_reason = "B", f"◎の勝率 {honmei_win:.1f}% → バックテスト実勝率28%/複勝率71%"
-                elif honmei_win >= 10:
-                    confidence, conf_reason = "C", f"◎の勝率 {honmei_win:.1f}% → バックテスト実勝率22%/複勝率56%"
-                else:
-                    confidence, conf_reason = "D", f"◎の勝率 {honmei_win:.1f}% → 混戦で読みにくいレース"
 
                 # ── 妙味（EVベース）──
                 max_ev = 0.0
@@ -1151,9 +1169,9 @@ if __name__ == "__main__":
 
     # 注: バックグラウンド結果取得は GitHub Actions 側に一本化(課題#10解消)
     # 旧: bg_thread = threading.Thread(target=_bg_result_fetcher, daemon=True); bg_thread.start()
-    # 結果取得は collect_results.yml / refresh_live.yml が担当
+    # 結果取得は race_day_runner.yml (日中loop) / collect_results.yml (夜間スイープ) が担当
     # app.py はダッシュボード閲覧専用に縮小
-    print("   ℹ️  結果自動取得は GitHub Actions(refresh_live.yml/collect_results.yml)に委譲")
+    print("   ℹ️  結果自動取得は GitHub Actions(race_day_runner.yml/collect_results.yml)に委譲")
 
     app.run(debug=True, host="0.0.0.0", port=5001)
 

@@ -30,10 +30,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: keiba.db
-          key: keiba-db-${{ github.run_id }}
+          key: keiba-db-${{ github.run_number }}
           restore-keys: |
             keiba-db-
 
+
+      # 🛡 git を source of truth に強制 (cache 古さの事故防止 - 2026-05-24)
+      - name: Force git DB (override stale cache)
+        run: |
+          git checkout HEAD -- keiba.db.gz
+          bash scripts/db_unpack.sh
+          echo "✅ keiba.db を git HEAD に復元"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -67,6 +74,12 @@ jobs:
           DATE="${{ inputs.date }}"
           python predict.py collect --date "$DATE" || true
 
+      # 🛡 Pre-flight check: races/runners/predictions 完整性確認 (#18 教訓)
+      - name: Pre-flight check
+        run: |
+          DATE="${{ inputs.date }}"
+          python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || echo "⚠️ Pre-flight 警告(続行)"
+
       - name: Run prediction
         run: |
           DATE="${{ inputs.date }}"
@@ -92,22 +105,27 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: keiba.db
-          key: keiba-db-${{ github.run_id }}
+          key: keiba-db-${{ github.run_number }}
 
       - name: Commit and push JSON
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 🆕 #68 audit: debug 用のため意図的に docs/data/ のみ commit (DB変更は破棄される)。
+          # 本番 predict は auto_post_x.yml を使うこと。
           git add docs/data/predictions_*.json docs/data/index.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "no JSON changes to commit"
           else
             git commit -m "🧪 Manual predict ${{ inputs.date }} ($(TZ=Asia/Tokyo date '+%H:%M JST'))"
+            # 作業ブランチ (workflow_dispatch で --ref 指定) でも動くよう
+            # GITHUB_REF_NAME を rebase/push 対象に。デフォルトは main。
+            BRANCH="${GITHUB_REF_NAME:-main}"
             # 並行workflow対策: rebase+retry
             for i in 1 2 3; do
-              git pull --rebase --autostash origin main || true
-              if git push; then echo "✅ pushed (試行$i)"; break; fi
-              echo "⚠️ push失敗→リトライ($i)"; sleep 5
+              git pull --rebase --autostash -X theirs origin "$BRANCH" || true
+              if git push origin "HEAD:$BRANCH"; then echo "✅ pushed (試行$i, branch=$BRANCH)"; break; fi
+              echo "⚠️ push失敗→リトライ($i, branch=$BRANCH)"; sleep 5
             done
           fi
 
