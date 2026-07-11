@@ -39,6 +39,9 @@ concurrency:
   group: race-day-runner
   cancel-in-progress: false  # 重複起動を許可しない
 
+env:
+  MARKS_ABILITY_W: "0.5"   # #108: 印の人気依存を弱める能力ブレンド (predict の印選定のみに作用)
+
 jobs:
   run:
     runs-on: ubuntu-latest

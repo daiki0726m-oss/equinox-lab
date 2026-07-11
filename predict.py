@@ -830,11 +830,26 @@ def cmd_predict(args):
             _has_market = _inv_sum > 0 and len(_inv) >= len(sorted_preds) * 0.8
             _t3_sum = sum((p.get('pred_top3') or 0) for p in sorted_preds) or 1.0
 
+            # ── #108 (2026-07-11): 能力ブレンドで「人気依存を弱める」 ──
+            # ユーザー指示「人気を弱くして」。オッズ非依存の能力モデル (ability_score,
+            # レース内正規化勝率) を印スコアに混ぜる。20,663R スイープ:
+            #   a=0.0: 完全捕捉37.2% ◎勝率34.0% ◎=1人気86%
+            #   a=0.5: 完全捕捉34.8% ◎勝率35.4% ◎=1人気72% (◎勝率は改善、捕捉-2.4pt)
+            #   a=1.0: 完全捕捉25.9% (全面置換は#98の再確認 = 破滅)
+            # MARKS_ABILITY_W env で制御 (default 0.0 = 従来)。workflow 側で設定。
+            _abil_w = float(os.environ.get('MARKS_ABILITY_W', '0.0'))
+            _ab_sum = sum((p.get('ability_score') or 0) for p in sorted_preds)
+            _has_abil = _ab_sum > 0
+
             def _mark_rank_key(p):
                 _w = _blend_w if _has_market else 0.0
                 _mkt = (_inv.get(p['horse_number'], 0.0) / _inv_sum) if _has_market else 0.0
                 _mod = (p.get('pred_top3') or 0) / _t3_sum
-                return _w * _mkt + (1.0 - _w) * _mod
+                base = _w * _mkt + (1.0 - _w) * _mod
+                if _has_abil and _abil_w > 0:
+                    _ab = (p.get('ability_score') or 0) / _ab_sum
+                    base = (1.0 - _abil_w) * base + _abil_w * _ab
+                return base
 
             by_top3 = sorted(sorted_preds, key=_mark_rank_key, reverse=True)
             capture5 = by_top3[:5]

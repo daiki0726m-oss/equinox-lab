@@ -88,6 +88,9 @@ concurrency:
   group: auto-post-x
   cancel-in-progress: false
 
+env:
+  MARKS_ABILITY_W: "0.5"   # #108: 印の人気依存を弱める能力ブレンド (predict の印選定のみに作用)
+
 jobs:
   # ─── 重複投稿防止: cron実行時、直近90分以内に同モードの dispatch 成功があればスキップ ───
   dedup:
