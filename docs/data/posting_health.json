@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-11T08:47:17.650427+09:00",
+  "generated_at": "2026-07-11T10:41:56.012760+09:00",
   "today": "2026-07-11 (Sat)",
   "weekday": 5,
   "slots": {
@@ -27,24 +27,35 @@
       "expected": "07:00 JST",
       "deadline": "07:30 JST",
       "recent_success": {
-        "created_at": "2026-07-11T07:53:40+09:00",
-        "title": "cron",
-        "event": "schedule",
-        "delay_minutes": 54
+        "created_at": "2026-07-11T08:56:18+09:00",
+        "title": "predict",
+        "event": "workflow_dispatch",
+        "delay_minutes": 116
       },
-      "delay_minutes": 54,
+      "delay_minutes": 116,
       "workflow": "auto_post_x.yml"
     },
     "odds_flash": {
       "slot": "odds_flash",
-      "status": "future",
+      "status": "ok_late",
       "expected": "09:30 JST",
+      "deadline": "10:15 JST",
+      "recent_success": {
+        "created_at": "2026-07-11T09:43:52+09:00",
+        "title": "odds_flash",
+        "event": "workflow_dispatch",
+        "delay_minutes": 14
+      },
+      "delay_minutes": 14,
       "workflow": "auto_post_x.yml"
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "future",
+      "status": "ok",
       "expected": "10:15 JST",
+      "actual": "2026-07-11T10:23:36+09:00",
+      "delay_minutes": 9,
+      "event": "workflow_dispatch",
       "workflow": "auto_post_x.yml"
     },
     "results": {
@@ -86,13 +97,13 @@
     }
   },
   "summary": {
-    "ok": 0,
+    "ok": 1,
     "missing": 0,
-    "future": 3,
+    "future": 1,
     "not_today": 7,
     "missed": 1,
     "ok_delayed": 0,
-    "ok_late": 1
+    "ok_late": 2
   },
   "missed_slots": [
     {
