@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-12T10:43:34.649482+09:00",
+  "generated_at": "2026-07-12T14:16:07.220660+09:00",
   "today": "2026-07-12 (Sun)",
   "weekday": 6,
   "slots": {
@@ -51,11 +51,16 @@
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "ok",
+      "status": "ok_late",
       "expected": "10:15 JST",
-      "actual": "2026-07-12T10:27:02+09:00",
-      "delay_minutes": 12,
-      "event": "workflow_dispatch",
+      "deadline": "10:50 JST",
+      "recent_success": {
+        "created_at": "2026-07-12T13:39:50+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 205
+      },
+      "delay_minutes": 205,
       "workflow": "auto_post_x.yml"
     },
     "results": {
@@ -104,13 +109,13 @@
     }
   },
   "summary": {
-    "ok": 1,
+    "ok": 0,
     "missing": 0,
     "future": 1,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 3
+    "ok_late": 4
   },
   "missed_slots": []
 }
