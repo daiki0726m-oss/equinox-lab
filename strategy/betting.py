@@ -7,6 +7,7 @@
 """
 
 import math
+import os
 from itertools import combinations
 
 
@@ -291,7 +292,8 @@ class BettingStrategy:
         def add(t, detail, hns, odds, prob, name, amount=None):
             nonlocal spent
             amt_i = amount or amt
-            sig = (t, tuple(sorted(hns)))
+            # 三連単は着順が意味を持つので sig を順序保存 (sorted だと別順序が同一視され欠落)
+            sig = (t, tuple(hns) if t == "三連単" else tuple(sorted(hns)))
             if sig in signatures:
                 return
             if len(set(hns)) != len(hns):
@@ -336,13 +338,36 @@ class BettingStrategy:
         # #95: 軸馬が相手プールに混入しないよう明示的に除外 (同一馬ペア防止の二重防御)
         partners = [p for p in partners if p["horse_number"] != center][:5]
 
+        # ── #113 (2026-07-14): レース適応型の買い目構造 (BET_STRUCTURE_ADAPTIVE=1) ──
+        # OOS (2025-03+, 2,823R) の条件付き実測 (#112):
+        #   ◎1倍台: G=三連複2頭軸(◎+○)→(▲△×+注) 143% (上位3的中依存39%だが月別7/10で100%+、
+        #            除外でも87% = 他構造74-89%より一貫優位) / D 74.6% / A 88.6%
+        #   ◎2倍台×11頭+: D=三連単F(1着◎○/2着◎○▲△/3着印5+注) 90.5% / A 82.8 / G 75.0
+        #   少頭数(≤10): D が 68.6% に崩れる → A (85.6%)
+        #   ◎3倍+: A 83.5% が最良 (G/D は 71-81%)
+        # 原則「◎を1着に固定しない」(固定Fは73.2%で最悪、#112)。実オッズ必須 (無ければ従来動作)。
+        structure = None
+        if os.environ.get('BET_STRUCTURE_ADAPTIVE') == '1' and p1.get('_has_real_odds'):
+            _ax_od = p1.get('odds_win') or 0
+            _nh = len(sorted_preds)
+            if 0 < _ax_od < 2.0:
+                structure = 'G'
+            elif 2.0 <= _ax_od < 3.0 and _nh >= 11:
+                structure = 'D'
+            elif _ax_od > 0:
+                structure = 'A'
+        if structure == 'D':
+            budget = max(budget, amt * 29)  # 三連単24点+ワイド5点の途中切れ防止
+        elif structure is not None:
+            budget = max(budget, amt * 11)
+
         # 優先順は ROI 最大化観点で「馬連 → ワイド → 三連複」
         # データから: 馬連207% > 三連複174% > ワイド150% だが、
         # 馬連・ワイドは1人気軸で的中率が高くROIが安定 → 先に確保
 
         # ─── 主力1: 馬連 ◎-相手 流し (5点) ROI 207% ───
         # trio_focus band 中は生成しない (帯内 馬連 ROI 83%、#95)
-        if "馬連" in enabled and not trio_focus:
+        if "馬連" in enabled and not trio_focus and structure is None:
             for partner in partners[:5]:
                 nums = sorted([center, partner["horse_number"]])
                 ow1 = p1.get("odds_win", 3) or 3
@@ -365,9 +390,17 @@ class BettingStrategy:
                 add("ワイド", f"{nums[0]}-{nums[1]}", nums, est_odds, est_prob, names)
 
         # ─── 主力3: ◎軸三連複 5頭流し (5頭から2頭 = 10点) ROI 174% ───
-        if "三連複" in enabled and len(partners) >= 2:
+        if "三連複" in enabled and len(partners) >= 2 and structure != 'D':
             from itertools import combinations
-            for pair in combinations(partners[:5], 2):
+            if structure == 'G' and len(partners) >= 2:
+                # 2頭軸 (◎+○) → 残り相手ながし (~4点)
+                pairs = [(partners[0], x) for x in partners[1:5]]
+            elif structure == 'A':
+                # ◎軸ながし・相手は印4頭のみ (注を含めない、#112 の A 定義に一致)
+                pairs = list(combinations(partners[:4], 2))
+            else:
+                pairs = list(combinations(partners[:5], 2))
+            for pair in pairs:
                 nums = sorted([center, pair[0]["horse_number"], pair[1]["horse_number"]])
                 ow1 = p1.get("odds_win", 3) or 3
                 ow2 = pair[0].get("odds_win", 5) or 5
@@ -381,6 +414,30 @@ class BettingStrategy:
                 # trio_focus band 中は2倍額 (帯内 trio ROI 200%、#95)
                 add("三連複", f"{nums[0]}-{nums[1]}-{nums[2]}", nums, est_odds, est_prob, names,
                     amount=(amt * 2 if trio_focus else None))
+
+        # ─── #113 D: 三連単フォーメーション 1着{◎○}/2着{◎○▲△}/3着{印5+注} (~24点) ───
+        # OOS全体 94.2% で全18構成の最高 (#112)。◎の2-3着取りこぼしを○が拾う構造。
+        if structure == 'D' and "三連単" in enabled and len(partners) >= 4:
+            firsts = [p1, partners[0]]
+            seconds = [p1] + partners[:3]
+            thirds = [p1] + partners[:5]
+            for a in firsts:
+                for b in seconds:
+                    if b["horse_number"] == a["horse_number"]:
+                        continue
+                    for cc in thirds:
+                        if cc["horse_number"] in (a["horse_number"], b["horse_number"]):
+                            continue
+                        hns = [a["horse_number"], b["horse_number"], cc["horse_number"]]
+                        oa = a.get("odds_win", 3) or 3
+                        ob = b.get("odds_win", 5) or 5
+                        oc = cc.get("odds_win", 8) or 8
+                        est_odds = max(20.0, oa * ob * oc * 0.18)
+                        est_prob = min((a.get("pred_win", 0.1) or 0.1) *
+                                       min((b.get("pred_top3", 0.15) or 0.15) * 2, 0.6) *
+                                       min((cc.get("pred_top3", 0.1) or 0.1) * 2, 0.5), 0.08)
+                        names = f'{a.get("horse_name","")}→{b.get("horse_name","")}→{cc.get("horse_name","")}'
+                        add("三連単", f"{hns[0]}-{hns[1]}-{hns[2]}", hns, est_odds, est_prob, names)
 
         return bets, spent
 
