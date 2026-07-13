@@ -853,6 +853,26 @@ def cmd_predict(args):
 
             by_top3 = sorted(sorted_preds, key=_mark_rank_key, reverse=True)
             capture5 = by_top3[:5]
+            # ── #110 (2026-07-13): ○を妙味枠に (MARKS_VALUE_TAIKO=1) ──
+            # ユーザー「本命や対抗が人気馬すぎて面白くない」(8度目)。○ を
+            # 「モデル複勝率÷市場率が最大の 5-20倍馬」に置換。OOS 10ヶ月実測:
+            # ○が平均6.3人気/中央16.3倍になる代わり、完全捕捉 34.1→29.6% (-4.5pt)、
+            # ○単体複勝率 51→25%。的中でなく「面白さ」への製品判断 (#108 と同じ扱い)。
+            # 実オッズが無い時 (木金の事前予測) は発動しない。
+            if os.environ.get('MARKS_VALUE_TAIKO') == '1' and _has_market:
+                def _vt(p):
+                    od = p.get('odds_win') or 0
+                    mkt = (_inv.get(p['horse_number'], 0.0) / _inv_sum) if _inv_sum else 0
+                    t3 = (p.get('pred_top3') or 0) / _t3_sum
+                    return (t3 / mkt) if mkt > 0 else 0
+                _vpool = [p for p in sorted_preds
+                          if p.get('_has_real_odds') and 5.0 <= (p.get('odds_win') or 0) < 20.0
+                          and p is not by_top3[0]]
+                if _vpool:
+                    _vp = max(_vpool, key=_vt)
+                    _rest = [p for p in by_top3 if p is not _vp][:4]
+                    if len(_rest) >= 4:
+                        capture5 = [_rest[0], _vp] + _rest[1:4]
             for i, mk in enumerate(['◎', '○', '▲', '△', '×']):
                 if i < len(capture5):
                     capture5[i]['mark'] = mk
