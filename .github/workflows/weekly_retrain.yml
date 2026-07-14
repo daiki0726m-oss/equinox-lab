@@ -93,8 +93,10 @@ jobs:
           echo "flags=$FLAGS" >> $GITHUB_OUTPUT
           if [ -n "$FLAGS" ]; then echo "🔻 segment flag: $FLAGS"; fi
 
+      # #114: retrain スキップ週も ROI レポートは毎週公開する (7/13 に retrain skip →
+      # roi_weekly.json が 11日 stale = #111「週次ROI報告」の結線切れが実発生)
       - name: Commit updated model + monitor
-        if: steps.check.outputs.age >= 7 || github.event_name == 'workflow_dispatch'
+        if: always() && steps.check.outputs.age != ''
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
