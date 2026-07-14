@@ -818,20 +818,24 @@ def cmd_predict(args):
             try:
                 _rd = race.get('race_date') or f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
                 uh = _upset_hist(race.get('race_name', ''), _rd)
-                if uh and uh['label'] == '荒れやすい':
+                if uh and uh['label'] in ('荒れやすい', '紐荒れ'):
                     # 荒れ=分布の尻尾が太る (1人気が最弱ではない #96/#100) → 軸は維持し
                     # カバーを広げるのが正しい含意。レース固有の実測を根拠に添える (#94)。
-                    _extras.append(
-                        f"\n⚡過去{uh['n']}年は荒れ傾向 (勝ち馬平均{uh['avg_win_pop']:.0f}人気"
-                        f"・二桁人気馬券内{uh['big_rate']*100:.0f}%) → 広めのカバーを\n")
+                    # #114: 行を短縮 — 旧76字は印6行の長い日に272字予算から silent drop
+                    # していた (七夕賞2026 で実発生、290>272)。紐荒れ型も⚡対象に。
+                    _tag = '荒れ傾向' if uh['label'] == '荒れやすい' else '紐荒れ型'
                     _marked = {m.get('horse_number') for m in marks.values()}
                     _cands = [q for q in preds
                               if q.get('horse_number') not in _marked
                               and (q.get('odds_win') or 0) >= 7]
-                    if _cands:
-                        _v = max(_cands, key=lambda q: (q.get('pred_top3_pct') or 0) * (q.get('odds_win') or 0))
-                        if (_v.get('pred_top3_pct') or 0) > 0:
-                            _extras.append(f"穴注意: {_v.get('horse_name','?')}（単{_v.get('odds_win'):.0f}倍）\n")
+                    _v = max(_cands, key=lambda q: (q.get('pred_top3_pct') or 0) * (q.get('odds_win') or 0)) if _cands else None
+                    if _v and (_v.get('pred_top3_pct') or 0) > 0:
+                        # 統合1行 (⚡タグ+実利の穴馬)。分割2行は272字予算に入らない日が多い
+                        _extras.append(f"\n⚡{_tag}・穴注意: {_v.get('horse_name','?')}"
+                                       f"（単{_v.get('odds_win'):.0f}倍）\n")
+                    else:
+                        _extras.append(f"\n⚡{_tag}: 勝ち馬平均{uh['avg_win_pop']:.0f}人気"
+                                       f"/二桁人気馬券内{uh['big_rate']*100:.0f}%\n")
                 elif uh and uh['label'] == '堅い':
                     _extras.append(f"\n🔒過去{uh['n']}年は堅め (勝ち馬平均{uh['avg_win_pop']:.0f}人気)\n")
             except Exception:
@@ -928,6 +932,13 @@ def cmd_predict(args):
                 json.dump({"date": date_str, "posted_at": _ts, "races": _sidecar},
                           _f, ensure_ascii=False, indent=1)
             print(f"📌 サイドカー保存: {_sc_path} (clobber耐性の正本)")
+            # #114: 投稿本文の全文も記録 — 「⚡/穴注意が実際に配信されたか」を後から
+            # 検証できる記録が無かった (post_history はハッシュ管理で本文が残らない)
+            _tw_path = os.path.join("docs", "data", f"posted_tweets_{date_str}.json")
+            with open(_tw_path, "w", encoding="utf-8") as _f:
+                json.dump({"date": date_str, "posted_at": _ts, "tweets": tweets},
+                          _f, ensure_ascii=False, indent=1)
+            print(f"📌 投稿全文保存: {_tw_path}")
         except Exception as _e:
             print(f"⚠️ サイドカー保存失敗(非致命): {_e}")
 

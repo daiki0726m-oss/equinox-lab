@@ -884,7 +884,13 @@ def cmd_predict(args):
                 t3 = p.get('pred_top3', 0) or 0            # モデルの複勝率
                 return (t3 / mkt) if mkt > 0 else 0
             rest = [p for p in sorted_preds if not p.get('mark')]
-            longshots = [p for p in rest if (p.get('odds_win') or 0) >= 7]
+            # #114 (2026-07-14): 注に上限30倍を導入。OOS実測 (2025-03+): 上限なしは
+            # 複勝率7.4%/単勝ROI72円 (深い大穴に吸われる #58 FLバイアス)、7-30倍×value は
+            # 複勝率19.7%/単勝ROI91円/複勝ROI87円で全候補最良。実運用4週の
+            # 「20-50倍帯 62R 回収ゼロ (roi_weekly 降格флаг)」とも整合。
+            longshots = [p for p in rest if 7 <= (p.get('odds_win') or 0) < 30]
+            if not longshots:
+                longshots = [p for p in rest if (p.get('odds_win') or 0) >= 7]
             pool = longshots if longshots else rest
             if pool:
                 chu = max(pool, key=_value)

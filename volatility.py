@@ -218,6 +218,12 @@ def compute_race_upset_history(race_name: str, race_date: str,
     if avg_pop >= 5.0 or big_rate >= 0.5:
         label = "荒れやすい"
         icon = "⚡"
+    elif avg_pop <= 3.5 and big_rate >= 1/3:
+        # #114 (2026-07-14): 紐荒れ型 — 勝ち馬は堅いが 2-3着に人気薄が入る型 (七夕賞2026:
+        # 1着2人気-2着6人気-3着15人気)。OOT検証: この予兆がある固有名レースの次エディションは
+        # 三連複 中央値7,870円・万馬券率42% (予兆なし同勝ち馬プロファイル: 4,170円・29%)。
+        label = "紐荒れ"
+        icon = "⚡"
     elif avg_pop <= 2.5 and big_rate <= 0.25:
         label = "堅い"
         icon = "🔒"
