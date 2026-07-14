@@ -875,6 +875,8 @@ def cmd_predict(args):
     t_last = f"📊 以上 {date_label} のAI予想印です\n\n"
     t_last += f"全{len(target_races)}レースの印を\n"
     t_last += f"レース前に事前公開しています\n\n"
+    # #115: 透明性を前面に (収益化の核 = 「凍結記録・後出しなし」の信頼)
+    t_last += "📌 印は投稿時点で凍結記録\n(削除・後出し・的中だけ自慢なし)\n\n"
     t_last += "結果は夕方に速報します🎯\n\n"
     t_last += f"{data_credit()}\n"
     t_last += "#AI競馬 #競馬予想"
@@ -1562,6 +1564,8 @@ def cmd_results(args):
         rate = round(top3_marked * 100 / total_marked)
         t_last += f"\n印馬の3着内率: {top3_marked}/{total_marked} ({rate}%)\n"
 
+    # #115: 外れ週も同じフォーマットで必ず出す「全成績公開」の宣言
+    t_last += "\n📌 予想は投稿時点で凍結記録\n外れも隠さず毎週ROIを公開しています\n"
     next_label = "来週も"
     if dt.weekday() == 5:  # 土曜
         next_label = "明日も"
