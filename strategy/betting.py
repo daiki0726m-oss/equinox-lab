@@ -7,6 +7,7 @@
 """
 
 import math
+import os
 from itertools import combinations
 
 
@@ -122,6 +123,61 @@ class BettingStrategy:
             return False
         odds = axis.get('odds_win') or 0
         return 2.0 <= odds < 3.0
+
+    def adaptive_structure(self, predictions, confidence, race_info=None):
+        """#113 (2026-07-14): レース特性適応型の honor 構造切替。
+
+        env BET_STRUCTURE_ADAPTIVE=1 でのみ発動 (default OFF)。
+        構造×(信頼度×頭数×荒れ度×◎オッズ帯) を OOS 2025-03+ 2,910R で cross-tab
+        実測し、n>=100 かつ 前後半期 (3-7月/8-12月) 両方で方向一致のセルだけ採用。
+        荒れ度(⚡/🔒)・三連単系のセルは単発的中支配 (ex-topday で崩壊) のため全て不採用。
+
+        採用2規則 (band = trio_focus_band が優先、band 発火時は呼び出し側で無効化):
+          R1 'S_lowodds_2axis': 信頼度S × ◎実オッズ<2.0 × 11頭+ × ○=妙味馬(実5-20倍)
+             → 馬連ながしを生成せず、三連複◎○2頭軸ながし (相手▲△×注 4点) に切替。
+             実測: ROI 181% (障害除外 n=478 / ex-topday 139% / H1 157% / H2 194% /
+             負け月1/10 / 的中95回=19%で単発依存なし)。同セルの馬連は 83% (ex 75%)。
+             論理: 1.x倍の堅い◎が3着内アンカー、○は#110の妙味馬(5-20倍)なので
+             2頭軸が決まると三連複でも中穴配当 (的中時平均 3,675円/400円)。
+          R2 'field15_trio6': 15頭+ → 馬連ながし (ROI 73.7%、全10ヶ月負け) を生成せず、
+             三連複◎軸ながしを注抜き6点 (相手○▲△×) で生成。
+             実測 (R1非該当の15頭+ n=1,213): 三連複6点 91.0% (H1 87.9/H2 94.4)。
+             多頭数では2頭ピンポイントの馬連が構造的に不利、紐を広げた三連複が優位。
+
+        障害/ジャンプは常に対象外 (R1セル内の障害 n=22 は ROI 39%、ML 学習データ外 #95)。
+        Returns: None (OFF/該当なし) or
+          {'rule': str, 'drop_umaren': True, 'trio_2axis': bool, 'trio_no_chu': bool,
+           'reason': str}
+        """
+        if os.environ.get('BET_STRUCTURE_ADAPTIVE') != '1':
+            return None
+        if not predictions:
+            return None
+        race_name = (race_info or {}).get('race_name', '') if race_info else ''
+        if race_name and any(k in race_name for k in ('障害', 'ジャンプ')):
+            return None
+        n = (race_info or {}).get('horse_count', 0) if race_info else 0
+        n = n or len(predictions)
+        axis = self.get_axis_horse(predictions)
+        # R1: S × ◎<2.0 (実オッズ) × 11頭+ × ○が妙味馬 (実5-20倍)
+        if confidence == 'S' and n >= 11 and axis and axis.get('_has_real_odds') \
+                and 0 < (axis.get('odds_win') or 0) < 2.0:
+            taiko = next((p for p in predictions if p.get('mark') == '○'), None)
+            if taiko and taiko.get('_has_real_odds') \
+                    and 5.0 <= (taiko.get('odds_win') or 0) < 20.0:
+                return {
+                    'rule': 'S_lowodds_2axis', 'drop_umaren': True,
+                    'trio_2axis': True, 'trio_no_chu': False,
+                    'reason': 'S×◎1.x倍×11頭+×○妙味馬: 三連複◎○2頭軸4点 (OOS ROI 181%) / 馬連なし',
+                }
+        # R2: 15頭+ → 馬連なし + 三連複は注抜き6点
+        if n >= 15:
+            return {
+                'rule': 'field15_trio6', 'drop_umaren': True,
+                'trio_2axis': False, 'trio_no_chu': True,
+                'reason': '15頭+: 馬連(OOS 74%)なし、三連複◎軸は注抜き6点 (91%)',
+            }
+        return None
 
     def kelly_criterion(self, prob, odds):
         """ケリー基準で最適賭け比率を計算"""
@@ -253,7 +309,7 @@ class BettingStrategy:
         return True, "OK"
 
     def _honor_bets(self, sorted_preds, enabled, budget, predictions=None, line_amount=None,
-                    trio_focus=False):
+                    trio_focus=False, adaptive=None):
         """印通り保証買い目を生成 — v3 (2026-05-27 confidence-aware)
 
         3-5月 7000R バックテストで判明した「最強の買い方」を主力化:
@@ -287,6 +343,11 @@ class BettingStrategy:
             # 馬連はこの帯で ROI 83% のため生成しない (下の 馬連 節で skip)。
             # 予算をワイド5点 + 三連複10点×2倍 = 25×amt まで拡張して途中切れを防ぐ。
             budget = max(budget, amt * 25)
+        elif adaptive:
+            # #113: 適応構造は馬連5点が消える代わりに三連複系が入る。
+            # R1 = ワイド5 + 2頭軸4 = 9点 / R2 = ワイド5 + 三連複6 = 11点。
+            # 既定予算 (10×amt) だと R2 の最終行が枯れるため必要点数まで拡張。
+            budget = max(budget, amt * (9 if adaptive.get('trio_2axis') else 11))
 
         def add(t, detail, hns, odds, prob, name, amount=None):
             nonlocal spent
@@ -342,7 +403,9 @@ class BettingStrategy:
 
         # ─── 主力1: 馬連 ◎-相手 流し (5点) ROI 207% ───
         # trio_focus band 中は生成しない (帯内 馬連 ROI 83%、#95)
-        if "馬連" in enabled and not trio_focus:
+        # #113 adaptive: R1/R2 該当時も生成しない (R1セル 83% / 15頭+ 74% の損失層)
+        if "馬連" in enabled and not trio_focus \
+                and not (adaptive and adaptive.get('drop_umaren')):
             for partner in partners[:5]:
                 nums = sorted([center, partner["horse_number"]])
                 ow1 = p1.get("odds_win", 3) or 3
@@ -364,10 +427,36 @@ class BettingStrategy:
                 names = f"{center_name}-{partner.get('horse_name','')}"
                 add("ワイド", f"{nums[0]}-{nums[1]}", nums, est_odds, est_prob, names)
 
+        # ─── #113 R1: 三連複◎○2頭軸ながし (相手▲△×注 = 4点) ───
+        # S×◎1.x倍×11頭+×○妙味馬 セル限定 (OOS ROI 181%、adaptive_structure 参照)。
+        # ◎(堅いアンカー)+○(5-20倍の妙味馬) を軸に、3頭目だけ流す。
+        if adaptive and adaptive.get('trio_2axis') and "三連複" in enabled and len(partners) >= 2:
+            taiko = next((p for p in partners if p.get('mark') == '○'), None)
+            if taiko:
+                for third in [p for p in partners if p is not taiko][:4]:
+                    nums = sorted([center, taiko["horse_number"], third["horse_number"]])
+                    ow1 = p1.get("odds_win", 3) or 3
+                    ow2 = taiko.get("odds_win", 8) or 8
+                    ow3 = third.get("odds_win", 8) or 8
+                    est_odds = max(8.0, ow1 * ow2 * ow3 * 0.06)
+                    est_prob = min(p1.get("pred_top3", 0.2) * 3, 0.85) * \
+                               min(taiko.get("pred_top3", 0.1) * 3, 0.6) * \
+                               min(third.get("pred_top3", 0.1) * 3, 0.55) * 0.5
+                    est_prob = min(est_prob, 0.2)
+                    names = f"{center_name}-{taiko.get('horse_name','')}-{third.get('horse_name','')}"
+                    add("三連複", f"{nums[0]}-{nums[1]}-{nums[2]}", nums, est_odds, est_prob, names)
+
         # ─── 主力3: ◎軸三連複 5頭流し (5頭から2頭 = 10点) ROI 174% ───
-        if "三連複" in enabled and len(partners) >= 2:
+        # #113 R2 (15頭+): 相手から注を外して ○▲△× の6点に絞る
+        # (10点 81.4% → 6点 91.0%、多頭数では注の紐荒れがノイズ)
+        # #113 R1: 2頭軸4点に切替済みなので通常の◎軸ながしは生成しない
+        # (予算残りで1点だけ漏れ込み、検証済み4点構造が崩れるのを防ぐ)
+        if "三連複" in enabled and len(partners) >= 2 \
+                and not (adaptive and adaptive.get('trio_2axis')):
             from itertools import combinations
-            for pair in combinations(partners[:5], 2):
+            _trio_partners = [p for p in partners if p.get('mark') != '注'][:4] \
+                if (adaptive and adaptive.get('trio_no_chu')) else partners[:5]
+            for pair in combinations(_trio_partners, 2):
                 nums = sorted([center, pair[0]["horse_number"], pair[1]["horse_number"]])
                 ow1 = p1.get("odds_win", 3) or 3
                 ow2 = pair[0].get("odds_win", 5) or 5
@@ -437,6 +526,15 @@ class BettingStrategy:
             # min(300, budget - total_amount) が負額 bet を生む (smoke test で検出)。
             budget = max(budget, line_amount * 25)
 
+        # ── #113: レース特性適応型の構造切替 (BET_STRUCTURE_ADAPTIVE=1、default OFF) ──
+        # band が優先 (band=◎2.0-2.9 と R1=◎<2.0 はオッズ帯で排他、R2 とは band 優先)。
+        adaptive = None if band else self.adaptive_structure(
+            predictions, confidence, race_info=race_info)
+        if adaptive:
+            print(f"  🧩 adaptive構造 [{adaptive['rule']}]: {adaptive['reason']}")
+            # _honor_bets 内部の予算拡張 (9/11×line_amount) と整合させる (band と同じ理由)
+            budget = max(budget, line_amount * (9 if adaptive.get('trio_2axis') else 11))
+
         # ── 0. 印通り保証買い目 (EV 関係なく必ず含める) ──
         # v2 (2026-05-24): バックテスト結果から「最強の買い目」を主力化:
         #   - ◎軸三連複5頭流し (10点) ROI 174%
@@ -447,7 +545,8 @@ class BettingStrategy:
         honor_list, honor_spent = self._honor_bets(sorted_preds, enabled, budget,
                                                     predictions=predictions,
                                                     line_amount=line_amount,
-                                                    trio_focus=band)
+                                                    trio_focus=band,
+                                                    adaptive=adaptive)
         bets = list(honor_list)
         total_amount = honor_spent
         # honor で既に bet した signature を以後の EV bets で重複させない
@@ -787,6 +886,9 @@ class BettingStrategy:
             "bet_count": len(bets),
             # #95: trio-focus band 該当フラグ (sb=0 ゼロ化の例外判定と ROI モニタ用)
             "trio_focus_band": band,
+            # #113: 適応構造の発火ルール (None=非該当/OFF)。sb=0 ゼロ化の例外判定と
+            # roi_weekly_monitor でのセグメント追跡用。
+            "adaptive_rule": adaptive["rule"] if adaptive else None,
         }
 
     def format_recommendation(self, bets_result, race_info=None):

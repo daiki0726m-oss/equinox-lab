@@ -1058,10 +1058,17 @@ def cmd_predict(args):
         # 例外: trio-focus band (◎2.0-2.9倍 × S/A/B、実測 trio ROI 200% / 単日除外161%)
         #       該当レースは sb=0 でも三連複/ワイドの honor 買い目を投資対象として残す。
         trio_band = bets_result.get('trio_focus_band', False)
+        # #113: adaptive R1 (S×◎1.x倍×11頭+×○妙味馬) は band と同格の検証済み例外。
+        # ◎<2.0 は odds band ガードで常に sb=0 になるが、このセルの三連複◎○2頭軸は
+        # OOS ROI 181% (ex-topday 139% / 両半期>150% / n=478) のため投資対象として残す。
+        # ワイドは同セルで 91% (損失) なので band と違い残さない。
+        _adaptive_r1 = bets_result.get('adaptive_rule') == 'S_lowodds_2axis'
         if not should_bet:
             _zeroed = 0
             for b in bets_result.get('bets', []):
                 if trio_band and b.get('honor') and b.get('type') in ('三連複', 'ワイド'):
+                    continue
+                if _adaptive_r1 and b.get('honor') and b.get('type') == '三連複':
                     continue
                 if b.get('amount'):
                     b['amount'] = 0
@@ -1069,6 +1076,8 @@ def cmd_predict(args):
             bets_result['total_amount'] = sum(b.get('amount', 0) for b in bets_result.get('bets', []))
             if trio_band:
                 reason = f"{reason} (trio-focus band: 三連複/ワイドのみ投資)"
+            if _adaptive_r1:
+                reason = f"{reason} (adaptive R1: 三連複◎○2頭軸のみ投資)"
             if _zeroed:
                 print(f"  🛡️ sb=0 のため {_zeroed} 点の金額を 0 に強制 (参考表示のみ)")
 
