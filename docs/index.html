@@ -1448,7 +1448,7 @@ function renderPredTab(race) {
           ${b.horse_name ? `<span style="font-size:10px;color:var(--text-muted)">${b.horse_name}</span>` : ''}
         </div>
         <div style="text-align:right;">
-          <div class="bet-amount">¥${b.amount.toLocaleString()}</div>
+          <div class="bet-amount">${b.amount > 0 ? '¥' + b.amount.toLocaleString() : '<span style="font-size:10px;color:var(--text-muted)">見送り(参考)</span>'}</div>
           ${race.has_results ? `<span class="bet-hit-label ${isHit?'hit':'miss'}">${hitLabel}</span>` : ''}
           ${payoutLabel ? `<div class="bet-payout">${payoutLabel}</div>` : ''}
         </div>
