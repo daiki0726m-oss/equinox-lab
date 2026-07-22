@@ -1158,6 +1158,7 @@ def _build_results_from_json(date_str):
                 'horse_number': horse.get('horse_number', 0),
                 'horse_name': horse.get('horse_name', ''),
                 'finish': fin,
+                'popularity': horse.get('popularity') or 0,
             })
 
         if marked:
@@ -1284,6 +1285,7 @@ def _build_results_jsonmarks_dbfinish(date_str):
                         'horse_number': h.get('horse_number', 0),
                         'horse_name': h.get('horse_name', ''),
                         'finish': finish_map.get(h.get('horse_number', 0)),
+                        'popularity': h.get('popularity') or 0,
                     })
             if marked:
                 race_data.append({
@@ -1303,6 +1305,29 @@ def _build_results_from_db(date_str, date_hyphen):
     race_data = []
     try:
         with get_db() as conn:
+            # 🆕 2026-07-20: 対象レース選定の第一正本はサイドカー (#101 の完成形)。
+            # posted_at (seal) / posted_slots は DB clobber (#70) で消える実績が複数回
+            # (7/19 も消えた)。posted_marks_YYYYMMDD.json は git tracked テキストで不変。
+            _sc_races = []
+            try:
+                _sc_path = os.path.join("docs", "data", f"posted_marks_{date_str}.json")
+                if os.path.exists(_sc_path):
+                    with open(_sc_path, encoding="utf-8") as _f:
+                        _sc_races = list((json.load(_f).get('races') or {}).keys())
+            except Exception:
+                _sc_races = []
+            if _sc_races:
+                _ph = ','.join('?' * len(_sc_races))
+                races = conn.execute(f"""
+                    SELECT ra.race_id, ra.race_name, ra.venue, ra.grade, ra.race_number,
+                           pc.predictions_json, pc.confidence, pc.should_bet
+                    FROM races ra
+                    JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                    WHERE ra.race_id IN ({_ph})
+                    ORDER BY ra.venue, ra.race_number
+                """, _sc_races).fetchall()
+                if races:
+                    return _assemble_results_race_data(conn, races, date_str)
             # 🆕 結果投稿の対象 = 実際に予想投稿したレース (posted_at IS NOT NULL) のみ (#46)。
             # 旧版は _select_target_races の再計算だったが、発走済み除外(#45)で予想を絞った
             # 場合に「予想していないレースの結果まで報告」する事故が起きた。実投稿の記録を正とする。
@@ -1339,6 +1364,18 @@ def _build_results_from_db(date_str, date_hyphen):
             if not races:
                 return []
 
+            return _assemble_results_race_data(conn, races, date_str)
+    except Exception as e:
+        print(f"  ⚠️ DB フォールバック失敗: {e}")
+        return []
+
+
+def _assemble_results_race_data(conn, races, date_str):
+    """races 行 (cache join 済) から結果投稿用 race_data を組み立てる共通部。
+    2026-07-20: sidecar-first 選定 (#101完成形) と legacy 選定の両方から呼ばれる。"""
+    race_data = []
+    if True:
+        if True:
             all_rows = [dict(r) for r in races]
             mark_order = ['◎', '○', '▲', '△', '×', '注']
             for race in all_rows:
@@ -1350,10 +1387,11 @@ def _build_results_from_db(date_str, date_hyphen):
                     continue
 
                 finishes = conn.execute("""
-                    SELECT horse_number, finish_position FROM results
+                    SELECT horse_number, finish_position, popularity FROM results
                     WHERE race_id = ? AND finish_position > 0
                 """, (race_id,)).fetchall()
                 finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
+                pop_map = {f['horse_number']: (f['popularity'] or 0) for f in finishes}
                 if not finish_map:
                     continue
 
@@ -1376,6 +1414,7 @@ def _build_results_from_db(date_str, date_hyphen):
                             'horse_number': s.get('horse_number', 0),
                             'horse_name': s.get('horse_name', ''),
                             'finish': finish_map.get(s.get('horse_number', 0)),
+                            'popularity': pop_map.get(s.get('horse_number', 0), 0),
                         })
                 else:
                     for m in mark_order:
@@ -1388,6 +1427,7 @@ def _build_results_from_db(date_str, date_hyphen):
                             'horse_number': horse.get('horse_number', 0),
                             'horse_name': horse.get('horse_name', ''),
                             'finish': fin,
+                            'popularity': pop_map.get(horse.get('horse_number', 0), 0),
                         })
 
                 race_data.append({
@@ -1397,9 +1437,6 @@ def _build_results_from_db(date_str, date_hyphen):
                     'grade': race.get('grade') or '',
                     'marks': marked,
                 })
-    except Exception as e:
-        print(f"  ⚠️ DB フォールバック失敗: {e}")
-        return []
     return race_data
 
 
@@ -1538,14 +1575,22 @@ def cmd_results(args):
         t += f"📍 {r['venue']}{r['race_number']}R {r['race_name']}{grade_label}\n\n"
 
         n_in_top3 = 0
+        # 2026-07-20 ユーザー要望: 着順に人気を併記。人気分の字数は馬名を段階的に
+        # 短縮して捻出 (8字→溢れたら6字で再構成、固定パディング復活はしない #97)
+        def _mark_lines(name_len):
+            lines = ""
+            for m in r['marks']:
+                mdl = medal(m['finish'])
+                name_disp = m['horse_name'][:name_len]
+                _mdl_sfx = f" {mdl}" if mdl else ""
+                _pop = f"({m.get('popularity')}人気)" if m.get('popularity') else ""
+                lines += f"{m['mark']} {m['horse_number']}番 {name_disp} {fmt_finish(m['finish'])}{_pop}{_mdl_sfx}\n"
+            return lines
+        _body = _mark_lines(8)
+        if x_weighted_len(t + _body) > 250:
+            _body = _mark_lines(6)
+        t += _body
         for m in r['marks']:
-            mdl = medal(m['finish'])
-            # 馬名を10文字でtruncate
-            name_disp = m['horse_name'][:10]
-            # #97: 固定幅パディング廃止 — X はプロポーショナルфォントで縦は揃わず、
-            # 空白が字数 (280) を浪費して超過事故を起こしていた (実測286字)
-            _mdl_sfx = f" {mdl}" if mdl else ""
-            t += f"{m['mark']} {m['horse_number']}番 {name_disp} → {fmt_finish(m['finish'])}{_mdl_sfx}\n"
             if m['finish'] and m['finish'] <= 3:
                 n_in_top3 += 1
 
