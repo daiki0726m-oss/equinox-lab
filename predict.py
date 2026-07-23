@@ -898,21 +898,30 @@ def cmd_predict(args):
                 chu['is_value_pick'] = True
 
         # 推奨理由を生成 (UI-2 fix)
+        # #117 (2026-07-20): 「直近勝率/複勝率」系の理由は廃止 — 出馬表で誰でも分かる
+        # 浅い情報 (ユーザー指摘)。AIにしか出せない「市場との乖離」を理由の主軸に。
+        _t3_order = sorted(sorted_preds, key=lambda q: -(q.get('pred_top3') or 0))
+        _t3_rank = {q['horse_number']: r + 1 for r, q in enumerate(_t3_order)}
+        _ab_order = sorted(sorted_preds, key=lambda q: -(q.get('ability_score') or 0))
+        _ab_rank = {q['horse_number']: r + 1 for r, q in enumerate(_ab_order)}
         for i, p in enumerate(sorted_preds):
             pw = p["pred_win"] * 100
             pt = p["pred_top3"] * 100
             si = p.get("si_avg", 0)
-            wr = p.get("win_rate", 0)
-            tr = p.get("top3_rate", 0)
             reasons = []
             if i == 0:
                 if pw >= 40: reasons.append("圧倒的な勝率で本命筆頭")
                 elif pw >= 25: reasons.append("勝率トップで信頼度が高い")
                 else: reasons.append("僅差ながら勝率1位")
-            if wr >= 30: reasons.append(f"直近勝率{wr}%と絶好調")
-            elif wr >= 15: reasons.append(f"直近勝率{wr}%で実績あり")
-            if tr >= 50: reasons.append(f"直近複勝率{tr}%で安定感抜群")
-            elif tr >= 30: reasons.append(f"直近複勝率{tr}%で堅実")
+            _pop = p.get('popularity') or 0
+            _tr3 = _t3_rank.get(p['horse_number'], 99)
+            _ab = _ab_rank.get(p['horse_number'], 99)
+            if _pop >= 6 and _tr3 <= 3:
+                reasons.append(f"市場{_pop}人気に対しAI複勝評価{_tr3}位 — 過小評価の妙味")
+            elif _pop == 1 and _ab >= 5:
+                reasons.append(f"1人気だがオッズ非依存の能力評価は{_ab}位 — 過剰人気に注意")
+            elif _pop and _tr3 < 99 and _pop - _tr3 >= 3:
+                reasons.append(f"AI評価{_tr3}位 vs 市場{_pop}人気の乖離あり")
             if si >= 90: reasons.append(f"SI{si}は出走馬中トップクラス")
             elif si >= 80: reasons.append(f"SI{si}で能力上位")
             if pt >= 25: reasons.append("複勝率が非常に高く堅実")
