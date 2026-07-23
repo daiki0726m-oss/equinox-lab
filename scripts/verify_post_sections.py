@@ -67,6 +67,12 @@ def _check_section(label, title, lines, require_pedigree):
         problems.append(
             f"🚫 [{label}] %を出しているのに『複勝率/3着内率』の説明が無い "
             f"— 『なんの%か分からん』違反 (#86)")
+    # #117: 「出馬表を見れば誰でも分かる浅い情報」の禁止 (2026-07-20 ユーザー指摘:
+    # 直近複勝率のような紙面転記は predictor の仕事ではない)
+    for w in ("直近複勝", "直近成績", "安定感抜群", "直近勝率"):
+        if w in blob:
+            problems.append(
+                f"🚫 [{label}] 浅い紙面転記語「{w}」— 出馬表で誰でも分かる情報は出さない (#117)")
     return problems
 
 
