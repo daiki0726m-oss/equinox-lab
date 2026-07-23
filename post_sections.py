@@ -1578,86 +1578,99 @@ def _score_entries_by_course(conn, race_id, venue, surface, distance, years=6):
 
 
 def _notable_form(conn, race_id, top=3, show_number=True):
-    """#97 (C1): mode="form" — 直近フォーム (SI平均 + 直近複勝率) で注目馬を選ぶ。
+    """#117 (2026-07-20): mode="form" — ローテ・距離替わりの過去実績で狙う。
 
-    月朝・月昼・月夜・火夜・水夜がすべて combined (鞍上コース適性) の同一TOP3を
-    反復していた問題への切り口追加。コース適性 (combined/jockey/blood) と独立の
-    「馬自身の近況」軸なので、同じレースでも別の馬・別の根拠が出る。
-
-    データ: predictions_cache の si_avg / top3_rate (直近10走複勝率) を優先。
-    キャッシュ未生成の平日は results から直近10走の複勝率を直接計算する。
+    旧実装 (直近複勝率+SI) は「出馬表を見れば誰でも分かる情報」でユーザー指摘により廃止。
+    新実装は「今回、距離短縮/延長 or 休み明けとなる馬が、過去に同じ条件でどう走ったか」
+    — 各馬の戦歴を連続2走ペアに分解して同方向の距離替わり/長期休養明けの着度数を集計する。
+    紙面に無い集計 = 予想家的なローテ読みの機械化。該当馬なしなら空を返す (builderが
+    別セクションへフォールバック #51)。
     """
+    from datetime import date as _pydate
     cur = conn.cursor()
     entries = _get_entries(conn, race_id)
-    title_base = f"【直近フォーム注目馬TOP{top}】"
+    title_base = "【ローテ・距離替わりで狙う注目馬】"
     if not entries:
         return (title_base, [], 0)
 
-    # AI予測キャッシュがあれば si_avg / top3_rate をそのまま使う
-    cache = {}
-    cur.execute("SELECT predictions_json FROM predictions_cache WHERE race_id = ?", (race_id,))
-    row = cur.fetchone()
-    if row and row[0]:
-        try:
-            import json as _json
-            for p in _json.loads(row[0]):
-                cache[p.get("horse_name", "")] = p
-        except Exception:
-            pass
-
-    # 直近走の temporal filter 用にレース日を取得 (未来レースなら実質フィルタなし)
-    cur.execute("SELECT race_date FROM races WHERE race_id = ?", (race_id,))
+    cur.execute("SELECT race_date, distance FROM races WHERE race_id = ?", (race_id,))
     rd = cur.fetchone()
     race_date = (rd[0] if rd and rd[0] else "") or "9999-12-31"
+    cur_dist = (rd[1] if rd else 0) or distance or 0
+
+    def _weeks(d1, d2):
+        try:
+            return (_pydate.fromisoformat(d2[:10]) - _pydate.fromisoformat(d1[:10])).days // 7
+        except Exception:
+            return None
 
     scored = []
     for e in entries:
         name = e.get("horse_name", "")
         hn = e.get("horse_number") or 0
         hid = e.get("horse_id")
-        if not name:
+        if not name or not hid:
             continue
-        p = cache.get(name) or {}
-        si = p.get("si_avg", 0) or 0
-        rate = p.get("top3_rate", None)
-        last_pos = None
-        if rate is None and hid:
-            # キャッシュ無し (平日) は results から直近10走の複勝率を計算
-            cur.execute(
-                """SELECT res2.finish_position FROM results res2
-                   JOIN races r2 ON res2.race_id = r2.race_id
-                   WHERE res2.horse_id = ? AND r2.race_date < ?
-                     AND res2.finish_position > 0
-                   ORDER BY r2.race_date DESC LIMIT 10""",
-                (hid, race_date))
-            recent = [r[0] for r in cur.fetchall()]
-            if len(recent) >= 2:  # 1走だけでは「フォーム」と呼べない
-                rate = 100.0 * sum(1 for fp in recent if fp <= 3) / len(recent)
-                last_pos = recent[0]
-        if rate is None:
+        cur.execute(
+            """SELECT r2.race_date, r2.distance, res2.finish_position
+               FROM results res2 JOIN races r2 ON res2.race_id = r2.race_id
+               WHERE res2.horse_id = ? AND r2.race_date < ? AND res2.finish_position > 0
+               ORDER BY r2.race_date ASC""", (hid, race_date))
+        hist = cur.fetchall()
+        if len(hist) < 3:
             continue
-        scored.append({"name": name, "hn": hn, "si": si, "rate": rate,
-                       "last": last_pos, "_score": (si or 0) + (rate or 0)})
+        prev_date, prev_dist = hist[-1][0], hist[-1][1] or 0
+        if not prev_dist or not cur_dist:
+            continue
+        delta = cur_dist - prev_dist
+        direction = "短縮" if delta <= -200 else ("延長" if delta >= 200 else None)
+        wk = _weeks(prev_date, race_date)
+
+        def _tally(cond):
+            c = [0, 0, 0, 0]
+            for (d_a, dist_a, _fa), (d_b, dist_b, fin_b) in zip(hist, hist[1:]):
+                if not cond(d_a, dist_a, d_b, dist_b):
+                    continue
+                if fin_b == 1: c[0] += 1
+                elif fin_b == 2: c[1] += 1
+                elif fin_b == 3: c[2] += 1
+                else: c[3] += 1
+            return c
+
+        fact = None
+        if direction:
+            c = _tally(lambda da, xa, db, xb: xa and xb and
+                       ((xb - xa <= -200) if direction == "短縮" else (xb - xa >= 200)))
+            n_sw = sum(c)
+            if n_sw >= 3:
+                rate = 100.0 * (c[0] + c[1] + c[2]) / n_sw
+                fact = f"距離{direction}時[{c[0]}-{c[1]}-{c[2]}-{c[3]}]複勝{rate:.0f}%"
+                score = rate + min(n_sw, 8)
+        if fact is None and wk is not None and wk >= 9:
+            c = _tally(lambda da, xa, db, xb: (_weeks(da, db) or 0) >= 9)
+            n_sw = sum(c)
+            if n_sw >= 2:
+                rate = 100.0 * (c[0] + c[1] + c[2]) / n_sw
+                fact = f"休み明け[{c[0]}-{c[1]}-{c[2]}-{c[3]}]複勝{rate:.0f}%"
+                score = rate + min(n_sw, 8)
+        if fact is None:
+            continue
+        if wk is not None and 1 <= wk <= 20:
+            fact += f"・今回中{wk}週" if wk <= 8 else f"・今回{wk}週ぶり"
+        scored.append({"name": name, "hn": hn, "fact": fact, "_score": score})
+
     scored.sort(key=lambda x: -x["_score"])
     if not scored:
         return (title_base, [], 0)
-
-    has_si = any(h["si"] > 0 for h in scored[:top])
-    legend = ("（SI=スピード指数・%＝直近成績(最大10走)の複勝率）" if has_si
-              else "（%＝直近成績(最大10走)の複勝率(3着内率)）")
+    legend = "（[1-2-3-着外]＝その馬の過去の同条件(距離替わり/休み明け)時の着度数）"
     title = f"{title_base}\n{legend}"
     medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
     lines = []
     for i, h in enumerate(scored[:top]):
         num = f"{h['hn']}番 " if (show_number and h.get("hn")) else ""
-        seg = []
-        if h["si"] > 0:
-            seg.append(f"SI{h['si']:.0f}")
-        seg.append(f"直近複勝{h['rate']:.0f}%")
-        if h["last"]:
-            seg.append(f"前走{h['last']}着")
-        lines.append(f"{medals[i]} {num}{h['name']}: {'・'.join(seg)}")
+        lines.append(f"{medals[i]} {num}{h['name']}: {h['fact']}")
     return (title, lines, len(scored))
+
 
 
 def sec_notable_horses(
@@ -1968,8 +1981,8 @@ def sec_attention_top(
 
         if not second_fact and si > 0:
             second_fact = f"SI{si:.0f}"
-        elif not second_fact and top3_rate >= 50:
-            second_fact = f"直近複勝{top3_rate:.0f}%"
+        # #117 (2026-07-20): 「直近複勝率」フォールバックは廃止 — 出馬表を見れば
+        # 誰でも分かる情報で浅い (ユーザー指摘)。SI (自前指数) までで止める。
 
         if second_fact:
             facts.append(second_fact)
