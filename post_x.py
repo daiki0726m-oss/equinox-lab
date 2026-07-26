@@ -1239,12 +1239,12 @@ def _build_results_jsonmarks_dbfinish(date_str):
                 continue
             rid = race.get('race_id')
             # 着順は results テーブル (新規収集済み) が source of truth
-            finish_map = {
-                row[0]: row[1] for row in conn.execute(
-                    "SELECT horse_number, finish_position FROM results "
-                    "WHERE race_id=? AND finish_position>0", (rid,)
-                ).fetchall()
-            }
+            _res_rows = conn.execute(
+                "SELECT horse_number, finish_position, popularity FROM results "
+                "WHERE race_id=? AND finish_position>0", (rid,)
+            ).fetchall()
+            finish_map = {row[0]: row[1] for row in _res_rows}
+            pop_map = {row[0]: (row[2] or 0) for row in _res_rows}
             if not finish_map:
                 continue  # まだ結果が収集されていない → スキップ (次 run で再試行)
             # 全頭確定 + 1-3着が揃ってから投稿 (中途半端な "?着" を出さない)
@@ -1273,6 +1273,9 @@ def _build_results_jsonmarks_dbfinish(date_str):
                         'horse_number': s.get('horse_number', 0),
                         'horse_name': s.get('horse_name', ''),
                         'finish': finish_map.get(s.get('horse_number', 0)),
+                        # #118: 人気併記 (#116) が本番で出なかった真因 — 最優先ビルダーの
+                        # snap 分岐 (毎回通る) だけ popularity 付与が漏れていた (#21型)
+                        'popularity': pop_map.get(s.get('horse_number', 0), 0),
                     })
             else:
                 horses = race.get('horses', [])
@@ -1626,6 +1629,18 @@ def cmd_results(args):
             return
 
     post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
+
+    # #118: 結果スレッドも全文記録 (predict と同様 #114) — 「人気が出てない」等の
+    # 実配信検証を可能に (今回まさに記録が無く検証に難儀した)
+    if not args.dry_run:
+        try:
+            _tw_path = os.path.join("docs", "data", f"posted_tweets_{date_str}_results.json")
+            with open(_tw_path, "w", encoding="utf-8") as _f:
+                json.dump({"date": date_str, "posted_at": now_jst().isoformat(),
+                           "tweets": tweets}, _f, ensure_ascii=False, indent=1)
+            print(f"📌 結果投稿全文保存: {_tw_path}")
+        except Exception as _e:
+            print(f"⚠️ 結果全文保存失敗(非致命): {_e}")
 
 
 # ─── 平日コンテンツ ───
@@ -3822,7 +3837,7 @@ def cmd_odds_flash(args):
                 key=lambda x: x.get('pred_win_display_pct') or x.get('pred_win_pct', 0),
                 reverse=True)[:3]
 
-        tweet = f"📊 オッズ確定！最終見解\n\n"
+        tweet = f"📊 朝オッズ チェック（9:30時点・確定は発走直前）\n\n"
         tweet += f"{venue}11R {rname}{grade}\n\n"
 
         _fallback_medals = ['🥇', '🥈', '🥉']
