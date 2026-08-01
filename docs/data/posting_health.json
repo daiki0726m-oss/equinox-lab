@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-01T08:52:51.035155+09:00",
+  "generated_at": "2026-08-01T10:49:28.259692+09:00",
   "today": "2026-08-01 (Sat)",
   "weekday": 5,
   "slots": {
@@ -37,14 +37,25 @@
     },
     "odds_flash": {
       "slot": "odds_flash",
-      "status": "future",
+      "status": "ok_late",
       "expected": "09:30 JST",
+      "deadline": "10:15 JST",
+      "recent_success": {
+        "created_at": "2026-08-01T09:43:52+09:00",
+        "title": "odds_flash",
+        "event": "workflow_dispatch",
+        "delay_minutes": 14
+      },
+      "delay_minutes": 14,
       "workflow": "auto_post_x.yml"
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "future",
+      "status": "ok",
       "expected": "10:15 JST",
+      "actual": "2026-08-01T10:27:01+09:00",
+      "delay_minutes": 12,
+      "event": "workflow_dispatch",
       "workflow": "auto_post_x.yml"
     },
     "results": {
@@ -93,13 +104,13 @@
     }
   },
   "summary": {
-    "ok": 0,
+    "ok": 1,
     "missing": 0,
-    "future": 3,
+    "future": 1,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 2
+    "ok_late": 3
   },
   "missed_slots": []
 }
