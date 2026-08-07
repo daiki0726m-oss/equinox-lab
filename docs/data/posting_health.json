@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-08T06:09:52.363786+09:00",
+  "generated_at": "2026-08-08T08:01:31.668286+09:00",
   "today": "2026-08-08 (Sat)",
   "weekday": 5,
   "slots": {
@@ -23,8 +23,16 @@
     },
     "weekend_morning_predict": {
       "slot": "weekend_morning_predict",
-      "status": "future",
+      "status": "ok_late",
       "expected": "07:00 JST",
+      "deadline": "07:30 JST",
+      "recent_success": {
+        "created_at": "2026-08-08T07:26:27+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 26
+      },
+      "delay_minutes": 26,
       "workflow": "auto_post_x.yml"
     },
     "odds_flash": {
@@ -65,11 +73,16 @@
     },
     "fetch_saturday": {
       "slot": "fetch_saturday",
-      "status": "ok",
+      "status": "ok_late",
       "expected": "05:00 JST",
-      "actual": "2026-08-08T05:35:22+09:00",
+      "deadline": "06:30 JST",
+      "recent_success": {
+        "created_at": "2026-08-08T05:35:22+09:00",
+        "title": "📅 fetch weekend races",
+        "event": "schedule",
+        "delay_minutes": 35
+      },
       "delay_minutes": 35,
-      "event": "schedule",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_sunday": {
@@ -80,13 +93,13 @@
     }
   },
   "summary": {
-    "ok": 1,
+    "ok": 0,
     "missing": 0,
-    "future": 4,
+    "future": 3,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 0
+    "ok_late": 2
   },
   "missed_slots": []
 }
