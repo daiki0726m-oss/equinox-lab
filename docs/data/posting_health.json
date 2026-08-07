@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-08T04:43:21.189061+09:00",
+  "generated_at": "2026-08-08T05:28:31.755274+09:00",
   "today": "2026-08-08 (Sat)",
   "weekday": 5,
   "slots": {
@@ -65,8 +65,11 @@
     },
     "fetch_saturday": {
       "slot": "fetch_saturday",
-      "status": "future",
+      "status": "missing",
       "expected": "05:00 JST",
+      "deadline": "06:30 JST",
+      "fallback_mode": "auto",
+      "action": "gh workflow run auto_post_x.yml --ref main -f mode=auto",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_sunday": {
@@ -78,8 +81,8 @@
   },
   "summary": {
     "ok": 0,
-    "missing": 0,
-    "future": 5,
+    "missing": 1,
+    "future": 4,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
