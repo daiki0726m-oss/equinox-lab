@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-08T08:01:31.668286+09:00",
+  "generated_at": "2026-08-08T08:54:33.080368+09:00",
   "today": "2026-08-08 (Sat)",
   "weekday": 5,
   "slots": {
@@ -27,12 +27,12 @@
       "expected": "07:00 JST",
       "deadline": "07:30 JST",
       "recent_success": {
-        "created_at": "2026-08-08T07:26:27+09:00",
-        "title": "cron",
-        "event": "schedule",
-        "delay_minutes": 26
+        "created_at": "2026-08-08T07:49:36+09:00",
+        "title": "predict",
+        "event": "workflow_dispatch",
+        "delay_minutes": 50
       },
-      "delay_minutes": 26,
+      "delay_minutes": 50,
       "workflow": "auto_post_x.yml"
     },
     "odds_flash": {
