@@ -41,6 +41,19 @@ class KeibaModel:
     # pred_win_display を EV や賭け金に使ってはならない。
     WIN_SHARPEN = 3.0
 
+    # ★ #120 (2026-08-08): 表示チャネルを「レース内 z-score 正規化 + 目標シャープネス」に変更。
+    # 旧実装は生の rank_score に固定温度 3.0 を掛けていたが、rank_score の分散は
+    # weekly_retrain のたびに変動する (実測 std 中央値: 7/19=0.33 → 7/26=0.55 → 8/8=0.12
+    # の 4.5倍レンジ)。固定温度ではこれがそのまま表示に出て、◎表示勝率の中央値が
+    # 46% (S 15件/日) 〜 14% (S 0件/日) と暴れ、固定閾値の confidence (S≥45/A≥30/…) が
+    # 週替わりで意味を失っていた (#36「閾値と分布はペア」の再発)。
+    # z-score 化すれば分散はモデルに依らず常に 1 になり、DISPLAY_SHARPNESS だけが
+    # 分布を決める = 再学習しても表示と信頼度ラベルの基準が動かない。
+    # T=1.0 は 7/19-8/8 の4開催日で ◎表示中央値 28-34% / S該当 4-9件/日 に揃うことを
+    # 実測して選定 (旧正常帯 7/19 の 31% / S=8件 と一致)。
+    # 意思決定チャネル (pred_win_norm、温度1・生スコア) は従来通り一切変更しない。
+    DISPLAY_SHARPNESS = 1.0
+
     RANK_PARAMS = {
         "objective": "lambdarank",
         "metric": "ndcg",
@@ -350,7 +363,14 @@ class KeibaModel:
         #                      意思決定に使うと本命 EV が約2倍過大になる — 使用禁止。
         rank_exp = np.exp(df["rank_score"] - df["rank_score"].max())
         df["pred_win_norm"] = rank_exp / rank_exp.sum()
-        disp_exp = np.exp((df["rank_score"] - df["rank_score"].max()) * self.WIN_SHARPEN)
+        # 表示チャネル (#120): レース内 z-score 化してから DISPLAY_SHARPNESS を掛ける。
+        # モデル再学習で rank_score の分散が変わっても表示分布が動かない (上記コメント参照)。
+        _sd = float(df["rank_score"].std(ddof=0))
+        if _sd > 1e-9:
+            _z = (df["rank_score"] - df["rank_score"].mean()) / _sd
+        else:
+            _z = df["rank_score"] * 0.0
+        disp_exp = np.exp((_z - _z.max()) * self.DISPLAY_SHARPNESS)
         df["pred_win_display"] = disp_exp / disp_exp.sum()
         df["pred_top3_norm"] = df["pred_top3"] / df["pred_top3"].sum() * 3  # 3頭入着
 
