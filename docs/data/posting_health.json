@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-09T08:50:54.186388+09:00",
+  "generated_at": "2026-08-09T09:53:03.981905+09:00",
   "today": "2026-08-09 (Sun)",
   "weekday": 6,
   "slots": {
@@ -37,8 +37,11 @@
     },
     "odds_flash": {
       "slot": "odds_flash",
-      "status": "future",
+      "status": "ok",
       "expected": "09:30 JST",
+      "actual": "2026-08-09T09:35:23+09:00",
+      "delay_minutes": 5,
+      "event": "workflow_dispatch",
       "workflow": "auto_post_x.yml"
     },
     "post_predict": {
@@ -93,9 +96,9 @@
     }
   },
   "summary": {
-    "ok": 0,
+    "ok": 1,
     "missing": 0,
-    "future": 3,
+    "future": 2,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
