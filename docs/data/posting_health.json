@@ -1,15 +1,15 @@
 {
-  "generated_at": "2026-08-14T08:09:24.641402+09:00",
+  "generated_at": "2026-08-14T09:04:45.981962+09:00",
   "today": "2026-08-14 (Fri)",
   "weekday": 4,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "ok",
+      "status": "ok_delayed",
       "expected": "07:30 JST",
-      "actual": "2026-08-14T07:17:02+09:00",
-      "delay_minutes": -13,
-      "event": "workflow_dispatch",
+      "actual": "2026-08-14T08:52:37+09:00",
+      "delay_minutes": 83,
+      "event": "schedule",
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
@@ -62,11 +62,16 @@
     },
     "fetch_friday": {
       "slot": "fetch_friday",
-      "status": "ok",
+      "status": "ok_late",
       "expected": "06:00 JST",
-      "actual": "2026-08-14T06:39:42+09:00",
+      "deadline": "09:00 JST",
+      "recent_success": {
+        "created_at": "2026-08-14T06:39:42+09:00",
+        "title": "📅 fetch weekend races",
+        "event": "schedule",
+        "delay_minutes": 40
+      },
       "delay_minutes": 40,
-      "event": "schedule",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_saturday": {
@@ -83,13 +88,13 @@
     }
   },
   "summary": {
-    "ok": 2,
+    "ok": 0,
     "missing": 0,
     "future": 2,
     "not_today": 8,
     "missed": 0,
-    "ok_delayed": 0,
-    "ok_late": 0
+    "ok_delayed": 1,
+    "ok_late": 1
   },
   "missed_slots": []
 }
