@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-16T17:53:04.809746+09:00",
+  "generated_at": "2026-08-16T18:16:58.317865+09:00",
   "today": "2026-08-16 (Sun)",
   "weekday": 6,
   "slots": {
@@ -67,9 +67,9 @@
       "slot": "results",
       "status": "ok",
       "expected": "17:30 JST",
-      "actual": "2026-08-16T17:34:47+09:00",
-      "delay_minutes": 5,
-      "event": "workflow_dispatch",
+      "actual": "2026-08-16T17:54:47+09:00",
+      "delay_minutes": 25,
+      "event": "schedule",
       "workflow": "auto_post_x.yml"
     },
     "fetch_monday": {
