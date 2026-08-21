@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-22T06:45:23.514903+09:00",
+  "generated_at": "2026-08-22T07:47:01.576424+09:00",
   "today": "2026-08-22 (Sat)",
   "weekday": 5,
   "slots": {
@@ -23,8 +23,16 @@
     },
     "weekend_morning_predict": {
       "slot": "weekend_morning_predict",
-      "status": "future",
+      "status": "ok_late",
       "expected": "07:00 JST",
+      "deadline": "07:30 JST",
+      "recent_success": {
+        "created_at": "2026-08-22T07:14:55+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 15
+      },
+      "delay_minutes": 15,
       "workflow": "auto_post_x.yml"
     },
     "odds_flash": {
@@ -87,11 +95,11 @@
   "summary": {
     "ok": 0,
     "missing": 0,
-    "future": 4,
+    "future": 3,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 1
+    "ok_late": 2
   },
   "missed_slots": []
 }
