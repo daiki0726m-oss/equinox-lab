@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-08-24T08:10:47.182436+09:00",
+  "generated_at": "2026-08-24T08:41:29.809336+09:00",
   "today": "2026-08-24 (Mon)",
   "weekday": 0,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "ok",
+      "status": "ok_delayed",
       "expected": "07:30 JST",
-      "actual": "2026-08-24T07:47:45+09:00",
-      "delay_minutes": 18,
+      "actual": "2026-08-24T08:30:48+09:00",
+      "delay_minutes": 61,
       "event": "schedule",
       "workflow": "auto_post_x.yml"
     },
@@ -83,12 +83,12 @@
     }
   },
   "summary": {
-    "ok": 2,
+    "ok": 1,
     "missing": 0,
     "future": 2,
     "not_today": 8,
     "missed": 0,
-    "ok_delayed": 0,
+    "ok_delayed": 1,
     "ok_late": 0
   },
   "missed_slots": []
