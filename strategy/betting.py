@@ -396,8 +396,16 @@ class BettingStrategy:
                 # 2頭軸 (◎+○) → 残り相手ながし (~4点)
                 pairs = [(partners[0], x) for x in partners[1:5]]
             elif structure == 'A':
-                # ◎軸ながし・相手は印4頭のみ (注を含めない、#112 の A 定義に一致)
-                pairs = list(combinations(partners[:4], 2))
+                # #121 (2026-08-24): A の相手は「印4頭」でなく「モデル複勝率上位4頭」。
+                # #112 の A 設計値 84-86% は ○=モデル2位 時代の実測で、#110 で ○ を
+                # 妙味枠 (複勝率25%の中穴) に替えた後は相手プールが構造的に弱くなっていた。
+                # 実運用111R の反実仮想: 現行(○▲△×) ROI 49.8% vs モデル上位4頭 70.1% (+20.3pt)。
+                # D/G は逆に妙味○が的中時の高配当を担うため現行維持 (D: 69.3% vs 36.9%)。
+                # 印(コンテンツ層)は変えず、買い目(ROI層)だけモデル順に戻す — #111 の役割分担。
+                _a_pool = sorted((q for q in sorted_preds
+                                  if q["horse_number"] != center),
+                                 key=lambda q: -(q.get('pred_top3') or 0))[:4]
+                pairs = list(combinations(_a_pool, 2))
             else:
                 pairs = list(combinations(partners[:5], 2))
             for pair in pairs:
