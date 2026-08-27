@@ -116,9 +116,26 @@ def course_records(conn, race, horse_numbers, years=6):
     counts = ("COUNT(*), SUM(CASE WHEN res.finish_position=1 THEN 1 ELSE 0 END), "
               "SUM(CASE WHEN res.finish_position=2 THEN 1 ELSE 0 END), "
               "SUM(CASE WHEN res.finish_position=3 THEN 1 ELSE 0 END)")
+    hid_map = {}
+    cur.execute("SELECT horse_number, horse_id FROM results WHERE race_id=?", (race.get("race_id"),))
+    for hn, hid in cur.fetchall():
+        hid_map[hn] = hid
     for hn in horse_numbers:
         jk, sire, damsire = ent.get(hn, ("", "", ""))
         rec = {"jockey": jk, "sire": sire, "damsire": damsire}
+        # 本馬自身の当コース実績 (最も直接的で読者にも分かりやすい材料)
+        _hid = hid_map.get(hn)
+        if _hid and race.get("race_date"):
+            # #126: 当日のレース自身を必ず除外する。race_date が渡らないと
+            # "9999-12-31" 比較で当該レースの着順まで実績に混入し (look-ahead)、
+            # 「このコースで複勝率75%」のような未来を知った数字が出てしまう (実際に発生)。
+            # race_id でも二重に除外する (同日別レース・日付欠損への保険)。
+            rec["self_rec"] = _tally(
+                f"""SELECT {counts} FROM races r JOIN results res ON r.race_id=res.race_id
+                    WHERE r.venue=? AND r.surface=? AND r.distance=? AND res.horse_id=?
+                      AND res.finish_position>0 AND r.race_date<? AND r.race_id<>?""",
+                (venue, surface, distance, _hid,
+                 race["race_date"], race.get("race_id") or ""), 3)
         if jk:
             rec["jockey_rec"] = _tally(
                 f"""SELECT {counts} FROM races r JOIN results res ON r.race_id=res.race_id
@@ -136,41 +153,6 @@ def course_records(conn, race, horse_numbers, years=6):
                     (venue, surface, distance, f"{y-years}-01-01", val), 6)
         out[hn] = rec
     return out
-
-
-# ── 穴予兆スコアの内部表記を、ロジックを知らない読者向けに翻訳 (#125) ──
-# volatility.compute_anasanee_score が返す文字列は "騎手変更(+1)" のような内部表記で、
-# 加点値もそのまま出ていた。読者には意味が伝わらないので自然文に開く。
-def _plain_ana(reason):
-    import re as _re
-    r = _re.sub(r"\(\+\d+\)", "", str(reason or "")).strip()
-    if not r:
-        return None
-    m = _re.match(r"前走(\d+)着$", r)
-    if m:
-        return f"前走は{m.group(1)}着に敗れ、人気を落としての一戦"
-    m = _re.match(r"\+?(-?\d+)m大幅(延長|短縮)$", r)
-    if m:
-        return f"前走から距離が{abs(int(m.group(1)))}m{m.group(2)}"
-    if r == "前走追込":
-        return "前走は後方から差す競馬 — 展開が向けば一発がある脚質"
-    if r == "前走差し":
-        return "前走は差す競馬 — 展開次第で浮上できる脚質"
-    m = _re.match(r"\+?(-?\d+)kg大幅(減|増)$", r)
-    if m:
-        return f"前走から馬体重{m.group(1)}kg"
-    if r == "騎手変更":
-        return "前走から乗り替わり"
-    m = _re.match(r"中休み(\d+)日$", r)
-    if m:
-        return f"前走から{m.group(1)}日空けての出走"
-    m = _re.match(r"(.+)産駒$", r)
-    if m:
-        return f"父{m.group(1)}は人気薄での好走が目立つ系統"
-    m = _re.match(r"(.+)騎手$", r)
-    if m:
-        return f"{m.group(1)}騎手は人気薄をよく持ってくる"
-    return r
 
 
 def _rank_of(horses, horse, key):
@@ -211,6 +193,9 @@ def eval_points(horse, horses, stats=None, limit=3):
 
     # 当コースの実績は着度数 [1着-2着-3着-着外] で示す (#55: 率だけだと母数が伝わらない)
     st = (stats or {}).get(horse.get("horse_number")) or {}
+    selfr = st.get("self_rec")
+    if selfr and selfr["pct"] >= 33:
+        pts.append(f"このコースで {selfr['chaku']} 複勝率{selfr['pct']:.0f}%")
     jr = st.get("jockey_rec")
     if st.get("jockey") and jr and jr["pct"] >= 25:
         pts.append(f"鞍上{st['jockey']}は当コース {jr['chaku']} 複勝率{jr['pct']:.0f}%")
@@ -221,11 +206,11 @@ def eval_points(horse, horses, stats=None, limit=3):
     if st.get("damsire") and dr and dr["pct"] >= 35:
         pts.append(f"母父{st['damsire']}は当コース {dr['chaku']} 複勝率{dr['pct']:.0f}%")
 
-    for r in (horse.get("anasanee_reasons") or []):
-        plain = _plain_ana(r)
-        if plain and not any(plain[:5] in p for p in pts):
-            pts.append(plain)
-            break
+    # #126: 穴予兆 (前走大敗・距離延長・騎手変更・中休み) は評価根拠に使わない。
+    # 2021-2026 の人気薄 182,202走で検証したところ、いずれも 3着内率を baseline より
+    # 下げる「紛れ要因」であり、その馬を推す理由にはならない (大幅延長 -3.8pt / 前走
+    # 10着以下 -5.5pt / 騎手変更 -1.0pt / 中休み ±0、全6年で一貫)。馬体重は朝の予測
+    # 時点では未発表 (実測: 未来レースの weight_change は全頭0) なので元より出ない。
     return pts[:limit]
 
 

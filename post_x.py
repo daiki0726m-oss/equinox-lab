@@ -943,6 +943,10 @@ def cmd_predict(args):
                     _r2['horses'] = json.loads(_r2.get('predictions_json') or '[]')
                 except Exception:
                     _r2['horses'] = []
+            # #126: race_date は JSON export に含まれないため必ず補う
+            # (course_records の look-ahead 遮断が race_date に依存する)
+            if not _r2.get('race_date'):
+                _r2['race_date'] = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
             if not _r2.get('upset_hist'):
                 try:
                     from volatility import compute_race_upset_history as _uh
