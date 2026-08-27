@@ -48,7 +48,9 @@ def race_rows(c, day):
 def structure_bets(c, rid, mk, fin, meta):
     """適応型買い目 (#113) を再現し (構造名, spend, return) を返す。対象外は None。"""
     rn = (meta[2] or '')
-    if any(k in rn for k in ('未勝利', '新馬', '障害', 'ジャンプ')):
+    sys.path.insert(0, ROOT)
+    from race_utils import is_ml_out_of_domain
+    if is_ml_out_of_domain(rn):    # #123: "新潟JS" 等のジャンプSも除外
         return None
     ax = mk['◎']; axhn = ax['horse_number']
     axod = ax.get('odds_win_at_post') or 0

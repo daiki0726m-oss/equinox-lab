@@ -116,7 +116,8 @@ class BettingStrategy:
         if confidence not in ("S", "A", "B"):
             return False
         race_name = (race_info or {}).get("race_name", "") if race_info else ""
-        if race_name and any(k in race_name for k in ("未勝利", "新馬", "障害", "ジャンプ")):
+        from race_utils import is_ml_out_of_domain as _ood   # #123
+        if race_name and _ood(race_name):
             return False
         axis = self.get_axis_horse(predictions)
         if not axis or not axis.get('_has_real_odds'):
@@ -187,7 +188,10 @@ class BettingStrategy:
         # ML は平地レースで学習しており障害は学習データ外。6月に障害レース
         # (京都ハイジャンプ等) へ S が付与され S=2.0x で最大額が張られた結果、
         # S 層全体の ROI が 44.6% に汚染された (S<B<A の序列逆転 #10 の再来)。
-        if race_name and ("障害" in race_name or "ジャンプ" in race_name):
+        # #123: 文字列 "障害/ジャンプ" だけでは "新潟JS" 等のジャンプS 73レースが素通り
+        # していた。共通判定 race_utils.is_jump_race に集約。
+        from race_utils import is_jump_race as _is_jump
+        if race_name and _is_jump(race_name):
             return False, "障害レースは ML 学習データ外のため投資見送り (印・予想は表示)"
 
         top_prob = max(p["pred_win"] for p in predictions)

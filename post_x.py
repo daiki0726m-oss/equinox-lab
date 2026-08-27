@@ -394,7 +394,7 @@ def race_recently_posted(race_id, hours=18):
 
 
 def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None,
-                image_paths=None):
+                image_paths=None, threads_override=None):
     """ツイートのリスト（スレッド）をX + Threadsに投稿（重複チェック付き）
 
     Args:
@@ -555,7 +555,9 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
 
     # Threads にも同時投稿 — #103: 1投稿に潰さず 500字チャンクの reply chain で全文送る
     if threads_client:
-        post_threads_thread(threads_client, tweets, dry_run=dry_run)
+        # #122: threads_override が渡された場合は X 用スレッドでなくそちらを投稿する
+        # (Threads は 1投稿完結・型ローテーションの専用コンポーザ)
+        post_threads_thread(threads_client, threads_override or tweets, dry_run=dry_run)
 
     return tweet_ids
 
@@ -805,7 +807,7 @@ def cmd_predict(args):
             p = marks.get(mk)
             if p:
                 if mk == '注' and (p.get('odds_win') or 0) >= 7:
-                    t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}（単{p.get('odds_win'):.0f}倍）\n"
+                    t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}（想定単{p.get('odds_win'):.0f}倍）\n"
                 else:
                     t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
 
@@ -832,7 +834,7 @@ def cmd_predict(args):
                     if _v and (_v.get('pred_top3_pct') or 0) > 0:
                         # 統合1行 (⚡タグ+実利の穴馬)。分割2行は272字予算に入らない日が多い
                         _extras.append(f"\n⚡{_tag}・穴注意: {_v.get('horse_name','?')}"
-                                       f"（単{_v.get('odds_win'):.0f}倍）\n")
+                                       f"（想定単{_v.get('odds_win'):.0f}倍）\n")
                     else:
                         _extras.append(f"\n⚡{_tag}: 勝ち馬平均{uh['avg_win_pop']:.0f}人気"
                                        f"/二桁人気馬券内{uh['big_rate']*100:.0f}%\n")
@@ -849,7 +851,7 @@ def cmd_predict(args):
                 _ab_pop = _ab_top.get('popularity') or 0
                 if _ab_pop >= 5:
                     _extras.append(f"\n💡AI能力値の最上位は {_ab_top.get('horse_name','?')}"
-                                   f" (市場{_ab_pop}人気) — 妙味あり\n")
+                                   f" (想定{_ab_pop}番人気) — 妙味あり\n")
         except Exception:
             pass
         for _ex in _extras:
@@ -902,7 +904,63 @@ def cmd_predict(args):
         if not client:
             return
 
-    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
+    # #122: Threads は X スレッドの再チャンクでなく専用の1投稿完結型に切替。
+    # チェーンは2投稿目以降が読まれず、6投稿×400字の記号の壁になっていた。
+    # 主役レース (信頼度が最も高い、同点ならメイン) を1つ選び、型をローテーションする。
+    _threads_override = None
+    try:
+        import threads_composer as _tc
+        _rank = {'S': 0, 'A': 1, 'B': 2, 'C': 3, 'D': 4}
+        # 主役は「重賞・特別 > 信頼度」の順 — 一般の関心は重賞に集まるので、
+        # 平場の高信頼レースより G3 を看板にする方がリーチが取れる (#71 の媒体役割分担)。
+        def _flagship_key(r):
+            _rn = r.get('race_name') or ''
+            # 障害・ジャンプは ML 学習データ外 (#95) かつ一般の関心も薄いので看板にしない
+            from race_utils import is_jump_race as _isj   # #123: "新潟JS" 等も障害と判定
+            _jump = 1 if _isj(_rn) else 0
+            # 重賞 (G1-G3) > OP/L > 特別 > その他。看板は世間の関心が集まる格上を優先し、
+            # 同格内でのみ信頼度で比べる (高信頼の平場が G3 を押しのけないように)。
+            _g = (r.get('grade') or '').strip()
+            if _g in ('G1', 'G2', 'G3'):
+                _tier = 0
+            elif _g in ('OP', 'L', 'リステッド'):
+                _tier = 1
+            elif _is_stakes_race(r):
+                _tier = 2
+            else:
+                _tier = 3
+            return (_jump, _tier,
+                    _rank.get((r.get('confidence') or 'D'), 9),
+                    -(r.get('race_number') or 0))
+        _cands = sorted(target_races, key=_flagship_key)
+        for _r in _cands:
+            _r2 = dict(_r)
+            # cmd_predict の race 行は印を predictions_json (文字列) で持つ。
+            # JSON export 経路は 'horses' を持つ — 両方を吸収して正規化する。
+            if not _r2.get('horses'):
+                try:
+                    _r2['horses'] = json.loads(_r2.get('predictions_json') or '[]')
+                except Exception:
+                    _r2['horses'] = []
+            if not _r2.get('upset_hist'):
+                try:
+                    from volatility import compute_race_upset_history as _uh
+                    _r2['upset_hist'] = _uh(
+                        _r2.get('race_name', ''),
+                        _r2.get('race_date') or f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}")
+                except Exception:
+                    pass
+            _pat, _txt = _tc.build_threads_predict_post(
+                _r2, n_other_races=max(len(target_races) - 1, 0), date_str=date_str)
+            if _txt:
+                _threads_override = [_txt]
+                print(f"🧵 Threads: 1投稿完結 (パターン={_pat}, {len(_txt)}字)")
+                break
+    except Exception as _e:
+        print(f"⚠️ Threads コンポーザ失敗 (X用チャンクにフォールバック): {_e}")
+
+    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client,
+                threads_override=_threads_override)
 
     # 🆕 投稿したレースを記録 (#46): 結果投稿はこの posted_at のレースのみ報告する。
     # 「予想投稿したレース = 結果投稿するレース」を物理保証。発走済み除外(#45)で予想を
@@ -3849,7 +3907,7 @@ def cmd_odds_flash(args):
             name = p.get('horse_name', '?')
             pop = p.get('popularity', '?')
             tweet += f"{mk} {name}\n"
-            tweet += f"  AI勝率{win_pct}% / {odds}倍({pop}人気)\n"
+            tweet += f"  AI勝率{win_pct}% / {odds}倍(想定{pop}番人気)\n"
 
         # 妙味判定: AI勝率が高いのにオッズが高い馬
         # #95: EV は意思決定用の温度1勝率 (pred_win_pct) で計算 (display だと約2倍過大)
