@@ -24,6 +24,7 @@ import re
 import random
 import time
 import urllib.request
+import sqlite3
 import urllib.parse
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -950,8 +951,20 @@ def cmd_predict(args):
                         _r2.get('race_date') or f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}")
                 except Exception:
                     pass
+            # #124: 「何で評価したか」を出すため、当コースの血統/騎手実績を引いて渡す
+            _stats = None
+            try:
+                from post_sections import _score_entries_by_course as _sc
+                with get_db() as _conn:
+                    _conn.row_factory = sqlite3.Row
+                    _rows = _sc(_conn, _r2.get('race_id'), _r2.get('venue', ''),
+                                _r2.get('surface', ''), _r2.get('distance') or 0)
+                _stats = {r.get('hn'): r for r in (_rows or [])}
+            except Exception as _se:
+                print(f"   (コース実績の取得スキップ: {_se})")
             _pat, _txt = _tc.build_threads_predict_post(
-                _r2, n_other_races=max(len(target_races) - 1, 0), date_str=date_str)
+                _r2, n_other_races=max(len(target_races) - 1, 0), date_str=date_str,
+                stats=_stats)
             if _txt:
                 _threads_override = [_txt]
                 print(f"🧵 Threads: 1投稿完結 (パターン={_pat}, {len(_txt)}字)")

@@ -67,6 +67,58 @@ def _ability_rank(horses):
     return sorted(scored, key=lambda h: -(h.get("ability_score") or 0))
 
 
+def _rank_of(horses, horse, key):
+    """出走馬中の順位 (降順)。値が無ければ None。"""
+    vals = [(h.get("horse_number"), h.get(key) or 0) for h in horses]
+    if not any(v for _, v in vals):
+        return None
+    ordered = sorted(vals, key=lambda x: -x[1])
+    for i, (hn, _v) in enumerate(ordered, 1):
+        if hn == horse.get("horse_number"):
+            return i
+    return None
+
+
+def eval_points(horse, horses, stats=None, limit=3):
+    """その馬を「何で評価したか」を具体的に2-3点返す (#124)。
+
+    汎用の説明文 (「複勝評価に対し市場が低い＝配当が大きい」等) は毎回同じで情報量ゼロ
+    (#94 の再発) なので使わない。順位・実測率など、その馬固有の数字だけを出す。
+    stats は post_sections._score_entries_by_course の結果を horse_number で引ける dict。
+    """
+    n = len(horses)
+    pop = horse.get("popularity") or 0
+    pts = []
+
+    t3_rank = _rank_of(horses, horse, "pred_top3_pct")
+    if t3_rank and pop and t3_rank + 2 <= pop:
+        pts.append(f"AIの複勝評価は{n}頭中{t3_rank}位（市場は想定{pop}番人気）")
+
+    ab_rank = _rank_of(horses, horse, "ability_score")
+    if ab_rank and ab_rank <= 3 and pop >= 4:
+        pts.append(f"オッズを一切見ない能力評価でも{ab_rank}位")
+
+    si = horse.get("si_avg") or 0
+    si_rank = _rank_of(horses, horse, "si_avg")
+    if si and si_rank and si_rank <= 3:
+        pts.append(f"スピード指数{si:.0f}は{n}頭中{si_rank}位")
+
+    st = (stats or {}).get(horse.get("horse_number")) or {}
+    if st.get("jockey") and (st.get("jockey_n") or 0) >= 8 and (st.get("jockey_pct") or 0) >= 25:
+        pts.append(f"鞍上{st['jockey']}は当コース複勝率{st['jockey_pct']:.0f}%（{st['jockey_n']}走）")
+    if st.get("sire") and (st.get("sire_n") or 0) >= 6 and (st.get("sire_pct") or 0) >= 30:
+        pts.append(f"父{st['sire']}産駒は当コース複勝率{st['sire_pct']:.0f}%（{st['sire_n']}走）")
+    if st.get("damsire") and (st.get("dam_n") or 0) >= 6 and (st.get("dam_pct") or 0) >= 35:
+        pts.append(f"母父{st['damsire']}は当コース複勝率{st['dam_pct']:.0f}%（{st['dam_n']}走）")
+
+    for r in (horse.get("anasanee_reasons") or []):
+        r = str(r).strip()
+        if r and not any(r[:4] in p for p in pts):
+            pts.append(f"穴予兆: {r}")
+            break
+    return pts[:limit]
+
+
 def _top_reason(h):
     """◎の推奨理由から表示に向く1行を選ぶ (紙面転記は既に排除済み #117)。"""
     for r in h.get("reasons") or []:
@@ -82,7 +134,7 @@ def _top_reason(h):
 # ── パターン定義 ────────────────────────────────────────────
 # 各 build_* は (text|None) を返す。None = このレースでは条件を満たさず不成立。
 
-def _p_ability_gap(race, horses, n_other):
+def _p_ability_gap(race, horses, n_other, stats=None):
     """能力値 (オッズ非依存) が市場と食い違う時だけ成立する、うち固有の切り口。"""
     rank = _ability_rank(horses)
     if len(rank) < 3:
@@ -108,17 +160,17 @@ def _p_ability_gap(race, horses, n_other):
     return "\n".join(lines)
 
 
-def _p_minimal(race, horses, n_other):
-    """本命1頭 + 根拠1行 + 相手/穴。最も読みやすい万人向け。"""
+def _p_minimal(race, horses, n_other, stats=None):
+    """本命1頭 + 評価根拠 + 相手/穴。最も読みやすい万人向け。"""
     mk = _mark_map(horses)
     honmei = mk.get("◎")
     if not honmei:
         return None
-    reason = _top_reason(honmei)
+    pts = eval_points(honmei, horses, stats, limit=2) or [_top_reason(honmei)]
     lines = [f"【{_race_title(race)}】AIの本命", "",
              f"◎ {honmei.get('horse_name','?')}{_label(honmei)}", ""]
-    if reason:
-        lines += [reason, ""]
+    lines += [f"・{p}" for p in pts if p]
+    lines += [""]
     aite = [mk[m].get("horse_name", "") for m in ("○", "▲") if m in mk]
     if aite:
         lines.append("相手 " + " / ".join(aite))
@@ -129,7 +181,7 @@ def _p_minimal(race, horses, n_other):
     return "\n".join(lines)
 
 
-def _p_transparency(race, horses, n_other):
+def _p_transparency(race, horses, n_other, stats=None):
     """凍結記録と全成績公開を前面に — フォロー動機を直接作る型 (#115)。"""
     mk = _mark_map(horses)
     honmei, chu = mk.get("◎"), mk.get("注")
@@ -149,7 +201,7 @@ def _p_transparency(race, horses, n_other):
     return "\n".join(lines)
 
 
-def _p_upset(race, horses, n_other):
+def _p_upset(race, horses, n_other, stats=None):
     """荒れ履歴のあるレース限定。事前に「荒れる」と言える強みを出す (#96/#114)。"""
     uh = race.get("upset_hist") or {}
     if uh.get("label") not in ("荒れやすい", "紐荒れ"):
@@ -170,22 +222,25 @@ def _p_upset(race, horses, n_other):
     return "\n".join(lines)
 
 
-def _p_chu_value(race, horses, n_other):
-    """注 (妙味longshot) を主役にした夢枠。"""
+def _p_chu_value(race, horses, n_other, stats=None):
+    """注 (妙味longshot) を主役にした夢枠。評価根拠はその馬固有の数字で示す (#124)。"""
     mk = _mark_map(horses)
     chu, honmei = mk.get("注"), mk.get("◎")
     if not chu or not honmei or (chu.get("odds_win") or 0) < 7:
         return None
+    pts = eval_points(chu, horses, stats)
+    if not pts:
+        return None          # 具体的な根拠が出せないなら、この型は使わない
     lines = [f"{_race_title(race)}、AIが妙味とみた1頭。", "",
-             f"⚡ {chu.get('horse_name','?')}{_label(chu)}", "",
-             "AIの複勝評価に対して市場の評価が低い、",
-             "つまり「来る確率のわりに配当が大きい」と判定した馬です。", "",
-             f"本命は ◎{honmei.get('horse_name','?')}{_label(honmei)}。",
-             "軸は堅く、紐で夢を見る形。", ""] + _footer()
+             f"⚡ {chu.get('horse_name','?')}{_label(chu)}", ""]
+    lines += [f"・{p}" for p in pts]
+    lines += ["",
+              f"本命は ◎{honmei.get('horse_name','?')}{_label(honmei)}。",
+              "軸は堅く、紐で夢を見る形。", ""] + _footer()
     return "\n".join(lines)
 
 
-def _p_confidence(race, horses, n_other):
+def _p_confidence(race, horses, n_other, stats=None):
     """信頼度が高い日だけ「今日はここ」と言い切る型。"""
     if race.get("confidence") not in ("S", "A"):
         return None
@@ -240,7 +295,7 @@ def _save_history(name):
 
 
 def build_threads_predict_post(race, n_other_races=0, force_pattern=None, record=True,
-                               date_str=None):
+                               date_str=None, stats=None):
     """1レース1投稿の Threads 用テキストを返す (成立しなければ (None, None))。
 
     ローテーションは **日付から決定的に** 決める。GitHub Actions は run ごとに新規
@@ -256,7 +311,7 @@ def build_threads_predict_post(race, n_other_races=0, force_pattern=None, record
         if force_pattern and name != force_pattern:
             continue
         try:
-            text = fn(race, horses, n_other_races)
+            text = fn(race, horses, n_other_races, stats)
         except Exception:
             text = None
         if text and len(text) <= MAX_LEN:
