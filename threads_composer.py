@@ -22,6 +22,7 @@ FREEZE = "印は投稿時点で凍結記録 (削除・後出しなし)"
 # 朝の人気・オッズは確定ではない (発走直前まで動く)。#118 の「オッズ確定！」と同じ
 # 誤りを繰り返さないため、想定であることを毎回明示する。
 ASSUMED_NOTE = "※人気・オッズは投稿時点の想定（確定は発走直前）"
+CHAKU_NOTE = "※[1-2-3-着外]＝1着・2着・3着・4着以下の回数"
 
 
 # ── ヘルパー ────────────────────────────────────────────────
@@ -45,8 +46,13 @@ def _label(h):
     return f"（{'・'.join(parts)}）" if parts else ""
 
 
-def _footer(cta=True):
-    return ([DASH_CTA] if cta else []) + [ASSUMED_NOTE]
+def _footer(cta=True, body=""):
+    """末尾の注記。着度数を使った投稿にだけ読み方の1行を足す (初見の読者向け)。"""
+    notes = []
+    if "[" in body and "-" in body:
+        notes.append(CHAKU_NOTE)
+    notes.append(ASSUMED_NOTE)
+    return ([DASH_CTA] if cta else []) + notes
 
 
 def _race_title(race):
@@ -65,6 +71,106 @@ def _ability_rank(horses):
     """オッズ非依存の能力値ランキング (上位のみ)。"""
     scored = [h for h in horses if (h.get("ability_score") or 0) > 0]
     return sorted(scored, key=lambda h: -(h.get("ability_score") or 0))
+
+
+# ── 着度数 (競馬慣習の [1着-2着-3着-着外] 表記、#55) ──────────
+def _chaku(p1, p2, p3, total):
+    return f"[{p1}-{p2}-{p3}-{max(total - p1 - p2 - p3, 0)}]"
+
+
+def course_records(conn, race, horse_numbers, years=6):
+    """指定馬の「鞍上・父・母父の当コース着度数」を引く (#125)。
+
+    率だけだと「13走で38%」が何を意味するか読者に伝わらないため、競馬慣習の
+    着度数 [1-2-3-着外] を併記する。対象は本命・注など数頭なのでコストは軽い。
+    """
+    from datetime import datetime
+    venue = race.get("venue", "") or ""
+    surface = race.get("surface", "") or ""
+    distance = race.get("distance") or 0
+    if not (venue and surface and distance):
+        return {}
+    cur = conn.cursor()
+    y = datetime.now().year
+    out = {}
+    ent = {}
+    cur.execute("""SELECT res.horse_number, j.jockey_name, h.sire, h.damsire
+                   FROM results res
+                   LEFT JOIN jockeys j ON res.jockey_id = j.jockey_id
+                   LEFT JOIN horses h ON res.horse_id = h.horse_id
+                   WHERE res.race_id = ?""", (race.get("race_id"),))
+    for hn, jk, sire, damsire in cur.fetchall():
+        ent[hn] = ((jk or "").strip(),
+                   (sire or "").split("(")[0].strip(),
+                   (damsire or "").split("(")[0].strip())
+
+    def _tally(sql, params, min_n):
+        cur.execute(sql, params)
+        r = cur.fetchone()
+        if not r or not r[0] or r[0] < min_n:
+            return None
+        n, p1, p2, p3 = r[0], r[1] or 0, r[2] or 0, r[3] or 0
+        return {"n": n, "chaku": _chaku(p1, p2, p3, n),
+                "pct": 100.0 * (p1 + p2 + p3) / n}
+
+    counts = ("COUNT(*), SUM(CASE WHEN res.finish_position=1 THEN 1 ELSE 0 END), "
+              "SUM(CASE WHEN res.finish_position=2 THEN 1 ELSE 0 END), "
+              "SUM(CASE WHEN res.finish_position=3 THEN 1 ELSE 0 END)")
+    for hn in horse_numbers:
+        jk, sire, damsire = ent.get(hn, ("", "", ""))
+        rec = {"jockey": jk, "sire": sire, "damsire": damsire}
+        if jk:
+            rec["jockey_rec"] = _tally(
+                f"""SELECT {counts} FROM races r JOIN results res ON r.race_id=res.race_id
+                    JOIN jockeys j ON res.jockey_id=j.jockey_id
+                    WHERE r.venue=? AND r.surface=? AND r.distance=? AND r.race_date>=?
+                      AND j.jockey_name=? AND res.finish_position>0""",
+                (venue, surface, distance, f"{y-3}-01-01", jk), 8)
+        for key, col, val in (("sire_rec", "h.sire", sire), ("dam_rec", "h.damsire", damsire)):
+            if val:
+                rec[key] = _tally(
+                    f"""SELECT {counts} FROM races r JOIN results res ON r.race_id=res.race_id
+                        JOIN horses h ON res.horse_id=h.horse_id
+                        WHERE r.venue=? AND r.surface=? AND r.distance=? AND r.race_date>=?
+                          AND {col}=? AND res.finish_position>0""",
+                    (venue, surface, distance, f"{y-years}-01-01", val), 6)
+        out[hn] = rec
+    return out
+
+
+# ── 穴予兆スコアの内部表記を、ロジックを知らない読者向けに翻訳 (#125) ──
+# volatility.compute_anasanee_score が返す文字列は "騎手変更(+1)" のような内部表記で、
+# 加点値もそのまま出ていた。読者には意味が伝わらないので自然文に開く。
+def _plain_ana(reason):
+    import re as _re
+    r = _re.sub(r"\(\+\d+\)", "", str(reason or "")).strip()
+    if not r:
+        return None
+    m = _re.match(r"前走(\d+)着$", r)
+    if m:
+        return f"前走は{m.group(1)}着に敗れ、人気を落としての一戦"
+    m = _re.match(r"\+?(-?\d+)m大幅(延長|短縮)$", r)
+    if m:
+        return f"前走から距離が{abs(int(m.group(1)))}m{m.group(2)}"
+    if r == "前走追込":
+        return "前走は後方から差す競馬 — 展開が向けば一発がある脚質"
+    if r == "前走差し":
+        return "前走は差す競馬 — 展開次第で浮上できる脚質"
+    m = _re.match(r"\+?(-?\d+)kg大幅(減|増)$", r)
+    if m:
+        return f"前走から馬体重{m.group(1)}kg"
+    if r == "騎手変更":
+        return "前走から乗り替わり"
+    m = _re.match(r"中休み(\d+)日$", r)
+    if m:
+        return f"前走から{m.group(1)}日空けての出走"
+    m = _re.match(r"(.+)産駒$", r)
+    if m:
+        return f"父{m.group(1)}は人気薄での好走が目立つ系統"
+    m = _re.match(r"(.+)騎手$", r)
+    if m:
+        return f"{m.group(1)}騎手は人気薄をよく持ってくる"
+    return r
 
 
 def _rank_of(horses, horse, key):
@@ -103,18 +209,22 @@ def eval_points(horse, horses, stats=None, limit=3):
     if si and si_rank and si_rank <= 3:
         pts.append(f"スピード指数{si:.0f}は{n}頭中{si_rank}位")
 
+    # 当コースの実績は着度数 [1着-2着-3着-着外] で示す (#55: 率だけだと母数が伝わらない)
     st = (stats or {}).get(horse.get("horse_number")) or {}
-    if st.get("jockey") and (st.get("jockey_n") or 0) >= 8 and (st.get("jockey_pct") or 0) >= 25:
-        pts.append(f"鞍上{st['jockey']}は当コース複勝率{st['jockey_pct']:.0f}%（{st['jockey_n']}走）")
-    if st.get("sire") and (st.get("sire_n") or 0) >= 6 and (st.get("sire_pct") or 0) >= 30:
-        pts.append(f"父{st['sire']}産駒は当コース複勝率{st['sire_pct']:.0f}%（{st['sire_n']}走）")
-    if st.get("damsire") and (st.get("dam_n") or 0) >= 6 and (st.get("dam_pct") or 0) >= 35:
-        pts.append(f"母父{st['damsire']}は当コース複勝率{st['dam_pct']:.0f}%（{st['dam_n']}走）")
+    jr = st.get("jockey_rec")
+    if st.get("jockey") and jr and jr["pct"] >= 25:
+        pts.append(f"鞍上{st['jockey']}は当コース {jr['chaku']} 複勝率{jr['pct']:.0f}%")
+    sr = st.get("sire_rec")
+    if st.get("sire") and sr and sr["pct"] >= 30:
+        pts.append(f"父{st['sire']}産駒は当コース {sr['chaku']} 複勝率{sr['pct']:.0f}%")
+    dr = st.get("dam_rec")
+    if st.get("damsire") and dr and dr["pct"] >= 35:
+        pts.append(f"母父{st['damsire']}は当コース {dr['chaku']} 複勝率{dr['pct']:.0f}%")
 
     for r in (horse.get("anasanee_reasons") or []):
-        r = str(r).strip()
-        if r and not any(r[:4] in p for p in pts):
-            pts.append(f"穴予兆: {r}")
+        plain = _plain_ana(r)
+        if plain and not any(plain[:5] in p for p in pts):
+            pts.append(plain)
             break
     return pts[:limit]
 
@@ -156,7 +266,7 @@ def _p_ability_gap(race, horses, n_other, stats=None):
     lines.append(f"本命は ◎{honmei.get('horse_name','?')}{_label(honmei)}。")
     lines.append(f"ただし3連系の紐には{top.get('horse_name','?')}を入れます。")
     lines.append("")
-    lines += _footer()
+    lines += _footer(body="\n".join(lines))
     return "\n".join(lines)
 
 
@@ -177,7 +287,7 @@ def _p_minimal(race, horses, n_other, stats=None):
     chu = mk.get("注")
     if chu:
         lines.append(f"穴  {chu.get('horse_name','?')}{_label(chu)}")
-    lines += [""] + _footer()
+    lines += [""] + _footer(body="\n".join(lines))
     return "\n".join(lines)
 
 
@@ -218,7 +328,7 @@ def _p_upset(race, horses, n_other, stats=None):
              "手を広げて構えるのが過去の傾向に沿った買い方です。"]
     if chu:
         lines += ["", f"穴で拾うなら {chu.get('horse_name','?')}{_label(chu)}"]
-    lines += [""] + _footer()
+    lines += [""] + _footer(body="\n".join(lines))
     return "\n".join(lines)
 
 
@@ -236,7 +346,8 @@ def _p_chu_value(race, horses, n_other, stats=None):
     lines += [f"・{p}" for p in pts]
     lines += ["",
               f"本命は ◎{honmei.get('horse_name','?')}{_label(honmei)}。",
-              "軸は堅く、紐で夢を見る形。", ""] + _footer()
+              "軸は堅く、紐で夢を見る形。", ""]
+    lines += _footer(body="\n".join(lines))
     return "\n".join(lines)
 
 
@@ -258,7 +369,8 @@ def _p_confidence(race, horses, n_other, stats=None):
              f"AI勝率 {disp:.0f}% — 出走馬の中で頭ひとつ抜けています。", ""]
     if aite:
         lines += ["相手 " + " / ".join(aite), ""]
-    lines += [f"※{FREEZE}", ""] + _footer()
+    lines += [f"※{FREEZE}", ""]
+    lines += _footer(body="\n".join(lines))
     return "\n".join(lines)
 
 

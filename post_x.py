@@ -954,12 +954,10 @@ def cmd_predict(args):
             # #124: 「何で評価したか」を出すため、当コースの血統/騎手実績を引いて渡す
             _stats = None
             try:
-                from post_sections import _score_entries_by_course as _sc
+                _hns = [h.get('horse_number') for h in (_r2.get('horses') or [])
+                        if h.get('mark') in ('◎', '○', '▲', '注')]
                 with get_db() as _conn:
-                    _conn.row_factory = sqlite3.Row
-                    _rows = _sc(_conn, _r2.get('race_id'), _r2.get('venue', ''),
-                                _r2.get('surface', ''), _r2.get('distance') or 0)
-                _stats = {r.get('hn'): r for r in (_rows or [])}
+                    _stats = _tc.course_records(_conn, _r2, _hns)
             except Exception as _se:
                 print(f"   (コース実績の取得スキップ: {_se})")
             _pat, _txt = _tc.build_threads_predict_post(
