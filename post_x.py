@@ -902,8 +902,14 @@ def cmd_predict(args):
     threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
-        if not client:
+        # #130 (2026-08-28): X が使えない時に return すると **Threads まで止まる**。
+        # X はクレジット枯渇・tier 制限・Cloudflare 等で落ちることが実際に何度もあり
+        # (#23/#47)、現在も投稿不能。片方が死んでももう片方は配信を続ける。
+        if not client and not threads_client:
+            print("❌ X も Threads も利用できないため投稿中止")
             return
+        if not client:
+            print("⚠️ X が利用不可 — Threads のみに投稿します")
 
     # #122: Threads は X スレッドの再チャンクでなく専用の1投稿完結型に切替。
     # チェーンは2投稿目以降が読まれず、6投稿×400字の記号の壁になっていた。
@@ -1698,8 +1704,14 @@ def cmd_results(args):
     threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
-        if not client:
+        # #130 (2026-08-28): X が使えない時に return すると **Threads まで止まる**。
+        # X はクレジット枯渇・tier 制限・Cloudflare 等で落ちることが実際に何度もあり
+        # (#23/#47)、現在も投稿不能。片方が死んでももう片方は配信を続ける。
+        if not client and not threads_client:
+            print("❌ X も Threads も利用できないため投稿中止")
             return
+        if not client:
+            print("⚠️ X が利用不可 — Threads のみに投稿します")
 
     post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
@@ -1884,8 +1896,14 @@ def cmd_weekday(args):
     threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
-        if not client:
+        # #130 (2026-08-28): X が使えない時に return すると **Threads まで止まる**。
+        # X はクレジット枯渇・tier 制限・Cloudflare 等で落ちることが実際に何度もあり
+        # (#23/#47)、現在も投稿不能。片方が死んでももう片方は配信を続ける。
+        if not client and not threads_client:
+            print("❌ X も Threads も利用できないため投稿中止")
             return
+        if not client:
+            print("⚠️ X が利用不可 — Threads のみに投稿します")
 
     post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client, race_id=race_id)
 
@@ -3268,8 +3286,14 @@ def cmd_answer_check(args):
     threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
-        if not client:
+        # #130 (2026-08-28): X が使えない時に return すると **Threads まで止まる**。
+        # X はクレジット枯渇・tier 制限・Cloudflare 等で落ちることが実際に何度もあり
+        # (#23/#47)、現在も投稿不能。片方が死んでももう片方は配信を続ける。
+        if not client and not threads_client:
+            print("❌ X も Threads も利用できないため投稿中止")
             return
+        if not client:
+            print("⚠️ X が利用不可 — Threads のみに投稿します")
 
     post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
@@ -3443,8 +3467,14 @@ def cmd_weekly_review(args):
     threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
-        if not client:
+        # #130 (2026-08-28): X が使えない時に return すると **Threads まで止まる**。
+        # X はクレジット枯渇・tier 制限・Cloudflare 等で落ちることが実際に何度もあり
+        # (#23/#47)、現在も投稿不能。片方が死んでももう片方は配信を続ける。
+        if not client and not threads_client:
+            print("❌ X も Threads も利用できないため投稿中止")
             return
+        if not client:
+            print("⚠️ X が利用不可 — Threads のみに投稿します")
 
     post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
 
@@ -3972,8 +4002,14 @@ def cmd_odds_flash(args):
     threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
-        if not client:
+        # #130 (2026-08-28): X が使えない時に return すると **Threads まで止まる**。
+        # X はクレジット枯渇・tier 制限・Cloudflare 等で落ちることが実際に何度もあり
+        # (#23/#47)、現在も投稿不能。片方が死んでももう片方は配信を続ける。
+        if not client and not threads_client:
+            print("❌ X も Threads も利用できないため投稿中止")
             return
+        if not client:
+            print("⚠️ X が利用不可 — Threads のみに投稿します")
 
     # 各レースを個別ツイートとして投稿
     for tweet in tweets:
@@ -4021,8 +4057,14 @@ def cmd_morning(args):
     threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
-        if not client:
+        # #130 (2026-08-28): X が使えない時に return すると **Threads まで止まる**。
+        # X はクレジット枯渇・tier 制限・Cloudflare 等で落ちることが実際に何度もあり
+        # (#23/#47)、現在も投稿不能。片方が死んでももう片方は配信を続ける。
+        if not client and not threads_client:
+            print("❌ X も Threads も利用できないため投稿中止")
             return
+        if not client:
+            print("⚠️ X が利用不可 — Threads のみに投稿します")
 
     post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client, race_id=race_id)
 
@@ -4067,8 +4109,14 @@ def cmd_evening(args):
     threads_client = load_threads_client()
     if not args.dry_run:
         client = load_x_client()
-        if not client:
+        # #130 (2026-08-28): X が使えない時に return すると **Threads まで止まる**。
+        # X はクレジット枯渇・tier 制限・Cloudflare 等で落ちることが実際に何度もあり
+        # (#23/#47)、現在も投稿不能。片方が死んでももう片方は配信を続ける。
+        if not client and not threads_client:
+            print("❌ X も Threads も利用できないため投稿中止")
             return
+        if not client:
+            print("⚠️ X が利用不可 — Threads のみに投稿します")
 
     post_tweet(client, tweet, dry_run=args.dry_run, threads_client=threads_client, race_id=race_id)
 
