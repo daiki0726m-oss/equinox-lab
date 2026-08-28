@@ -259,6 +259,13 @@ def _paginate_single_section(header: str, section: str, cta: str, hashtags: str,
     return tweets
 
 
+def _resolve_header(header, day, label, sections, emoji="🏇"):
+    """#129: header が None の場合、実際のセクションからテーマを組み立てる。"""
+    if header:
+        return header
+    return f"{emoji} {day} {label}\n{_theme_from_sections(sections)}"
+
+
 def _split_to_thread(header: str, sections: list, cta: str, hashtags: str,
                       budget: int = CHAR_BUDGET,
                       max_tweets: int = MAX_THREAD_TWEETS) -> list:
@@ -1317,6 +1324,7 @@ def build_morning_post(race: dict, conn, today: Optional[datetime] = None) -> Tu
                       "weekday": dow, "skipped": "no_content"}
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cfg["cta"], hashtags)
 
     char_count = sum(_x_len(t) for t in tweets)
@@ -1327,6 +1335,33 @@ def build_morning_post(race: dict, conn, today: Optional[datetime] = None) -> Tu
 # ─────────────────────────────────────────────────────────
 # 月昼: コース傾向 (種牡馬×枠×異常年)
 # ─────────────────────────────────────────────────────────
+def _theme_from_sections(sections, fallback="注目レース分析"):
+    """#129: ヘッダーのテーマを「実際に入ったセクション」から導出する。
+
+    固定文字列のヘッダーは、フォールバックでセクション構成が変わると中身と食い違う
+    (「今週の注目馬とコース傾向」と名乗りながら注目馬が1頭も無い等 = タイトル詐欺)。
+    #50/#51 で個別ビルダーを直したが、固定ヘッダーが残っていた箇所で再発したため、
+    見出し語から機械的に組み立てる方式に変える。
+    """
+    labels = []
+    for sec in sections:
+        if not sec:
+            continue
+        head = str(sec).split("\n")[0]
+        for key, word in (("注目馬", "注目馬"), ("血統", "血統"), ("種牡馬", "血統"),
+                          ("母父", "血統"), ("歴代勝ち馬", "歴代勝ち馬"), ("枠", "枠順傾向"),
+                          ("末脚", "末脚傾向"), ("前残り", "末脚傾向"), ("1人気", "人気馬の信頼性"),
+                          ("波乱", "波乱事例"), ("追い切り", "追い切り"), ("騎手", "鞍上"),
+                          ("鞍上", "鞍上"), ("パターン", "好相性パターン"),
+                          ("ローテ", "ローテ傾向"), ("コース適性", "コース適性")):
+            if key in head and word not in labels:
+                labels.append(word)
+                break
+    if not labels:
+        return fallback
+    return "と".join(labels[:2])
+
+
 def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     """月昼 (12:30): レースのコース傾向 (種牡馬/枠/異常年)"""
     samples = {}
@@ -1340,7 +1375,7 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     race_id = race.get("race_id", "")
     race_name = race.get("race_name", "")
 
-    header = f"🔍 {day} {label}\n今週の注目馬とコース傾向"
+    header = None  # #129: セクション確定後に _theme_from_sections で決める
     import re as _re
 
     # 🆕 #81: 月昼と火昼で同じ「総合TOP3」が出て反復していた → 曜日で切り口を変える。
@@ -1447,6 +1482,7 @@ def build_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 今夜AI注目要素を配信"  # #97 (D4): CTA は「🔔 」始まりに統一
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
     char_count = sum(_x_len(t) for t in tweets)
@@ -1511,6 +1547,7 @@ def build_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 火朝に血統深掘りを配信"  # #97 (D4)
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
     char_count = sum(_x_len(t) for t in tweets)
@@ -1562,6 +1599,7 @@ def build_tue_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 木朝は追い切り・コース適性で最終チェック"
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
     char_count = sum(_x_len(t) for t in tweets)
@@ -1617,7 +1655,7 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
         th, lh, nh = sec_historical_winners(conn, race.get("race_name", ""), years=6)
         if lh and nh > 0:
             sections.append(_make_section("【歴代勝ち馬】", lh[:3]))
-            theme = "歴代勝ち馬とコース傾向"
+            theme = "歴代勝ち馬"  # #129: 実際に入るのは【歴代勝ち馬】だけ (コース傾向は付かない)
         else:
             ts, ls, ns = sec_sire_course_cross(
                 conn, venue, surface, distance, top=3, years=6, race_id=race_id)
@@ -1639,6 +1677,7 @@ def build_wed_morning_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 今夜は危険な1人気を配信"  # #97 (D4)
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
     char_count = sum(_x_len(t) for t in tweets)
@@ -1661,7 +1700,7 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
     grade = race.get("grade")
     race_name = race.get("race_name", "")
 
-    header = f"⚠️ {day} {label}\n注目馬と人気馬の落とし穴"
+    header = None  # #129: セクション確定後に決める
 
     # 🆕 #53: 先頭に「今週の注目馬」(実名+データ) を必ず置く
     # #97 (C1): 月朝・月昼・月夜・火夜と同じ combined TOP3 の反復を解消 →
@@ -1704,6 +1743,7 @@ def build_wed_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 木朝は追い切り・コース適性で最終チェック"
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
     char_count = sum(_x_len(t) for t in tweets)
@@ -1786,7 +1826,7 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
         th, lh, nh = sec_historical_winners(conn, race.get("race_name", ""), years=6)
         if lh and nh > 0:
             sections.append(_make_section("【歴代勝ち馬】", lh[:3]))
-            theme = "歴代勝ち馬とコース傾向"
+            theme = "歴代勝ち馬"  # #129: 実際に入るのは【歴代勝ち馬】だけ (コース傾向は付かない)
 
     # それでも空なら投稿スキップ (空投稿禁止)
     if not [s for s in sections if s]:
@@ -1806,6 +1846,7 @@ def build_fri_morning_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 今夜は翌朝の配信予定を告知"  # #97 (D4)
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
 
     char_count = sum(_x_len(t) for t in tweets)
@@ -1839,7 +1880,7 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     else:
         # 追い切り未公開 (未来レースは直前まで非公開) → コース適性の handpicked TOP3。
         # ヘッダーも実内容に合わせ「追い切り」とは書かない (タイトルと中身を一致させる)。
-        header = f"🏇 {day} {label}\nコース適性 注目馬TOP"
+        header = None  # #129: セクション確定後に決める
         t_alt, lines_alt, n_alt = sec_handpicked_top(
             conn, race_id, venue, surface, distance, top=3, years=6
         )
@@ -1850,7 +1891,7 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
             # コース適性も取れない極薄レース → 歴代勝ち馬で埋める (#50: 空投稿禁止)。
             th, lh, nh = sec_historical_winners(conn, race.get("race_name", ""), years=6)
             if lh and nh > 0:
-                header = f"🏇 {day} {label}\n歴代勝ち馬とコース傾向"
+                header = f"🏇 {day} {label}\n歴代勝ち馬"  # #129: 中身と一致させる
                 sections.append(_make_section("【歴代勝ち馬】", lh[:3]))
 
     # 中身ゼロ (追い切り・コース適性・歴代いずれも空) は投稿スキップ (ヘッダー+CTA 空投稿禁止)
@@ -1859,13 +1900,16 @@ def build_wed_weekday_post(race: dict, conn) -> Tuple[str, dict]:
 
     # 🆕 強い見出し (この builder は #52 で SLOT_BUILDERS[thu_morning] に割当 → dow=3)
     lede = _build_morning_lede(3, conn, race)
-    if lede:
-        header += f"\n\n{lede}"
+    # #129: header は遅延決定 (None) になりうるので、lede は解決後に足す
+    _pending_lede = lede
 
     # CTA は木朝 slot 用 (#52: 水昼→木朝へ移動。netkeibaの追い切り評価は木以降公開のため)
     cta = "🔔 木昼に注目馬TOP3を配信"  # #97 (D4)
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
+    if _pending_lede:
+        header += f"\n\n{_pending_lede}"
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
     return tweets, {"sections_used": ["workout"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
@@ -1946,7 +1990,7 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
         th, lh, nh = sec_historical_winners(conn, race.get("race_name", ""), years=6)
         if lh and nh > 0:
             sections.append(_make_section("【歴代勝ち馬】", lh[:3]))
-            theme = "歴代勝ち馬とコース傾向"
+            theme = "歴代勝ち馬"  # #129: 実際に入るのは【歴代勝ち馬】だけ (コース傾向は付かない)
         else:
             t_hp, lines_hp, n_hp = sec_handpicked_top(
                 conn, race_id, venue, surface, distance, top=3, years=6)
@@ -1968,6 +2012,7 @@ def build_thu_morning_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 今夜は危険な1人気を配信"  # #97 (D4)
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
     return tweets, {"sections_used": ["entry_pedigree", "sires"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
@@ -2055,6 +2100,7 @@ def build_thu_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 今夜も注目馬の最終チェックを配信"  # #79: note は手動のため告知しない / #97 (D4)
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
     return tweets, {"sections_used": ["top3", "pattern"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
@@ -2114,6 +2160,7 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 レース当日の朝10時すぎに印の最終予想"  # #79 note削除 / #81 短縮し3頭目を確保
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
     return tweets, {"sections_used": ["top3"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
@@ -2178,6 +2225,7 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 レース当日の朝10時すぎに印 (◎○▲) の最終予想"  # #97 (A2): 買い目はXに出ないので予告しない
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
     return tweets, {"sections_used": ["attention/handpicked", "pattern"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 
@@ -2231,6 +2279,7 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
     cta = "🔔 週末をお楽しみに🔥"  # #97 (D4)
 
     hashtags = _hashtags(race)
+    header = _resolve_header(header, day, label, [s for s in sections if s])
     tweets = _split_to_thread(header, [s for s in sections if s], cta, hashtags)
     return tweets, {"sections_used": ["top1"], "samples": samples, "char_count": sum(_x_len(t) for t in tweets)}
 

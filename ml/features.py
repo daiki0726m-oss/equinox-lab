@@ -1060,11 +1060,11 @@ class FeatureBuilder:
             "post_top3_rate_course",
             # 同距離限定成績 (2)
             "dist_win_rate", "dist_top3_rate",
-            # #127: 距離適性の盲目修正 + 血統×距離 (8個)
+            # #128: 距離適性の盲目修正のみ残す (2個)。血統×距離の6特徴量は
+            # OOS A/B (学習<2025-03 / 評価2025-03以降) で AUC -0.0002・予測1位複勝率
+            # -0.15pt と**改善なし**だったため撤去した (#127 の「市場が既に織り込んでいる」
+            # という分析通りの結果)。推論側の per-sire 集計クエリのコストも不要になる。
             "has_dist_experience", "dist_scope",
-            "sire_distband_top3_rate", "damsire_distband_top3_rate",
-            "sire_dist_edge", "dist_edge_x_ddiff", "dist_edge_x_shorten",
-            "damsire_x_inexp",
             # v5新規 - 着差(前走の質を示す強シグナル)
             "margin_avg", "margin_best",
             # v5新規 - 同馬の同コース過去成績(course familiarity)

@@ -2342,11 +2342,18 @@ def get_weekend_graded_races(conn, allow_past=True):
     sat_str = next_sat.strftime('%Y-%m-%d')
     sun_str = next_sun.strftime('%Y-%m-%d')
 
-    # まず来週末のレースを検索
+    # まず来週末のレースを検索。
+    # #129 (2026-08-28): 旧実装は `race_number = 11` 固定だったが、**メインレースは
+    # 必ずしも11Rではない**。夏の薄暮開催など変則日程では重賞が7-8Rに組まれる
+    # (2026-08-30 新潟記念=8R / 中京2歳S=7R、8/9・8/16・8/23 も同様で今夏は毎週発生)。
+    # その結果、平日の題材が 11R の「3歳以上1勝クラス」になり、今週末の G3 を
+    # 差し置いて平場を看板にしていた (ユーザー指摘)。
+    # → 重賞・OP を番号に関係なく拾い、無ければ 11R にフォールバックする。
     result = conn.execute("""
         SELECT race_id, race_name, venue, surface, distance, grade, race_date, race_number
         FROM races
-        WHERE race_date BETWEEN ? AND ? AND race_number = 11
+        WHERE race_date BETWEEN ? AND ?
+          AND (grade IN ('G1','G2','G3','L','OP','リステッド') OR race_number = 11)
         ORDER BY race_date, venue
     """, (sat_str, sun_str)).fetchall()
 
@@ -2357,7 +2364,8 @@ def get_weekend_graded_races(conn, allow_past=True):
         result = conn.execute("""
             SELECT race_id, race_name, venue, surface, distance, grade, race_date, race_number
             FROM races
-            WHERE race_number = 11 AND race_date <= ?
+            WHERE (grade IN ('G1','G2','G3','L','OP','リステッド') OR race_number = 11)
+              AND race_date <= ?
             ORDER BY race_date DESC
             LIMIT 6
         """, (today.strftime('%Y-%m-%d'),)).fetchall()
@@ -2367,7 +2375,11 @@ def get_weekend_graded_races(conn, allow_past=True):
 
     # G1 > G2 > G3 > L > OP でソート
     grade_order = {'G1': 0, 'G2': 1, 'G3': 2, 'L': 3, 'OP': 4, '': 5}
-    result = sorted(result, key=lambda r: grade_order.get(detect_grade(r['race_name'], r.get('grade')), 5))
+    from race_utils import is_jump_race
+    result = sorted(result, key=lambda r: (
+        1 if is_jump_race(r.get('race_name', '')) else 0,     # #123: 障害は看板にしない
+        grade_order.get(detect_grade(r['race_name'], r.get('grade')), 5),
+        r.get('race_date', ''), r.get('venue', '')))
 
     return result
 
