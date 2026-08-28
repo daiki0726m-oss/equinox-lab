@@ -394,8 +394,43 @@ def race_recently_posted(race_id, hours=18):
         return False
 
 
+def _record_threads_post(post_ids, meta):
+    """#131: Threads 投稿の id と型をサイドカーに追記する。
+
+    後日 scripts/collect_threads_insights.py が各 id の閲覧数・いいね等を取得し、
+    「どの型 (ability_gap / minimal / upset / transparency / chu_value / confidence)
+    が読まれるか」を実データで判定するための土台。DB でなくテキスト sidecar に
+    書くのは #70/#101 の clobber 回避。
+    """
+    path = os.path.join("docs", "data", "threads_posts.json")
+    rec = []
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                rec = json.load(f)
+        except Exception:
+            rec = []
+    now = now_jst().isoformat()
+    for i, pid in enumerate(post_ids):
+        rec.append({
+            "post_id": pid,
+            "posted_at": now,
+            "slot": meta.get("slot", ""),
+            "pattern": meta.get("pattern", ""),
+            "race_id": meta.get("race_id", ""),
+            "race_name": meta.get("race_name", ""),
+            "chunk": i,
+            "chars": meta.get("chars", 0),
+        })
+    rec = rec[-500:]          # 直近500件だけ保持
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False, indent=1)
+    print(f"  📈 Threads投稿を記録: {len(post_ids)}件 (型={meta.get('pattern','-')})")
+
+
 def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None,
-                image_paths=None, threads_override=None):
+                image_paths=None, threads_override=None, threads_meta=None):
     """ツイートのリスト（スレッド）をX + Threadsに投稿（重複チェック付き）
 
     Args:
@@ -558,7 +593,14 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
     if threads_client:
         # #122: threads_override が渡された場合は X 用スレッドでなくそちらを投稿する
         # (Threads は 1投稿完結・型ローテーションの専用コンポーザ)
-        post_threads_thread(threads_client, threads_override or tweets, dry_run=dry_run)
+        _tids = post_threads_thread(threads_client, threads_override or tweets, dry_run=dry_run)
+        # #131: 投稿IDと型を記録 — 後から「どの型が読まれたか」を計測するため。
+        # これが無いと投稿の効果を一切測れない (予想精度は検証済みだが配信効果は未計測)。
+        if _tids and not dry_run:
+            try:
+                _record_threads_post(_tids, threads_meta or {})
+            except Exception as _e:
+                print(f"  ⚠️ Threads投稿記録に失敗(非致命): {_e}")
 
     return tweet_ids
 
@@ -915,6 +957,7 @@ def cmd_predict(args):
     # チェーンは2投稿目以降が読まれず、6投稿×400字の記号の壁になっていた。
     # 主役レース (信頼度が最も高い、同点ならメイン) を1つ選び、型をローテーションする。
     _threads_override = None
+    _threads_meta = None
     try:
         import threads_composer as _tc
         _rank = {'S': 0, 'A': 1, 'B': 2, 'C': 3, 'D': 4}
@@ -975,13 +1018,16 @@ def cmd_predict(args):
                 stats=_stats)
             if _txt:
                 _threads_override = [_txt]
+                _threads_meta = {"slot": "post_predict", "pattern": _pat,
+                                 "race_id": _r2.get("race_id", ""),
+                                 "race_name": _r2.get("race_name", ""), "chars": len(_txt)}
                 print(f"🧵 Threads: 1投稿完結 (パターン={_pat}, {len(_txt)}字)")
                 break
     except Exception as _e:
         print(f"⚠️ Threads コンポーザ失敗 (X用チャンクにフォールバック): {_e}")
 
     post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client,
-                threads_override=_threads_override)
+                threads_override=_threads_override, threads_meta=_threads_meta)
 
     # 🆕 投稿したレースを記録 (#46): 結果投稿はこの posted_at のレースのみ報告する。
     # 「予想投稿したレース = 結果投稿するレース」を物理保証。発走済み除外(#45)で予想を

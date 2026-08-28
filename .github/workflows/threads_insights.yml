@@ -1,0 +1,54 @@
+name: 📈 Threads Insights
+
+# #131 (2026-08-28): Threads 投稿の反応 (閲覧数・いいね等) を毎日収集する。
+# 予想の精度は6年分で検証してきたのに配信効果は一度も計測していなかった。
+# X が使えないため Threads が主戦場 (ユーザー指示) — まずここから測る。
+on:
+  schedule:
+    - cron: '0 13 * * *'      # 毎日 22:00 JST (当日の投稿が十分に露出した後)
+  workflow_dispatch:
+
+concurrency:
+  group: threads-insights
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Force latest main (stale checkout 対策 #61)
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Collect insights
+        env:
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+        run: python3 scripts/collect_threads_insights.py
+
+      - name: Commit insights
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/threads_insights.json docs/data/threads_posts.json 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "📭 変更なし"
+          else
+            git commit -m "📈 Threads insights $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+            for i in 1 2 3; do
+              git pull --rebase --autostash -X theirs origin main || true
+              git push origin HEAD:main && break
+              sleep 5
+            done
+          fi
