@@ -49,16 +49,25 @@ def scrape_horse_pedigree(session, horse_id, max_retries=3):
                 sire = a.get_text(strip=True) if a else sire_td.get_text(strip=True)
 
             # Row 16: rowspan=16のtd = 母(Dam), rowspan=8のtd = 母父(Damsire)
+            # #127 (2026-08-24): 旧実装は rowspan==8 (母父) を見つけた時点で break しており
+            # **同じ行にある rowspan==16 の母を一度も読んでいなかった** → auto_pedigree の
+            # p.get('dam','') が常に空文字を書き、horses.dam が 38,533頭すべて空だった。
+            # 母系 (半兄弟の成績) を特徴量にできない構造的欠落の原因。#14/#95 と同型の silent .get()。
+            dam = ""
             damsire = ""
             for td in trs[16].find_all("td"):
                 rs = int(td.get("rowspan", 1))
-                if rs == 8:
-                    a = td.find("a")
-                    damsire = a.get_text(strip=True) if a else td.get_text(strip=True)
+                a = td.find("a")
+                text = a.get_text(strip=True) if a else td.get_text(strip=True)
+                if rs == 16 and not dam:
+                    dam = text
+                elif rs == 8 and not damsire:
+                    damsire = text
+                if dam and damsire:
                     break
 
-            if sire or damsire:
-                return {"sire": sire, "damsire": damsire}
+            if sire or damsire or dam:
+                return {"sire": sire, "dam": dam, "damsire": damsire}
             return None
 
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):

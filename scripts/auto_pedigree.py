@@ -51,7 +51,8 @@ def main():
         JOIN races ra ON r.race_id = ra.race_id
         LEFT JOIN horses h ON r.horse_id = h.horse_id
         WHERE ra.race_date BETWEEN ? AND ?
-          AND (h.sire IS NULL OR h.sire = '' OR h.damsire IS NULL OR h.damsire = '')
+          AND (h.sire IS NULL OR h.sire = '' OR h.damsire IS NULL OR h.damsire = ''
+               OR h.dam IS NULL OR h.dam = '')
         LIMIT ?
     ''', (date_from, date_to, args.max)).fetchall()
 
@@ -72,9 +73,16 @@ def main():
         try:
             p = scrape_horse_pedigree(sess, row['horse_id'])
             if p and (p.get('sire') or p.get('damsire')):
+                # #127: 取得できなかった項目で既存値を空に潰さない (保全UPDATE)
                 conn.execute(
-                    'UPDATE horses SET sire=?, damsire=?, dam=? WHERE horse_id=?',
-                    (p.get('sire', ''), p.get('damsire', ''), p.get('dam', ''),
+                    '''UPDATE horses SET
+                         sire    = CASE WHEN ?<>'' THEN ? ELSE sire END,
+                         damsire = CASE WHEN ?<>'' THEN ? ELSE damsire END,
+                         dam     = CASE WHEN ?<>'' THEN ? ELSE dam END
+                       WHERE horse_id=?''',
+                    (p.get('sire', ''), p.get('sire', ''),
+                     p.get('damsire', ''), p.get('damsire', ''),
+                     p.get('dam', ''), p.get('dam', ''),
                      row['horse_id'])
                 )
                 conn.commit()

@@ -172,6 +172,8 @@ class FeatureBuilder:
         )
         features["dist_win_rate"] = dist_stats["win_rate"]
         features["dist_top3_rate"] = dist_stats["top3_rate"]
+        features["has_dist_experience"] = dist_stats.get("has_dist_experience", 0)
+        features["dist_scope"] = dist_stats.get("dist_scope", 2)
 
         # ── 13. v5新規: 着差 (前走の走行品質) ──
         margin_stats = self._get_margin_avg(horse_id, race_date, n=5)
@@ -198,6 +200,16 @@ class FeatureBuilder:
         features["sire_surface_top3_rate"] = ped_cross["sire_surface_top3_rate"]
         features["damsire_course_top3_rate"] = ped_cross["damsire_course_top3_rate"]
         features["damsire_surface_top3_rate"] = ped_cross["damsire_surface_top3_rate"]
+        # ── #127新規: 距離帯キーの血統 / 父の距離適性 / 母父×経験の浅さ ──
+        features["sire_distband_top3_rate"] = ped_cross["sire_distband_top3_rate"]
+        features["damsire_distband_top3_rate"] = ped_cross["damsire_distband_top3_rate"]
+        _edge = ped_cross["sire_dist_edge"]
+        _ddiff = features.get("distance_diff", 0) or 0
+        features["sire_dist_edge"] = _edge
+        features["dist_edge_x_ddiff"] = _edge * (_ddiff / 1000.0)
+        features["dist_edge_x_shorten"] = _edge * (min(_ddiff, 0) / 1000.0)
+        features["damsire_x_inexp"] = (
+            ped_cross["damsire_surface_top3_rate"] / (1.0 + (features.get("race_experience", 0) or 0)))
 
         # ── 18. v7: 市場シグナル (人気押さえ型に調整) ──
         # 旧 v6: popularity_norm + is_favorite + is_top3_pop の3特徴量で
@@ -699,28 +711,47 @@ class FeatureBuilder:
         return 0.2  # デフォルト
 
     def _get_distance_specific_stats(self, horse_id, distance, surface, race_date=None):
-        """同馬場・同距離(±100m)限定の勝率・複勝率を取得"""
-        date_filter = f"AND ra.race_date < '{race_date}'" if race_date else ""
-        with get_db() as conn:
-            stats = conn.execute(f"""
-                SELECT COUNT(*) as total,
-                       SUM(CASE WHEN r.finish_position = 1 THEN 1 ELSE 0 END) as wins,
-                       SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
-                FROM results r
-                JOIN races ra ON r.race_id = ra.race_id
-                WHERE r.horse_id = ?
-                  AND ra.surface = ?
-                  AND ra.distance BETWEEN ? AND ?
-                  AND r.finish_position > 0
-                  {date_filter}
-            """, (horse_id, surface, distance - 100, distance + 100)).fetchone()
+        """同距離(±200m)限定の勝率・複勝率。#127 で2点修正:
 
+        (a) **train/serve skew の解消**: 学習側 (fast_train) は「±200m・馬場不問」で
+            計算しているのに、推論側は「±100m・同馬場限定」だった。同じ特徴量名で
+            別物を渡していたため、モデルが学習した意味と本番の値がずれていた。
+            学習側の定義に合わせる。
+        (b) **母数ゼロの盲目修正**: ±200m に該当0走だと 0.0 を返し「走ったが3着内なし」と
+            区別できなかった。経験フラグを分離し、空なら ±400m へフォールバックする。
+        """
+        date_filter = f"AND ra.race_date < '{race_date}'" if race_date else ""
+
+        def _q(win):
+            with get_db() as conn:
+                return conn.execute(f"""
+                    SELECT COUNT(*) as total,
+                           SUM(CASE WHEN r.finish_position = 1 THEN 1 ELSE 0 END) as wins,
+                           SUM(CASE WHEN r.finish_position <= 3 THEN 1 ELSE 0 END) as top3
+                    FROM results r
+                    JOIN races ra ON r.race_id = ra.race_id
+                    WHERE r.horse_id = ?
+                      AND ra.distance BETWEEN ? AND ?
+                      AND r.finish_position > 0
+                      {date_filter}
+                """, (horse_id, distance - win, distance + win)).fetchone()
+
+        stats = _q(200)
+        has_exp = 1 if (stats and stats["total"] > 0) else 0
+        scope = 0 if has_exp else 2
+        if not has_exp:
+            stats = _q(400)
+            if stats and stats["total"] > 0:
+                scope = 1
         if stats and stats["total"] > 0:
             return {
                 "win_rate": stats["wins"] / stats["total"],
                 "top3_rate": stats["top3"] / stats["total"],
+                "has_dist_experience": has_exp,
+                "dist_scope": scope,
             }
-        return {"win_rate": 0, "top3_rate": 0}
+        return {"win_rate": 0, "top3_rate": 0,
+                "has_dist_experience": has_exp, "dist_scope": 2}
 
     # ─── v5 新規 features (機能していない features を置換) ──
 
@@ -862,6 +893,10 @@ class FeatureBuilder:
             'sire_surface_top3_rate': 0.0,
             'damsire_course_top3_rate': 0.0,
             'damsire_surface_top3_rate': 0.0,
+            # #127
+            'sire_distband_top3_rate': 0.0,
+            'damsire_distband_top3_rate': 0.0,
+            'sire_dist_edge': 0.0,
         }
         with get_db() as conn:
             horse = conn.execute(
@@ -913,7 +948,79 @@ class FeatureBuilder:
         result['sire_surface_top3_rate'] = _query_one(sire, 'h.sire', 'surface', min_runs=10)
         result['damsire_course_top3_rate'] = _query_one(damsire, 'h.damsire', 'course', min_runs=5)
         result['damsire_surface_top3_rate'] = _query_one(damsire, 'h.damsire', 'surface', min_runs=10)
+
+        # ── #127: 距離帯キー (厳密距離は距離替わり馬で母数ゼロになりやすい) ──
+        band = FeatureBuilder.dist_band(distance)
+        lo, hi = FeatureBuilder.band_range(band)
+
+        def _query_band(name, name_field, min_runs=8):
+            if not name:
+                return 0.0
+            sql = f"""
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END) AS t3
+                FROM results r
+                JOIN races ra ON r.race_id=ra.race_id
+                JOIN horses h ON r.horse_id=h.horse_id
+                WHERE {name_field}=? AND ra.surface=? AND ra.distance BETWEEN ? AND ?
+                  AND r.finish_position>0 {date_filter}
+            """
+            with get_db() as conn:
+                row = conn.execute(sql, (name, surface, lo, hi) + params_base).fetchone()
+            if row and row['total'] and row['total'] >= min_runs:
+                return row['t3'] / row['total']
+            return 0.0
+
+        result['sire_distband_top3_rate'] = _query_band(sire, 'h.sire')
+        result['damsire_distband_top3_rate'] = _query_band(damsire, 'h.damsire')
+
+        # ── #127: 父の距離適性 (相対着順の短距離帯 vs 長距離帯) ──
+        # fast_train.sire_distance_edge と同一定義: (長距離帯平均) − (短距離帯平均)。
+        # 相対着順 (着順-1)/(頭数-1) は小さいほど good なので、正なら短距離向き。
+        if sire:
+            cache_key = (sire, race_date or '')
+            if not hasattr(self, '_sire_edge_cache'):
+                self._sire_edge_cache = {}
+            if cache_key in self._sire_edge_cache:
+                result['sire_dist_edge'] = self._sire_edge_cache[cache_key]
+            else:
+                def _rel(lo_d, hi_d):
+                    sql = f"""
+                        SELECT COUNT(*) AS n,
+                               SUM((r.finish_position - 1.0) / (ra.horse_count - 1.0)) AS rel_sum
+                        FROM results r
+                        JOIN races ra ON r.race_id=ra.race_id
+                        JOIN horses h ON r.horse_id=h.horse_id
+                        WHERE h.sire=? AND ra.distance BETWEEN ? AND ?
+                          AND r.finish_position>0 AND ra.horse_count>1 {date_filter}
+                    """
+                    with get_db() as conn:
+                        row = conn.execute(sql, (sire, lo_d, hi_d) + params_base).fetchone()
+                    if row and row['n'] and row['n'] >= 40 and row['rel_sum'] is not None:
+                        return row['rel_sum'] / row['n']
+                    return None
+                s_rel = _rel(0, 1800)      # 短距離帯 (band 0-1)
+                l_rel = _rel(1801, 9999)   # 長距離帯 (band 2-3)
+                edge = (l_rel - s_rel) if (s_rel is not None and l_rel is not None) else 0.0
+                self._sire_edge_cache[cache_key] = edge
+                result['sire_dist_edge'] = edge
         return result
+
+    @staticmethod
+    def dist_band(d):
+        """距離帯 (#127)。fast_train.dist_band と**必ず同一定義**に保つこと。"""
+        d = d or 0
+        if d <= 1400:
+            return 0
+        if d <= 1800:
+            return 1
+        if d <= 2200:
+            return 2
+        return 3
+
+    @staticmethod
+    def band_range(band):
+        return {0: (0, 1400), 1: (1401, 1800), 2: (1801, 2200)}.get(band, (2201, 9999))
 
     @staticmethod
     def get_feature_columns():
@@ -953,6 +1060,11 @@ class FeatureBuilder:
             "post_top3_rate_course",
             # 同距離限定成績 (2)
             "dist_win_rate", "dist_top3_rate",
+            # #127: 距離適性の盲目修正 + 血統×距離 (8個)
+            "has_dist_experience", "dist_scope",
+            "sire_distband_top3_rate", "damsire_distband_top3_rate",
+            "sire_dist_edge", "dist_edge_x_ddiff", "dist_edge_x_shorten",
+            "damsire_x_inexp",
             # v5新規 - 着差(前走の質を示す強シグナル)
             "margin_avg", "margin_best",
             # v5新規 - 同馬の同コース過去成績(course familiarity)

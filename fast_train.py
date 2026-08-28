@@ -205,6 +205,21 @@ def _empty_stat(kind):
     return {'top3_rate': 0, 'total': 0}
 
 
+def dist_band(d):
+    """距離帯 (#127): 0=~1400 / 1=~1800 / 2=~2200 / 3=2200+。
+    血統の距離適性を「厳密距離」でなく帯で見るためのキー。厳密距離キーは
+    非ゼロ率 81.5% (2024年以降実測) だが、帯キーなら 97.2% まで回復する。
+    ml/features.py の同名関数と**必ず同一定義**に保つこと。"""
+    d = d or 0
+    if d <= 1400:
+        return 0
+    if d <= 1800:
+        return 1
+    if d <= 2200:
+        return 2
+    return 3
+
+
 def build_pedigree_cross_stats(results_df, races_df):
     """v7: 血統 × コース cross 集計 (temporal-safe)
 
@@ -237,6 +252,22 @@ def build_pedigree_cross_stats(results_df, races_df):
     sire_surface = {}   # key=(sire, surface)
     damsire_course = {} # key=(damsire, venue, surface, distance)
     damsire_surface = {}# key=(damsire, surface)
+    # #127 追加: 距離帯キー (厳密距離だと距離替わり馬で母数ゼロになる問題の回復)
+    sire_distband = {}      # key=(sire, surface, band)
+    damsire_distband = {}   # key=(damsire, surface, band)
+    # #127 追加: 父の距離適性 — 相対着順 (着順-1)/(頭数-1) の帯別平均。
+    # 相対着順なので産駒の質レベルが自己相殺され、「短距離向きか長距離向きか」だけが残る。
+    sire_band_rel = {}      # key=(sire, band) → [(date, rel_sum, count), ...]
+
+    def _push_rel(d, key, race_date, rel):
+        """相対着順の累積 (temporal-safe)。"""
+        if key not in d:
+            d[key] = [(race_date, 0.0, 0)]
+            prev = (0.0, 0)
+        else:
+            prev = (d[key][-1][1], d[key][-1][2])
+            d[key].append((race_date, prev[0], prev[1]))
+        d[key][-1] = (race_date, prev[0] + rel, prev[1] + 1)
 
     def _push(d, key, race_date, finish):
         if key not in d:
@@ -257,18 +288,76 @@ def build_pedigree_cross_stats(results_df, races_df):
         rd = row.race_date
         fp = row.finish_position
 
+        band = dist_band(distance)
+        hc = getattr(row, 'horse_count', None) or 0
+        rel = ((fp - 1) / (hc - 1)) if hc > 1 else None
         if sire:
             _push(sire_course, (sire, venue, surface, distance), rd, fp)
             _push(sire_surface, (sire, surface), rd, fp)
+            _push(sire_distband, (sire, surface, band), rd, fp)
+            if rel is not None:
+                _push_rel(sire_band_rel, (sire, band), rd, rel)
         if damsire:
             _push(damsire_course, (damsire, venue, surface, distance), rd, fp)
             _push(damsire_surface, (damsire, surface), rd, fp)
+            _push(damsire_distband, (damsire, surface, band), rd, fp)
 
     elapsed = time.time() - t0
     print(f"  ✅ sire_course{len(sire_course)}, sire_surface{len(sire_surface)}, "
           f"damsire_course{len(damsire_course)}, damsire_surface{len(damsire_surface)} "
           f"({elapsed:.1f}秒)")
-    return sire_course, sire_surface, damsire_course, damsire_surface
+    return (sire_course, sire_surface, damsire_course, damsire_surface,
+            sire_distband, damsire_distband, sire_band_rel)
+
+
+def _lookup_rel(records, target_date, min_runs=40):
+    """相対着順累積から target_date 直前の平均相対着順を返す (無ければ None)。"""
+    import bisect
+    if not records:
+        return None
+    dates = [r[0] for r in records]
+    idx = bisect.bisect_left(dates, target_date)
+    if idx == 0:
+        return None
+    _, rel_sum, cnt = records[idx - 1]
+    if cnt < min_runs:
+        return None
+    return rel_sum / cnt
+
+
+def sire_distance_edge(sire_band_rel, sire, target_date, min_runs=40):
+    """父の距離適性 (#127): 正なら短距離向き、負なら長距離向き。
+
+    (長距離帯の平均相対着順) − (短距離帯の平均相対着順)。相対着順は小さいほど good
+    なので、短距離帯で good (小) なら差は正になる。片側しかデータが無ければ 0。
+    検証 (2021-2026): 父の距離短縮適性 +0.768pt/1sd (t=+4.94, 6/6年で正)。
+    効くのは短縮側のみで、大幅延長の不利は血統で救えない (#127)。
+    """
+    if not sire:
+        return 0.0
+    short = [sire_band_rel.get((sire, b)) for b in (0, 1)]
+    long_ = [sire_band_rel.get((sire, b)) for b in (2, 3)]
+
+    def _agg(recs):
+        tot_sum = 0.0
+        tot_cnt = 0
+        import bisect
+        for r in recs:
+            if not r:
+                continue
+            dates = [x[0] for x in r]
+            idx = bisect.bisect_left(dates, target_date)
+            if idx == 0:
+                continue
+            _, rel_sum, cnt = r[idx - 1]
+            tot_sum += rel_sum
+            tot_cnt += cnt
+        return (tot_sum / tot_cnt) if tot_cnt >= min_runs else None
+
+    s_rel, l_rel = _agg(short), _agg(long_)
+    if s_rel is None or l_rel is None:
+        return 0.0
+    return l_rel - s_rel
 
 
 def _lookup_pedigree(records, target_date, min_runs=5):
@@ -361,7 +450,9 @@ def build_speed_index_cache(results_df, races_df):
 def compute_features_fast(race, race_results, horse_history, jockey_stats,
                           trainer_stats, combo_stats, si_cache,
                           sire_course=None, sire_surface=None,
-                          damsire_course=None, damsire_surface=None):
+                          damsire_course=None, damsire_surface=None,
+                          sire_distband=None, damsire_distband=None,
+                          sire_band_rel=None):
     """1レース分の特徴量を高速計算
 
     v7: pedigree_cross 引数を追加(temporal-safe 血統 cross stats)。
@@ -575,8 +666,19 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
             f["age_class_top3_rate"] = 0
 
         # === 距離別成績 (2) ===
+        # #127: 旧実装は ±200m のみを母数とし、該当0走なら 0.0 を返していた。
+        # これは「その距離で走ったが一度も3着内なし」と区別できず、200m以上の
+        # 距離替わり (延長200m+の20.0% / 短縮200m+の9.2%) で特徴量が盲目になっていた。
+        # → 経験の有無フラグを分離し、±200m が空なら ±400m へフォールバックする。
         dist_past = [pr for pr in past_races
                      if abs((pr.get("distance", 0) or 0) - dist) <= 200]
+        f["has_dist_experience"] = 1 if dist_past else 0
+        if dist_past:
+            f["dist_scope"] = 0
+        else:
+            dist_past = [pr for pr in past_races
+                         if abs((pr.get("distance", 0) or 0) - dist) <= 400]
+            f["dist_scope"] = 1 if dist_past else 2
         if dist_past:
             f["dist_win_rate"] = sum(1 for p in dist_past if p["finish_position"] == 1) / len(dist_past)
             f["dist_top3_rate"] = sum(1 for p in dist_past if p["finish_position"] <= 3) / len(dist_past)
@@ -688,6 +790,31 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
             f["damsire_course_top3_rate"] = 0.0
             f["damsire_surface_top3_rate"] = 0.0
 
+        # ── #127新規: 距離帯キーの血統 (厳密距離だと距離替わり馬で母数ゼロ) ──
+        _band = dist_band(distance)
+        f["sire_distband_top3_rate"] = (
+            _lookup_pedigree(sire_distband.get((sire, surface, _band)), race_date, min_runs=8)
+            if (sire_distband is not None and sire) else 0.0)
+        f["damsire_distband_top3_rate"] = (
+            _lookup_pedigree(damsire_distband.get((damsire, surface, _band)), race_date, min_runs=8)
+            if (damsire_distband is not None and damsire) else 0.0)
+
+        # ── #127新規: 父の距離適性 と 距離変化との交互作用 ──
+        # 木は distance_diff (gain 0.27%) と血統を自力で掛け合わせられないため、
+        # 積を明示的に特徴量として与える。検証で効くのは短縮側のみだったので
+        # 短縮専用項も併置する (延長側の不利は血統で救えない = #127)。
+        _edge = (sire_distance_edge(sire_band_rel, sire, race_date)
+                 if (sire_band_rel is not None and sire) else 0.0)
+        _ddiff = f.get("distance_diff", 0) or 0
+        f["sire_dist_edge"] = _edge
+        f["dist_edge_x_ddiff"] = _edge * (_ddiff / 1000.0)
+        f["dist_edge_x_shorten"] = _edge * (min(_ddiff, 0) / 1000.0)
+
+        # ── #127新規: 母父は「総合的な質」として効き、しかも経験の浅い馬に限定 ──
+        # (同条件未経験 +1.59pt vs 5戦以上 +0.51pt)。現状は全馬に一律適用されていた。
+        _exp = f.get("race_experience", 0) or 0
+        f["damsire_x_inexp"] = f["damsire_surface_top3_rate"] / (1.0 + _exp)
+
         # === ターゲット ===
         fp = r.get("finish_position", 0) or 0
         f["target_win"] = 1 if fp == 1 else 0
@@ -740,6 +867,11 @@ def get_feature_columns():
         "post_top3_rate_course",
         # 距離別 (2)
         "dist_win_rate", "dist_top3_rate",
+        # #127: 距離適性の盲目修正 + 血統×距離 (8個)
+        "has_dist_experience", "dist_scope",
+        "sire_distband_top3_rate", "damsire_distband_top3_rate",
+        "sire_dist_edge", "dist_edge_x_ddiff", "dist_edge_x_shorten",
+        "damsire_x_inexp",
         # v5: 着差
         "margin_avg", "margin_best",
         # v5: 同コース familiarity
@@ -1028,7 +1160,8 @@ def build_feature_table():
     jockey_stats, trainer_stats, combo_stats = build_jockey_trainer_stats(results_df, races_df)
     si_cache = build_speed_index_cache(results_df, races_df)
     # v7: 血統 cross stats (temporal-safe)
-    sire_course, sire_surface, damsire_course, damsire_surface = \
+    (sire_course, sire_surface, damsire_course, damsire_surface,
+     sire_distband, damsire_distband, sire_band_rel) = \
         build_pedigree_cross_stats(results_df, races_df)
 
     # Step 3: 特徴量一括計算
@@ -1056,6 +1189,8 @@ def build_feature_table():
             jockey_stats, trainer_stats, combo_stats, si_cache,
             sire_course=sire_course, sire_surface=sire_surface,
             damsire_course=damsire_course, damsire_surface=damsire_surface,
+            sire_distband=sire_distband, damsire_distband=damsire_distband,
+            sire_band_rel=sire_band_rel,
         )
         all_rows.extend(rows)
 
