@@ -1,12 +1,15 @@
 {
-  "generated_at": "2026-08-28T02:02:51.984002+09:00",
+  "generated_at": "2026-08-28T10:33:28.195872+09:00",
   "today": "2026-08-28 (Fri)",
   "weekday": 4,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "future",
+      "status": "ok",
       "expected": "07:30 JST",
+      "actual": "2026-08-28T07:17:01+09:00",
+      "delay_minutes": -13,
+      "event": "workflow_dispatch",
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
@@ -59,8 +62,9 @@
     },
     "fetch_friday": {
       "slot": "fetch_friday",
-      "status": "future",
+      "status": "missed",
       "expected": "06:00 JST",
+      "deadline": "09:00 JST",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_saturday": {
@@ -77,13 +81,20 @@
     }
   },
   "summary": {
-    "ok": 0,
+    "ok": 1,
     "missing": 0,
-    "future": 4,
+    "future": 2,
     "not_today": 8,
-    "missed": 0,
+    "missed": 1,
     "ok_delayed": 0,
     "ok_late": 0
   },
-  "missed_slots": []
+  "missed_slots": [
+    {
+      "slot": "fetch_friday",
+      "workflow": "fetch_weekend_races.yml",
+      "expected": "06:00 JST",
+      "deadline": "09:00 JST"
+    }
+  ]
 }
