@@ -28,5 +28,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18163032778481462",
+  "posted_at": "2026-08-29T10:10:53.698752+09:00",
+  "slot": "post_predict",
+  "pattern": "confidence",
+  "race_id": "202604030308",
+  "race_name": "BSN賞",
+  "chunk": 0,
+  "chars": 175
  }
 ]
