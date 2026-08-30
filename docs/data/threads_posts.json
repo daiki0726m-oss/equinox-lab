@@ -218,5 +218,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18104696435578868",
+  "posted_at": "2026-08-30T10:24:18.095011+09:00",
+  "slot": "post_predict",
+  "pattern": "minimal",
+  "race_id": "202607030407",
+  "race_name": "中京2歳S",
+  "chunk": 0,
+  "chars": 214
  }
 ]
