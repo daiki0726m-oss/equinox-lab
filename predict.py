@@ -42,7 +42,16 @@ def _load_ability_model():
             model = pickle.load(f)
         with open(os.path.join(mdir, "calibrator_ability_win.pkl"), "rb") as f:
             calib = pickle.load(f)
-        cols = [c for c in get_feature_columns() if c not in ("odds_log", "popularity_norm")]
+        # #134 (2026-08-31): 旧実装は現行の get_feature_columns() から毎回導出していたため、
+        # 特徴量を1つでも増やすと 学習済み能力モデル (50列) と食い違い LightGBMError →
+        # except で握られて ability_score=0 → **MARKS_ABILITY_W=0.5「人気を弱くして」が
+        # silent に無効化**されていた (8/29-30 の全72レースで能力ブレンドが効いていない)。
+        # モデル自身が保持する特徴量名を正とする。
+        try:
+            _b = getattr(model, "booster_", model)
+            cols = list(_b.feature_name())
+        except Exception:
+            cols = [c for c in get_feature_columns() if c not in ("odds_log", "popularity_norm")]
         _ABILITY_MODEL = (model, calib, cols)
     except Exception as e:
         print(f"  ⚠️ 能力モデル未ロード ({e}) → ability_score=0 で継続")

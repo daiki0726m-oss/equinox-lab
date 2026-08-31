@@ -11,6 +11,19 @@ import os
 from itertools import combinations
 
 
+def _bet_sig(bet_type, horse_numbers):
+    """買い目の同一性キー。#134: 三連単は着順が意味を持つので順序を保存する。
+
+    #113 で add() だけ順序保存にしたが、generate_bets 末尾と honor_signatures は
+    `tuple(sorted(...))` のままだったため、**三連単フォーメーション24点が最終段で
+    14点に潰れ「◎1着固定」に退化**していた (実データ 81/81レースで24点は0件)。
+    #112 の測定では ◎1着固定は全18構成中**最悪の 73.2%** であり、最良のD構造
+    (94.2%) を実行しているつもりで最悪構成を買っていたことになる。
+    """
+    hns = list(horse_numbers or [])
+    return (bet_type, tuple(hns) if bet_type == "三連単" else tuple(sorted(hns)))
+
+
 class BettingStrategy:
     """
     馬券戦略 (2026-05-27 entertainment モード)
@@ -297,7 +310,7 @@ class BettingStrategy:
             nonlocal spent
             amt_i = amount or amt
             # 三連単は着順が意味を持つので sig を順序保存 (sorted だと別順序が同一視され欠落)
-            sig = (t, tuple(hns) if t == "三連単" else tuple(sorted(hns)))
+            sig = _bet_sig(t, hns)
             if sig in signatures:
                 return
             if len(set(hns)) != len(hns):
@@ -520,7 +533,7 @@ class BettingStrategy:
         bets = list(honor_list)
         total_amount = honor_spent
         # honor で既に bet した signature を以後の EV bets で重複させない
-        honor_signatures = {(b["type"], tuple(sorted(b["horse_numbers"]))) for b in honor_list}
+        honor_signatures = {_bet_sig(b["type"], b["horse_numbers"]) for b in honor_list}
 
         # 複勝率8%以上（÷3済み値で判定、実質24%以上）の上位馬
         top_horses = [p for p in sorted_preds if p["pred_top3"] >= 0.08][:4]
@@ -834,7 +847,7 @@ class BettingStrategy:
         deduped = []
         seen = set()
         for b in bets:
-            sig = (b["type"], tuple(sorted(b.get("horse_numbers", []))))
+            sig = _bet_sig(b["type"], b.get("horse_numbers", []))
             if sig in seen:
                 # 重複 → honor を残すために、後出を捨てる
                 continue

@@ -315,9 +315,14 @@ class NetkeibaScraper:
                 cmap.setdefault("odds", i)
             elif ("上がり" in h or "上り" in h or h == "後3F") and "指数" not in h:
                 cmap.setdefault("last_3f", i)
-            elif h in ("通過", "通過順", "通過順位"):
+            elif "通過" in h:
+                # #134 (2026-08-31): netkeiba が列名を「通過」→「コーナー通過順」に改称し、
+                # 完全一致判定が外れて **2026-04-25 以降 passing_order が 100% 欠落**していた
+                # (5月以降の全レース)。脚質・展開系の特徴量が4か月分ゼロで学習されていた。
+                # 列名の揺れに強い部分一致にする。
                 cmap.setdefault("passing_order", i)
-            elif h == "調教師":
+            elif h in ("調教師", "厩舎"):
+                # 同じく「調教師」→「厩舎」の改称で trainer_id が5月に94.9%欠落していた
                 cmap.setdefault("trainer", i)
             elif h in ("馬体重", "体重", "馬体重(増減)"):
                 cmap.setdefault("weight", i)

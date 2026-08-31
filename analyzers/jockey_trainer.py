@@ -20,6 +20,9 @@ class JockeyTrainerAnalyzer:
     def get_jockey_stats(self, jockey_id, venue=None, distance=None,
                          surface=None, track_condition=None):
         """騎手の条件別成績"""
+        # #134: 空IDで全件集計しないガード (get_trainer_stats と同じ)
+        if not jockey_id or not str(jockey_id).strip():
+            return {}
         with get_db() as conn:
             query = """
                 SELECT
@@ -70,6 +73,11 @@ class JockeyTrainerAnalyzer:
 
     def get_trainer_stats(self, trainer_id, venue=None, distance=None, surface=None):
         """調教師の条件別成績"""
+        # #134 (2026-08-31): 空IDでクエリすると WHERE が効かず**全件 (159,628行=50.5%) を
+        # 集計して「複勝率21.6%」のような もっともらしい嘘の数値**を返していた。
+        # 学習側は同じ馬に 0 を渡すため、推論だけに幻の実績が入る train/serve skew でもある。
+        if not trainer_id or not str(trainer_id).strip():
+            return {}
         with get_db() as conn:
             query = """
                 SELECT

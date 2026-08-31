@@ -950,12 +950,30 @@ def train_models(df, feature_cols, num_boost_round=500, early_stopping_rounds=50
     print("\n🔄 LambdaRank 学習中...")
     ds_rank_t = lgb.Dataset(X_train, label=y_rank[train_mask], group=train_group)
     ds_rank_v = lgb.Dataset(X_val, label=y_rank[val_mask], group=val_group, reference=ds_rank_t)
+    # #134 (2026-08-31): early_stopping が ndcg@1/3/5 のうち**最も早く頭打ちした指標**で
+    # 打ち切るため、model_rank が **木3本** で出荷されていた (top3=143 / win=97 に対し)。
+    # 木3本では rank_score の分散が潰れ、意思決定チャネル (pred_win_norm → EV/Kelly/
+    # should_bet) が一様分布に近づく。実害: should_bet が 13/36 → **0/36**、
+    # 賭け金 ¥28,600 → ¥2,000 と買い目が事実上停止していた (印・信頼度は別チャネルなので無事)。
+    # first_metric_only=True で ndcg@1 のみを基準にし、さらに木が極端に少ない場合は
+    # early stopping なしで再学習する (下の健全性ガード)。
     model_rank = lgb.train(
         RANK_PARAMS, ds_rank_t, num_boost_round=num_boost_round,
         valid_sets=[ds_rank_v],
-        callbacks=[lgb.early_stopping(early_stopping_rounds), lgb.log_evaluation(50)],
+        callbacks=[lgb.early_stopping(early_stopping_rounds, first_metric_only=True),
+                   lgb.log_evaluation(50)],
     )
-    print(f"  Best iteration: {model_rank.best_iteration}")
+    if model_rank.num_trees() < 20:
+        print(f"  ⚠️ 木が {model_rank.num_trees()} 本しか育たなかった "
+              f"(best_iter={model_rank.best_iteration}) → early stopping なしで再学習")
+        model_rank = lgb.train(
+            RANK_PARAMS, ds_rank_t, num_boost_round=max(200, num_boost_round // 2),
+            valid_sets=[ds_rank_v], callbacks=[lgb.log_evaluation(100)],
+        )
+    print(f"  Best iteration: {model_rank.best_iteration} / 木の本数: {model_rank.num_trees()}")
+    if model_rank.num_trees() < 20:
+        raise RuntimeError(f"model_rank の木が {model_rank.num_trees()} 本しか無い — "
+                           f"意思決定チャネルが機能しないため出荷を中止 (#134)")
 
     # === Binary top3 ===
     print("\n🔄 複勝モデル学習中...")
