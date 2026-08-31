@@ -478,6 +478,17 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
             past_races = [h for h in horse_history[horse_id]
                          if h.get("race_date", "") < race_date
                          and h.get("finish_position", 0) > 0]
+            # 🚨 #133 (2026-08-31): **新しい順に並べ替える**。
+            # build_horse_history は race_date **昇順** で格納しているため、旧実装の
+            # past_races[0] は「前走」ではなく **デビュー戦** を指していた。
+            # 実データ例 (馬2010101988): distance_diff が 学習側+200m(延長) に対し
+            # 真の前走比は -200m(短縮) で **符号が逆**、rest_days は 293日 vs 実際6日。
+            # 影響を受けていた特徴量: distance_diff / rest_days / jockey_change /
+            # avg_finish_5r / win_rate_10r / top3_rate_10r / finish_trend / front_rate /
+            # weight_trend / impost_diff。推論側 (ml/features.py) は ORDER BY race_date
+            # DESC で正しく前走を見ており、**同じ特徴量名に学習と推論で別物が入っていた**
+            # (train/serve skew)。#128 で直した dist_top3_rate の skew と同型だが影響は桁違い。
+            past_races = past_races[::-1]
 
         # === SI系 (6) ===
         si_list = []
