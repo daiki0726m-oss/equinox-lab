@@ -370,7 +370,11 @@ class BettingStrategy:
             if 0 < _ax_od < 2.0:
                 structure = 'G'
             elif 2.0 <= _ax_od < 3.0 and _nh >= 11:
-                structure = 'D'
+                # #139: D (三連単F24点) は A (三連複◎軸6点) を **4つの独立再現すべてで下回った**
+                # (69.0 vs 79.8 / 68.9 vs 79.8 / 71.7 vs 77.5 / 76.8 vs 79.4)。
+                # ペアbootstrap でも現行比 Δ=-8.9pt。さらに D 分岐は一撃依存・分散・最大DD が
+                # 全構成中で最悪。BET_KEEP_D=0 で A に寄せられるようにする (既定は現行維持)。
+                structure = 'A' if os.environ.get('BET_KEEP_D') == '0' else 'D'
             elif _ax_od > 0:
                 structure = 'A'
         if structure == 'D':
@@ -445,7 +449,14 @@ class BettingStrategy:
         if structure == 'D' and "三連単" in enabled and len(partners) >= 4:
             firsts = [p1, partners[0]]
             seconds = [p1] + partners[:3]
-            thirds = [p1] + partners[:5]
+            # #139 (2026-09-01): 3列目に注 (妙味穴) を入れるのは有害と実証。
+            # 注の配置別ROI: 1着 97-104% / 2着 82% / **3着 65%**。
+            # matched contrast で Δ = -7.6pt (95%CI [-13.2, -1.1]、両期間で負)。
+            # 注は「1着に来た時に配当が跳ねる馬」であり、3着に置くと当たっても安いのに
+            # 点数だけ増える。BET_D_NO_CHU=1 で3列目から外す (点数 24 → 約18)。
+            # 既定 OFF — posted_marks の実運用データが 4-8週 (n>=60R) 貯まってから判定 (#72→#73 の規律)。
+            _d_no_chu = os.environ.get('BET_D_NO_CHU') == '1'
+            thirds = [p1] + partners[:4 if _d_no_chu else 5]
             for a in firsts:
                 for b in seconds:
                     if b["horse_number"] == a["horse_number"]:
