@@ -103,7 +103,7 @@ def refresh_odds(date_str, update_track=True):
 
     with get_db() as conn:
         races = conn.execute("""
-            SELECT race_id, race_name, venue, race_number
+            SELECT race_id, race_name, venue, race_number, race_date, start_time
             FROM races
             WHERE race_date = ? OR race_date = ?
             ORDER BY venue, race_number
@@ -181,12 +181,18 @@ def refresh_odds(date_str, update_track=True):
                 _today = _now.strftime('%Y-%m-%d')
                 _rd = str(race['race_date'] if 'race_date' in race.keys() else '')[:10]
                 _st = race['start_time'] if 'start_time' in race.keys() else None
-                if _rd and _today > _rd:
+                if not _rd:
+                    # #141: 日付が取れない = 発走済みか判定できない。
+                    # 判定できない時は「凍結する側」に倒す (cache を壊さない方が安全)。
+                    # 旧実装は SELECT に race_date が無く常にここを通らず _started=False =
+                    # 全レースで上書き許可になっていた (#99 の凍結が半分死んでいた真因)。
+                    _started = True
+                elif _today > _rd:
                     _started = True          # 過去日のレースは常に発走済み
-                elif _rd and _today == _rd and _st and _now.strftime('%H:%M') >= str(_st):
+                elif _today == _rd and _st and _now.strftime('%H:%M') >= str(_st):
                     _started = True          # 当日で発走時刻を過ぎた
             except Exception:
-                _started = False
+                _started = True              # #141: 例外時も凍結側 (旧: False=上書き許可)
 
             if cache and not _sealed and not _started:
                 preds = json.loads(cache['predictions_json'])

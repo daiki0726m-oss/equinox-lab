@@ -48,6 +48,79 @@ from database import init_db, get_db, acquire_post_slot, release_post_slot, clea
 # 1日1スロット1回の atomic lock。cron/watchdog/手動 のどこから何回 trigger
 # されても、同じ (post_date, slot_name) で 2 度目以降は skip される。
 # 失敗時は posted_slots 行を削除して再試行可能。
+def _slot_sidecar_path(post_date=None):
+    """#141: 投稿スロットlockのテキスト正本。
+    DB (posted_slots) の UNIQUE 制約は #41 で「二重投稿の物理保証」として入れたが、
+    実測で直近12開催日中6日が二重・8/22は三重配信されていた。機序は
+    「post側がlockをpush → race_day_runner のループ内 commit が -X theirs で
+    DB を丸ごと上書き → lockが消滅 → 次のrunがfetch+resetしても取得できてしまう」
+    (#70 の gz clobber がそのまま lock を殺す)。posted_marks サイドカーは
+    テキストなので12/12日 clobber を生き延びている実績があり、同じ方式に移す。"""
+    from datetime import datetime as _d, timezone as _tz, timedelta as _td
+    d = post_date or _d.now(_tz(_td(hours=9))).strftime('%Y%m%d')
+    d = str(d).replace('-', '')
+    return os.path.join("docs", "data", f"posted_slots_{d}.json")
+
+
+def _slot_sidecar_read(post_date=None):
+    """ローカル → GitHub raw の順に読む。clobber されたローカルだけを信じない。"""
+    path = _slot_sidecar_path(post_date)
+    data = {}
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f) or {}
+        except Exception:
+            data = {}
+    try:
+        import requests as _rq
+        _r = _rq.get("https://raw.githubusercontent.com/daiki0726m-oss/equinox-lab/main/"
+                     + path.replace(os.sep, "/"), timeout=8)
+        if _r.status_code == 200:
+            remote = _r.json() or {}
+            # 和集合を取る (どちらかに記録があれば「投稿済み」= 二重投稿を防ぐ側に倒す)
+            for k, v in (remote.get("slots") or {}).items():
+                data.setdefault("slots", {}).setdefault(k, v)
+    except Exception:
+        pass
+    return data
+
+
+def _slot_sidecar_write(slot_name, post_date=None):
+    path = _slot_sidecar_path(post_date)
+    data = _slot_sidecar_read(post_date)
+    data.setdefault("slots", {})[slot_name] = {
+        "posted_at": datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M:%S'),
+        "run_id": os.environ.get('GITHUB_RUN_ID'),
+        "event": os.environ.get('GITHUB_EVENT_NAME'),
+    }
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        print(f"📝 slot サイドカーに記録: {path} [{slot_name}]")
+    except Exception as e:
+        print(f"⚠️ slot サイドカー書き込み失敗: {e}")
+
+
+def _slot_sidecar_clear(slot_name, post_date=None):
+    """#141: 偽lock解放 (#91) の際、サイドカーからも消す。
+    これを忘れるとサイドカーが「投稿済み」を主張し続け、
+    結果が揃った後の再試行が永久にスキップされる (#70 の lock 解放漏れの再発)。"""
+    path = _slot_sidecar_path(post_date)
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f) or {}
+        if (data.get("slots") or {}).pop(slot_name, None) is not None:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=1)
+            print(f"   ↩️ slot サイドカーからも [{slot_name}] を解放")
+    except Exception as e:
+        print(f"   ⚠️ slot サイドカー解放失敗: {e}")
+
+
 def _acquire_or_exit(slot_name):
     """各 cmd_* の冒頭で呼ぶ。lock 取れなければ exit 0 で正常終了。
 
@@ -66,6 +139,15 @@ def _acquire_or_exit(slot_name):
     if '--dry-run' in sys.argv:
         # dry-run でも lock は試すが、取得しない (= skip 判定なし、ただ通す)
         return
+    # #141: DB lock より先にテキストサイドカーを見る。
+    # DB は並行 workflow の -X theirs push で丸ごと巻き戻るが、テキストは残る。
+    _sc = (_slot_sidecar_read().get("slots") or {}).get(slot_name)
+    if _sc:
+        print(f"⏭️ 既に本日 [{slot_name}] 投稿済み (slot サイドカー)")
+        print(f"   posted_at={_sc.get('posted_at')}  run_id={_sc.get('run_id')}  event={_sc.get('event')}")
+        print(f"   再投稿したい場合: {_slot_sidecar_path()} から該当 slot を削除")
+        sys.exit(0)
+
     ok, prev = acquire_post_slot(
         slot_name,
         run_id=os.environ.get('GITHUB_RUN_ID'),
@@ -81,6 +163,7 @@ def _acquire_or_exit(slot_name):
         print(f"   再投稿したい場合: sqlite3 keiba.db \"DELETE FROM posted_slots WHERE post_date=date('now','+9 hours') AND slot_name='{slot_name}';\"")
         sys.exit(0)
     print(f"🔒 [{slot_name}] atomic lock 取得: {datetime.now(timezone(timedelta(hours=9))).strftime('%H:%M JST')}")
+    _slot_sidecar_write(slot_name)   # #141: 同時にテキスト正本にも記録
 
 
 def _release_on_failure(slot_name, exc):
@@ -1079,9 +1162,9 @@ def cmd_predict(args):
             print(f"⚠️ seal失敗(非致命): {e}")
 
 
-def _load_sidecar_marks(date_str, race_id):
-    """#101: 投稿印サイドカー (docs/data/posted_marks_YYYYMMDD.json) から該当レースの印を読む。
-    ローカル → GitHub raw の順。無ければ [] (呼び出し側が DB → cache にフォールバック)。"""
+def _load_sidecar(date_str):
+    """#101: 投稿印サイドカー (docs/data/posted_marks_YYYYMMDD.json) を丸ごと読む。
+    ローカル → GitHub raw の順。無ければ None。"""
     data = None
     path = os.path.join("docs", "data", f"posted_marks_{date_str}.json")
     if os.path.exists(path):
@@ -1097,6 +1180,24 @@ def _load_sidecar_marks(date_str, race_id):
             data = r.json() if r.status_code == 200 else None
         except Exception:
             data = None
+    return data or None
+
+
+def _sidecar_race_ids(date_str):
+    """#141: その日「実際に予想投稿した」レースIDの一覧。
+    完走ガード等の『予想したレース』判定はこれを第一正本にする —
+    DB の posted_at (seal) は #70 の gz clobber で消えており、実測16開催日中14日で
+    消失していた。targets が空だとガードが fail-open して、まだ発走していない
+    薄暮レース (中京11R 18:00発走 等) の結果を17:5x に「報告」してしまう。"""
+    data = _load_sidecar(date_str)
+    if not data:
+        return []
+    return list((data.get("races") or {}).keys())
+
+
+def _load_sidecar_marks(date_str, race_id):
+    """該当レースの投稿時点の印。無ければ [] (呼び出し側が DB → cache にフォールバック)。"""
+    data = _load_sidecar(date_str)
     if not data:
         return []
     return (data.get("races") or {}).get(race_id) or []
@@ -1372,9 +1473,13 @@ def _build_results_jsonmarks_dbfinish(date_str):
             pop_map = {row[0]: (row[2] or 0) for row in _res_rows}
             if not finish_map:
                 continue  # まだ結果が収集されていない → スキップ (次 run で再試行)
-            # 全頭確定 + 1-3着が揃ってから投稿 (中途半端な "?着" を出さない)
-            top3 = set(f for f in finish_map.values() if 1 <= f <= 3)
-            if len(top3) < 3:
+            # 結果が確定してから投稿 (中途半端な "?着" を出さない)。
+            # #141: 旧実装は set(1..3着) の要素数が3未満なら捨てていたため、
+            # 1着同着 {1,1,3} は set={1,3} で len=2 → **永久にスキップ**されていた
+            # (実例 8/16 中京11R。JRA の同着は年7件、うち1件は安田記念G1)。
+            # #91 で確立した「1着が存在すればそのレースは確定」基準に統一する
+            # (collect はレース単位で全着順を一括保存するため、1着の存在が確定の証)。
+            if 1 not in finish_map.values():
                 continue
 
             marked = []
@@ -1608,6 +1713,7 @@ def cmd_results(args):
         # 後でデータが揃っても「投稿済み」扱いで永久にスキップ (6/14 結果未投稿の主因)。
         # データはまだ無い (収集が間に合っていない) だけなので、後続 run が再試行できるよう release。
         clear_post_slot('results', post_date=date_str)
+        _slot_sidecar_clear('results', date_str)
         print(f"❌ {date_str} の予測データがありません(JSON/DB共に) → lock 削除して再試行可能に (#70)")
         return
     print(f"📥 結果ソース: {src}")
@@ -1615,6 +1721,7 @@ def cmd_results(args):
     # 結果未確定 (finish_map 空) のレースは _build_*_ 内ですでに除外済み
     if not race_data:
         clear_post_slot('results', post_date=date_str)
+        _slot_sidecar_clear('results', date_str)
         print(f"❌ {date_str} の結果がまだ出ていません → lock 削除 (#70)")
         return
 
@@ -1625,12 +1732,27 @@ def cmd_results(args):
     is_partial_ok = os.environ.get("ALLOW_PARTIAL_RESULTS", "0") == "1"
     if not is_partial_ok:
         with get_db() as conn:
-            targets = [dict(r) for r in conn.execute("""
-                SELECT ra.race_id, ra.venue, ra.race_number, ra.race_name
-                FROM races ra JOIN predictions_cache pc ON ra.race_id = pc.race_id
-                WHERE (ra.race_date = ? OR ra.race_date = ?)
-                  AND pc.posted_at IS NOT NULL
-            """, (date_str, date_hyphen)).fetchall()]
+            # #141: 対象の第一正本はサイドカー。posted_at は #70 の DB clobber で消え、
+            # 実測16開催日中14日で消失していた。targets=[] だと下の
+            # `if targets and incomplete` が False になりガードが素通り (fail-open) し、
+            # **まだ発走していない薄暮レースの結果を報告しようとする**
+            # (8/15-8/23 の中京11R 17:50-18:00発走が4週連続で17:5x に処理され永久未報告)。
+            _sc_ids = _sidecar_race_ids(date_str)
+            if _sc_ids:
+                _ph = ','.join('?' * len(_sc_ids))
+                targets = [dict(r) for r in conn.execute(f"""
+                    SELECT race_id, venue, race_number, race_name
+                    FROM races WHERE race_id IN ({_ph})
+                """, _sc_ids).fetchall()]
+                print(f"🛡 完走ガード対象: サイドカーの {len(targets)}レース")
+            else:
+                targets = [dict(r) for r in conn.execute("""
+                    SELECT ra.race_id, ra.venue, ra.race_number, ra.race_name
+                    FROM races ra JOIN predictions_cache pc ON ra.race_id = pc.race_id
+                    WHERE (ra.race_date = ? OR ra.race_date = ?)
+                      AND pc.posted_at IS NOT NULL
+                """, (date_str, date_hyphen)).fetchall()]
+                print(f"🛡 完走ガード対象: posted_at の {len(targets)}レース (サイドカー無し)")
 
             incomplete = []
             for t in targets:
@@ -1661,6 +1783,7 @@ def cmd_results(args):
             #   後続の results run が「投稿済」と誤認して永久に投稿できない。skip 時は lock を解放。
             try:
                 clear_post_slot('results')
+                _slot_sidecar_clear('results', date_str)
                 print("   ↩️ 未完走スキップのため results lock を解放 (次回再試行可能に)")
             except Exception as _e:
                 print(f"   ⚠️ lock 解放失敗: {_e}")

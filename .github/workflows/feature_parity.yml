@@ -34,8 +34,14 @@ jobs:
         id: parity
         run: |
           set +e
+          # #141: `| tee` を挟むと $? は tee の終了コード(常に0)になり、
+          # 検知しても通知が永久に発火しなかった。pipefail でパイプ内の失敗を拾う。
+          set -o pipefail
           python3 scripts/verify_feature_parity.py --races 4 | tee /tmp/parity.txt
-          echo "code=$?" >> $GITHUB_OUTPUT
+          CODE=${PIPESTATUS[0]}
+          [ -z "$CODE" ] && CODE=$?
+          echo "検査の終了コード: $CODE"
+          echo "code=$CODE" >> $GITHUB_OUTPUT
       - name: 🔔 Notify on new mismatch
         if: steps.parity.outputs.code == '2'
         env:
