@@ -70,17 +70,18 @@ class FeatureBuilder:
         features["sire_sample_size"] = min(sire_dist.get("total", 0), 500) / 500
 
         # ── 3. 騎手・調教師系 (5次元) ──
-        jt = self.jt_analyzer.analyze(
-            jockey_id, trainer_id, venue, distance, surface, track_condition
-        )
-        features["jt_score"] = jt["score"]
-        j_cond = jt["details"].get("jockey_condition", {})
-        features["jockey_cond_top3"] = j_cond.get("top3_rate", 0)
-        features["jockey_cond_win"] = j_cond.get("win_rate", 0)
-        t_cond = jt["details"].get("trainer_condition", {})
-        features["trainer_cond_top3"] = t_cond.get("top3_rate", 0)
-        combo = jt["details"].get("combo", {})
-        features["combo_top3"] = combo.get("top3_rate", 0)
+        # #136 (2026-09-01): 学習側 (fast_train.build_jockey_trainer_stats) は
+        # **通算成績の時系列累積** を使い、jt_score も 騎手+調教師 の2項式。
+        # 一方この推論側は analyzer の **コース条件別** 統計と 5項式 を使っており、
+        # 同じ特徴量名にまったく別の量が入っていた (パリティ一致率 jt_score 0.6% /
+        # trainer_cond_top3 0.0% / combo_top3 9.6%、推論値の57.4%が学習分布の外)。
+        # モデルは通算で学習しているので、**学習側の定義に合わせる**。
+        jt_stats = self._get_jt_career_stats(jockey_id, trainer_id, race_date)
+        features["jt_score"] = jt_stats["jt_score"]
+        features["jockey_cond_top3"] = jt_stats["jockey_top3"]
+        features["jockey_cond_win"] = jt_stats["jockey_win"]
+        features["trainer_cond_top3"] = jt_stats["trainer_top3"]
+        features["combo_top3"] = jt_stats["combo_top3"]
 
         # ── 4. 馬場バイアス系 (2次元) ──
         passing_orders = self._get_passing_orders(horse_id)
@@ -92,10 +93,15 @@ class FeatureBuilder:
         features["post_position_ratio"] = horse_number / max(horse_count, 1)
 
         # ── 5. ペース系 (3次元) ──
-        tendency = self.pace_analyzer.get_horse_running_tendency(horse_id)
-        features["front_rate"] = tendency["front_rate"]
-        features["avg_pos_ratio"] = tendency["avg_first_pos_ratio"]
-        features["avg_last_3f"] = tendency["avg_last_3f"]
+        # #136 (2026-09-01): 学習側と定義を統一。相違点は3つあった:
+        #   (a) 推論側に **日付フィルタが無く**、過去日の再予測で未来の通過順が混入
+        #       (#134 で通過順が4か月空だった間は偶然マスクされていたが、収集復活で顕在化)
+        #   (b) 母集団が違う (学習=直近5走のうち通過順のあるもの / 推論=通過順のある直近5走)
+        #   (c) データ無し時の既定値が違う (学習=0 / 推論=0.5) — デビュー戦で必ず不一致
+        pace = self._get_pace_tendency_train_compatible(horse_id, race_date)
+        features["front_rate"] = pace["front_rate"]
+        features["avg_pos_ratio"] = pace["avg_pos_ratio"]
+        features["avg_last_3f"] = pace["avg_last_3f"]
 
         # ── 6. 馬の実績系 (12次元) ── ※v2で大幅強化
         features["horse_count"] = horse_count
@@ -709,6 +715,105 @@ class FeatureBuilder:
         if stats and stats["total"] >= 10:
             return stats["top3"] / stats["total"]
         return 0.2  # デフォルト
+
+
+
+    def _get_pace_tendency_train_compatible(self, horse_id, race_date=None):
+        """脚質3特徴を **学習側 (fast_train) と同一定義** で計算する (#136)。
+
+        学習側: past_races[:5] (=直近5走) を走査し、通過順があるものだけ集計。
+        1コーナー通過位置 / 頭数 <= 0.35 を先行とみなす。頭数の既定は14。
+        データが無ければ 0 (0.5 ではない)。
+        """
+        date_filter = "AND ra.race_date < ?" if race_date else ""
+        params = [horse_id] + ([race_date] if race_date else []) + [5]
+        with get_db() as conn:
+            rows = conn.execute(f"""
+                SELECT r.passing_order, ra.horse_count, r.last_3f
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.horse_id = ? AND r.finish_position > 0 {date_filter}
+                ORDER BY ra.race_date DESC
+                LIMIT ?
+            """, params).fetchall()
+        front = 0
+        ratios = []
+        last3 = []
+        n = len(rows)
+        for row in rows:
+            po = (row["passing_order"] or "")
+            if po:
+                try:
+                    positions = [int(p) for p in po.replace("-", ",").split(",")
+                                 if p.strip().isdigit()]
+                    if positions:
+                        ratio = positions[0] / max(row["horse_count"] or 14, 1)
+                        ratios.append(ratio)
+                        if ratio <= 0.35:
+                            front += 1
+                except ValueError:
+                    pass
+            if row["last_3f"] and row["last_3f"] > 0:
+                last3.append(row["last_3f"])
+        return {
+            "front_rate": front / max(n, 1) if n else 0,
+            # #136: avg_pos_ratio だけ学習側の既定値が 0.5 (front_rate/avg_last_3f は 0)
+            "avg_pos_ratio": (sum(ratios) / len(ratios)) if ratios else 0.5,
+            "avg_last_3f": (sum(last3) / len(last3)) if last3 else 0,
+        }
+
+    def _get_jt_career_stats(self, jockey_id, trainer_id, race_date=None):
+        """騎手・調教師の**通算**成績 (race_date 未満)。#136: 学習側と同一定義。
+
+        fast_train.build_jockey_trainer_stats は条件を絞らない通算の時系列累積で、
+        jt_score は `50 + (騎手複勝率%-25)*0.3 [総数30以上] + (調教師複勝率%-25)*0.15
+        [総数20以上]` の2項式。ここでは同じ量を SQL で再現する。
+        """
+        if not hasattr(self, "_jt_cache"):
+            self._jt_cache = {}
+        key = (jockey_id, trainer_id, race_date or "")
+        if key in self._jt_cache:
+            return self._jt_cache[key]
+        date_filter = "AND ra.race_date < ?" if race_date else ""
+        dparam = [race_date] if race_date else []
+
+        def _agg(where, params):
+            sql = f"""
+                SELECT COUNT(*) total,
+                       SUM(CASE WHEN r.finish_position=1 THEN 1 ELSE 0 END) wins,
+                       SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END) top3
+                FROM results r JOIN races ra ON r.race_id=ra.race_id
+                WHERE {where} AND r.finish_position>0 {date_filter}
+            """
+            with get_db() as conn:
+                row = conn.execute(sql, tuple(params) + tuple(dparam)).fetchone()
+            if not row or not row["total"]:
+                return (0, 0.0, 0.0)
+            return (row["total"], 100.0 * (row["wins"] or 0) / row["total"],
+                    100.0 * (row["top3"] or 0) / row["total"])
+
+        j_total, j_win, j_top3 = _agg("r.jockey_id=?", [jockey_id]) if jockey_id else (0, 0.0, 0.0)
+        t_total, _t_win, t_top3 = _agg("r.trainer_id=?", [trainer_id]) if trainer_id else (0, 0.0, 0.0)
+        c_total, _c_win, c_top3 = (_agg("r.jockey_id=? AND r.trainer_id=?", [jockey_id, trainer_id])
+                                   if (jockey_id and trainer_id) else (0, 0.0, 0.0))
+        # #136: 学習側 (_lookup_at) はサンプル数が足りないと **0 を返す**。
+        # 騎手/調教師は5走未満、コンビは3走未満。この足切りが無いと、
+        # 若手騎手やデビュー間もないコンビで別の値が入る (パリティ不一致の原因)。
+        if j_total < 5:
+            j_win = j_top3 = 0.0
+        if t_total < 5:
+            t_top3 = 0.0
+        if c_total < 3:
+            c_top3 = 0.0
+        score = 50.0
+        if j_total >= 30:
+            score += (j_top3 - 25) * 0.3
+        if t_total >= 20:
+            score += (t_top3 - 25) * 0.15
+        score = max(0.0, min(100.0, score))
+        out = {"jt_score": score, "jockey_top3": j_top3, "jockey_win": j_win,
+               "trainer_top3": t_top3, "combo_top3": c_top3}
+        self._jt_cache[key] = out
+        return out
 
     def _get_distance_specific_stats(self, horse_id, distance, surface, race_date=None):
         """同距離(±200m)限定の勝率・複勝率。#127 で2点修正:

@@ -179,7 +179,15 @@ def _lookup_at(records, target_date, kind):
     idx = bisect.bisect_left(dates, target_date)
     if idx == 0:
         return _empty_stat(kind)
-    rec = records[idx - 1]
+    # #136 (2026-09-01): records[i] は「i 番目のレースを**含まない**」累積のため、
+    # records[idx-1] だと target_date 直前の1走を取りこぼしていた
+    # (実測 n=2576 → 2575、率の差 0.011pt)。数値的には無害だが推論側と厳密一致せず
+    # パリティ検査に残り続けるので、取りこぼし分を補正する。
+    # records[idx] があり、その日付が target_date 以降なら、その累積が
+    # 「target_date 直前までの全レース」を含む正しい値。
+    rec = records[idx] if idx < len(records) else None
+    if rec is None or rec[0] < target_date:
+        rec = records[idx - 1]
     if kind == 'jockey':
         _, win_cum, top3_cum, total_cum = rec
         if total_cum < 5:
