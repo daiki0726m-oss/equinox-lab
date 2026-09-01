@@ -830,7 +830,7 @@ def cmd_predict(args):
                 marks[m] = p
         if '◎' not in marks and preds:
             sorted_p = sorted(preds, key=lambda x: x.get('pred_win_pct', 0), reverse=True)
-            mark_labels = ['◎', '○', '▲', '△', '×', '注']
+            mark_labels = ['◎', '○', '▲', '△', '×', '☆', '注']
             for i, mk in enumerate(mark_labels):
                 if mk not in marks and i < len(sorted_p):
                     marks[mk] = sorted_p[i]
@@ -846,7 +846,7 @@ def cmd_predict(args):
         # 印（全て表示)— 「{mark} {番号}番 {馬名}」形式で fact_check に確実に通す
         # #100: 注 (妙味longshot) はオッズを併記 — 「夢の配当枠」であることを
         # 数字で示す (回収期待は主張しない: OOS検証で単勝78%/複勝71% #100)
-        for mk in ['◎', '○', '▲', '△', '×', '注']:
+        for mk in ['◎', '○', '▲', '△', '×', '☆', '注']:
             p = marks.get(mk)
             if p:
                 if mk == '注' and (p.get('odds_win') or 0) >= 7:
@@ -911,7 +911,7 @@ def cmd_predict(args):
                  # 検証用スナップショット — バックテストの look-ahead 汚染の再発防止)
                  'odds_win_at_post': marks[mk].get('odds_win', 0),
                  'popularity_at_post': marks[mk].get('popularity', 0)}
-                for mk in ['◎', '○', '▲', '△', '×', '注'] if marks.get(mk)
+                for mk in ['◎', '○', '▲', '△', '×', '☆', '注'] if marks.get(mk)
             ]
 
         bet_tweets.append(t)
@@ -1008,7 +1008,7 @@ def cmd_predict(args):
             _stats = None
             try:
                 _hns = [h.get('horse_number') for h in (_r2.get('horses') or [])
-                        if h.get('mark') in ('◎', '○', '▲', '注')]
+                        if h.get('mark') in ('◎', '○', '▲', '☆', '注')]
                 with get_db() as _conn:
                     _stats = _tc.course_records(_conn, _r2, _hns)
             except Exception as _se:
@@ -1214,7 +1214,7 @@ def _build_results_from_json(date_str):
 
     venues = data.get('venues', {}) if isinstance(data, dict) else {}
     race_data = []
-    mark_order = ['◎', '○', '▲', '△', '×', '注']
+    mark_order = ['◎', '○', '▲', '△', '×', '☆', '注']
 
     # 🆕 結果投稿の対象 = 実際に予想投稿したレース (posted_at IS NOT NULL) のみ (#46)。
     # DB から「投稿済み race_id」を取得し、JSON 側でそれだけをフィルタする。
@@ -1357,7 +1357,7 @@ def _build_results_jsonmarks_dbfinish(date_str):
         target_ids = {r.get('race_id') for r in target}
 
     race_data = []
-    mark_order = ['◎', '○', '▲', '△', '×', '注']
+    mark_order = ['◎', '○', '▲', '△', '×', '☆', '注']
     with get_db() as conn:
         for race in flat_races:
             if race.get('race_id') not in target_ids:
@@ -1505,7 +1505,7 @@ def _assemble_results_race_data(conn, races, date_str):
     if True:
         if True:
             all_rows = [dict(r) for r in races]
-            mark_order = ['◎', '○', '▲', '△', '×', '注']
+            mark_order = ['◎', '○', '▲', '△', '×', '☆', '注']
             for race in all_rows:
                 preds_raw = race.get('predictions_json')
                 preds = json.loads(preds_raw) if preds_raw else []
@@ -1759,7 +1759,10 @@ def cmd_results(args):
         if not client:
             print("⚠️ X が利用不可 — Threads のみに投稿します")
 
-    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
+    # #140: どのスロットの投稿かを計測に残す (旧実装は 40件中37件が「型なし」で
+    # 時間帯別の比較ができなかった)
+    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client,
+                threads_meta={"slot": "results"})
 
     # #118: 結果スレッドも全文記録 (predict と同様 #114) — 「人気が出てない」等の
     # 実配信検証を可能に (今回まさに記録が無く検証に難儀した)
@@ -3341,7 +3344,10 @@ def cmd_answer_check(args):
         if not client:
             print("⚠️ X が利用不可 — Threads のみに投稿します")
 
-    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
+    # #140: どのスロットの投稿かを計測に残す (旧実装は 40件中37件が「型なし」で
+    # 時間帯別の比較ができなかった)
+    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client,
+                threads_meta={"slot": "answer_check"})
 
 
 # ─── 日曜夜: 週間ROIレビュー ───
@@ -3522,7 +3528,10 @@ def cmd_weekly_review(args):
         if not client:
             print("⚠️ X が利用不可 — Threads のみに投稿します")
 
-    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client)
+    # #140: どのスロットの投稿かを計測に残す (旧実装は 40件中37件が「型なし」で
+    # 時間帯別の比較ができなかった)
+    post_thread(client, tweets, dry_run=args.dry_run, threads_client=threads_client,
+                threads_meta={"slot": "weekly_review"})
 
 
 # ─── 平日: note記事プロモ ───

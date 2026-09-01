@@ -752,7 +752,7 @@ body {
   .prob-value { font-size: 16px; }
   .prob-label { font-size: 9px; }
   .rank-bar { width: 40px; height: 3px; }
-  /* 印馬を強調(◎○▲△×注 が付いた馬は背景でハイライト) */
+  /* 印馬を強調(◎○▲△☆注 が付いた馬は背景でハイライト。× は旧データ互換) */
   .horse-row.has-mark {
     background: linear-gradient(90deg, rgba(240,192,64,0.05), transparent);
     border-left: 3px solid var(--gold);
@@ -1316,7 +1316,7 @@ function switchTab(btn, raceId, tab) {
 function renderPredTab(race) {
   const horses = race.horses || [];
   // Sort by mark order: ◎→○→▲→△→×→注→(no mark by pred_win_pct)
-  const MARK_ORDER = {'◎': 0, '○': 1, '▲': 2, '△': 3, '×': 4, '注': 5};
+  const MARK_ORDER = {'◎': 0, '○': 1, '▲': 2, '△': 3, '☆': 4, '×': 5, '注': 6};
   const sorted = [...horses].sort((a, b) => {
     const ma = a.mark in MARK_ORDER ? MARK_ORDER[a.mark] : 100;
     const mb = b.mark in MARK_ORDER ? MARK_ORDER[b.mark] : 100;
@@ -1483,7 +1483,7 @@ function renderHorseRow(h) {
   const wrClass = wr >= 20 ? 'hot' : '';
   const t3rClass = t3r >= 40 ? 'hot' : '';
 
-  const hasMark = !!(h.mark && ['◎','○','▲','△','×','注'].includes(h.mark));
+  const hasMark = !!(h.mark && ['◎','○','▲','△','☆','×','注'].includes(h.mark));
   let html = `<div class="horse-row${hasMark ? ' has-mark' : ''}">
     <div class="horse-mark ${markClass}">${h.mark || ''}</div>
     <div class="horse-number">${h.horse_number}</div>

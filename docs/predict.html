@@ -1202,7 +1202,7 @@ function switchTab(btn, raceId, tab) {
 function renderPredTab(race) {
   const horses = race.horses || [];
   // Sort by mark order: ◎→○→▲→△→×→注→(no mark by pred_win)
-  const MARK_ORDER = {'◎': 0, '○': 1, '▲': 2, '△': 3, '×': 4, '注': 5};
+  const MARK_ORDER = {'◎': 0, '○': 1, '▲': 2, '△': 3, '☆': 4, '×': 5, '注': 6};
   const sorted = [...horses].sort((a, b) => {
     const ma = a.mark in MARK_ORDER ? MARK_ORDER[a.mark] : 100;
     const mb = b.mark in MARK_ORDER ? MARK_ORDER[b.mark] : 100;

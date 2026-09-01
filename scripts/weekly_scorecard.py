@@ -55,7 +55,7 @@ def structure_bets(c, rid, mk, fin, meta):
     ax = mk['◎']; axhn = ax['horse_number']
     axod = ax.get('odds_win_at_post') or 0
     ohn = mk.get('○', {}).get('horse_number')
-    others = [mk[m]['horse_number'] for m in ('▲', '△', '×') if m in mk]
+    others = [mk[m]['horse_number'] for m in ('▲', '△', '×', '☆') if m in mk]
     chu = mk.get('注', {}).get('horse_number')
     nh = meta[3] or len(fin)
     pay = {(bt, cb): amt for bt, cb, amt in c.execute(
@@ -112,7 +112,7 @@ def main():
             st['n'] += 1
             st['axw'] += (fin.get(axhn) == 1)
             st['axt3'] += (axhn in top3)
-            five = [mk[m]['horse_number'] for m in ('◎', '○', '▲', '△', '×') if m in mk]
+            five = [mk[m]['horse_number'] for m in ('◎', '○', '▲', '△', '×', '☆') if m in mk]
             st['full'] += (len(set(five) & top3) == 3)
             if '○' in mk:
                 st['on'] += 1

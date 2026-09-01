@@ -341,11 +341,13 @@ class BettingStrategy:
         # 相手 (○▲△×注) の取得 — mark フィールド優先、なければ ML 順
         partners = []
         if predictions:
-            mark_priority = {'○': 1, '▲': 2, '△': 3, '×': 4, '注': 5}
+            # #140: ☆ = 妙味枠 (旧 ○)。記号を実力順に振り直したため優先順も更新。
+            # ○▲△ はモデル上位2-4位、× は妙味枠が無い日のモデル5位、☆ が妙味枠。
+            mark_priority = {'○': 1, '▲': 2, '△': 3, '×': 4, '☆': 5, '注': 6}
             partner_candidates = [
                 (mark_priority.get(p.get('mark',''), 99), p)
                 for p in predictions
-                if p.get('mark') in ('○','▲','△','×','注')
+                if p.get('mark') in ('○','▲','△','×','☆','注')
             ]
             partner_candidates.sort(key=lambda x: x[0])
             partners = [p for _, p in partner_candidates][:5]
@@ -483,13 +485,29 @@ class BettingStrategy:
     #   - budget スケール: 高信頼ほど合計投資額を増やして of  カバー率拡大
     #   - line_amount スケール: 高信頼ほど 1点 200円 にして payout を大きく
     # C/D は should_bet=False で既に遮断済。
+    # #140 (2026-09-01): 信頼度による賭け金倍率を **フラット化**。
+    # 導入時 (#27) の根拠は「高信頼レースは捕捉率が高い」だったが、その後の検証で
+    #   - #75: 自信度比例 sizing は全バンドで ROI 79-90% に収束し黒字化しない
+    #   - 実運用7週の三連複◎軸 ROI: S=64.0% / A=86.1% / B=34.0% / C=24.2% / D=61.2%
+    #     = **信頼度は◎複勝率をよく予測する (S83%>A68%>B45%) が ROI は全く予測しない**
+    # 予測できない指標で賭け金を2倍にするのは、期待値を変えずに**分散だけ増やす**行為。
+    # S/A/B を 1.0 に統一する (C/D の 0.0 遮断は #25 で +22pt と実証済みなので維持)。
+    # 倍率を戻す場合は CONFIDENCE_SIZING=1 で旧挙動。
     CONFIDENCE_MULTIPLIER = {
-        'S': 2.0,  # 高信頼 → budget 2000円 / 1点 200円
-        'A': 1.5,  # 上位   → budget 1500円 / 1点 100円 (端数切り捨て)
-        'B': 1.0,  # 標準   → budget 1000円 / 1点 100円
-        'C': 0.0,  # 念のため (実運用では should_bet=False で遮断)
+        'S': 1.0,
+        'A': 1.0,
+        'B': 1.0,
+        'C': 0.0,  # 損失層 (#25) — 遮断は維持
         'D': 0.0,
     }
+    CONFIDENCE_MULTIPLIER_LEGACY = {'S': 2.0, 'A': 1.5, 'B': 1.0, 'C': 0.0, 'D': 0.0}
+
+    def _conf_mult(self):
+        """#140: 既定はフラット。CONFIDENCE_SIZING=1 で旧来の信頼度比例に戻す。"""
+        import os as _os
+        return (self.CONFIDENCE_MULTIPLIER_LEGACY
+                if _os.environ.get('CONFIDENCE_SIZING') == '1'
+                else self.CONFIDENCE_MULTIPLIER)
 
     def generate_bets(self, predictions, bankroll=None, bet_types=None, confidence=None,
                       race_info=None, strict_whitelist=False):
@@ -509,7 +527,7 @@ class BettingStrategy:
             print(f"  🎯 Whitelist hit: {seg_name} (bet_types={allowed_types})")
 
         # confidence ウェイトで budget と line_amount をスケール
-        mult = self.CONFIDENCE_MULTIPLIER.get(confidence, 1.0) if confidence else 1.0
+        mult = self._conf_mult().get(confidence, 1.0) if confidence else 1.0
         if mult == 0.0:
             # C/D 等 (理論上 should_bet=False で遮断されてるはず)
             return {"bets": [], "total_amount": 0, "race_info": {}, "skipped": True}

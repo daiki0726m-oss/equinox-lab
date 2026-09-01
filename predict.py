@@ -881,8 +881,20 @@ def cmd_predict(args):
                     _vp = max(_vpool, key=_vt)
                     _rest = [p for p in by_top3 if p is not _vp][:4]
                     if len(_rest) >= 4:
-                        capture5 = [_rest[0], _vp] + _rest[1:4]
-            for i, mk in enumerate(['◎', '○', '▲', '△', '×']):
+                        # #140 (2026-09-01): 記号は**実力順**に割り当てる。
+                        # 旧実装は ○ に妙味馬を入れていたため、実測で
+                        # ○(複勝23.6%/平均6.6人気) < ▲(49.4%) < △(39.3%) と序列が逆転し、
+                        # 「○=2番手に来そうな馬」という読者の読みと中身が食い違っていた。
+                        # 同じ6頭のまま ◎○▲△=モデル上位4頭 / ☆=妙味(5-20倍) に振り直す。
+                        capture5 = _rest[:4] + [_vp]
+                        _symbols = ['◎', '○', '▲', '△', '☆']
+                    else:
+                        _symbols = ['◎', '○', '▲', '△', '×']
+                else:
+                    _symbols = ['◎', '○', '▲', '△', '×']
+            else:
+                _symbols = ['◎', '○', '▲', '△', '×']
+            for i, mk in enumerate(_symbols):
                 if i < len(capture5):
                     capture5[i]['mark'] = mk
 
