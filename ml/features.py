@@ -159,8 +159,13 @@ class FeatureBuilder:
             features["is_peak_age"] = 1 if 4 <= horse_age <= 6 else 0
 
         # ── 10. コース別枠順バイアス (2次元) ── ※新規
-        post_bias = self._get_course_post_position_bias(
-            horse_number, venue, distance, surface, race_date
+        # #137 (2026-09-01): 学習側は「**その馬自身**が同会場・同馬場で馬番±2から
+        # 走った時の成績」(馬と枠の相性) を計算しているのに、推論側は
+        # 「そのコースで**どの馬でも**その枠がどれだけ好成績か」(コースの枠バイアス)
+        # という**まったく別の量**を渡していた。モデルは前者で学習しているので、
+        # 学習側の定義に揃える。
+        post_bias = self._get_horse_post_position_record(
+            horse_id, horse_number, venue, surface, race_date
         )
         features["post_win_rate_course"] = post_bias["win_rate"]
         features["post_top3_rate_course"] = post_bias["top3_rate"]
@@ -718,6 +723,39 @@ class FeatureBuilder:
 
 
 
+
+    def _get_horse_post_position_record(self, horse_id, horse_number, venue, surface,
+                                        race_date=None):
+        """**その馬自身**の「同会場・同馬場・馬番±2」の過去成績 (#137)。
+
+        学習側 (fast_train) の定義:
+            same_post_past = [過去走 for pr if pr.venue==venue and pr.surface==surface
+                              and abs(pr.horse_number - hn) <= 2]
+            該当が無ければ 0。
+        コース全体の枠バイアスではなく「この馬がその枠から走った時どうだったか」。
+        """
+        if not horse_id:
+            return {"win_rate": 0, "top3_rate": 0}
+        date_filter = "AND ra.race_date < ?" if race_date else ""
+        params = [horse_id, venue, surface, horse_number - 2, horse_number + 2]
+        if race_date:
+            params.append(race_date)
+        with get_db() as conn:
+            row = conn.execute(f"""
+                SELECT COUNT(*) total,
+                       SUM(CASE WHEN r.finish_position=1 THEN 1 ELSE 0 END) wins,
+                       SUM(CASE WHEN r.finish_position<=3 THEN 1 ELSE 0 END) top3
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.horse_id = ? AND ra.venue = ? AND ra.surface = ?
+                  AND r.horse_number BETWEEN ? AND ?
+                  AND r.finish_position > 0
+                  {date_filter}
+            """, params).fetchone()
+        if not row or not row["total"]:
+            return {"win_rate": 0, "top3_rate": 0}
+        return {"win_rate": (row["wins"] or 0) / row["total"],
+                "top3_rate": (row["top3"] or 0) / row["total"]}
+
     def _get_pace_tendency_train_compatible(self, horse_id, race_date=None):
         """脚質3特徴を **学習側 (fast_train) と同一定義** で計算する (#136)。
 
@@ -1150,14 +1188,19 @@ class FeatureBuilder:
             # ペース (3)
             "front_rate", "avg_pos_ratio", "avg_last_3f",
             # 馬情報 (7)
-            "horse_count", "weight", "weight_change",
+            # #137 (2026-09-01): 馬体重系3特徴 (weight / weight_change / weight_trend) を除外。
+            # **予測時点では馬体重が未発表**で必ず 0 になる一方、学習時は実測値が入るため、
+            # 埋めようのない train/serve skew だった (実測: 未来レース 146頭すべて 0、
+            # 確定済み 479頭中 478頭に実値)。モデルは「体重が入っている前提」で学習し、
+            # 本番では常に 0 を渡されるという最悪の形。ユーザー判断で特徴量から外す。
+            "horse_count",
             "impost", "distance_cat", "surface_turf", "rest_days",
             # 過去成績 (5)
             "avg_finish_5r", "win_rate_10r", "top3_rate_10r",
             "finish_trend", "race_experience",
             # コンテキスト (5)
             "distance_diff", "jockey_change", "course_top3_rate",
-            "last_3f_best", "weight_trend",
+            "last_3f_best",
             # 天候・馬場 (3)
             "track_cond_code", "weather_code",
             "horse_wet_win_rate", "horse_wet_top3_rate",

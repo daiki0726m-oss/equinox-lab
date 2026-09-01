@@ -871,14 +871,19 @@ def get_feature_columns():
         # ペース (3)
         "front_rate", "avg_pos_ratio", "avg_last_3f",
         # 馬情報 (7)
-        "horse_count", "weight", "weight_change",
+        # #137 (2026-09-01): 馬体重系3特徴 (weight / weight_change / weight_trend) を除外。
+        # **予測時点では馬体重が未発表**で必ず 0 になる一方、学習時は実測値が入るため、
+        # 埋めようのない train/serve skew だった (実測: 未来レース 146頭すべて 0、
+        # 確定済み 479頭中 478頭に実値)。モデルは「体重が入っている前提」で学習し、
+        # 本番では常に 0 を渡されるという最悪の形。ユーザー判断で特徴量から外す。
+        "horse_count",
         "impost", "distance_cat", "surface_turf", "rest_days",
         # 過去成績 (5)
         "avg_finish_5r", "win_rate_10r", "top3_rate_10r",
         "finish_trend", "race_experience",
         # コンテキスト (5)
         "distance_diff", "jockey_change", "course_top3_rate",
-        "last_3f_best", "weight_trend",
+        "last_3f_best",
         # 天気・馬場 (4)
         "track_cond_code", "weather_code",
         "horse_wet_win_rate", "horse_wet_top3_rate",
