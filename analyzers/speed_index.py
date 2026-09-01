@@ -148,18 +148,28 @@ class SpeedIndexCalculator:
 
         return indices
 
-    def get_horse_indices(self, horse_id, n_races=5):
-        """馬の直近N走のスピード指数を取得"""
+    def get_horse_indices(self, horse_id, n_races=5, race_date=None):
+        """馬の直近N走のスピード指数を取得。
+
+        #135 (2026-09-01): race_date を受けて **それより前のレースだけ**を見る。
+        旧実装は日付フィルタが無く、過去レースを再予測すると**そのレース以降の
+        走破時計まで混入**していた (未走の未来レースは finish_time_seconds=0 で
+        弾かれるため当日予測は無害だが、過去日の再 predict では実害)。
+        #26 で「5/9 の ROI 339% は lucky day」とした異常値も、この経路で説明がつく。
+        """
+        date_filter = "AND ra.race_date < ?" if race_date else ""
+        params = [horse_id] + ([race_date] if race_date else []) + [n_races]
         with get_db() as conn:
-            rows = conn.execute("""
+            rows = conn.execute(f"""
                 SELECT r.*, ra.venue, ra.distance, ra.surface, ra.track_condition
                 FROM results r
                 JOIN races ra ON r.race_id = ra.race_id
                 WHERE r.horse_id = ?
                   AND r.finish_time_seconds > 0
+                  {date_filter}
                 ORDER BY ra.race_date DESC
                 LIMIT ?
-            """, (horse_id, n_races)).fetchall()
+            """, params).fetchall()
 
         indices = []
         for row in rows:
@@ -172,17 +182,19 @@ class SpeedIndexCalculator:
 
         return indices
 
-    def get_horse_stats(self, horse_id, n_races=5):
-        """馬のスピード指数の統計値を取得"""
-        indices = self.get_horse_indices(horse_id, n_races)
+    def get_horse_stats(self, horse_id, n_races=5, race_date=None):
+        """馬のスピード指数の統計値を取得 (#135: race_date で未来を遮断)"""
+        indices = self.get_horse_indices(horse_id, n_races, race_date=race_date)
         if not indices:
             return {"avg": 0, "max": 0, "min": 0, "std": 0, "latest": 0, "count": 0}
 
+        # #135: 学習側 (fast_train) は np.mean をそのまま使うため、ここで丸めると
+        # 同じ特徴量名に別の値が入る (パリティ検査で一致率0%として検出された)。
         return {
-            "avg": round(np.mean(indices), 1),
-            "max": round(max(indices), 1),
-            "min": round(min(indices), 1),
-            "std": round(np.std(indices), 1) if len(indices) > 1 else 0,
+            "avg": float(np.mean(indices)),
+            "max": float(max(indices)),
+            "min": float(min(indices)),
+            "std": float(np.std(indices)) if len(indices) > 1 else 0,
             "latest": indices[0],
             "count": len(indices),
         }

@@ -1,0 +1,51 @@
+name: 🔬 Feature Parity Check
+
+# #135 (2026-09-01): 学習側 (fast_train.py) と推論側 (ml/features.py) で
+# 54特徴量の値が一致するかを毎日検査する。
+# 両者を二重実装しているのに中身の一致を照合する仕組みが無く、同型のバグが
+# 繰り返し発生していた: #128 (dist_top3_rate)、#133 (前走がデビュー戦)、
+# #134 (通過順の列名改称で4か月欠落)。いずれもこの検査で初日に検出できた。
+on:
+  schedule:
+    - cron: '0 20 * * *'      # 毎日 5:00 JST (週末の予測生成より前)
+  workflow_dispatch:
+
+concurrency:
+  group: feature-parity
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack DB
+        run: bash scripts/db_unpack.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
+      - name: Parity check
+        id: parity
+        run: |
+          set +e
+          python3 scripts/verify_feature_parity.py --races 4 | tee /tmp/parity.txt
+          echo "code=$?" >> $GITHUB_OUTPUT
+      - name: 🔔 Notify on new mismatch
+        if: steps.parity.outputs.code == '2'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="🔬 学習↔推論の特徴量が食い違っています $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+          EXISTING=$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+          [ "$EXISTING" != "0" ] && exit 0
+          gh issue create --title "$TITLE" \
+            --body "$(printf '%s\n' "パリティ検査が新規の不一致を検出しました (#135)。" "" \
+              "同じ特徴量名に学習と推論で別の値が入っている状態です。放置すると予測が静かに劣化します。" "" \
+              "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" "" \
+              '```' "$(cat /tmp/parity.txt | tail -20)" '```')" 2>&1 || echo "Issue作成失敗"

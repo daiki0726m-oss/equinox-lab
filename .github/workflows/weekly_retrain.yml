@@ -95,6 +95,15 @@ jobs:
 
       # #114: retrain スキップ週も ROI レポートは毎週公開する (7/13 に retrain skip →
       # roi_weekly.json が 11日 stale = #111「週次ROI報告」の結線切れが実発生)
+      # #135 (2026-09-01): 出荷前ゲート。#134 で model_rank が **木3本** で出荷され
+      # 買い目が停止していた事故 (should_bet 13/36 → 0/36) の再発防止。
+      # モデルの木の本数・特徴量数を検査し、異常なら commit させない。
+      - name: Model health gate (#135)
+        if: steps.check.outputs.age >= 7 || github.event_name == 'workflow_dispatch'
+        run: |
+          python3 scripts/verify_feature_parity.py --models-only
+          echo "✅ モデル健全性ゲート通過"
+
       - name: Commit updated model + monitor
         if: always() && steps.check.outputs.age != ''
         run: |

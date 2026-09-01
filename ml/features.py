@@ -52,7 +52,7 @@ class FeatureBuilder:
         features = {}
 
         # ── 1. スピード指数系 (6次元) ──
-        si_stats = self.speed_calc.get_horse_stats(horse_id, n_races=5)
+        si_stats = self.speed_calc.get_horse_stats(horse_id, n_races=5, race_date=race_date)
         features["si_avg"] = si_stats["avg"]
         features["si_max"] = si_stats["max"]
         features["si_min"] = si_stats["min"]

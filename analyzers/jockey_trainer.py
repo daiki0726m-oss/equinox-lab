@@ -20,9 +20,10 @@ class JockeyTrainerAnalyzer:
     def get_jockey_stats(self, jockey_id, venue=None, distance=None,
                          surface=None, track_condition=None):
         """騎手の条件別成績"""
-        # #134: 空IDで全件集計しないガード (get_trainer_stats と同じ)
+        # #134: 空IDで全件集計しないガード / #135: 呼び出し側が期待する同形のゼロ値を返す
         if not jockey_id or not str(jockey_id).strip():
-            return {}
+            return {"win_rate": 0, "top2_rate": 0, "top3_rate": 0,
+                    "avg_pos": 0, "total": 0, "roi_win": 0}
         with get_db() as conn:
             query = """
                 SELECT
@@ -77,7 +78,9 @@ class JockeyTrainerAnalyzer:
         # 集計して「複勝率21.6%」のような もっともらしい嘘の数値**を返していた。
         # 学習側は同じ馬に 0 を渡すため、推論だけに幻の実績が入る train/serve skew でもある。
         if not trainer_id or not str(trainer_id).strip():
-            return {}
+            # #135: 空 dict を返すと呼び出し側の stats['total'] が KeyError になり
+            # **推論経路ごと落ちる** (パリティ検査が即日で検出)。ゼロ値の同形を返す。
+            return {"win_rate": 0, "top3_rate": 0, "avg_pos": 0, "total": 0}
         with get_db() as conn:
             query = """
                 SELECT
