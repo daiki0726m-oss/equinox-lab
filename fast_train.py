@@ -915,6 +915,7 @@ def get_feature_columns():
 def train_models(df, feature_cols, num_boost_round=500, early_stopping_rounds=50):
     """3モデルを学習"""
     import pickle
+    import json
 
     RANK_PARAMS = {
         "objective": "lambdarank", "metric": "ndcg",
@@ -933,7 +934,12 @@ def train_models(df, feature_cols, num_boost_round=500, early_stopping_rounds=50
     }
 
     confirmed = df[df["finish_position"] > 0].copy()
-    confirmed = confirmed.sort_values("race_id")
+    # #141: 旧実装は sort_values("race_id")。race_id は「年+場コード+開催回+日+R」なので
+    # ソートしても日付順にならず**場コード順**になり、時系列分割が成立していなかった
+    # (実測: 学習側に 2025-03 以降が 1,114レース混入、学習側の最大日付は 2025-11-24)。
+    # CLAUDE.md #109 が定めた「backtest の評価窓は学習境界以降」という規律が
+    # 導入以来ずっと無効で、全バックテストが静かに in-sample を混ぜていた。
+    confirmed = confirmed.sort_values(["race_date", "race_id"])
     print(f"\n📊 学習データ: {len(confirmed)}行, {confirmed['race_id'].nunique()}レース")
 
     X = confirmed[feature_cols].fillna(0)
@@ -1033,6 +1039,25 @@ def train_models(df, feature_cols, num_boost_round=500, early_stopping_rounds=50
         pickle.dump(model_rank, f)
     with open(os.path.join(MODEL_DIR, "model_top3.pkl"), "wb") as f:
         pickle.dump(model_top3, f)
+    # #141: 学習境界をモデルと一緒に保存する。
+    # 境界は再学習のたびに動くので、backtest 側が固定日 ('2025-03-01' 等) を
+    # ハードコードすると必ず陳腐化して in-sample を混ぜる。
+    try:
+        _tr_dates = confirmed.loc[train_mask, "race_date"]
+        _va_dates = confirmed.loc[val_mask, "race_date"]
+        _meta = {
+            "train_max_date": str(_tr_dates.max()),
+            "val_min_date": str(_va_dates.min()),
+            "train_races": int(len(train_races)),
+            "val_races": int(len(val_races)),
+            "feature_count": len(feature_cols),
+        }
+        with open(os.path.join(MODEL_DIR, "train_boundary.json"), "w", encoding="utf-8") as f:
+            json.dump(_meta, f, ensure_ascii=False, indent=1)
+        print(f"📅 学習境界を保存: 学習は {_meta['train_max_date']} まで / "
+              f"評価は {_meta['val_min_date']} から (OOS窓はこの日以降)")
+    except Exception as _e:
+        print(f"⚠️ 学習境界の保存に失敗: {_e}")
     with open(os.path.join(MODEL_DIR, "model_win.pkl"), "wb") as f:
         pickle.dump(model_win, f)
     print(f"\n💾 モデル保存完了: {MODEL_DIR}")

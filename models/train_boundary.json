@@ -1,0 +1,9 @@
+{
+ "train_max_date": "2025-11-24",
+ "val_min_date": "2025-01-05",
+ "train_races": 18488,
+ "val_races": 4623,
+ "feature_count": 51,
+ "note": "#141: 現行の models/*.pkl は race_id ソート (=場コード順) の壊れた分割で 学習されており、学習側に 2025-03 以降が 1,114レース混入している。train_max_date はその実測値。次回 weekly_retrain で race_date ソートに切り替わると境界は正しく更新される。",
+ "split_key": "race_id (broken, pre-#141)"
+}

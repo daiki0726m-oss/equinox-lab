@@ -83,7 +83,10 @@ def collect_weekly_stats(conn, weeks_back):
         # 軸 = 表示上の ◎、相手 = 印 (○▲△×注) を優先 (#95: 本番の honor 買い目と
         # 同じ構造をシミュレートする。旧実装の pred_win 順相手は実際の買い目と乖離)。
         axis_p = next((p for p in preds if p.get("mark") == "◎"), None)
-        _mark_pri = {'○': 1, '▲': 2, '△': 3, '×': 4, '注': 5}
+        # #141: ☆ (#140 の妙味枠) が抜けていると相手が5頭→4頭になり、
+        # 三連複が10点→6点に減って ROI が 10-20pt 跳ね上がる (spend が減るだけ)。
+        # #111 でユーザーが評価主軸に指定した数値が、記号を変えただけで歪む。
+        _mark_pri = {'○': 1, '▲': 2, '△': 3, '×': 4, '☆': 5, '注': 6}
         mark_partners = sorted(
             (p for p in preds if p.get("mark") in _mark_pri),
             key=lambda p: _mark_pri[p["mark"]])

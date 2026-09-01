@@ -351,6 +351,22 @@ class BettingStrategy:
             ]
             partner_candidates.sort(key=lambda x: x[0])
             partners = [p for _, p in partner_candidates][:5]
+            # #141: G/D 構造の2列目 (partners[0]) は設計上「妙味枠」でなければならない。
+            # #112/#113 で D 69.3% vs モデル2位 36.9% と実測され、L426 のコメントも
+            # 「D/G は妙味○が的中時の高配当を担うため現行維持」と明記している。
+            # ところが #140 で ○ をモデル2位に、妙味枠を ☆ に変えた際、mark_priority が
+            # ○:1 のままだったため partners[0] が silent に「妙味馬 → モデル2位」に変わり、
+            # 買い目構造が壊れていた (実測: ○の単勝中央値 15.35倍 vs モデル2位 4.5倍、
+            # 一致は 2/144レースのみ = 約47%のレースで買い目が別物に)。
+            # 印 (コンテンツ層) の記号変更が ROI層 に波及するのは #111 の役割分担違反。
+            # → 妙味枠を記号でなく「役割」で取得し、先頭に固定する。
+            _value = next((p for p in predictions if p.get('mark') == '☆'), None)
+            if _value is None:   # ☆ 以前のデータ (○が妙味枠だった時代) との互換
+                _value = next((p for p in predictions if p.get('mark') == '○'), None)
+            if _value is not None:
+                partners = [_value] + [p for p in partners
+                                       if p.get('horse_number') != _value.get('horse_number')]
+                partners = partners[:5]
         if len(partners) < 2:
             # フォールバック: ML 順 上位5
             partners = sorted_preds[1:6]
