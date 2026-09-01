@@ -42,7 +42,8 @@ concurrency:
 env:
   MARKS_ABILITY_W: "0.5"   # #108
   MARKS_VALUE_TAIKO: "1"   # #110: ○=妙味枠(5-20倍)
-  BET_STRUCTURE_ADAPTIVE: "1"   # #113: レース適応型の買い目構造   # #108: 印の人気依存を弱める能力ブレンド (predict の印選定のみに作用)
+  BET_STRUCTURE_ADAPTIVE: "1"
+  BET_D_NO_CHU: "1"   # #139: 三連単の3列目から注を外す (注の3着セル 回収65%)
 
 jobs:
   run:
