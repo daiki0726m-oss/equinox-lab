@@ -80,6 +80,11 @@ jobs:
         run: |
           python3 scripts/roi_weekly_monitor.py --weeks 12 --output docs/data/roi_weekly.json > /tmp/roi_report.md || true
           tail -30 /tmp/roi_report.md || true
+          # #142: 実測トラッカー — 凍結した投稿印 × 確定着順 × 実払戻だけの集計。
+          # バックテストが5回連続で幻を掴んだ (#73/#99/#100/#109/#141) ため、
+          # 判断材料はこちらを正とする。
+          echo '===== 印の実測トラッカー (#142) ====='
+          python3 scripts/mark_tracker.py --json docs/data/mark_tracker.json || true
           FLAGS=$(python3 -c "
           import json
           try:
@@ -110,7 +115,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           bash scripts/db_pack.sh
-          git add models/ keiba.db.gz docs/data/roi_weekly.json
+          git add models/ keiba.db.gz docs/data/roi_weekly.json docs/data/mark_tracker.json models/train_boundary.json
           if git diff --staged --quiet; then
             echo "📭 変更なし"
           else
