@@ -999,8 +999,21 @@ def cmd_predict(args):
         # should_bet 判定 → C/D も bet=1 のまま、というバグの根本修正)
         from confidence import evaluate as eval_confidence
         n_horses = len(sorted_preds) if sorted_preds else 1
-        top1 = sorted_preds[0] if sorted_preds else {}
-        top2 = sorted_preds[1] if len(sorted_preds) >= 2 else top1
+        # #142: 信頼度は【実際に◎を付けた馬】から計算する。
+        # 旧実装は sorted_preds[0] (ML勝率1位) を入力にしていたが、◎ は v5 で
+        # pred_top3 × 能力ブレンドから別に選ばれるため、**219レース中81レース (37%)**
+        # で信頼度が◎とは違う馬を説明していた。
+        # 実測 (凍結印×確定着順、16開催日): 信頼度が◎と一致したレースでは
+        # ラベルと◎3着内率の相関 +0.80 (S 68.9% → D 33.3% と綺麗に並ぶ) なのに対し、
+        # 別馬から計算されたレースでは +0.31 でラダーが崩れる (S 50.0% < A 59.1%)。
+        # ユーザーの用途は「印を見て自分で買い目を組む時の参考」であり、
+        # 『この◎は信用していいか』を示す信頼度が別馬の話をしているのは致命的。
+        _axis = next((p for p in sorted_preds if p.get('mark') == '◎'), None)
+        top1 = _axis or (sorted_preds[0] if sorted_preds else {})
+        # 2番手も◎を除いた先頭に (◎自身が top2 に入る自己参照を避ける)
+        _rest = [p for p in sorted_preds
+                 if p.get('horse_number') != top1.get('horse_number')]
+        top2 = _rest[0] if _rest else top1
         # ★ #95: confidence の勝率入力は【表示チャネル (温度×3)】を使う。
         # confidence.py の _win_grade 閾値 (S≥45/A≥30/B≥20/C≥13) は 2026-05-30 に
         # 「WIN_SHARPEN=3 適用後の◎勝率分布」に合わせて再調整されたもの。
