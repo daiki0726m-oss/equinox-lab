@@ -121,6 +121,22 @@ def _slot_sidecar_clear(slot_name, post_date=None):
         print(f"   ⚠️ slot サイドカー解放失敗: {e}")
 
 
+MARK_DISPLAY_ORDER = ['◎', '○', '▲', '△', '×', '☆', '注']
+
+
+def marked_in_order(horses):
+    """印のついた馬を表示順に返す。**同じ印が複数ついていても全部返す**。
+
+    #143 (2026-09-02): △(連下) を2頭に増やしたため、
+    `{h['mark']: h for h in horses}` のように印をキーにする実装は
+    2頭目の△を黙って落とす。印を読む箇所は必ずこの関数を通すこと。
+    """
+    order = {m: i for i, m in enumerate(MARK_DISPLAY_ORDER)}
+    return sorted([h for h in horses if h.get('mark') in order],
+                  key=lambda h: (order[h['mark']],
+                                 -(h.get('pred_top3') or h.get('pred_top3_pct') or 0)))
+
+
 def _acquire_or_exit(slot_name):
     """各 cmd_* の冒頭で呼ぶ。lock 取れなければ exit 0 で正常終了。
 
@@ -905,18 +921,18 @@ def cmd_predict(args):
     for race in target_races:
         preds = json.loads(race['predictions_json']) if race['predictions_json'] else []
 
-        # 印を全て取得（◎○▲△×注）
+        # 印を全て取得。#143: △が2頭あるので dict でなく順序リストで扱う
+        marked_list = marked_in_order(preds)
         marks = {}
-        for p in preds:
-            m = p.get('mark', '')
-            if m and m not in marks:
-                marks[m] = p
-        if '◎' not in marks and preds:
+        for p in marked_list:
+            marks.setdefault(p['mark'], p)      # 旧コード互換 (代表1頭)
+        if not marked_list and preds:
             sorted_p = sorted(preds, key=lambda x: x.get('pred_win_pct', 0), reverse=True)
-            mark_labels = ['◎', '○', '▲', '△', '×', '☆', '注']
-            for i, mk in enumerate(mark_labels):
-                if mk not in marks and i < len(sorted_p):
-                    marks[mk] = sorted_p[i]
+            for i, mk in enumerate(['◎', '○', '▲', '△', '△', '☆', '注']):
+                if i < len(sorted_p):
+                    sorted_p[i] = dict(sorted_p[i], mark=mk)
+                    marked_list.append(sorted_p[i])
+                    marks.setdefault(mk, sorted_p[i])
 
         grade = f" [{race['grade']}]" if race['grade'] else ""
         # 信頼度アルファベット表記に戻す (2026-05-24 v4)
@@ -929,8 +945,8 @@ def cmd_predict(args):
         # 印（全て表示)— 「{mark} {番号}番 {馬名}」形式で fact_check に確実に通す
         # #100: 注 (妙味longshot) はオッズを併記 — 「夢の配当枠」であることを
         # 数字で示す (回収期待は主張しない: OOS検証で単勝78%/複勝71% #100)
-        for mk in ['◎', '○', '▲', '△', '×', '☆', '注']:
-            p = marks.get(mk)
+        for p in marked_list:           # #143: △2頭を両方出す
+            mk = p['mark']
             if p:
                 if mk == '注' and (p.get('odds_win') or 0) >= 7:
                     t += f"{mk} {p.get('horse_number',0)}番 {p.get('horse_name','?')}（想定単{p.get('odds_win'):.0f}倍）\n"
@@ -988,13 +1004,13 @@ def cmd_predict(args):
         rid = race.get('race_id')
         if rid:
             _posted_marks[rid] = [
-                {'mark': mk, 'horse_number': marks[mk].get('horse_number', 0),
-                 'horse_name': marks[mk].get('horse_name', ''),
+                {'mark': _p['mark'], 'horse_number': _p.get('horse_number', 0),
+                 'horse_name': _p.get('horse_name', ''),
                  # #99: 投稿時点のオッズ/人気を不変記録 (事後の refresh で汚染されない
                  # 検証用スナップショット — バックテストの look-ahead 汚染の再発防止)
-                 'odds_win_at_post': marks[mk].get('odds_win', 0),
-                 'popularity_at_post': marks[mk].get('popularity', 0)}
-                for mk in ['◎', '○', '▲', '△', '×', '☆', '注'] if marks.get(mk)
+                 'odds_win_at_post': _p.get('odds_win', 0),
+                 'popularity_at_post': _p.get('popularity', 0)}
+                for _p in marked_list          # #143: △2頭を両方記録
             ]
 
         bet_tweets.append(t)
@@ -1372,10 +1388,8 @@ def _build_results_from_json(date_str):
             continue  # 中途半端は投稿しない
 
         marked = []
-        for m in mark_order:
-            horse = next((h for h in horses if h.get('mark') == m), None)
-            if not horse:
-                continue
+        for horse in marked_in_order(horses):   # #143: △2頭を両方
+            m = horse['mark']
             fin = horse.get('finish')
             if not isinstance(fin, int) or fin < 1:
                 fin = None
@@ -1509,10 +1523,8 @@ def _build_results_jsonmarks_dbfinish(date_str):
                     })
             else:
                 horses = race.get('horses', [])
-                for m in mark_order:
-                    h = next((x for x in horses if x.get('mark') == m), None)
-                    if not h:
-                        continue
+                for h in marked_in_order(horses):   # #143: △2頭を両方
+                    m = h['mark']
                     marked.append({
                         'mark': m,
                         'horse_number': h.get('horse_number', 0),
@@ -1650,10 +1662,8 @@ def _assemble_results_race_data(conn, races, date_str):
                             'popularity': pop_map.get(s.get('horse_number', 0), 0),
                         })
                 else:
-                    for m in mark_order:
-                        horse = next((p for p in preds if p.get('mark') == m), None)
-                        if not horse:
-                            continue
+                    for horse in marked_in_order(preds):   # #143: △2頭を両方
+                        m = horse['mark']
                         fin = finish_map.get(horse.get('horse_number', 0))
                         marked.append({
                             'mark': m,

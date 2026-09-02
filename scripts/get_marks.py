@@ -56,7 +56,8 @@ def format_marks(race, by_mark=True):
     if not horses:
         return ''
 
-    mark_order = {'◎': 1, '○': 2, '▲': 3, '△': 4, '×': 5, '注': 6}
+    # #143: △は2頭。ソート用なので同順位で問題ない (☆ を追加)
+    mark_order = {'◎': 1, '○': 2, '▲': 3, '△': 4, '×': 5, '☆': 6, '注': 7}
     if by_mark:
         sorted_h = sorted(
             horses,

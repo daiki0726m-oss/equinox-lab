@@ -126,11 +126,14 @@ def analyze(since=None, until=None):
                 continue
             pay = payouts.get(rid, {})
             marked = {}
+            marked_all = []
             for h in horses:
                 mk, hn = h.get('mark'), h.get('horse_number')
                 if mk not in per_mark or hn is None:
                     continue
-                marked[mk] = hn
+                # #143: △は2頭つくので上書きしない (印→馬番の多重辞書)
+                marked.setdefault(mk, hn)
+                marked_all.append((mk, hn))
                 f, pop_db, _ = fin.get(hn, (0, 0, ''))
                 # 人気は投稿時点の凍結値を優先。results.popularity には
                 # 取消馬の 9999 が入っており (実測8件)、平均を壊す (#141 N)。
@@ -152,10 +155,12 @@ def analyze(since=None, until=None):
 
             # 3着以内3頭のうち何頭を印で捕まえたか
             top3_horses = [hn for hn, v in fin.items() if 1 <= v[0] <= 3]
-            caught = len([hn for hn in top3_horses if hn in marked.values()])
+            _all_hns = {hn for _, hn in marked_all}
+            caught = len([hn for hn in top3_horses if hn in _all_hns])
             race_rows.append({
                 'date': date, 'race_id': rid,
-                'marked': marked, 'top3_horses': top3_horses,
+                'marked': marked, 'marked_all': marked_all,
+                'top3_horses': top3_horses,
                 'caught': caught, 'need': len(top3_horses),
                 'payouts': pay, 'fin': fin,
             })

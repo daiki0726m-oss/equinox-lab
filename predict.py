@@ -868,6 +868,25 @@ def cmd_predict(args):
             # ○が平均6.3人気/中央16.3倍になる代わり、完全捕捉 34.1→29.6% (-4.5pt)、
             # ○単体複勝率 51→25%。的中でなく「面白さ」への製品判断 (#108 と同じ扱い)。
             # 実オッズが無い時 (木金の事前予測) は発動しない。
+            # ── #143 (2026-09-02): 印(捕捉) と 穴枠 を分離する ──
+            # 旧構造は6印のうち2枠 (妙味○/☆ と 注) を穴が占めており、
+            # 「捕捉に使える印」は実質 ◎○▲△ の4頭しかなかった。
+            # 実測 (公開JSON 1,462R): その4頭だけで3着以内3頭が揃うのは **21.2%** —
+            # 8割のレースで印の外に手を伸ばさないと買い目が組めない状態だった。
+            # ユーザーの用途は「印を見て自分で買い目を組む」ことなので、これは致命的。
+            #
+            # 新構造: 印5頭 (◎○▲△△、△は2頭) = 純粋に捕捉最優先
+            #         穴枠2頭 (☆妙味 / 注大穴) = 印の枠を消費しない別建て
+            # 実測: 捕捉印だけで3頭揃う 21.2% → **33.9%**、穴込みでは 39.0% → 51.6%。
+            # 穴を消したわけではなく「印の枠を奪うのをやめた」だけなので、
+            # 面白さ (#108/#110 の要望) は維持される。
+            _symbols = ['◎', '○', '▲', '△', '△']
+            for i, mk in enumerate(_symbols):
+                if i < len(capture5):
+                    capture5[i]['mark'] = mk
+
+            # ── ☆ = 妙味枠 (モデル複勝率÷市場率が最大の 5-20倍馬、印5頭の外) ──
+            # #110 で ○ に入れていたものを、印の枠を奪わない別建てに移した。
             if os.environ.get('MARKS_VALUE_TAIKO') == '1' and _has_market:
                 def _vt(p):
                     od = p.get('odds_win') or 0
@@ -875,30 +894,14 @@ def cmd_predict(args):
                     t3 = (p.get('pred_top3') or 0) / _t3_sum
                     return (t3 / mkt) if mkt > 0 else 0
                 _vpool = [p for p in sorted_preds
-                          if p.get('_has_real_odds') and 5.0 <= (p.get('odds_win') or 0) < 20.0
-                          and p is not by_top3[0]]
+                          if not p.get('mark') and p.get('_has_real_odds')
+                          and 5.0 <= (p.get('odds_win') or 0) < 20.0]
                 if _vpool:
                     _vp = max(_vpool, key=_vt)
-                    _rest = [p for p in by_top3 if p is not _vp][:4]
-                    if len(_rest) >= 4:
-                        # #140 (2026-09-01): 記号は**実力順**に割り当てる。
-                        # 旧実装は ○ に妙味馬を入れていたため、実測で
-                        # ○(複勝23.6%/平均6.6人気) < ▲(49.4%) < △(39.3%) と序列が逆転し、
-                        # 「○=2番手に来そうな馬」という読者の読みと中身が食い違っていた。
-                        # 同じ6頭のまま ◎○▲△=モデル上位4頭 / ☆=妙味(5-20倍) に振り直す。
-                        capture5 = _rest[:4] + [_vp]
-                        _symbols = ['◎', '○', '▲', '△', '☆']
-                    else:
-                        _symbols = ['◎', '○', '▲', '△', '×']
-                else:
-                    _symbols = ['◎', '○', '▲', '△', '×']
-            else:
-                _symbols = ['◎', '○', '▲', '△', '×']
-            for i, mk in enumerate(_symbols):
-                if i < len(capture5):
-                    capture5[i]['mark'] = mk
+                    _vp['mark'] = '☆'
+                    _vp['is_value_pick'] = True
 
-            # ── 注 = 妙味 longshot (複勝率÷市場率 最大、オッズ7倍+、捕捉5頭の外) ──
+            # ── 注 = 妙味 longshot (複勝率÷市場率 最大、オッズ7-30倍、印・☆の外) ──
             def _value(p):
                 od = p.get('odds_win') or 0
                 mkt = (1.0 / od) if od > 0 else 0          # 市場の暗黙率
