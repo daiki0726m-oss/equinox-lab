@@ -823,6 +823,45 @@ body {
   /* cat-badges は印馬でも完全非表示 (スペース確保) */
   .horse-row .cat-badges { display: none; }
 }
+
+/* #144: 「なぜこの印か」パネル */
+.why-toggle {
+  width: 100%; margin: 6px 0 2px; padding: 7px 10px; cursor: pointer;
+  background: rgba(212,168,67,0.10); border: 1px solid rgba(212,168,67,0.28);
+  border-radius: 8px; color: #D4A843; font-size: 0.78rem; font-weight: 600;
+  text-align: left; transition: background .15s;
+}
+.why-toggle:hover { background: rgba(212,168,67,0.18); }
+.why-panel { padding: 8px 2px 4px; }
+.why-block { margin-bottom: 12px; }
+.why-title { font-size: 0.74rem; color: #94A3B8; font-weight: 600; margin-bottom: 5px; }
+/* viewBox だけだと height:auto で潰れるブラウザがあるので aspect-ratio で固定 */
+.why-svg { width: 100%; max-width: 420px; aspect-ratio: 320 / 200; height: auto; display: block; }
+.why-note { font-size: 0.68rem; color: #64748B; line-height: 1.5; margin-top: 4px; }
+.why-horse { margin-bottom: 9px; }
+.why-horse-head { display: flex; align-items: center; gap: 6px; font-size: 0.76rem; margin-bottom: 3px; }
+.why-mark { font-weight: 700; color: #D4A843; width: 1.1em; }
+.why-num {
+  background: rgba(148,163,184,0.18); border-radius: 4px;
+  padding: 0 5px; font-size: 0.7rem; color: #CBD5E1;
+}
+.why-name { color: #E2E8F0; font-weight: 600; }
+.why-odds { color: #f0c040; font-size: 0.7rem; margin-left: auto; }
+.why-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+.why-bar-row { display: flex; align-items: center; gap: 5px; }
+.why-bar-label { font-size: 0.66rem; color: #94A3B8; width: 3.4em; flex-shrink: 0;
+                 white-space: nowrap; }
+.why-bar-track {
+  flex: 1; height: 6px; background: rgba(148,163,184,0.14);
+  border-radius: 3px; overflow: hidden;
+}
+.why-bar-fill { display: block; height: 100%; background: #60A5FA; border-radius: 3px; }
+.why-bar-fill.hi { background: linear-gradient(90deg,#D4A843,#F0C040); }
+.why-bar-fill.lo { background: rgba(148,163,184,0.45); }
+@media (max-width: 480px) {
+  .why-bars { grid-template-columns: 1fr; }
+  .why-bar-label { width: 3.4em; }
+}
 </style>
 
 </head>
@@ -1349,7 +1388,7 @@ function renderPredTab(race) {
     if (allSame || allZero) {
       sorted.forEach(h => {
         if (!h._catGrades) h._catGrades = [];
-        h._catGrades[idx] = { label: cat.label, grade: '-' };
+        h._catGrades[idx] = { label: cat.label, grade: '-', str: null };
       });
       return;
     }
@@ -1369,7 +1408,9 @@ function renderPredTab(race) {
       else if (pct <= 0.80) grade = 'C';
       else grade = 'D';
       if (!h._catGrades) h._catGrades = [];
-      h._catGrades[idx] = { label: cat.label, grade };
+      // #144: バー描画用に「レース内での強さ (0-100)」も保存
+      h._catGrades[idx] = { label: cat.label, grade,
+                            str: v === 0 ? null : Math.round((1 - pct) * 100) };
     });
   });
 
@@ -1396,7 +1437,9 @@ function renderPredTab(race) {
         else grade = 'D';
       }
       if (!h._catGrades) h._catGrades = [];
-      h._catGrades[idx] = { label: cat.label, grade };
+      // #144: 絶対評価は pct を持たないのでグレードから強さを逆算 (バー描画用)
+      const _GS = { S: 92, A: 76, B: 58, C: 38, D: 18 };
+      h._catGrades[idx] = { label: cat.label, grade, str: _GS[grade] ?? null };
     });
   });
 
@@ -1414,6 +1457,9 @@ function renderPredTab(race) {
     html += `<button class="show-all-btn" onclick="toggleRestHorses('${race.race_id}', this)">▼ 全${horses.length}頭を表示</button>`;
   }
   html += '</div>';
+
+  // #144: 「なぜこの印か」— 評価の内訳と市場とのズレ
+  html += renderWhyPanel(race, sorted);
 
   // Bets section
   html += '<div class="bets-section">';
@@ -1464,6 +1510,96 @@ function renderPredTab(race) {
   }
   html += '</div>';
   return html;
+}
+
+
+// ─── #144: 「なぜこの印か」の可視化 ───────────────────────────
+// ユーザー要望「なぜこの馬が本命なのかを視覚的にわかるようにしたい」。
+// 用途は「印を見て自分で買い目を組む」ことなので、AIの結論だけでなく
+// 『何を評価したのか』と『市場とどこがズレているか』を出す。
+const WHY_CAT_FULL = { 能:'能力', 騎:'騎手', 場:'コース', 血:'血統', 績:'戦績', 天:'馬場' };
+const WHY_CAT_TIP  = { 能:'能力', 騎:'騎手', 場:'コース適性', 血:'血統', 績:'戦績', 天:'馬場' };
+
+function whyScatter(horses, raceId) {
+  // AI複勝率 (縦) × オッズ (横・対数) の散布図。
+  // 右上 = AIは来ると見ているのに市場は評価していない = 妙味
+  // 左下 = 市場は人気なのにAIは低評価 = 危険な人気馬
+  const pts = horses.filter(h => (h.odds_win || 0) > 0 && h.pred_top3_pct != null);
+  if (pts.length < 4) return '';
+  const W = 320, H = 200, PL = 34, PR = 10, PT = 14, PB = 26;
+  const lx = v => Math.log10(Math.max(1.05, v));
+  const xs = pts.map(h => lx(h.odds_win)), ys = pts.map(h => h.pred_top3_pct);
+  // 端の馬が枠線に重ならないよう、両端に少し余白を取る
+  const xm = (Math.max(...xs) - Math.min(...xs)) * 0.08 || 0.05;
+  const x0 = Math.min(...xs) - xm, x1 = Math.max(...xs) + xm;
+  const y0 = 0, y1 = (Math.max(...ys) * 1.22) || 1;
+  const px = v => PL + (lx(v) - x0) / ((x1 - x0) || 1) * (W - PL - PR);
+  const py = v => H - PB - (v - y0) / ((y1 - y0) || 1) * (H - PT - PB);
+  // 分割線 = レース内の中央値 (レースごとに基準が動くので絶対値でなく相対)
+  const med = a => { const b = [...a].sort((m, n) => m - n); return b[Math.floor(b.length / 2)]; };
+  const mx = med(pts.map(h => h.odds_win)), my = med(ys);
+  let sv = `<svg viewBox="0 0 ${W} ${H}" class="why-svg" role="img" aria-label="AI評価と市場評価の散布図">`;
+  sv += `<rect x="${PL}" y="${PT}" width="${W-PL-PR}" height="${H-PT-PB}" fill="rgba(148,163,184,0.05)" rx="4"/>`;
+  sv += `<line x1="${px(mx)}" y1="${PT}" x2="${px(mx)}" y2="${H-PB}" stroke="rgba(148,163,184,0.28)" stroke-dasharray="3 3"/>`;
+  sv += `<line x1="${PL}" y1="${py(my)}" x2="${W-PR}" y2="${py(my)}" stroke="rgba(148,163,184,0.28)" stroke-dasharray="3 3"/>`;
+  sv += `<text x="${W-PR-3}" y="${PT+11}" text-anchor="end" font-size="8" fill="#34D399">妙味 (人気薄だがAI高評価)</text>`;
+  sv += `<text x="${PL+3}" y="${H-PB-4}" font-size="8" fill="#F87171">危険な人気馬</text>`;
+  // 軸ラベル
+  [1, 3, 10, 30, 100].filter(v => lx(v) >= x0 - 0.05 && lx(v) <= x1 + 0.05).forEach(v => {
+    sv += `<text x="${px(v)}" y="${H-8}" text-anchor="middle" font-size="8" fill="#64748B">${v}倍</text>`;
+  });
+  sv += `<text x="4" y="${PT+8}" font-size="8" fill="#64748B">AI複勝</text>`;
+  sv += `<text x="4" y="${py(0)}" font-size="8" fill="#64748B">0%</text>`;
+  pts.forEach(h => {
+    const marked = !!h.mark;
+    const col = h.mark === '◎' ? '#D4A843' : h.mark === '☆' ? '#34D399'
+      : h.mark === '注' ? '#F472B6' : marked ? '#60A5FA' : 'rgba(148,163,184,0.45)';
+    const r = marked ? 8 : 4;
+    sv += `<circle cx="${px(h.odds_win)}" cy="${py(h.pred_top3_pct)}" r="${r}" fill="${col}"`
+       + `${marked ? ' stroke="rgba(255,255,255,0.55)" stroke-width="1"' : ''}>`
+       + `<title>${h.mark || ''} ${h.horse_number} ${h.horse_name || ''} / ${h.odds_win}倍 / AI複勝${h.pred_top3_pct}%</title></circle>`;
+    if (marked) sv += `<text x="${px(h.odds_win)}" y="${py(h.pred_top3_pct)+3}" text-anchor="middle" font-size="8" font-weight="700" fill="#0B1220">${h.horse_number}</text>`;
+  });
+  sv += '</svg>';
+  return sv;
+}
+
+function whyBars(h) {
+  // その馬が「何で評価されたか」。レース内での相対的な強さ (0-100)。
+  const gs = (h._catGrades || []).filter(g => g && g.str != null);
+  if (!gs.length) return '';
+  const top = [...gs].sort((a, b) => b.str - a.str);
+  return `<div class="why-horse">
+    <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
+      <span class="why-num">${h.horse_number}</span>
+      <span class="why-name">${h.horse_name || ''}</span>
+      <span class="why-odds">${h.odds_win ? h.odds_win + '倍' : ''}</span></div>
+    <div class="why-bars">${top.map(g => `
+      <div class="why-bar-row" title="${WHY_CAT_TIP[g.label] || g.label}: レース内で上位${100 - g.str}%">
+        <span class="why-bar-label">${WHY_CAT_FULL[g.label] || g.label}</span>
+        <span class="why-bar-track"><span class="why-bar-fill${g.str >= 75 ? ' hi' : g.str <= 30 ? ' lo' : ''}" style="width:${g.str}%"></span></span>
+      </div>`).join('')}</div>
+  </div>`;
+}
+
+function renderWhyPanel(race, sorted) {
+  const marked = sorted.filter(h => h.mark);
+  if (!marked.length) return '';
+  const id = 'why-' + race.race_id;
+  const sc = whyScatter(sorted, race.race_id);
+  const bars = marked.slice(0, 5).map(whyBars).join('');   // 印5頭 (#143)
+  if (!sc && !bars) return '';
+  return `<button class="why-toggle" onclick="const e=document.getElementById('${id}');
+      const o=e.style.display==='none'; e.style.display=o?'block':'none';
+      this.textContent=o?'▲ 根拠を閉じる':'🔍 なぜこの印か（評価の内訳）';">🔍 なぜこの印か（評価の内訳）</button>
+    <div id="${id}" class="why-panel" style="display:none">
+      ${sc ? `<div class="why-block"><div class="why-title">AIの評価 × 市場の評価</div>${sc}
+        <div class="why-note">右へ行くほど人気薄、上へ行くほどAIが「3着以内に来る」と見ている馬。
+        右上に印があれば、市場が軽視している馬をAIが拾っている。</div></div>` : ''}
+      ${bars ? `<div class="why-block"><div class="why-title">印馬は何を評価されたか</div>
+        <div class="why-note" style="margin-bottom:6px">バーの長さ = そのレースの出走馬の中での相対的な強さ</div>
+        ${bars}</div>` : ''}
+    </div>`;
 }
 
 function renderHorseRow(h) {
