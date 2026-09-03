@@ -42,6 +42,7 @@ concurrency:
 env:
   MARKS_ABILITY_W: "0.5"   # #108
   MARKS_VALUE_TAIKO: "1"   # #110: ○=妙味枠(5-20倍)
+  MARKS_SCORECARD: "1"     # #147: 点数表で◎を選ぶ (説明可能性 ⇄ 捕捉-5.5pt)
   BET_STRUCTURE_ADAPTIVE: "1"
   BET_D_NO_CHU: "1"   # #139: 三連単の3列目から注を外す (注の3着セル 回収65%)
 
