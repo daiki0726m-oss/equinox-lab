@@ -83,6 +83,64 @@ def _attach_ability_score(pred_df):
     return pred_df
 
 
+_SCORECARD = None
+_SCORECARD_TRIED = False
+
+
+def _load_scorecard():
+    """説明できる点数表 (#145) を読む。無ければ None。"""
+    global _SCORECARD, _SCORECARD_TRIED
+    if _SCORECARD_TRIED:
+        return _SCORECARD
+    _SCORECARD_TRIED = True
+    try:
+        from ml.scorecard import load_model
+        _SCORECARD = load_model()
+        if _SCORECARD:
+            print(f"  📋 点数表モデル読込 (学習〜{_SCORECARD.get('train_until')}"
+                  f" / 係数{len(_SCORECARD.get('pts', {}))}個)")
+        else:
+            print("  ⚠️ models/scorecard.pkl が無い → 点数表は使えません")
+    except Exception as e:
+        print(f"  ⚠️ 点数表モデルの読込失敗: {e}")
+        _SCORECARD = None
+    return _SCORECARD
+
+
+def _attach_scorecard(pred_df, race_id=None):
+    """pred_df に _sc_points (合計点) と _sc_reasons (内訳) を付与。
+
+    #145: ◎ を「説明できる点数表」から選ぶための土台。
+    失敗しても純加算なので既存挙動は壊れない (点数0 = 従来ロジックにフォールバック)。
+    """
+    m = _load_scorecard()
+    if not m:
+        pred_df["_sc_points"] = 0.0
+        pred_df["_sc_reasons"] = [[] for _ in range(len(pred_df))]
+        return pred_df
+    try:
+        from ml.scorecard import FEATS, score_with_reasons
+        need = [c for c, _, _, _, _ in FEATS]
+        missing = [c for c in need if c not in pred_df.columns]
+        if missing:
+            # #134 の silent 無効化の再発防止 — 黙って0にせず必ず警告する
+            print(f"  ⚠️ 点数表: 特徴量 {len(missing)}列が無い ({missing[:3]}...) → 点数0")
+            pred_df["_sc_points"] = 0.0
+            pred_df["_sc_reasons"] = [[] for _ in range(len(pred_df))]
+            return pred_df
+        d = pred_df.copy()
+        if "race_id" not in d.columns:
+            d["race_id"] = race_id or "x"
+        pts, reasons = score_with_reasons(d, m)
+        pred_df["_sc_points"] = pts
+        pred_df["_sc_reasons"] = reasons
+    except Exception as e:
+        print(f"  ⚠️ 点数表の計算失敗 ({e}) → 点数0")
+        pred_df["_sc_points"] = 0.0
+        pred_df["_sc_reasons"] = [[] for _ in range(len(pred_df))]
+    return pred_df
+
+
 def cmd_collect(args):
     """データ収集コマンド"""
     scraper = NetkeibaScraper()
@@ -430,6 +488,8 @@ def cmd_predict(args):
 
         # 能力スコア (オッズ非依存) を付与 (#72、純加算で既存挙動に影響なし)
         pred_df = _attach_ability_score(pred_df)
+        # 説明できる点数表 (#145) を付与。◎ の選定根拠として使う
+        pred_df = _attach_scorecard(pred_df, race_id)
 
         # ── 追い切り (workout) 補正 — ML 統合できない過去データ不足を補う ──
         # workouts は 2026年シーズン分のみ (513件) で、ML 学習データに統合できない。
@@ -622,6 +682,11 @@ def cmd_predict(args):
                 "top3_rate": round(row.get("top3_rate_10r", 0) * 100, 1),
                 # 能力モデル (オッズ非依存) 勝率 — 記事の AI独自評価 / ◎2軸化に使用 (#72)
                 "ability_score": round(float(row.get("_ability_score", 0) or 0), 4),
+                # ── 説明できる点数表 (#145) ──
+                # オッズを一切使わない23項目の加算スコアと、その内訳。
+                # 「なぜこの馬が◎か」を足し算で言えるようにするための唯一の材料。
+                "sc_points": round(float(row.get("_sc_points", 0) or 0), 1),
+                "sc_reasons": list(row.get("_sc_reasons") or []),
             })
 
         # ── 人気順 (popularity) を先に確定して各馬に付与 (#95 2026-07-02) ──
@@ -860,7 +925,40 @@ def cmd_predict(args):
                     base = (1.0 - _abil_w) * base + _abil_w * _ab
                 return base
 
-            by_top3 = sorted(sorted_preds, key=_mark_rank_key, reverse=True)
+            # ── #145 (2026-09-03): 印を「説明できる点数表」から選ぶ ──
+            # ユーザー判断: 「人気だから9割はやめたい。当たっても安すぎだから」
+            # 従来の印は pred_top3 (=実質オッズの写し、評価順位と人気順位の相関0.90) から
+            # 選んでいたため、「なぜこの馬が◎か」の正直な答えが「人気だから」しかなかった。
+            # 点数表はオッズ・人気を一切使わない23項目の加算式で、内訳をそのまま
+            # 理由として出せる。
+            #
+            # 実測 (OOS 2,688R、学習境界より後だけで統一比較):
+            #   点数表◎      3着内 56.9% / 印5頭の完全捕捉 29.5%
+            #   現行の◎      3着内 62.4% / 35.2%   ← 点数表は 5.5pt 劣る
+            #   市場(人気順)  3着内 65.7% / 37.7%
+            # 得られるもの: ◎の平均人気 1.45→1.99、中央オッズ 2.70→3.20、
+            #   そして「なぜこの馬か」が足し算で言えること。
+            # = 的中は上がらない。説明可能性と引き換えに捕捉を約5pt 払う取引。
+            # 点数が全頭0 (モデル未ロード/特徴量欠損) なら従来ロジックに自動フォールバック。
+            # #146: 既定 OFF に反転。監査 (OOS 2,688レース) で
+            #   点数表◎ 3着内 56.9% / 5頭完全捕捉 29.5%
+            #   現行 (能力ブレンド)  62.4% / 35.2%
+            # と **捕捉が約5.5pt 劣る** ことが判明した。
+            # 当初 docstring に書いた「58.1% で引き分け」は比較が誤り —
+            # 点数表(オフライン再現) と 実配信の◎(本番) を比べており、
+            # 本番側にだけ配信経路の劣化(約3pt)が乗る非対称比較だった。
+            # 同条件のオフライン同士で比べると符号が逆になる。
+            # よって「当たるから入れる」根拠は無い。入れるなら
+            # 「説明できることに捕捉5ptを払う」という製品判断として明示的にONにする。
+            _use_sc = os.environ.get('MARKS_SCORECARD') == '1'
+            _sc_ok = _use_sc and any((p.get('sc_points') or 0) != 0 for p in sorted_preds)
+            if _sc_ok:
+                by_top3 = sorted(sorted_preds,
+                                 key=lambda p: (p.get('sc_points') or 0), reverse=True)
+            else:
+                if _use_sc:
+                    print("  ⚠️ 点数表が使えないため印は従来ロジック (pred_top3) で選定")
+                by_top3 = sorted(sorted_preds, key=_mark_rank_key, reverse=True)
             capture5 = by_top3[:5]
             # ── #110 (2026-07-13): ○を妙味枠に (MARKS_VALUE_TAIKO=1) ──
             # ユーザー「本命や対抗が人気馬すぎて面白くない」(8度目)。○ を
@@ -988,6 +1086,12 @@ def cmd_predict(args):
             # #95: 再評価サイト (evaluate_from_horses) が騎手信頼補正を再現できるよう保存
             "jockey_trust": p.get("jockey_trust", 0),
             "reasons": p.get("reasons", []),
+            # ── #145: 説明できる点数表 ──
+            # 印の選定根拠そのもの。UI/投稿が「なぜこの馬か」を出すのに必須。
+            # ※ このブロックは列を明示列挙する形なので、predictions dict に足すだけでは
+            #    ここまで届かない (実際 sc_points が全頭 None で保存される事故を起こした)。
+            "sc_points": p.get("sc_points", 0),
+            "sc_reasons": p.get("sc_reasons", []),
         } for p in sorted_preds], ensure_ascii=False)
 
         with get_db() as conn:

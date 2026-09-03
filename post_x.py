@@ -137,6 +137,37 @@ def marked_in_order(horses):
                                  -(h.get('pred_top3') or h.get('pred_top3_pct') or 0)))
 
 
+_HELD_SLOTS = set()      # lock を取ったが、まだ投稿していない slot
+_POSTED_SLOTS = set()    # 実際に投稿できた slot
+
+
+def mark_slot_posted(slot_name):
+    """実際に投稿できた時に呼ぶ。これが呼ばれなかった slot は自動で解放される。"""
+    _POSTED_SLOTS.add(slot_name)
+
+
+def release_unposted_slots():
+    """#146: 投稿しないまま終了した slot の lock を必ず解放する。
+
+    lock は「同じ内容を二度投稿しない」ための札であって、
+    「試したが投稿できなかった」記録ではない。ところが cmd_* には
+    lock 取得後にデータ不足等で return する経路が **11箇所** あり、
+    そこを通ると投稿していないのに札だけが立った。
+    #141 で lock の正本をテキストサイドカーに移した結果、この札が
+    DB clobber で消えることもなくなり、**その日ずっと再試行できない**状態に。
+    実際 9/2・9/3 の夜の投稿が2日連続で消えている。
+
+    そこで「投稿できた」と明示された slot 以外は、処理の最後に必ず解放する。
+    """
+    for slot in sorted(_HELD_SLOTS - _POSTED_SLOTS):
+        try:
+            clear_post_slot(slot)
+            _slot_sidecar_clear(slot)
+            print(f"↩️ [{slot}] 投稿しないまま終了 → lock を解放 (次の実行で再試行可能)")
+        except Exception as e:
+            print(f"⚠️ [{slot}] lock 解放に失敗: {e}")
+
+
 def _acquire_or_exit(slot_name):
     """各 cmd_* の冒頭で呼ぶ。lock 取れなければ exit 0 で正常終了。
 
@@ -180,6 +211,7 @@ def _acquire_or_exit(slot_name):
         sys.exit(0)
     print(f"🔒 [{slot_name}] atomic lock 取得: {datetime.now(timezone(timedelta(hours=9))).strftime('%H:%M JST')}")
     _slot_sidecar_write(slot_name)   # #141: 同時にテキスト正本にも記録
+    _HELD_SLOTS.add(slot_name)       # #146: 投稿できなければ最後に解放する
 
 
 def _release_on_failure(slot_name, exc):
@@ -700,6 +732,12 @@ def post_thread(client, tweets, dry_run=False, threads_client=None, race_id=None
                 _record_threads_post(_tids, threads_meta or {})
             except Exception as _e:
                 print(f"  ⚠️ Threads投稿記録に失敗(非致命): {_e}")
+
+    # #146: 1本でも実際に投稿できたら、保持中の lock を「確定」させる。
+    # これを通らなかった slot は release_unposted_slots() で自動解放される。
+    if not dry_run and (tweet_ids or locals().get('_tids')):
+        for _s in list(_HELD_SLOTS):
+            mark_slot_posted(_s)
 
     return tweet_ids
 
@@ -4372,6 +4410,15 @@ def main():
         print("   pip install tweepy")
         return
 
+    # #146: どの経路で return しても、投稿していない slot の lock は必ず解放する。
+    # (cmd_* には lock 取得後の早期 return が11箇所あり、そこで枠が焼き切れていた)
+    try:
+        _dispatch(args, parser)
+    finally:
+        release_unposted_slots()
+
+
+def _dispatch(args, parser):
     if args.command == "predict":
         cmd_predict(args)
     elif args.command == "results":

@@ -350,7 +350,11 @@ class BettingStrategy:
                 if p.get('mark') in ('○','▲','△','×','☆','注')
             ]
             partner_candidates.sort(key=lambda x: x[0])
-            partners = [p for _, p in partner_candidates][:5]
+            # #146: 上限を6に。#143 で △が2頭になり ☆ も加わったため、
+            # 5のままだと候補6つの最後尾 = 注 が押し出される。
+            # 実測: 注が買い目に入るレースが 30/36 → 7/36 に激減していた
+            # (ワイド「◎-注」の高配当枠が78%のレースで消えていた)。
+            partners = [p for _, p in partner_candidates][:6]
             # #141: G/D 構造の2列目 (partners[0]) は設計上「妙味枠」でなければならない。
             # #112/#113 で D 69.3% vs モデル2位 36.9% と実測され、L426 のコメントも
             # 「D/G は妙味○が的中時の高配当を担うため現行維持」と明記している。
@@ -366,7 +370,7 @@ class BettingStrategy:
             if _value is not None:
                 partners = [_value] + [p for p in partners
                                        if p.get('horse_number') != _value.get('horse_number')]
-                partners = partners[:5]
+                partners = partners[:6]
         if len(partners) < 2:
             # フォールバック: ML 順 上位5
             partners = sorted_preds[1:6]
@@ -407,7 +411,7 @@ class BettingStrategy:
         # ─── 主力1: 馬連 ◎-相手 流し (5点) ROI 207% ───
         # trio_focus band 中は生成しない (帯内 馬連 ROI 83%、#95)
         if "馬連" in enabled and not trio_focus and structure is None:
-            for partner in partners[:5]:
+            for partner in partners[:6]:
                 nums = sorted([center, partner["horse_number"]])
                 ow1 = p1.get("odds_win", 3) or 3
                 ow2 = partner.get("odds_win", 5) or 5
@@ -418,7 +422,7 @@ class BettingStrategy:
 
         # ─── 主力2: ワイド ◎-相手 流し (5点) ROI 150% ───
         if "ワイド" in enabled:
-            for partner in partners[:5]:
+            for partner in partners[:6]:
                 nums = sorted([center, partner["horse_number"]])
                 ow1 = p1.get("odds_win", 3) or 3
                 ow2 = partner.get("odds_win", 5) or 5
@@ -446,7 +450,7 @@ class BettingStrategy:
                                  key=lambda q: -(q.get('pred_top3') or 0))[:4]
                 pairs = list(combinations(_a_pool, 2))
             else:
-                pairs = list(combinations(partners[:5], 2))
+                pairs = list(combinations(partners[:6], 2))
             for pair in pairs:
                 nums = sorted([center, pair[0]["horse_number"], pair[1]["horse_number"]])
                 ow1 = p1.get("odds_win", 3) or 3

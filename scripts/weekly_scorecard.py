@@ -34,7 +34,14 @@ def load_conf(day):
 def race_rows(c, day):
     """day の投稿レースを (marks, finish_map, meta) で列挙。結果未確定はスキップ。"""
     for rid, lst in load_marks(day).items():
-        mk = {e['mark']: e for e in lst}
+        # #146: △は2頭つく (#143)。dict にすると2頭目が黙って消えるので、
+        # 代表1頭の dict と、全頭の順序リストを両方持つ。
+        ORDER = ['◎', '○', '▲', '△', '☆', '×', '注']
+        mk = {}
+        for e in lst:
+            mk.setdefault(e['mark'], e)          # 代表 (◎/○/注 は1頭なので従来通り)
+        mk['_all'] = sorted([e for e in lst if e.get('mark') in ORDER],
+                            key=lambda e: ORDER.index(e['mark']))
         if '◎' not in mk:
             continue
         fin = {hn: fp for hn, fp in c.execute(
@@ -55,7 +62,9 @@ def structure_bets(c, rid, mk, fin, meta):
     ax = mk['◎']; axhn = ax['horse_number']
     axod = ax.get('odds_win_at_post') or 0
     ohn = mk.get('○', {}).get('horse_number')
-    others = [mk[m]['horse_number'] for m in ('▲', '△', '×', '☆') if m in mk]
+    # #146: △2頭を両方拾う (旧: 印をキーにした列挙で1頭落ちていた)
+    others = [e['horse_number'] for e in mk['_all']
+              if e['mark'] in ('▲', '△', '×', '☆')]
     chu = mk.get('注', {}).get('horse_number')
     nh = meta[3] or len(fin)
     pay = {(bt, cb): amt for bt, cb, amt in c.execute(
@@ -112,7 +121,8 @@ def main():
             st['n'] += 1
             st['axw'] += (fin.get(axhn) == 1)
             st['axt3'] += (axhn in top3)
-            five = [mk[m]['horse_number'] for m in ('◎', '○', '▲', '△', '×', '☆') if m in mk]
+            five = [e['horse_number'] for e in mk['_all']
+                    if e['mark'] in ('◎', '○', '▲', '△', '×', '☆')]
             st['full'] += (len(set(five) & top3) == 3)
             if '○' in mk:
                 st['on'] += 1

@@ -173,7 +173,7 @@ def analyze(since=None, until=None):
 # ─────────────────────────────────────────────────────────────
 #  印だけで組んだ買い目が実際にいくら返ってきたか (実払戻のみ)
 # ─────────────────────────────────────────────────────────────
-def _combos(kind, marks_map):
+def _combos(kind, marks_map, marks_all=None):
     """印から買い目を組む。marks_map = {印: 馬番}。
     ここで組むのは「印を見た人が普通に買う形」であって、本番の投資判断
     (should_bet / 適応型構造) とは別物。目的は『印そのものにいくらの
@@ -182,7 +182,15 @@ def _combos(kind, marks_map):
     ax = m.get('◎')
     # ☆ は #140 で新設した妙味枠。それ以前のデータでは ○ が妙味枠だった
     val = m.get('☆') or m.get('○')
-    others = [m[k] for k in ('○', '▲', '△', '☆', '×') if k in m and m[k] != ax]
+    # #146: △は2頭つく (#143)。印をキーにした列挙だと2頭目が落ち、
+    # 代わりに☆が印5頭に混ざって買い目が別物になる。
+    if marks_all:
+        _ORD = ['○', '▲', '△', '☆', '×']
+        others = [hn for mk_, hn in sorted(
+            [(mk_, hn) for mk_, hn in marks_all if mk_ in _ORD],
+            key=lambda t: _ORD.index(t[0])) if hn != ax]
+    else:
+        others = [m[k] for k in ('○', '▲', '△', '☆', '×') if k in m and m[k] != ax]
     chu = m.get('注')
     out = []
     if kind == '単勝◎' and ax:
@@ -229,7 +237,8 @@ def bet_returns(races):
            for k in BET_KINDS}
     for r in races:
         for kind in BET_KINDS:
-            combos = _combos(kind, r['marked'])
+            # #146: marked は印→馬番の代表1頭。△2頭目は marked_all にしかない。
+            combos = _combos(kind, r['marked'], r.get('marked_all'))
             if not combos:
                 continue
             ptype = _PAY_TYPE[kind]
