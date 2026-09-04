@@ -79,6 +79,9 @@ function triggerRefreshDashboard() { if (isWeekend_()) dispatchWorkflow("refresh
 function triggerFetchWeekend()  { if (isWeekend_()) dispatchAny("fetch_weekend_races.yml", null); }
 // 土日 8時台: 日中の結果収集ループ。8/29 はここが不発で結果が終日反映されなかった。
 function triggerRaceDayRunner() { if (isWeekend_()) dispatchAny("race_day_runner.yml", null); }
+// 金 22時台: 週末2日分の予測を前夜に生成しておく (#150b)。
+// 9/5 は土曜朝の生成機会が 07:00 の1本だけで、それが来る前にユーザーが 404 を踏んだ。
+function triggerWeekendPrefetch() { if (jstDay_() === 5) dispatchAny("weekend_prefetch.yml", null); }
 
 // 初回テスト用: 実行して 204 が返ればトークン設定 OK (refresh_dashboard は無害)
 function testDispatch() { dispatchWorkflow("refresh_dashboard"); }
@@ -100,7 +103,8 @@ function setupTriggers() {
     ["triggerRefreshDashboard", 18], // 土日 dashboard 18-19時
     // #150: 収集系にも独立した時計を (GitHub cron 単独だった層)
     ["triggerFetchWeekend", 5],     // 土日 出走馬取得 5-6時
-    ["triggerRaceDayRunner", 8]     // 土日 結果収集ループ起動 8-9時
+    ["triggerRaceDayRunner", 8],    // 土日 結果収集ループ起動 8-9時
+    ["triggerWeekendPrefetch", 22]  // 金 週末予測の前夜生成 22-23時 (#150b)
   ];
   defs.forEach(function(d) {
     ScriptApp.newTrigger(d[0]).timeBased().atHour(d[1]).everyDays(1)

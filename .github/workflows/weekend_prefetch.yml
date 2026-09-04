@@ -1,0 +1,131 @@
+name: 🌙 Weekend Prefetch (前夜に予測を作っておく)
+
+# #150b (2026-09-05): 「朝ダッシュボードが404」を構造的に潰す。
+#
+# 何が起きていたか:
+#   出走馬は金曜の朝には DB に揃っている (9/5 は 9/4 07:56 の fetch で 455頭登録済み)。
+#   オッズも前日発売で金曜夜には取れる (実測: 9/5 00:50 に 455/455頭 取得成功)。
+#   にもかかわらず **予測を最初に走らせるのは土曜 07:00 の cron** だったため、
+#   その1本が GitHub スケジューラに飛ばされると朝は必ず 404 になっていた。
+#   9/5 は 05:00 の fetch cron が不発 → #88 の「fetch完了で predict」も連鎖せず、
+#   06:48 時点で予測ゼロ = ユーザーが 404 を踏んだ。
+#
+# 対策: **前夜のうちに週末2日分の予測を作って JSON を公開しておく**。
+#   土曜朝の cron 群は「更新」であって「初回生成」ではなくなるので、
+#   朝の cron が何本落ちてもダッシュボードは埋まっている。
+#
+# 投稿は一切しない (JSON の生成と公開だけ)。X/Threads には触らない。
+
+on:
+  schedule:
+    # 金 22:30 JST (UTC 13:30 金) — 土日2日分を前夜に生成
+    - cron: '30 13 * * 5'
+    # 土 03:30 JST / 日 03:30 JST (UTC 18:30 金・土) — 前夜が落ちた時の2本目
+    - cron: '30 18 * * 5,6'
+  workflow_dispatch:
+
+concurrency:
+  group: keiba-db-accum          # 蓄積系 writer を直列化 (#70)
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  prefetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      # 既定値は config/prediction_flags.yml (flags.py が読む)。ここは明示的な上書き。
+      MARKS_ABILITY_W: "0.5"
+      MARKS_VALUE_TAIKO: "1"
+      MARKS_SCORECARD: "1"
+      BET_STRUCTURE_ADAPTIVE: "1"
+      BET_D_NO_CHU: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # #61: checkout の SHA は run 作成時点で固定されるため、必ず最新に上書きする
+      - name: Force git DB (override stale checkout)
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+          bash scripts/db_unpack.sh
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 週末2日分の予測を生成
+        id: gen
+        run: |
+          set -o pipefail
+          # 今日から見て「次の土曜・日曜」(今日が土日ならその日と翌日)
+          DATES=$(python3 - <<'PY'
+          import datetime
+          jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+          d = jst.date()
+          out = []
+          for i in range(0, 3):
+              c = d + datetime.timedelta(days=i)
+              if c.weekday() in (5, 6):
+                  out.append(c.strftime("%Y%m%d"))
+          print(" ".join(out[:2]))
+          PY
+          )
+          echo "対象日: $DATES"
+          GENERATED=0
+          for D in $DATES; do
+            N=$(python3 -c "
+          from database import get_db
+          d='$D'; h=f'{d[:4]}-{d[4:6]}-{d[6:8]}'
+          with get_db() as c:
+              print(c.execute('SELECT COUNT(*) FROM races WHERE race_date IN (?,?)',(d,h)).fetchone()[0])
+          " 2>/dev/null || echo 0)
+            if [ "${N:-0}" -lt 1 ]; then
+              echo "⏭️ $D: レース未登録 → skip"
+              continue
+            fi
+            echo "── $D (${N}レース) ──"
+            # 確定馬番に同期 (金11時の枠順抽選が DB に入るのはここ)
+            timeout 420 python3 refresh_entries.py --date "$D" || echo "⚠️ 馬番同期に失敗 → 続行"
+            # 前日発売のオッズ。まだ出ていなければ predict 側のゲートが skip する
+            timeout 420 python3 refresh_odds.py --date "$D" || echo "⚠️ オッズ取得に失敗 → 続行"
+            python3 predict.py predict --date "$D" || echo "⚠️ 予測に失敗 → 続行"
+            python3 export_predictions.py "$D" || echo "⚠️ export に失敗 → 続行"
+            if [ -f "docs/data/predictions_${D}.json" ]; then
+              echo "✅ $D の予測JSONを生成"
+              GENERATED=$((GENERATED+1))
+            fi
+          done
+          echo "generated=$GENERATED" >> $GITHUB_OUTPUT
+          if [ "$GENERATED" -lt 1 ]; then
+            echo "❌ 1日分も生成できなかった (朝の404リスクが残る)"
+            exit 1
+          fi
+
+      - name: 公開 (docs/data のみ)
+        if: always() && steps.gen.outputs.generated != '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # keiba.db.gz は push しない — 並行 workflow との clobber (#70) を避け、
+          # 朝の予測が前夜の DB で上書きされないようにする。公開に必要なのは JSON だけ。
+          git add docs/data/
+          if git diff --staged --quiet; then
+            echo "📭 変更なし"
+            exit 0
+          fi
+          git commit -m "🌙 週末の予測を前夜に生成 $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')"
+          PUSHED=0
+          for i in 1 2 3; do
+            if git pull --rebase --autostash -X theirs origin main && git push origin HEAD:main; then
+              echo "🚀 公開完了 (試行$i)"; PUSHED=1; break
+            fi
+            git rebase --abort 2>/dev/null || true
+            echo "⚠️ push 失敗 → リトライ($i)"; sleep 5
+          done
+          [ "$PUSHED" = "1" ] || { echo "❌ push できず"; exit 1; }

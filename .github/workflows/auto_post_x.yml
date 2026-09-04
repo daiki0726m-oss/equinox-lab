@@ -56,6 +56,13 @@ on:
     - cron: '30 22 * * 0-4'
     # 平日朝の冗長フォールバック 8:10 JST (UTC 23:10前日)
     - cron: '10 23 * * 0-4'
+    # 土日朝 04:00 JST (UTC 19:00前日) → predict
+    # #150b: 9/5 は 05:00 の fetch cron 不発 → #88 の連鎖も起きず、
+    #   最初の予測機会が 07:00 の1本だけになり 06:48 時点で 404 だった。
+    #   出走馬もオッズも前夜には揃っているので、朝の生成機会を4本に増やす。
+    - cron: '0 19 * * 5,6'
+    # 土日朝 05:30 JST (UTC 20:30前日)
+    - cron: '30 20 * * 5,6'
     # 土日朝7:00 JST (UTC 22:00前日) → predict
     - cron: '0 22 * * 5,6'
     # 土日朝の冗長フォールバック 7:40 JST (#61: 6/6 の predict cron 完全スキップ事故クラス対策。
@@ -139,6 +146,8 @@ jobs:
           case "$SCHEDULE" in
             "30 22 * * 0-4")  EXPECTED_MODE="morning" ;;
             "10 23 * * 0-4")  EXPECTED_MODE="morning" ;;   # 冗長フォールバック 8:10 JST
+            "0 19 * * 5,6")   EXPECTED_MODE="predict" ;;   # 土日 04:00 JST (#150b)
+            "30 20 * * 5,6")  EXPECTED_MODE="predict" ;;   # 土日 05:30 JST (#150b)
             "0 22 * * 5,6")   EXPECTED_MODE="predict" ;;
             "40 22 * * 5,6")  EXPECTED_MODE="predict" ;;   # 冗長フォールバック 7:40 JST
             "30 3 * * 1-5")   EXPECTED_MODE="weekday" ;;
@@ -333,6 +342,8 @@ jobs:
           case "$SCHEDULE" in
             "30 22 * * 0-4")  TYPE="morning" ;;         # 平日朝7:30 JST
             "10 23 * * 0-4")  TYPE="morning" ;;         # 平日朝 冗長 8:10 JST
+            "0 19 * * 5,6")   TYPE="predict" ;;         # 土日 04:00 JST (#150b)
+            "30 20 * * 5,6")  TYPE="predict" ;;         # 土日 05:30 JST (#150b)
             "0 22 * * 5,6")   TYPE="predict" ;;         # 土日朝7:00 JST
             "40 22 * * 5,6")  TYPE="predict" ;;         # 土日朝 冗長 7:40 JST
             "30 3 * * 1-5")   TYPE="weekday" ;;         # 平日昼12:30 JST
@@ -357,6 +368,7 @@ jobs:
               else
                 # 土日
                 case "$HOUR" in
+                  03|04|05) TYPE="predict" ;;   # #150b: 早朝の生成機会
                   06|07|08) TYPE="predict" ;;
                   09)       TYPE="odds_flash" ;;
                   10)       TYPE="post_predict" ;;
