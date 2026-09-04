@@ -1006,7 +1006,12 @@ def cmd_predict(args):
                     # #114: 行を短縮 — 旧76字は印6行の長い日に272字予算から silent drop
                     # していた (七夕賞2026 で実発生、290>272)。紐荒れ型も⚡対象に。
                     _tag = '荒れ傾向' if uh['label'] == '荒れやすい' else '紐荒れ型'
-                    _marked = {m.get('horse_number') for m in marks.values()}
+                    # #148: marks は印をキーにした dict なので、#143 で2頭になった
+                    # △ の片方が集合に入らず、**すでに印を打った馬を「印の外の穴」として
+                    # 名指しする**自己矛盾が起きていた (同一ツイート内で
+                    # 「△11番 リジル」と「穴注意: リジル」が並ぶ)。
+                    # 同関数内の marked_list (順序リスト) を使えば全頭が入る。
+                    _marked = {p.get('horse_number') for p in marked_list}
                     _cands = [q for q in preds
                               if q.get('horse_number') not in _marked
                               and (q.get('odds_win') or 0) >= 7]
@@ -1144,8 +1149,10 @@ def cmd_predict(args):
             # #124: 「何で評価したか」を出すため、当コースの血統/騎手実績を引いて渡す
             _stats = None
             try:
+                # #148: △ が抜けていたため、印を打った馬の一部に
+                # コース実績が付かなかった (#143 で △ が2頭になった際の漏れ)
                 _hns = [h.get('horse_number') for h in (_r2.get('horses') or [])
-                        if h.get('mark') in ('◎', '○', '▲', '☆', '注')]
+                        if h.get('mark') in ('◎', '○', '▲', '△', '☆', '注')]
                 with get_db() as _conn:
                     _stats = _tc.course_records(_conn, _r2, _hns)
             except Exception as _se:
@@ -1294,10 +1301,24 @@ def _select_target_races(all_races, max_total=None):
         except ValueError:
             max_total = 14
 
+    # #148: 障害・未勝利・新馬は ML も点数表も学習範囲外。
+    # should_bet 側は #123 で共通判定 (race_utils) を使って正しく投資を止めているが、
+    # **投稿の選定だけがこの判定を使っておらず**、同じレースを平場と同じ体裁で
+    # 印つきで公開していた。実測: 直近の凍結記録14件が該当
+    # (ソレイユJS / 新潟JS / 3歳以上障害OP / 3歳未勝利 の11R など)。
+    # 「投資しないと判断した層を、根拠のある予想として出す」のは配信として矛盾する。
+    try:
+        from race_utils import is_ml_out_of_domain as _ood
+    except Exception:
+        def _ood(_n):
+            return False
+
     selected = []
     seen = set()
 
     def _add(r):
+        if _ood(r.get('race_name') or ''):
+            return
         k = _race_key(r)
         if k not in seen:
             selected.append(r)
