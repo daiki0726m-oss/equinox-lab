@@ -155,11 +155,21 @@ def refresh_odds(date_str, update_track=True):
 
         with get_db() as conn:
             # DBのresultsテーブルを更新
+            # #149: netkeiba のオッズAPIは**出走取消の馬に odds='-3.0' / popularity=9999**
+            # を返す。旧実装は検証せず保存していたため、公開JSONに
+            # 「◎ -3.0倍 9999人気」がそのまま出ていた (8/30 新潟11R の◎が実際に該当)。
+            # results に odds<0 が58行 / popularity>=9999 が58行 蓄積済み。
+            # sync_github_pages.py:68 と app.py:76 は既に `if ov > 0` で弾いており、
+            # 本番に配線されている refresh_odds だけがガード漏れだった。
             for horse_num, o in odds.items():
+                _ov = o.get("odds_win") or 0
+                _pv = o.get("popularity") or 0
+                if _ov <= 0 or _pv >= 999:
+                    continue          # 取消馬 — 既存の値を壊さず素通り
                 conn.execute("""
                     UPDATE results SET odds = ?, popularity = ?
                     WHERE race_id = ? AND horse_number = ?
-                """, (o["odds_win"], o["popularity"], rid, horse_num))
+                """, (_ov, _pv, rid, horse_num))
 
             # predictions_cache を更新
             # #99: seal 済み (posted_at = 投稿済みの予測) と発走済みレースは書き換えない。
@@ -199,8 +209,12 @@ def refresh_odds(date_str, update_track=True):
                 for p in preds:
                     hn = p['horse_number']
                     if hn in odds:
-                        p['odds_win'] = odds[hn]["odds_win"]
-                        p['popularity'] = odds[hn]["popularity"]
+                        # #149: 取消馬の番兵値 (-3.0 / 9999) で cache を壊さない
+                        _o = odds[hn].get("odds_win") or 0
+                        _p = odds[hn].get("popularity") or 0
+                        if _o > 0 and _p < 999:
+                            p['odds_win'] = _o
+                            p['popularity'] = _p
 
                 conn.execute("""
                     UPDATE predictions_cache SET predictions_json = ?

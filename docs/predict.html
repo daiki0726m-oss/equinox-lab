@@ -777,6 +777,19 @@ body {
 @media (max-width: 480px) {
   .why-bars { grid-template-columns: 1fr; }
   .why-bar-label { width: 3.4em; }
+
+/* #149: 点数表の内訳 */
+.why-pts { margin-left:auto; color:var(--gold,#D4A843); font-weight:700; font-size:0.78rem; }
+.why-rows { display:grid; gap:3px; }
+.why-row { display:grid; grid-template-columns:9.5em 1fr 2.6em; gap:6px; align-items:center; }
+.why-row-l { font-size:0.68rem; color:#94A3B8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.why-row-l i { font-style:normal; color:#5A6273; margin-left:3px; }
+.why-row-b { height:6px; background:rgba(148,163,184,.14); border-radius:3px; overflow:hidden; }
+.why-row-f { display:block; height:100%; background:#D4A843; border-radius:3px; }
+.why-row-f.minus { background:rgba(148,163,184,.5); }
+.why-row-v { font-size:0.7rem; color:#E2E8F0; text-align:right; font-variant-numeric:tabular-nums; }
+.why-row-v.minus { color:#94A3B8; }
+@media (max-width:480px){ .why-row { grid-template-columns:8em 1fr 2.4em; } }
 </style>
 
 </head>
@@ -1388,7 +1401,30 @@ function whyScatter(horses, raceId) {
 }
 
 function whyBars(h) {
-  // その馬が「何で評価されたか」。レース内での相対的な強さ (0-100)。
+  // #149: ◎ を実際に決めた「点数表」の内訳を出す。
+  // これ以前は cat_ability/cat_jockey/... の6軸を描いていたが、その6項目は
+  // 人気の影響を除くと寄与がほぼゼロで、しかも #147 以降◎はそれで選ばれていない。
+  // = 選定に使っていない値を「なぜこの印か」として見せていた。
+  const rs = (h.sc_reasons || []).filter(r => r && r.points);
+  if (rs.length) {
+    const max = Math.max(...rs.map(r => Math.abs(r.points))) || 1;
+    return `<div class="why-horse">
+      <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
+        <span class="why-num">${h.horse_number}</span>
+        <span class="why-name">${h.horse_name || ''}</span>
+        <span class="why-pts">${h.sc_points > 0 ? '+' : ''}${h.sc_points}点</span></div>
+      <div class="why-rows">${rs.map(r => {
+        const w = Math.round(Math.abs(r.points) / max * 100);
+        const minus = r.points < 0;
+        return `<div class="why-row">
+          <span class="why-row-l">${r.label}<i>${r.bin}</i></span>
+          <span class="why-row-b"><span class="why-row-f${minus ? ' minus' : ''}" style="width:${w}%"></span></span>
+          <span class="why-row-v${minus ? ' minus' : ''}">${r.points > 0 ? '+' : ''}${r.points}</span>
+        </div>`;
+      }).join('')}</div>
+    </div>`;
+  }
+  // 点数表が無い日 (旧データ) は従来の6軸に落とす
   const gs = (h._catGrades || []).filter(g => g && g.str != null);
   if (!gs.length) return '';
   const top = [...gs].sort((a, b) => b.str - a.str);
@@ -1404,7 +1440,6 @@ function whyBars(h) {
       </div>`).join('')}</div>
   </div>`;
 }
-
 function renderWhyPanel(race, sorted) {
   const marked = sorted.filter(h => h.mark);
   if (!marked.length) return '';
@@ -1419,8 +1454,8 @@ function renderWhyPanel(race, sorted) {
       ${sc ? `<div class="why-block"><div class="why-title">AIの評価 × 市場の評価</div>${sc}
         <div class="why-note">右へ行くほど人気薄、上へ行くほどAIが「3着以内に来る」と見ている馬。
         右上に印があれば、市場が軽視している馬をAIが拾っている。</div></div>` : ''}
-      ${bars ? `<div class="why-block"><div class="why-title">印馬は何を評価されたか</div>
-        <div class="why-note" style="margin-bottom:6px">バーの長さ = そのレースの出走馬の中での相対的な強さ</div>
+      ${bars ? `<div class="why-block"><div class="why-title">◎を決めた点数の内訳</div>
+        <div class="why-note" style="margin-bottom:6px">オッズを使わない23項目の足し算。合計が最も高い馬が◎</div>
         ${bars}</div>` : ''}
     </div>`;
 }
@@ -1449,7 +1484,7 @@ function renderHorseRow(h, showReasons) {
         ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
       </div>
       <div class="horse-stats">
-        ${h.odds_win && h.popularity ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span>${h.popularity ? `<span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span>` : ''}</span>` : (h.odds_win ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">推定${h.odds_win}倍</span></span>` : '')}
+        ${(h.odds_win > 0 && h.popularity > 0 && h.popularity < 999) ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span>${h.popularity ? `<span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span>` : ''}</span>` : (h.odds_win ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">推定${h.odds_win}倍</span></span>` : '')}
         <span class="stat">SI <span class="stat-val">${h.si_avg || 0}</span></span>
         <span class="stat">AI複勝 <span class="stat-val">${h.pred_top3 || 0}%</span></span>
         <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>

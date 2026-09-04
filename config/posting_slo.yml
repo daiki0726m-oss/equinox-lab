@@ -69,7 +69,9 @@ slots:
     expected_jst: "10:15"
     time_guard_jst: [10, 10]  # 10:00-10:59 内 (cmd_predict 時間ガード)
     watchdog_deadline_jst: "10:50"
-    fallback_mode: "predict"
+    # #149: ここが "predict" だと、代打が呼ばれても**予測を回すだけで投稿しない**まま
+    # 「投稿済み」と記録され、失敗が見えなくなる。投稿させたいので post_predict。
+    fallback_mode: "post_predict"
     days: [5, 6]
 
   # (旧 hit_flash slot は #57 で削除 — cmd_results の完走ガードにより 15:30 時点では

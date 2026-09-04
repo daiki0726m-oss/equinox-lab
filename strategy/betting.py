@@ -375,7 +375,10 @@ class BettingStrategy:
             # フォールバック: ML 順 上位5
             partners = sorted_preds[1:6]
         # #95: 軸馬が相手プールに混入しないよう明示的に除外 (同一馬ペア防止の二重防御)
-        partners = [p for p in partners if p["horse_number"] != center][:5]
+        # #149: 上限は6。#146 で 5→6 に広げたのに**ここだけ 5 のまま**残っており、
+        # 切り詰めで最後尾の注が再び消えていた (☆と注が揃った57レース全部で
+        # 注が買い目から脱落、ワイドが6点→5点)。同じ値が2箇所にあるのが原因。
+        partners = [p for p in partners if p["horse_number"] != center][:6]
 
         # ── #113 (2026-07-14): レース適応型の買い目構造 (BET_STRUCTURE_ADAPTIVE=1) ──
         # OOS (2025-03+, 2,823R) の条件付き実測 (#112):
@@ -477,8 +480,13 @@ class BettingStrategy:
             # 注は「1着に来た時に配当が跳ねる馬」であり、3着に置くと当たっても安いのに
             # 点数だけ増える。BET_D_NO_CHU=1 で3列目から外す (点数 24 → 約18)。
             # 既定 OFF — posted_marks の実運用データが 4-8週 (n>=60R) 貯まってから判定 (#72→#73 の規律)。
+            # #149: 「注を3列目から外す」設定が**位置**で切っていたため、
+            # #143 で印構成が変わった後は注でなく2頭目の△を落としていた
+            # (実測9/9レースで消えたのは△)。役割 (mark=='注') で外す。
             _d_no_chu = os.environ.get('BET_D_NO_CHU') == '1'
-            thirds = [p1] + partners[:4 if _d_no_chu else 5]
+            _th_pool = [p for p in partners
+                        if not (_d_no_chu and p.get('mark') == '注')]
+            thirds = [p1] + _th_pool[:5]
             for a in firsts:
                 for b in seconds:
                     if b["horse_number"] == a["horse_number"]:
