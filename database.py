@@ -430,7 +430,7 @@ def sync_cache_race_ids(race_date_str):
                 WHERE substr(race_id,5,2) = ?
                   AND substr(race_id,7,2) = ?
                   AND substr(race_id,11,2) = ?
-                  AND date(created_at) = ?
+                  AND date(created_at, '+9 hours') = ?   -- #150: created_at は UTC 保存なので JST に揃える
                 ORDER BY created_at DESC LIMIT 1
             """, (venue_code, kai_code, race_num, date_hyphen)).fetchone()
 

@@ -3,8 +3,13 @@ name: 🐦 Auto Post to X
 run-name: "${{ github.event.inputs.mode || 'cron' }}"
 
 on:
-  # ─── 手動・watchdog・race_day_runner からの dispatch ───
-  # (旧設計の GAS トリガーは廃止済み — run 履歴に GAS 発火実績なし #57)
+  # ─── 手動・watchdog・race_day_runner・GAS からの dispatch ───
+  # #150: 「GAS は廃止済み・発火実績なし (#57)」は **事実誤認**だった。
+  # GAS (Google Apps Script の時計) は現役で、predict 07:49±1秒 / morning 07:17 と
+  # 秒単位で安定発火しており、GitHub スケジューラが全滅した日の配信を実際に支えている。
+  # ただし GAS が叩けるのはこの workflow 1本だけ (scripts/gas_trigger.js の WORKFLOW が
+  # ハードコード)。fetch_weekend_races と race_day_runner は GitHub cron 単独。
+  # 設定手順: docs/GAS_SETUP.md
   workflow_dispatch:
     inputs:
       mode:
@@ -19,7 +24,9 @@ on:
           - results
           - answer_check
           - weekly_review
-          - refresh_odds
+          # #150: 'refresh_odds' は determine が type を出すだけでどのステップにも
+          # マップされておらず、選ぶと何もせず success になる完全な no-op だった。
+          # オッズだけ更新したい時は 'odds_flash' を使う。
           - refresh_dashboard
           - odds_flash
           - post_predict
@@ -89,6 +96,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # #150: 既定値は config/prediction_flags.yml に集約済み (flags.py が読む)。
+  # ここは明示的な上書き。値を変える時は config 側と必ず揃えること
+  # (揃っていないと、この workflow 経由とそれ以外で印が変わる)。
   MARKS_ABILITY_W: "0.5"   # #108
   MARKS_VALUE_TAIKO: "1"   # #110: ○=妙味枠(5-20倍)
   # #147 (2026-09-03): ユーザー指示「今週は点数表で予想して」。
@@ -174,6 +184,10 @@ jobs:
     needs: [dedup, dedup_cron]
     if: always() && (needs.dedup.outputs.should_run == 'true' || needs.dedup_cron.outputs.should_run == 'true')
     runs-on: ubuntu-latest
+    # #150: timeout 指定が無く既定360分だった。cancel-in-progress:false と
+    #   組み合わさると、1本のハング run が後続を最大6時間ブロックし、
+    #   その間の投稿スロットが丸ごと失われる。実測の最長は38分。
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -359,6 +373,22 @@ jobs:
           echo "type=$TYPE" >> $GITHUB_OUTPUT
           echo "📬 Determined type (schedule-mapped): $TYPE"
 
+          # #150: 結果投稿だけは「日跨ぎ」を救済する。
+          # 17:30 の results cron が GitHub スケジューラの遅延で 0時を跨いで発火すると、
+          # DATE が翌日になり「今日はレースが無い」で終わって、前日の結果が
+          # **永久に未投稿**になる (#22 の実測では 4.5時間遅延まで観測済み)。
+          # 当日に投稿印のサイドカーが無く、前日にあるなら前日を対象にする。
+          if [ "$TYPE" = "results" ] && [ -z "$DATE_OVERRIDE" ]; then
+            YDAY=$(TZ=Asia/Tokyo date -d '1 day ago' +%Y%m%d 2>/dev/null \
+                   || TZ=Asia/Tokyo date -v-1d +%Y%m%d)
+            if [ ! -f "docs/data/posted_marks_${TODAY_YYYYMMDD}.json" ] \
+               && [ -f "docs/data/posted_marks_${YDAY}.json" ]; then
+              echo "🌙 当日の投稿記録なし・前日にあり → 対象日を $YDAY に切替 (日跨ぎ救済)"
+              TODAY_YYYYMMDD="$YDAY"
+              TODAY_HYPHEN="${YDAY:0:4}-${YDAY:4:2}-${YDAY:6:2}"
+            fi
+          fi
+
           echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
           echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
 
@@ -390,8 +420,16 @@ jobs:
 
           # 🆕 確定馬番リフレッシュ (#44): 枠順確定前の仮馬番(五十音順)を確定馬番に更新。
           # 怠ると馬番と馬名がズレたまま予測・投稿される。軽量(scrape_shutubaのみ)で stuck しない。
+          # #150: ここは土曜朝の要。金曜夜時点では出馬表の仮馬番 (五十音順) のままで、
+          # 実測 9/5 は 33/36レースで馬番↔馬名がズレ、枠順も 8% しか入っていなかった。
+          # refresh_entries が確定版に同期して初めて正しい予想になる (実測: 枠順 37→455頭、
+          # 所要80秒)。失敗を握り潰して predict に進むと **間違った馬番で配信する**ので、
+          # 失敗したら予測せず run を落として可視化する。timeout は実測80秒に対し余裕を持たせる。
           echo "🏇 確定馬番を更新..."
-          timeout 180 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 既存データで続行"
+          if ! timeout 420 python refresh_entries.py --date "$DATE"; then
+            echo "❌ 確定馬番の更新に失敗 — 仮馬番のまま予測すると馬番と馬名がズレるため中止"
+            exit 1
+          fi
 
           # 🆕 #52 (2026-06-08): refresh_entries の直後に **必ず** refresh_odds を実行する。
           # refresh_entries (scrape_shutuba) は出馬表ベースで odds を持たないため、
@@ -446,15 +484,19 @@ jobs:
 
       # オッズ更新
       - name: Refresh odds before lock
-        if: steps.determine.outputs.type == 'odds_flash' || steps.determine.outputs.type == 'predict'
+        # #150: 'predict' を外した。直前の "Scrape and predict" が
+        # refresh_entries → refresh_odds → predict を既に済ませているため、
+        # type=predict では同じ3処理が1 run で2回ずつ走っていた
+        # (netkeiba への無駄な負荷 + 実行時間の倍増 + 2回目の再予測で印が変わる余地)。
+        if: steps.determine.outputs.type == 'odds_flash'
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           JST_HOUR=$(TZ=Asia/Tokyo date +%H)
           # 🆕 確定馬番リフレッシュ (#44): オッズ取得前に馬番を確定版に揃える
           echo "🏇 確定馬番を更新..."
-          timeout 180 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 続行"
+          timeout 420 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 続行"
           echo "📡 ${DATE} の最新オッズを取得..."
-          python refresh_odds.py --date "$DATE"
+          timeout 420 python refresh_odds.py --date "$DATE"
           
           # 10時以降は再予測しない（オッズ更新のみ）
           if [ "$JST_HOUR" -ge 10 ]; then
@@ -574,6 +616,38 @@ jobs:
             python3 scripts/x_diagnose.py || echo "(診断スクリプト終了コード ≠ 0)"
           fi
 
+      # ── #150: 投稿ロックの永続化 (Export/Deploy より先・失敗しても必ず実行) ──
+      # 旧構成では lock (posted_slots / posted_marks / posted_tweets サイドカー) の push が
+      # Export → Deploy の後ろにしか無く、Export が exit 1 したり Deploy の push が
+      # 3回失敗すると **投稿済みなのに lock が origin に届かない**。
+      # 次の cron/watchdog はその状態を「未投稿」と読んで同じ内容を再投稿する。
+      # ロックは投稿の直後に、他の何が失敗しても push する。
+      - name: 🔒 Persist post locks (always)
+        if: always() && steps.determine.outputs.type != 'skip'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/posted_slots_*.json docs/data/posted_marks_*.json \
+                  docs/data/posted_tweets_*.json 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "📭 新しい投稿ロックなし"
+            exit 0
+          fi
+          git commit -m "🔒 post locks $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')"
+          PUSHED=0
+          for i in 1 2 3; do
+            if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" \
+               && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
+              echo "✅ 投稿ロックを origin に反映 (試行$i)"; PUSHED=1; break
+            fi
+            git rebase --abort 2>/dev/null || true
+            echo "⚠️ lock push 失敗 → リトライ($i)"; sleep 5
+          done
+          if [ "$PUSHED" != "1" ]; then
+            echo "❌ 投稿ロックを push できませんでした — 二重投稿のリスクがあります"
+            exit 1
+          fi
+
       # ── 静的予測サイト更新（GitHub Pages） ──
       - name: Export predictions to static JSON
         if: contains(fromJSON('["predict","odds_flash","post_predict","refresh_dashboard","results","answer_check","weekly_review"]'), steps.determine.outputs.type)
@@ -624,13 +698,22 @@ jobs:
             #   unstaged に戻り、autostash 無しの rebase は「you have unstaged changes」で即死する。
             #   → 6/6 は predict 成功・export 成功・commit 成功なのに push が3回とも死に、
             #   予測JSONが origin に届かず朝404 が継続した (他の全 workflow は autostash 有りで生存)。
+            PUSHED=0
             for i in 1 2 3; do
               if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" && git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
-                echo "🚀 デプロイ完了 (試行$i)"; break
+                echo "🚀 デプロイ完了 (試行$i)"; PUSHED=1; break
               fi
               git rebase --abort 2>/dev/null || true
               echo "⚠️ push失敗→リトライ($i)"; sleep 5
             done
+            # #150: 旧実装は3回失敗しても run が success だった。投稿ロック
+            # (posted_slots サイドカー) が origin に届かないまま「成功」に見えるので、
+            # 次の cron/watchdog が lock 無しの状態を見て **同じ内容を再投稿**する。
+            # 失敗は必ず可視化する (#135 の tee 握り潰しと同型)。
+            if [ "$PUSHED" != "1" ]; then
+              echo "❌ 3回とも push に失敗 — 投稿ロックが origin に届いていません (二重投稿のリスク)"
+              exit 1
+            fi
           fi
 
       # ── 投稿履歴を永続化（重複防止用） ──

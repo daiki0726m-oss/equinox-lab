@@ -29,10 +29,13 @@ DEFAULT_TOL = 0.90
 # 実装差で微小にズレうる列は緩める (相関で見る)
 CORR_ONLY = {"si_avg", "si_max", "si_min", "si_std", "si_latest", "avg_last_3f",
              "margin_avg", "margin_best", "jt_score", "combo_top3"}
-# 既知の未解決 skew (#134 で記録済み、修正は再学習とセット) — 落とさず警告に留める
-KNOWN_SKEW = {"jt_score", "jockey_cond_top3", "jockey_cond_win", "trainer_cond_top3",
-              "combo_top3", "front_rate", "avg_pos_ratio", "avg_last_3f",
-              "post_top3_rate_course", "weight", "weight_change", "weight_trend"}
+# 既知の未解決 skew — 落とさず警告に留める免除リスト。
+# #150: #136/#137 で解消済みの9列と、#137 で特徴量から外れた体重系3列を削除。
+# 免除を残したままだと「点数表が使う5列 (jockey_cond_top3 / trainer_cond_top3 /
+# front_rate / avg_pos_ratio / avg_last_3f) が回帰しても検査が緑」になり、
+# #128(数週間)/#133(年単位)/#134(4か月) を初日に捕まえるための唯一の常時検査が
+# 最も壊れやすい列を素通しする状態だった。
+KNOWN_SKEW = set()
 
 
 def check_models():
@@ -56,6 +59,31 @@ def check_models():
         if nfeat != n_code:
             problems.append(("致命", f"{name}: モデル {nfeat}列 vs コード {n_code}列 "
                                      f"— predict が全滅する (#107)"))
+    # #150: 点数表 (印の選定に使う) の健全性検査。
+    # models/scorecard.pkl はヘルスチェックも再学習も通知も無く、
+    # #134 の能力モデルと同じ silent 無効化 (読めない → sc_points=0 →
+    # 印が黙って従来ロジックに落ちる) に無防備だった。
+    sp = os.path.join(mdir, "scorecard.pkl")
+    if os.path.exists(sp):
+        try:
+            with open(sp, "rb") as f:
+                sm = pickle.load(f)
+            from ml.scorecard import FEATS as _SC_FEATS
+            need = {c for c, *_ in _SC_FEATS}
+            have = {k.split("=")[0] for k in sm.get("cols", [])} | set(sm.get("spec", {}))
+            miss = need - have
+            if miss:
+                problems.append(("致命", f"scorecard: コードの特徴量 {sorted(miss)[:4]} が "
+                                         f"モデルに無い — 印が黙って従来ロジックに落ちる"))
+            if not sm.get("pts"):
+                problems.append(("致命", "scorecard: 点数表 (pts) が空"))
+        except Exception as e:
+            problems.append(("致命", f"scorecard.pkl 読込失敗: {e} "
+                                     f"— MARKS_SCORECARD=1 が silent 無効化される"))
+    else:
+        problems.append(("警告", "models/scorecard.pkl が無い "
+                                 "(MARKS_SCORECARD=1 なら印が従来ロジックになる)"))
+
     # 能力モデルは列数が違ってよい (市場特徴量を除くため) が、読み込めることは必須
     ap = os.path.join(mdir, "model_ability_win.pkl")
     if os.path.exists(ap):

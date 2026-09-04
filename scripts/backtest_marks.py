@@ -28,7 +28,7 @@ from itertools import combinations, permutations
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-MARKS = ['◎', '○', '▲', '△', '×', '注']
+MARKS = ['◎', '○', '▲', '△', '×', '☆', '注']   # #150: ☆(妙味枠, #140) を追加
 
 
 def get_conn():
@@ -217,7 +217,7 @@ def trio_box_4(ctx):
 
 def trio_box_5(ctx):
     """三連複 BOX (◎○▲△×) = 5頭BOX = 5C3 = 10点"""
-    horses = [ctx['marks'].get(m) for m in ['◎', '○', '▲', '△', '×']]
+    horses = [ctx['marks'].get(m) for m in ['◎', '○', '▲', '△', '×', '☆']]
     horses = [h for h in horses if h]
     if len(horses) < 3: return []
     return [('三連複', '-'.join(str(x) for x in sorted(c))) for c in combinations(horses, 3)]

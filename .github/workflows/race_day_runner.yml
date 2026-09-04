@@ -40,6 +40,9 @@ concurrency:
   cancel-in-progress: false  # 重複起動を許可しない
 
 env:
+  # #150: 既定値は config/prediction_flags.yml に集約済み (flags.py が読む)。
+  # ここは明示的な上書き。値を変える時は config 側と必ず揃えること
+  # (揃っていないと、この workflow 経由とそれ以外で印が変わる)。
   MARKS_ABILITY_W: "0.5"   # #108
   MARKS_VALUE_TAIKO: "1"   # #110: ○=妙味枠(5-20倍)
   MARKS_SCORECARD: "1"     # #147: 点数表で◎を選ぶ (説明可能性 ⇄ 捕捉-5.5pt)
@@ -112,11 +115,17 @@ jobs:
             local minimum_jst_hm=$2  # 例: 1015 = 10:15
             local current_jst_hm=$3
 
-            # 🔒 atomic lock (posted_slots) 事前 check — run 間でも共有される
-            TODAY=$(TZ=Asia/Tokyo date +%Y-%m-%d)
-            EXISTING=$(sqlite3 keiba.db \
-              "SELECT run_id FROM posted_slots WHERE post_date='$TODAY' AND slot_name='$mode' LIMIT 1" \
-              2>/dev/null)
+            # 🔒 atomic lock 事前 check — run 間でも共有される。
+            # #150: 参照先を DB の posted_slots から **テキストサイドカー**に変更。
+            # #141 で lock の正本は docs/data/posted_slots_YYYYMMDD.json に移っており、
+            # DB 側は並行 workflow の `-X theirs` push で丸ごと巻き戻る (#70)。
+            # 巻き戻った DB を見ると「lock 無し」と読んで再 dispatch → 重複配信になる
+            # (直近12開催日中6日で予想スレッドが二重、8/22 は三重配信されていた)。
+            TODAY_YMD=$(TZ=Asia/Tokyo date +%Y%m%d)
+            EXISTING=$(curl -sf --max-time 10 \
+              "https://raw.githubusercontent.com/${{ github.repository }}/main/docs/data/posted_slots_${TODAY_YMD}.json" \
+              | python3 -c "import json,sys; print((json.load(sys.stdin).get('slots') or {}).get('$mode',{}).get('run_id',''))" \
+              2>/dev/null || true)
             if [ -n "$EXISTING" ]; then
               echo "⏭️ [$mode] posted_slots に lock 済み (run=$EXISTING) → dispatch skip"
               # /tmp flag にも記録して次 iter で再 check しない

@@ -20,8 +20,15 @@ function getToken_() {
   return token;
 }
 
-function dispatchWorkflow(mode) {
-  var url = "https://api.github.com/repos/" + REPO + "/actions/workflows/" + WORKFLOW + "/dispatches";
+// #150: workflow を引数に取れるよう一般化。
+// 旧版は WORKFLOW が auto_post_x.yml 固定で、GAS が叩けるのは投稿系だけだった。
+// そのため **収集系 (fetch_weekend_races / race_day_runner) は GitHub cron 単独**で、
+// 8/29 の朝はそこだけが全滅し、誰も気づかないまま日中の結果反映が止まった。
+// 冗長化は「層の数」でなく「故障モードの独立性」(#67)。収集系にも Google の時計を挿す。
+function dispatchAny(workflow, inputs) {
+  var url = "https://api.github.com/repos/" + REPO + "/actions/workflows/" + workflow + "/dispatches";
+  var payload = { ref: "main" };
+  if (inputs) payload.inputs = inputs;
   var options = {
     method: "post",
     headers: {
@@ -29,18 +36,22 @@ function dispatchWorkflow(mode) {
       "Accept": "application/vnd.github+json",
     },
     contentType: "application/json",
-    payload: JSON.stringify({ ref: "main", inputs: { mode: mode } }),
+    payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   };
   var res = UrlFetchApp.fetch(url, options);
   var code = res.getResponseCode();
   if (code === 204) {
-    Logger.log("✅ dispatch 成功: " + mode);
+    Logger.log("✅ dispatch 成功: " + workflow + (inputs ? " mode=" + inputs.mode : ""));
   } else {
     // 401/404 = トークン失効や権限不足。気づけるようログ + 例外
     Logger.log("❌ dispatch 失敗 (" + code + "): " + res.getContentText().slice(0, 200));
-    throw new Error("dispatch 失敗 mode=" + mode + " HTTP " + code);
+    throw new Error("dispatch 失敗 " + workflow + " HTTP " + code);
   }
+}
+
+function dispatchWorkflow(mode) {
+  dispatchAny(WORKFLOW, { mode: mode });
 }
 
 // JST の曜日 (0=日 .. 6=土)
@@ -63,6 +74,12 @@ function triggerResults()          { if (isWeekend_()) dispatchWorkflow("results
 function triggerRefreshDashboard() { if (isWeekend_()) dispatchWorkflow("refresh_dashboard"); } // 18-19時
 // (旧 hit_flash は #57 で廃止 — トリガー不要)
 
+// ═══ 収集系 (#150): GitHub cron 単独だった層に Google の時計を足す ═══
+// 土日 5時台: 出走馬の取得。これが落ちると予測そのものが作れない。
+function triggerFetchWeekend()  { if (isWeekend_()) dispatchAny("fetch_weekend_races.yml", null); }
+// 土日 8時台: 日中の結果収集ループ。8/29 はここが不発で結果が終日反映されなかった。
+function triggerRaceDayRunner() { if (isWeekend_()) dispatchAny("race_day_runner.yml", null); }
+
 // 初回テスト用: 実行して 204 が返ればトークン設定 OK (refresh_dashboard は無害)
 function testDispatch() { dispatchWorkflow("refresh_dashboard"); }
 
@@ -80,7 +97,10 @@ function setupTriggers() {
     ["triggerOddsFlash", 9],        // 土日 オッズ 9-10時
     ["triggerPostPredict", 10],     // 土日 予想投稿 10-11時
     ["triggerResults", 17],         // 土日 結果 17-18時
-    ["triggerRefreshDashboard", 18] // 土日 dashboard 18-19時
+    ["triggerRefreshDashboard", 18], // 土日 dashboard 18-19時
+    // #150: 収集系にも独立した時計を (GitHub cron 単独だった層)
+    ["triggerFetchWeekend", 5],     // 土日 出走馬取得 5-6時
+    ["triggerRaceDayRunner", 8]     // 土日 結果収集ループ起動 8-9時
   ];
   defs.forEach(function(d) {
     ScriptApp.newTrigger(d[0]).timeBased().atHour(d[1]).everyDays(1)

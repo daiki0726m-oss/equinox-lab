@@ -2657,7 +2657,7 @@ def build_fri_weekday(race, conn, entries, sires, damsires, today_d, hashtags_fn
         return None  # entries無いなら投稿しない(中身なし防止)
 
     # #97 (A5): 「買い目」はXに投稿されない (ダッシュボード限定 #71) → 印のみ予告。
-    parts.append("\n🔔 印(◎○▲△×注)は明朝のAI完全予想で")
+    parts.append("\n🔔 AI印は明朝の完全予想で")   # #150: 記号を列挙しない (#140 で構成が変わるたび stale になる)
     parts.append('')
     parts.append(hashtags_fn(race))
     return '\n'.join(parts)
@@ -2680,7 +2680,7 @@ def build_fri_evening(graded_races, today_d, hashtags_fn):
     # #97 (A5): X投稿は10:15の post_predict のみ (7時はXに出ない) + 買い目はXに
     #   出さない (ダッシュボード限定 #71) → 実態に合わせて修正。
     parts.append("⏰ 土曜朝10:15頃に印付き完全予想を配信")
-    parts.append("印:◎○▲△×注 を全レース分")
+    parts.append("AI印を注目レース分")   # #150: 記号列挙をやめ、「全レース」の過大予告も撤回 (実態は品質ゲート付き~14R)
     parts.append("")
     parts.append("(日曜分は別途配信)")
     parts.append("")

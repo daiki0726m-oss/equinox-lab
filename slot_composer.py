@@ -105,12 +105,35 @@ def _is_post_position_drawn(race: dict, today: Optional[datetime] = None) -> boo
         # 平日レース (祝日等の特殊): レース当日11時以降のみ
         draw_date = race_d
 
-    if today_d > draw_date:
-        return True
     if today_d < draw_date:
         return False
-    # 抽選日当日 — 11時以降のみ True
-    return today.hour >= 11
+    if today_d == draw_date and today.hour < 11:
+        return False
+
+    # #150: カレンダーだけで「確定済」と判定してはいけない。
+    # JRA の抽選は金11時でも、**DB に確定馬番が入るのは土曜朝の refresh_entries**。
+    # 実測 2026-09-04(金) 22時の時点で、翌日9/5 の枠順は 455頭中37頭 (8%) しか
+    # 入っておらず、馬番↔馬名は 33/36レースでズレていた (仮馬番=五十音順のまま)。
+    # この状態で馬番を出すと **実在しない馬番を公開する**。
+    # カレンダー条件を満たしたうえで、DB に実際に枠順が入っているかを確認する。
+    return _db_post_position_ready(race)
+
+
+def _db_post_position_ready(race: dict) -> bool:
+    """DB にそのレースの確定枠順が入っているか (#150)。"""
+    rid = race.get("race_id")
+    if not rid:
+        return False
+    try:
+        from database import get_db
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT MAX(post_position) FROM results WHERE race_id = ?", (rid,)
+            ).fetchone()
+        return bool(row and row[0] and int(row[0]) > 0)
+    except Exception:
+        # DB が読めない時は「まだ確定していない」側に倒す (誤った馬番を出さない)
+        return False
 
 
 def _horse_label(horse: dict, race: dict, today: Optional[datetime] = None) -> str:
@@ -866,8 +889,11 @@ def _morning_sec_notable(conn, ctx, mode):
     出走馬さえ確定していれば常に実名+数値根拠が出るので、朝投稿が
     「歴代勝ち馬」「コース統計」だけの抽象的な内容になるのを防ぐ。
     """
+    # #150: race_id を渡す。枠順確定の判定が DB (実際に確定馬番が入っているか) も
+    # 見るようになったため、race_id を落とすと常に「未確定」と判定され馬番が出ない。
     drawn = _is_post_position_drawn(
-        {"race_date": ctx.get("race_date", "")}, ctx.get("today"))
+        {"race_date": ctx.get("race_date", ""), "race_id": ctx.get("race_id", "")},
+        ctx.get("today"))
     title, lines, n = sec_notable_horses(
         conn, ctx["race_id"], ctx["venue"], ctx["surface"], ctx["distance"],
         mode=mode, top=3, show_number=drawn)
@@ -895,7 +921,7 @@ def _notable_lead(conn, race, mode="combined", today=None, top=3):
     どの slot も「具体的な馬名ゼロ」を構造的に防ぐ。該当馬無しなら None。
     """
     drawn = _is_post_position_drawn(
-        {"race_date": race.get("race_date", "")}, today)
+        {"race_date": race.get("race_date", ""), "race_id": race.get("race_id", "")}, today)
     title, lines, n = sec_notable_horses(
         conn, race.get("race_id", ""), race.get("venue", ""),
         race.get("surface", ""), race.get("distance", 0),
@@ -2274,7 +2300,7 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
     # #97 (A1): 旧「朝7時 印別最終予想 / 朝10時 確定買い目」は二重の嘘だった —
     #   朝7時のX投稿は存在せず (7時は predict cron のみ)、買い目はXに出ない
     #   (ダッシュボード限定 #71)。実在する配信 (odds_flash 9:30 / post_predict 10:15) に修正。
-    sections.append("【配信予定】(レース当日の朝)\n🌅 9:30 — オッズ確定・最終見解\n🎯 10:15 — 注目レースのAI印(◎○▲△×注)を一挙公開")  # #97: 実投稿は品質ゲート付き厳選(~14R)なので「全レース分」と約束しない
+    sections.append("【配信予定】(レース当日の朝)\n🌅 9:30 — オッズ確定・最終見解\n🎯 10:15 — 注目レースのAI印を一挙公開")  # #97: 実投稿は品質ゲート付き厳選(~14R)なので「全レース分」と約束しない
 
     cta = "🔔 週末をお楽しみに🔥"  # #97 (D4)
 

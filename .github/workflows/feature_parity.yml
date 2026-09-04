@@ -43,7 +43,9 @@ jobs:
           echo "検査の終了コード: $CODE"
           echo "code=$CODE" >> $GITHUB_OUTPUT
       - name: 🔔 Notify on new mismatch
-        if: steps.parity.outputs.code == '2'
+        # #150: KNOWN_SKEW を空にしたので「警告(1)」も実質的な不一致を意味する。
+        # 0 以外はすべて通知する (免除リストで沈黙させない)。
+        if: steps.parity.outputs.code != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

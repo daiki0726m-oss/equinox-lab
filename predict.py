@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 # プロジェクトルートをパスに追加
 sys.path.insert(0, os.path.dirname(__file__))
 
+import flags   # #150: 予測フラグの単一情報源 (env > config/prediction_flags.yml)
 from database import init_db, get_db
 from scraper import NetkeibaScraper
 from ml.model import KeibaModel
@@ -70,6 +71,11 @@ def _attach_ability_score(pred_df):
     try:
         missing = [c for c in cols if c not in pred_df.columns]
         if missing:
+            # #150: 旧実装は無警告で 0 にしていた — #134 で MARKS_ABILITY_W=0.5 が
+            # 8/29 以降 silent に無効化されていた事故と同じ形。点数表側 (下) は
+            # 既に警告を出しているので揃える。
+            print(f"  ⚠️ 能力モデル: 特徴量 {len(missing)}列が不足 ({missing[:3]}...) "
+                  f"→ ability_score=0 (MARKS_ABILITY_W が無効化されます)")
             pred_df["_ability_score"] = 0.0
             return pred_df
         X = pred_df[cols].fillna(0)
@@ -447,15 +453,28 @@ def cmd_predict(args):
                     from refresh_odds import fetch_odds_from_api
                     api_odds = fetch_odds_from_api(race_id)
                     if api_odds:
+                        # #150: 旧実装は `od.get('win_odds')` を読んでいたが
+                        # refresh_odds.fetch_odds_from_api が返すキーは `odds_win`。
+                        # 常に 0 になり、#52 が用意した「最後の防衛線」は
+                        # 導入(2026-06-08)以来一度も機能していなかった。
+                        _n = 0
                         with get_db() as oconn:
                             for hn, od in api_odds.items():
-                                win = od.get('win_odds', 0) if isinstance(od, dict) else od
-                                if win and win > 0:
-                                    oconn.execute(
-                                        "UPDATE results SET odds = ? WHERE race_id = ? AND horse_number = ?",
-                                        (win, race_id, int(hn))
-                                    )
-                        print(f"  📡 API オッズ {len(api_odds)}頭分を反映")
+                                if isinstance(od, dict):
+                                    win = od.get('odds_win', od.get('win_odds', 0)) or 0
+                                    pop = od.get('popularity', 0) or 0
+                                else:
+                                    win, pop = (od or 0), 0
+                                # 取消・除外センチネル (-3.0倍 / 9999人気) は書かない (#149)
+                                if win <= 0 or pop >= 999:
+                                    continue
+                                oconn.execute(
+                                    "UPDATE results SET odds = ?, popularity = ? "
+                                    "WHERE race_id = ? AND horse_number = ?",
+                                    (win, pop, race_id, int(hn))
+                                )
+                                _n += 1
+                        print(f"  📡 API オッズ {_n}頭分を反映 (取得{len(api_odds)}頭)")
                 except Exception as e:
                     print(f"  ⚠️ API オッズ取得失敗: {e}")
                 # 再確認: まだ全頭0なら degenerate 予測を避けて skip
@@ -619,6 +638,10 @@ def cmd_predict(args):
                         # resultsテーブルも更新
                         with get_db() as conn2:
                             for hn, od in api_odds.items():
+                                # #150: 取消・除外センチネル (-3.0倍 / 9999人気) を
+                                # results に書き込まない (#149 のガードがこの経路に無かった)
+                                if (od.get("odds_win") or 0) <= 0 or (od.get("popularity") or 0) >= 999:
+                                    continue
                                 conn2.execute(
                                     "UPDATE results SET odds = ?, popularity = ? WHERE race_id = ? AND horse_number = ?",
                                     (od["odds_win"], od["popularity"], race_id, hn))
@@ -852,7 +875,7 @@ def cmd_predict(args):
         #   - 注 = 妙味 longshot (複勝率÷市場率 が最大、オッズ7倍+)。複勝率11.4% だが
         #     平均101倍・複勝期待回収135円/100 = ユーザー要望「人気ないが馬券になる高配当馬」。
         # MARKS_LEGACY=1 で旧 ROI 志向ロジック (◎ML1位 + ○▲△relay + ×注穴) に戻せる。
-        if os.environ.get('MARKS_LEGACY') == '1':
+        if flags.is_on('MARKS_LEGACY'):
             core = abil_top if (os.environ.get('USE_ABILITY_CORE') == '1' and abil_top) else ml_top
             if core:
                 core['mark'] = '◎'
@@ -897,7 +920,7 @@ def cmd_predict(args):
             # (歴史側±0.7pt)。優位の証明が無い以上 default は 0.0 (現行=モデル単独) を維持し、
             # refresh_odds 凍結後の posted_marks (真の投稿時点記録) が4-8週貯まったら再判定。
             # 実オッズが8割未満の馬しか無い時 (木金の事前予測等) は市場側を使わない (w=0)。
-            _blend_w = float(os.environ.get('MARKS_BLEND_W', '0.0'))
+            _blend_w = flags.as_float('MARKS_BLEND_W', '0.0')
             _inv = {p['horse_number']: 1.0 / p['odds_win'] for p in sorted_preds
                     if p.get('_has_real_odds') and (p.get('odds_win') or 0) > 0}
             _inv_sum = sum(_inv.values())
@@ -911,7 +934,7 @@ def cmd_predict(args):
             #   a=0.5: 完全捕捉34.8% ◎勝率35.4% ◎=1人気72% (◎勝率は改善、捕捉-2.4pt)
             #   a=1.0: 完全捕捉25.9% (全面置換は#98の再確認 = 破滅)
             # MARKS_ABILITY_W env で制御 (default 0.0 = 従来)。workflow 側で設定。
-            _abil_w = float(os.environ.get('MARKS_ABILITY_W', '0.0'))
+            _abil_w = flags.as_float('MARKS_ABILITY_W', '0.0')
             _ab_sum = sum((p.get('ability_score') or 0) for p in sorted_preds)
             _has_abil = _ab_sum > 0
 
@@ -950,7 +973,7 @@ def cmd_predict(args):
             # 同条件のオフライン同士で比べると符号が逆になる。
             # よって「当たるから入れる」根拠は無い。入れるなら
             # 「説明できることに捕捉5ptを払う」という製品判断として明示的にONにする。
-            _use_sc = os.environ.get('MARKS_SCORECARD') == '1'
+            _use_sc = flags.is_on('MARKS_SCORECARD')
             _sc_ok = _use_sc and any((p.get('sc_points') or 0) != 0 for p in sorted_preds)
             if _sc_ok:
                 by_top3 = sorted(sorted_preds,
@@ -985,7 +1008,7 @@ def cmd_predict(args):
 
             # ── ☆ = 妙味枠 (モデル複勝率÷市場率が最大の 5-20倍馬、印5頭の外) ──
             # #110 で ○ に入れていたものを、印の枠を奪わない別建てに移した。
-            if os.environ.get('MARKS_VALUE_TAIKO') == '1' and _has_market:
+            if flags.is_on('MARKS_VALUE_TAIKO') and _has_market:
                 def _vt(p):
                     od = p.get('odds_win') or 0
                     mkt = (_inv.get(p['horse_number'], 0.0) / _inv_sum) if _inv_sum else 0

@@ -74,7 +74,7 @@ def export_predictions(date_str=None):
                         WHERE substr(race_id,5,2) = ?
                           AND substr(race_id,7,2) = ?
                           AND substr(race_id,11,2) = ?
-                          AND date(created_at) = ?
+                          AND date(created_at, '+9 hours') = ?   -- #150: created_at は UTC 保存なので JST に揃える
                         ORDER BY created_at DESC LIMIT 1
                     """, (venue_code, kai_code, race_num_str, race_date_hyphen)).fetchone()
                     if cached:
@@ -165,7 +165,9 @@ def export_predictions(date_str=None):
                     if db_r:
                         if db_r['odds'] and db_r['odds'] > 0:
                             h['odds_win'] = db_r['odds']
-                        if db_r['popularity'] and db_r['popularity'] > 0:
+                        # #150: 取消・除外センチネル (9999人気) を公開JSONに出さない
+                        # (#149 で results/cache 側は塞いだが export に残っていた)
+                        if db_r['popularity'] and 0 < db_r['popularity'] < 999:
                             h['popularity'] = db_r['popularity']
                     # 結果をマージ
                     res = race_results.get(h['horse_number'])

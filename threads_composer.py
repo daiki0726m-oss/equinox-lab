@@ -26,7 +26,22 @@ CHAKU_NOTE = "※[1-2-3-着外]＝1着・2着・3着・4着以下の回数"
 
 
 # ── ヘルパー ────────────────────────────────────────────────
+MARK_DISPLAY_ORDER = ['◎', '○', '▲', '△', '×', '☆', '注']
+
+
+def _marked_in_order(horses):
+    """#150: 印のついた馬を表示順に **全頭** 返す。
+    #143 で △ が2頭になったため、印をキーにした dict は2頭目を黙って落とす。
+    印を列挙する箇所はこちらを使う (post_x.marked_in_order と同じ規約)。"""
+    order = {m: i for i, m in enumerate(MARK_DISPLAY_ORDER)}
+    return sorted([h for h in horses if h.get("mark") in order],
+                  key=lambda h: (order[h["mark"]],
+                                 -(h.get("pred_top3") or h.get("pred_top3_pct") or 0)))
+
+
 def _mark_map(horses):
+    """印 → 馬 の辞書。**単独の印 (◎○▲☆注) を引く用途にだけ使うこと**。
+    △ は2頭いるので、印を列挙するときは _marked_in_order を使う。"""
     return {h.get("mark"): h for h in horses if h.get("mark")}
 
 

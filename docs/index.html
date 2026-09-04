@@ -1699,6 +1699,9 @@ function toggleRestHorses(raceId, btn) {
 function renderResultTab(race) {
   if (!race.has_results) return '';
   const horses = [...(race.horses || [])].filter(h => h.finish > 0).sort((a, b) => a.finish - b.finish);
+  // #150: 印を打った馬が取消 (finish=0) だと結果一覧から消え、「◎はどうなったのか」が
+  // 分からなくなる。取消の印馬は別行で明示する (印の説明責任)。
+  const scratched = (race.horses || []).filter(h => !(h.finish > 0) && h.mark);
 
   let html = '<div class="results-section">';
 
@@ -1717,6 +1720,17 @@ function renderResultTab(race) {
       </div>
       <div style="font-size:11px;color:var(--text-secondary);">${h.time || ''}</div>
       <div style="font-size:11px;color:var(--text-muted);">${h.actual_odds || ''}倍</div>
+    </div>`;
+  });
+  scratched.forEach(h => {
+    html += `<div class="podium-row" style="opacity:.6">
+      <div class="podium-rank">取消</div>
+      <div class="horse-number">${h.horse_number}</div>
+      <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;">
+        <span class="horse-mark mark-renshita" style="font-size:14px;">${h.mark}</span>
+        ${h.horse_name || ''}
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);" colspan="2">出走取消・除外</div>
     </div>`;
   });
   html += '</div>';

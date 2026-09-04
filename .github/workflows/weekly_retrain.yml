@@ -104,13 +104,18 @@ jobs:
       # 買い目が停止していた事故 (should_bet 13/36 → 0/36) の再発防止。
       # モデルの木の本数・特徴量数を検査し、異常なら commit させない。
       - name: Model health gate (#135)
+        id: gate
         if: steps.check.outputs.age >= 7 || github.event_name == 'workflow_dispatch'
         run: |
           python3 scripts/verify_feature_parity.py --models-only
           echo "✅ モデル健全性ゲート通過"
 
       - name: Commit updated model + monitor
-        if: always() && steps.check.outputs.age != ''
+        # #150: 旧条件は always() だけで、直前の Model health gate が失敗しても
+        # commit が走ってしまい **ゲートがゲートになっていなかった**
+        # (#134 の「木3本モデルを出荷して買い目が停止」を止められない)。
+        # ゲートが落ちた時だけ commit を止める (ゲートが skip された週は従来どおり通す)。
+        if: always() && steps.check.outputs.age != '' && steps.gate.outcome != 'failure'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

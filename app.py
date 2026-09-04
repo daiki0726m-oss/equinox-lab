@@ -809,19 +809,20 @@ def api_predict_date(date_str):
                     })
 
                 # ── 印と理由 ──
+                # #150: ここで勝率順に ◎○▲△× を **自前で割り当て直していた**ため、
+                # 本番 (predict.py の点数表/能力ブレンド/☆妙味枠) と全く別の印が
+                # 出ていた。△は2頭・☆が存在する #140/#143 の構成にも追従できない。
+                # 印の正本は predictions_cache の mark。既に入っていればそれを使う。
+                _has_marks = any(h.get("mark") for h in horses)
                 sorted_horses = sorted(horses, key=lambda x: x["pred_win"], reverse=True)
                 for i, h in enumerate(sorted_horses):
                     si = h["si_avg"]
                     pw = h["pred_win"]
                     pt = h["pred_top3"]
 
-                    # 印の割り当て: ◎○▲△×各1頭
-                    if i == 0: h["mark"] = "◎"
-                    elif i == 1: h["mark"] = "○"
-                    elif i == 2: h["mark"] = "▲"
-                    elif i == 3: h["mark"] = "△"
-                    elif i == 4: h["mark"] = "×"
-                    else: h["mark"] = ""
+                    if not _has_marks:
+                        # cache に印が無い場合のみの暫定表示 (本番経路では通らない)
+                        h["mark"] = ["◎", "○", "▲", "△", "△"][i] if i < 5 else ""
 
                     # 理由生成
                     reasons = []

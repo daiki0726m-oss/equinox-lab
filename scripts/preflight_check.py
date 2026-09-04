@@ -32,7 +32,15 @@ from database import get_db, init_db  # noqa: E402
 
 # 同 scripts ディレクトリの幽霊馬除去ロジックを再利用 (#43/#44 残存幽霊の検出)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import remove_ghost_horses as rgh  # noqa: E402
+# #150: このモジュールは長らく **git 未追跡** で、CI では ModuleNotFoundError となり
+# preflight の全チェック (レース件数・出走馬・予測キャッシュ・ML flat 検知・幽霊馬) が
+# 2026-06 以降ずっと丸ごと死んでいた (workflow 側が出力を握り潰していたため無音)。
+# ファイルは追跡対象に入れたうえで、万一欠けても他のチェックまで巻き添えにしない。
+try:
+    import remove_ghost_horses as rgh  # noqa: E402
+except ImportError as _e:
+    rgh = None
+    print(f"⚠️ remove_ghost_horses が読み込めません ({_e}) → 幽霊馬チェックのみ無効化")
 
 
 # 想定値 (土日開催・3場各12レース)
@@ -182,6 +190,8 @@ def check_ghost_horses(conn, date_iso: str, use_api: bool = False) -> tuple[int,
     返り値: (severity, issues, detected)。detected=True なら auto-fix 対象。
     """
     issues: list[str] = []
+    if rgh is None:
+        return 0, ["ℹ️ 幽霊馬チェックはスキップ (remove_ghost_horses 未配置)"], False
     date_yyyymmdd = date_iso.replace("-", "")
     races = conn.execute(
         "SELECT race_id, venue, race_number FROM races WHERE race_date = ? OR race_date = ?",
@@ -278,6 +288,9 @@ def auto_fix_ghosts(date_yyyymmdd: str) -> bool:
     print(f"🔧 自動修復: 幽霊馬を除去中 ({date_yyyymmdd})...")
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "remove_ghost_horses.py")
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.path.exists(script):
+        print(f"❌ {script} が存在しないため幽霊馬の自動修復ができません")
+        return False
     try:
         result = subprocess.run(
             ["python3", script, "--date", date_yyyymmdd, "--apply", "--repredict"],

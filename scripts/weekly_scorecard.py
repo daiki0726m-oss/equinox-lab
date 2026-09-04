@@ -61,10 +61,17 @@ def structure_bets(c, rid, mk, fin, meta):
         return None
     ax = mk['◎']; axhn = ax['horse_number']
     axod = ax.get('odds_win_at_post') or 0
-    ohn = mk.get('○', {}).get('horse_number')
+    # #150: 2列目の軸は「妙味枠」= 本番 (strategy/betting.py:365-372) と同じく
+    # ☆ 優先・○ フォールバックの役割ベースで取る。旧実装は記号 '○' 固定で、
+    # #140 以降 ○ が実力2位に変わっているため、**実際に買った買い目と
+    # 別の買い目の ROI** を報告していた (#121 の設計値陳腐化と同型)。
+    _val = mk.get('☆') or mk.get('○') or {}
+    ohn = _val.get('horse_number')
     # #146: △2頭を両方拾う (旧: 印をキーにした列挙で1頭落ちていた)
+    # ☆ は2列目軸に使うので相手からは除く (二重計上の防止)
     others = [e['horse_number'] for e in mk['_all']
-              if e['mark'] in ('▲', '△', '×', '☆')]
+              if e['mark'] in ('▲', '△', '×', '○', '☆')
+              and e['horse_number'] != ohn]
     chu = mk.get('注', {}).get('horse_number')
     nh = meta[3] or len(fin)
     pay = {(bt, cb): amt for bt, cb, amt in c.execute(
@@ -121,13 +128,20 @@ def main():
             st['n'] += 1
             st['axw'] += (fin.get(axhn) == 1)
             st['axt3'] += (axhn in top3)
+            # #150: #143 の設計値 (印5頭で33.9%) と比較するため、母集団は
+            # 捕捉印5頭 (◎○▲△△) のみ。☆ は穴枠なので入れない (入れると
+            # 「6頭で捕捉」を「5頭の設計値」と比べることになり判定を誤る)。
             five = [e['horse_number'] for e in mk['_all']
-                    if e['mark'] in ('◎', '○', '▲', '△', '×', '☆')]
+                    if e['mark'] in ('◎', '○', '▲', '△', '×')]
             st['full'] += (len(set(five) & top3) == 3)
-            if '○' in mk:
+            # #150: 妙味枠の追跡対象は ☆ (無ければ ○ で後方互換)。
+            # DESIGN['o_rate']=25% は「妙味枠の複勝率」の設計値なので、
+            # 実力2位になった ○ と比べ続けると恒久的に「設計値超え」に見える。
+            _v = mk.get('☆') or mk.get('○')
+            if _v:
                 st['on'] += 1
-                st['o'] += (mk['○']['horse_number'] in top3)
-                st['opop'].append(mk['○'].get('popularity_at_post') or 0)
+                st['o'] += (_v['horse_number'] in top3)
+                st['opop'].append(_v.get('popularity_at_post') or 0)
             if '注' in mk:
                 st['chun'] += 1
                 st['chu'] += (mk['注']['horse_number'] in top3)
@@ -158,8 +172,9 @@ def main():
         for rid, mk, fin, meta in race_rows(c, d):
             top3 = {hn for hn, fp in fin.items() if fp <= 3}
             axhn = mk['◎']['horse_number']
-            if '○' in mk:
-                o_tot[1] += 1; o_tot[0] += (mk['○']['horse_number'] in top3)
+            _v = mk.get('☆') or mk.get('○')
+            if _v:
+                o_tot[1] += 1; o_tot[0] += (_v['horse_number'] in top3)
             if d >= CONF_STABLE:
                 cf = conf_map.get(rid, '?')
                 if cf in 'SABCD':
@@ -176,7 +191,7 @@ def main():
         gsp += sp; gret += ret
         print(f"  {k}: {cnt}R ROI {100*ret/max(sp,1):.1f}%")
     print(f"  総合: {gsp:,}円→{gret:,}円 ROI {100*gret/max(gsp,1):.1f}%")
-    print(f"  ○複勝率 累計: {o_tot[0]}/{o_tot[1]} = {100*o_tot[0]/max(o_tot[1],1):.1f}% (設計値{DESIGN['o_rate']}%)")
+    print(f"  妙味枠(☆)複勝率 累計: {o_tot[0]}/{o_tot[1]} = {100*o_tot[0]/max(o_tot[1],1):.1f}% (設計値{DESIGN['o_rate']}%)")
     print(f"  信頼度別◎複勝 (#120以降): " + ' '.join(
         f"{k}:{v[0]}/{v[1]}({100*v[0]/v[1]:.0f}%)" for k, v in sorted(conf_agg.items())))
     # A構造の分散vs構造判定 (bootstrap 95%CI)

@@ -92,8 +92,11 @@ def collect_weekly_stats(conn, weeks_back):
             key=lambda p: _mark_pri[p["mark"]])
         if axis_p is not None and axis_p.get("horse_number") and len(mark_partners) >= 2:
             axis_hn = axis_p.get("horse_number")
+            # #150: 相手候補は 6印 (○▲△△☆注) なのに [:5] で切っており、
+            # 最後尾の注が毎回脱落していた (本番 strategy/betting.py は上限6)。
+            # ROI 監視が「実際に買った買い目と別の買い目」を測る状態だった。
             partner_hns = [p.get("horse_number") for p in mark_partners
-                           if p.get("horse_number") and p.get("horse_number") != axis_hn][:5]
+                           if p.get("horse_number") and p.get("horse_number") != axis_hn][:6]
             top6 = [axis_hn] + partner_hns
         elif axis_p is not None and axis_p.get("horse_number"):
             others_p = [p for p in sorted_p

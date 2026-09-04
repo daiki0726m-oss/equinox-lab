@@ -80,7 +80,9 @@ def get_race_predictions(date_str, model, strategy):
                 has_marks = any(h.get('mark') for h in horses)
                 if not has_marks:
                     sorted_h = sorted(horses, key=lambda x: x.get('pred_win', 0), reverse=True)
-                    mark_list = ["◎", "○", "▲", "△", "×"]
+                    # #150: #143 の構成 (◎○▲△△ = 捕捉5頭、△は2頭) に合わせる。
+                    # ここは cache に印が無い時だけのフォールバック。
+                    mark_list = ["◎", "○", "▲", "△", "△"]
                     for i, h in enumerate(sorted_h):
                         h["mark"] = mark_list[i] if i < 5 else ""
                     # 注マーク: 6位以下だがSIがトップ3に入る馬
@@ -290,17 +292,20 @@ def get_race_predictions(date_str, model, strategy):
                 })
 
             # 印の割り当て
+            # #150: predictions_cache に印があればそれが正本 (点数表・☆妙味枠・△2頭)。
+            # 自前で勝率順に振り直すと、記事の印が X 投稿・ダッシュボードと食い違う。
             sorted_horses = sorted(horses, key=lambda x: x["pred_win"], reverse=True)
-            marks = ["◎", "○", "▲", "△", "×"]
-            for i, h in enumerate(sorted_horses):
-                h["mark"] = marks[i] if i < 5 else ""
-            # 注マーク: 6位以下だがSIがトップ3に入る馬
-            top3_si = sorted([h.get('si_avg', 0) for h in sorted_horses], reverse=True)[:3]
-            si_threshold = top3_si[-1] if len(top3_si) == 3 else 0
-            for h in sorted_horses[5:]:
-                if h.get('si_avg', 0) >= si_threshold and si_threshold > 0 and h.get('si_avg', 0) > 0:
-                    h['mark'] = '注'
-                    break  # 1頭のみ
+            if not any(h.get("mark") for h in horses):
+                marks = ["◎", "○", "▲", "△", "△"]
+                for i, h in enumerate(sorted_horses):
+                    h["mark"] = marks[i] if i < 5 else ""
+                # 注マーク: 6位以下だがSIがトップ3に入る馬
+                top3_si = sorted([h.get('si_avg', 0) for h in sorted_horses], reverse=True)[:3]
+                si_threshold = top3_si[-1] if len(top3_si) == 3 else 0
+                for h in sorted_horses[5:]:
+                    if h.get('si_avg', 0) >= si_threshold and si_threshold > 0 and h.get('si_avg', 0) > 0:
+                        h['mark'] = '注'
+                        break  # 1頭のみ
 
             # 買い目生成
             should_bet, bet_reason = strategy.should_bet_race(predictions_for_bet)

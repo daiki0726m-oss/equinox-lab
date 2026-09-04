@@ -9,6 +9,9 @@
 import math
 import os
 from itertools import combinations
+import sys as _sys150, os as _os150
+_sys150.path.insert(0, _os150.path.dirname(_os150.path.dirname(_os150.path.abspath(__file__))))
+import flags   # #150: 買い目フラグの単一情報源 (env > config/prediction_flags.yml)
 
 
 def _bet_sig(bet_type, horse_numbers):
@@ -389,7 +392,7 @@ class BettingStrategy:
         #   ◎3倍+: A 83.5% が最良 (G/D は 71-81%)
         # 原則「◎を1着に固定しない」(固定Fは73.2%で最悪、#112)。実オッズ必須 (無ければ従来動作)。
         structure = None
-        if os.environ.get('BET_STRUCTURE_ADAPTIVE') == '1' and p1.get('_has_real_odds'):
+        if flags.is_on('BET_STRUCTURE_ADAPTIVE') and p1.get('_has_real_odds'):
             _ax_od = p1.get('odds_win') or 0
             _nh = len(sorted_preds)
             if 0 < _ax_od < 2.0:
@@ -399,7 +402,7 @@ class BettingStrategy:
                 # (69.0 vs 79.8 / 68.9 vs 79.8 / 71.7 vs 77.5 / 76.8 vs 79.4)。
                 # ペアbootstrap でも現行比 Δ=-8.9pt。さらに D 分岐は一撃依存・分散・最大DD が
                 # 全構成中で最悪。BET_KEEP_D=0 で A に寄せられるようにする (既定は現行維持)。
-                structure = 'A' if os.environ.get('BET_KEEP_D') == '0' else 'D'
+                structure = 'A' if flags.get('BET_KEEP_D', '1') == '0' else 'D'
             elif _ax_od > 0:
                 structure = 'A'
         if structure == 'D':
@@ -483,10 +486,15 @@ class BettingStrategy:
             # #149: 「注を3列目から外す」設定が**位置**で切っていたため、
             # #143 で印構成が変わった後は注でなく2頭目の△を落としていた
             # (実測9/9レースで消えたのは△)。役割 (mark=='注') で外す。
-            _d_no_chu = os.environ.get('BET_D_NO_CHU') == '1'
+            _d_no_chu = flags.is_on('BET_D_NO_CHU')
             _th_pool = [p for p in partners
                         if not (_d_no_chu and p.get('mark') == '注')]
-            thirds = [p1] + _th_pool[:5]
+            # #150: 相手プールは6頭なのに [:5] で切っていたため、
+            # BET_D_NO_CHU=0 のときは **切り詰めが先に注を落とし**、
+            # フラグの ON/OFF で3列目が変わらないレースがあった
+            # (フラグの効果測定が成立しない)。スライスは6に揃え、
+            # 「注を外すかどうか」は役割フィルタだけが決めるようにする。
+            thirds = [p1] + _th_pool[:6]
             for a in firsts:
                 for b in seconds:
                     if b["horse_number"] == a["horse_number"]:
@@ -534,7 +542,7 @@ class BettingStrategy:
         """#140: 既定はフラット。CONFIDENCE_SIZING=1 で旧来の信頼度比例に戻す。"""
         import os as _os
         return (self.CONFIDENCE_MULTIPLIER_LEGACY
-                if _os.environ.get('CONFIDENCE_SIZING') == '1'
+                if flags.is_on('CONFIDENCE_SIZING')
                 else self.CONFIDENCE_MULTIPLIER)
 
     def generate_bets(self, predictions, bankroll=None, bet_types=None, confidence=None,

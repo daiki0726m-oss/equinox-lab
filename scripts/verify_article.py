@@ -296,10 +296,17 @@ def check_marks_confirmed(text, conn, race_name=None):
     except (_json.JSONDecodeError, TypeError):
         return issues
 
-    db_marks = {p.get('mark'): p.get('horse_name') for p in preds if p.get('mark')}
+    # #150: △ は #143 で2頭になったため、印をキーにした dict は2頭目を落とし、
+    # 記事に正しい2頭目の△を書いても「DBと違う」と誤検出していた。印ごとに候補名の
+    # 集合を持ち、どれか1つに一致すれば OK とする。
+    db_marks = {}
+    for p in preds:
+        if p.get('mark'):
+            db_marks.setdefault(p['mark'], []).append(p.get('horse_name') or '')
     for mark, article_name in article_marks.items():
-        db_name = db_marks.get(mark)
-        if db_name and article_name not in db_name and db_name not in article_name:
+        _cands = db_marks.get(mark) or []
+        if _cands and not any(article_name in dn or dn in article_name for dn in _cands if dn):
+            db_name = _cands[0]
             issues.append(
                 f"⚠️ 印不一致 ({race_name}): 記事「{mark}{article_name}」 vs DB「{mark}{db_name}」"
             )

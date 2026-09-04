@@ -88,6 +88,43 @@ UNSTABLE_FOR_DISPLAY = {
 }
 
 
+# #150: 絶対値項目のビン名を人間語にする。
+# 旧実装は 5分位を "1/5".."5/5" とだけ出しており、読者向けの理由として
+# 「休養日数 3/5 +1.2点」のような内部表記がそのまま画面に出ていた (#125 の再発)。
+# ビン数は学習時の分位で決まるので、**ビン数が一致するときだけ**日本語名を使い、
+# 一致しなければ従来表記に落とす (再学習で分位が変わっても壊れない)。
+DISPLAY_BINS = {
+    "rest_days":       ["中2週以内", "中3〜4週", "1〜2ヶ月", "2〜4ヶ月", "4ヶ月以上(休み明け)"],
+    "distance_diff":   ["距離短縮", "ほぼ同距離", "距離延長", "大幅な距離延長"],
+    "jockey_change":   ["継続騎乗", "乗り替わり", "乗り替わり"],
+    "impost_diff":     ["斤量減・据え置き", "斤量+1kg以内", "斤量+1kg超"],
+    "graded_exp":      ["重賞経験なし", "重賞経験あり"],
+    "race_experience": ["キャリア3戦以内", "キャリア4〜9戦", "キャリア10〜18戦", "キャリア19〜30戦", "キャリア30戦超"],
+    "front_rate":      ["逃げ先行なし", "先行率2割以下", "先行率2割超"],
+    "avg_pos_ratio":   ["前めで運ぶ", "やや前", "中団", "後方から"],
+    "post_position_ratio": ["最内寄り", "内", "中", "外", "大外寄り"],
+}
+
+
+def display_bin(col, raw_bin, n_bins=None):
+    """内部ビン名 ("3/5") を読者向けの日本語に翻訳する。
+
+    **内部キーは変えない** — model['pts'] は学習時に作った "rest_days=3/5" で
+    引かれるので、label() 側を日本語にすると点数の参照が全滅して
+    絶対値項目の寄与が静かにゼロになる。翻訳は表示の瞬間だけ行う。
+    """
+    names = DISPLAY_BINS.get(col)
+    if not names or not isinstance(raw_bin, str) or "/" not in raw_bin:
+        return raw_bin
+    try:
+        idx = int(raw_bin.split("/")[0]) - 1
+    except ValueError:
+        return raw_bin
+    if n_bins is not None and len(names) != n_bins:
+        return raw_bin     # 再学習で分位が変わった → 従来表記に落とす (誤訳を防ぐ)
+    return names[idx] if 0 <= idx < len(names) else raw_bin
+
+
 def _rel_rank(df, col, direction, zero_na):
     """レース内順位 (1=最良)。データ無しは NaN。"""
     v = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
@@ -147,7 +184,9 @@ def score_with_reasons(df, model, top_n=4):
         for i, (k, v) in enumerate(zip(keys, vals)):
             if abs(v) < 0.02:      # 0点前後は理由にならないので出さない
                 continue
-            per[i].append({"label": NAMES[col], "bin": k.split("=", 1)[1],
+            _raw = k.split("=", 1)[1]
+            _nb = (len(spec[col]) - 1) if col in spec else None
+            per[i].append({"label": NAMES[col], "bin": display_bin(col, _raw, _nb),
                            "points": round(float(v) * 10, 1)})
     reasons = [sorted(p, key=lambda x: -abs(x["points"]))[:top_n] for p in per]
     return total * 10, reasons     # 点数は ×10 して読みやすく

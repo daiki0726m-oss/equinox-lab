@@ -21,6 +21,7 @@ on:
 permissions:
   actions: write   # workflow_dispatch trigger に必要
   contents: write  # health.json commit に必要
+  issues: write    # #150: SLO 違反 Issue の作成に必要 (無くて一度も作成できていなかった)
 
 jobs:
   check-and-recover:
@@ -61,6 +62,9 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: 🚨 未投稿 slot を自動 trigger (posted_slots aware)
+        # #150: always() ではなく missing がある時だけだが、continue-on-error で
+        # ここが落ちても Issue 通知・health.json・runner 生存確認は必ず走らせる。
+        continue-on-error: true
         if: steps.health.outputs.missing_count != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -74,8 +78,20 @@ jobs:
           # missing 誤判定 → 重複 dispatch の元、#41 audit より)。posted_slots は
           # post_x.py が物理的に書く lock なので、これが SoT。
           echo '${{ steps.health.outputs.missing_slots }}' | python3 -c "
-          import json, sys, subprocess, time
-          from database import is_slot_posted
+          import json, sys, subprocess, time, os, datetime
+          # #150: 旧実装は 'from database import is_slot_posted' で keiba.db を開いていたが、
+          # このワークフローの checkout に keiba.db は存在しない (git 正本は keiba.db.gz、
+          # しかも展開していない) ため 'no such table: posted_slots' で **必ず例外死**していた。
+          # set -e 配下なので、未投稿を検知した瞬間に自動復旧 step がクラッシュし、
+          # 同じ run 内の Issue 通知・health.json・runner 生存確認まで巻き添えで飛んでいた。
+          # #141 で lock の正本はテキストサイドカーに移っているので、そちらを読む。
+          _today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime('%Y%m%d')
+          try:
+              with open(os.path.join('docs','data',f'posted_slots_{_today}.json'), encoding='utf-8') as f:
+                  _locked = (json.load(f).get('slots') or {})
+          except Exception as e:
+              print(f'ℹ️ slot サイドカー未取得 ({e}) → lock 不明として dispatch する')
+              _locked = {}
           slots = json.load(sys.stdin)
           for s in slots:
               workflow = s.get('workflow', 'auto_post_x.yml')
@@ -84,10 +100,9 @@ jobs:
 
               # 🔒 atomic lock check (auto_post_x.yml 系のみ)
               if workflow == 'auto_post_x.yml' and mode:
-                  # fallback_mode が slot_name と一致しないことがあるので mode を優先
-                  existing = is_slot_posted(mode)
+                  existing = _locked.get(mode) or _locked.get(slot_name)
                   if existing:
-                      print(f'⏭️ {workflow} mode={mode} ({slot_name}) は posted_slots に lock 済み → trigger skip')
+                      print(f'⏭️ {workflow} mode={mode} ({slot_name}) は lock 済み → trigger skip')
                       print(f'    posted_at={existing.get(\"posted_at\")} run_id={existing.get(\"run_id\")}')
                       continue
 
@@ -107,6 +122,7 @@ jobs:
           "
 
       - name: 🔔 missed slot を GitHub Issue で通知 (復旧不能 = 沈黙の失敗を可視化)
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -139,12 +155,24 @@ jobs:
                     '', '_この Issue は posting_watchdog.yml が自動生成_']
           print(chr(10).join(lines))
           ")
-          gh issue create --title "$TITLE" --body "$BODY" --label "slo-violation" 2>&1 || \
-            gh issue create --title "$TITLE" --body "$BODY" 2>&1 || \
-            echo "⚠️ Issue 作成失敗 (label 無し再試行も失敗)"
-          echo "✅ SLO 違反 Issue 作成 (GitHub からメール通知が飛ぶ)"
+          # #150: 旧実装は失敗しても無条件に「✅ 作成」と出していたため、
+          # permissions 不足で一度も作成できていない事実が3ヶ月見えなかった。
+          if gh issue create --title "$TITLE" --body "$BODY" --label "slo-violation" 2>&1 \
+             || gh issue create --title "$TITLE" --body "$BODY" 2>&1; then
+            echo "✅ SLO 違反 Issue 作成 (GitHub からメール通知が飛ぶ)"
+          else
+            echo "❌ Issue 作成に失敗 — SLO 違反が通知されていません"
+            {
+              echo "### ❌ SLO 違反 Issue の作成に失敗"
+              echo ""
+              echo '```json'
+              cat /tmp/missed.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: 📝 health.json を commit
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -184,7 +212,38 @@ jobs:
       # 同時不発 = 収集系が完全停止した (投稿系 GAS 4層は機能、収集は2層とも
       # GitHub スケジューラ依存で相関故障)。本 workflow の cron は同朝も生存して
       # いた実績があるため、土日 8:40-17:00 JST に runner が不在なら再起動する。
+      # #150: GAS (外部の独立した時計) の生存監視。
+      # 監査で「GAS が唯一の実働独立層。しかも PAT の失効監視がゼロ」と判明した。
+      # PAT が切れると GAS は 401 で静かに死に (#63 で一度実際に起きている)、
+      # GitHub スケジューラが全滅した日に復旧手段がなくなる。
+      # 直近24hの workflow_dispatch に GAS 起点が1件も無ければ警告する。
+      - name: GAS 生存確認 (外部トリガー層)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SINCE=$(date -u -d '26 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+                  || date -u -v-26H '+%Y-%m-%dT%H:%M:%SZ')
+          N=$(gh api "repos/${{ github.repository }}/actions/workflows/auto_post_x.yml/runs?event=workflow_dispatch&per_page=100" \
+                --jq "[.workflow_runs[] | select(.created_at > \"$SINCE\") | select(.triggering_actor.login != \"github-actions[bot]\")] | length" 2>/dev/null || echo "-1")
+          if [ "$N" = "-1" ]; then
+            echo "ℹ️ GAS 生存確認をスキップ (API 取得失敗)"
+          elif [ "$N" = "0" ]; then
+            echo "⚠️ 直近26時間に外部 (GAS) 起点の dispatch がありません"
+            {
+              echo "### ⚠️ GAS トリガーが発火していません"
+              echo ""
+              echo "GitHub スケジューラが全滅した時の唯一の独立層です。"
+              echo "PAT の失効 (前回 #63) か、GAS 側のトリガー消滅を疑ってください。"
+              echo "確認: GAS プロジェクトの実行ログ / https://github.com/settings/personal-access-tokens"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "✅ GAS 生存 (直近26時間に $N 件の外部 dispatch)"
+          fi
+
       - name: Ensure race_day_runner alive (weekend)
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
