@@ -266,12 +266,27 @@ print(f'✅ {{len(ids)}}レース処理')
 
 
 def auto_fix_predictions(date_yyyymmdd: str) -> bool:
-    """予測キャッシュ不足を自動修復"""
+    """予測キャッシュ不足を自動修復。
+
+    #150c: **既に印を投稿した日は --force を付けない**。
+    race_day_runner は 10分ごとに約50回この preflight を回すため、
+    予測欠落や ML flat を検知すると 10:15 の投稿後でも --force で全レースを
+    再予測しうる。それは「投稿時点で凍結した印」(#99/#101) を午後に
+    書き換えることになり、公開済みの予想と結果報告の印が食い違う。
+    投稿記録 (posted_marks サイドカー = clobber を生き延びるテキスト正本) が
+    あれば、欠落レースの追加生成だけに留める。
+    """
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    posted = os.path.join(repo, "docs", "data", f"posted_marks_{date_yyyymmdd}.json")
+    cmd = ["python3", "predict.py", "predict", "--date", date_yyyymmdd]
+    if os.path.exists(posted):
+        print(f"🔒 {date_yyyymmdd} は印を投稿済み → --force を外して欠落分のみ生成")
+    else:
+        cmd.append("--force")
     print(f"🔧 自動修復: 予測実行中 ({date_yyyymmdd})...")
     try:
         result = subprocess.run(
-            ["python3", "predict.py", "predict", "--date", date_yyyymmdd, "--force"],
-            capture_output=True, text=True, timeout=900
+            cmd, capture_output=True, text=True, timeout=900
         )
         if result.returncode != 0:
             print(f"❌ 予測失敗: {result.stderr[-200:]}")

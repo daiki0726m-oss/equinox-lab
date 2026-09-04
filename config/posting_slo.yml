@@ -50,7 +50,17 @@ slots:
     # 対策: deadline を 07:30 に短縮、fallback_mode を "predict" に直接指定。
     # → 7:00 cron が遅延・スキップしても、7:30 (or 8:00) watchdog tick で
     # deadline 過ぎ判定 → 即 predict mode で trigger → 8時前後には JSON 反映。
-    watchdog_deadline_jst: "07:30"
+    #
+    # 🚨 #150c (2026-09-05) — 上の #36 の前提が実測で崩れていた。
+    # 「7:30 の watchdog tick」は存在しない。posting_watchdog は `*/30` 指定だが
+    # **実測の発火間隔は中央値121分・p95 473分**、30分以内の間隔は全体の10%しかない。
+    # 復旧窓 (expected〜deadline = 30分) に tick が入る確率は極めて低く、
+    # 直近5週末で窓に入ったのは 2/5 日だけ。しかも入らなかった3日は
+    # いずれも GitHub スケジューラが劣化した日 = **復旧が必要な日ほど復旧しない**。
+    # 窓を狭めると復旧が速くなるどころか、復旧経路そのものが発火しなくなる。
+    # → deadline を watchdog の実解像度より広く取る (07:30 → 09:30)。
+    # 併せて check_posting_health 側で「生成系は missed でも復旧を試みる」ようにした。
+    watchdog_deadline_jst: "09:30"
     fallback_mode: "predict"  # ← 直接指定で確実性UP
     days: [5, 6]              # 土日
 
@@ -119,7 +129,8 @@ data_fetch_slots:
     description: "土曜朝 — R1-R8 一般レース取り込み (重要)"
     cron: "0 20 * * 5"
     expected_jst: "05:00"
-    watchdog_deadline_jst: "06:30"
+    # #150c: watchdog の実測発火間隔 (中央値121分) より窓が狭く、復旧が発火しなかった
+    watchdog_deadline_jst: "09:00"
     days: [5]
 
   fetch_sunday:
@@ -127,7 +138,8 @@ data_fetch_slots:
     description: "日曜朝 — 日曜分の最終 fetch (重要)"
     cron: "0 20 * * 6"
     expected_jst: "05:00"
-    watchdog_deadline_jst: "06:30"
+    # #150c: watchdog の実測発火間隔 (中央値121分) より窓が狭く、復旧が発火しなかった
+    watchdog_deadline_jst: "09:00"
     days: [6]
 
 # ─────────── 監視設定 ───────────

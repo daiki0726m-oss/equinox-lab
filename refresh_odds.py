@@ -30,14 +30,33 @@ def now_jst():
     return datetime.now(JST)
 
 
-def fetch_odds_from_api(race_id):
-    """netkeiba APIから単勝オッズを取得"""
+# netkeiba のオッズ API が返す status。'yoso' は **発売前の「予想オッズ」** で、
+# 実際の投票に基づかない参考値。これを実オッズとして DB に書くと、
+# 印 (☆妙味枠・注) も should_bet も EV も架空の数字で決まってしまう。
+# #150c: 前夜 prefetch を入れたことで「発売前に予測を作る」経路ができたため、
+# ここで弾かないと日曜の予想が予想オッズ由来になる (監査で実測: 土曜07:05 時点で
+# 日曜レースは status='yoso'、08:45 には 'middle' に変わっていた)。
+PROVISIONAL_ODDS_STATUS = {"yoso"}
+
+
+def fetch_odds_from_api(race_id, allow_provisional=False):
+    """netkeiba APIから単勝オッズを取得。
+
+    発売前の「予想オッズ」(status='yoso') は既定で **返さない**。
+    呼び出し側は空 dict を受け取り、predict のオッズ充足ゲート (#52) が
+    「オッズ未取得」として当該レースを skip する = 架空オッズでの予測を防ぐ。
+    """
     url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1&action=update"
     headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://race.netkeiba.com/"}
 
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         data = resp.json()
+
+        _st = str(data.get("status") or "")
+        if _st in PROVISIONAL_ODDS_STATUS and not allow_provisional:
+            print(f"  ⏭️ {race_id}: 発売前の予想オッズ (status={_st}) → 実オッズとして扱わない")
+            return {}
 
         if data.get("status") and data.get("data", {}).get("odds"):
             odds_raw = data["data"]["odds"].get("1", {})

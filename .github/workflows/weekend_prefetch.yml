@@ -90,15 +90,36 @@ jobs:
               continue
             fi
             echo "── $D (${N}レース) ──"
-            # 確定馬番に同期 (金11時の枠順抽選が DB に入るのはここ)
-            timeout 420 python3 refresh_entries.py --date "$D" || echo "⚠️ 馬番同期に失敗 → 続行"
-            # 前日発売のオッズ。まだ出ていなければ predict 側のゲートが skip する
+            # 確定馬番に同期。#150c: ここを握り潰すと **仮馬番 (五十音順) のまま
+            # 予測を公開**してしまう。auto_post_x 側は同じ理由で exit 1 のハードゲートに
+            # したのに、prefetch だけ「続行」にしていた (#83『誤配信 ≫ 無配信』の原則違反)。
+            if ! timeout 420 python3 refresh_entries.py --date "$D"; then
+              echo "❌ $D: 確定馬番の同期に失敗 → この日は生成しない (仮馬番での公開を避ける)"
+              continue
+            fi
+            # 前日発売のオッズ。発売前の「予想オッズ」は refresh_odds 側で弾かれ、
+            # predict のオッズ充足ゲート (#52) が当該レースを skip する
             timeout 420 python3 refresh_odds.py --date "$D" || echo "⚠️ オッズ取得に失敗 → 続行"
             python3 predict.py predict --date "$D" || echo "⚠️ 予測に失敗 → 続行"
             python3 export_predictions.py "$D" || echo "⚠️ export に失敗 → 続行"
-            if [ -f "docs/data/predictions_${D}.json" ]; then
+            # #150c: ファイルの存在だけでは「前からある古いJSON」と区別できない。
+            # 今回の run で書かれた (=更新時刻が新しい) かつ中身があることを確認する。
+            OK=$(python3 -c "
+          import json, os, time, sys
+          p = 'docs/data/predictions_$D.json'
+          if not os.path.exists(p): print(0); sys.exit()
+          fresh = (time.time() - os.path.getmtime(p)) < 1800
+          try:
+              n = int(json.load(open(p)).get('total_races') or 0)
+          except Exception:
+              n = 0
+          print(1 if (fresh and n > 0) else 0)
+          " 2>/dev/null || echo 0)
+            if [ "$OK" = "1" ]; then
               echo "✅ $D の予測JSONを生成"
               GENERATED=$((GENERATED+1))
+            else
+              echo "⚠️ $D: JSONが更新されていない (発売前でオッズ未取得の可能性)"
             fi
           done
           echo "generated=$GENERATED" >> $GITHUB_OUTPUT

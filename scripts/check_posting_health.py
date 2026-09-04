@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 JST = timezone(timedelta(hours=9))
 
 WORKFLOW_NAME = "auto_post_x.yml"  # 投稿系のデフォルト
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_CONFIG = ROOT / "config" / "posting_slo.yml"
 DEFAULT_OUTPUT = ROOT / "docs" / "data" / "posting_health.json"
 
@@ -209,12 +210,30 @@ def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None, all_slots_
             window_minutes=monitor_cfg.get("recent_success_window_minutes", 240),
             all_slot_expected_dts=other_dts,
         )
+        # #150c: 「期限を1分過ぎた瞬間に復旧を放棄する」のをやめる。
+        # 旧実装は deadline 超過を一律 missed とし、posting_watchdog は
+        # missing しか dispatch しないため、**その日はもう二度と自動復旧しなかった**。
+        # 9/5 は 06:55 の watchdog が fetch 欠落を正しく検知しながら Issue を出しただけで、
+        # 復旧したのは 07:02 に GitHub cron が2時間遅れで自力発火したからにすぎない。
+        # 投稿を伴わない生成系 (データ取得・予測生成) には「遅すぎるからやめる」理由がない。
+        # レースが始まるまでは何度でも作り直してよいので、missing として復旧対象に残す。
+        _is_generation = (
+            slot_cfg.get("recoverable_after_deadline")
+            or slot_cfg.get("workflow", "").startswith("fetch_")
+            or slot_name in ("weekend_morning_predict",)
+        )
+        _st = "ok_late" if recent else ("missing" if _is_generation else "missed")
         result = {
             "slot": slot_name,
-            "status": "ok_late" if recent else "missed",
+            "status": _st,
             "expected": expected_jst.strftime("%H:%M JST"),
             "deadline": deadline.strftime("%H:%M JST"),
         }
+        if _st == "missing":
+            result["fallback_mode"] = slot_cfg["fallback_mode"]
+            result["workflow"] = slot_cfg.get("workflow", "auto_post_x.yml")
+            result["note"] = "deadline 超過だが生成系のため復旧を継続 (#150c)"
+        
         if recent:
             result["recent_success"] = recent
             result["delay_minutes"] = recent.get("delay_minutes", 0)
@@ -334,6 +353,38 @@ def main():
                 "expected": evaluation.get("expected"),
                 "deadline": evaluation.get("deadline"),
             })
+
+    # ── #150c: 成果物ゲート「ダッシュボードに今日の予想があるか」 ──
+    # これが今まで **どこにも無かった**。2026-09-05 06:48 にユーザーが 404 を踏んだ瞬間、
+    # health.json は missing=0 (異常なし) と報告していた。
+    # SLO が「workflow が走ったか」しか見ておらず、「ユーザーが見るものがあるか」を
+    # 見ていなかったのが原因。cron の発火状況に関係なく、実物を直接確認する。
+    if today.weekday() in (5, 6):     # 土日 = 開催日
+        _ds = today.strftime("%Y%m%d")
+        _path = os.path.join(REPO_ROOT, "docs", "data", f"predictions_{_ds}.json")
+        _n, _exported = 0, None
+        try:
+            with open(_path, encoding="utf-8") as _f:
+                _j = json.load(_f)
+            _n = int(_j.get("total_races") or 0)
+            _exported = _j.get("exported_at") or _j.get("generated_at")
+        except Exception:
+            pass
+        if _n < 1:
+            _ev = {"slot": "dashboard_predictions", "status": "missing",
+                   "expected": "開催日は常時", "deadline": "1R発走まで",
+                   "fallback_mode": "predict", "workflow": "auto_post_x.yml",
+                   "note": f"docs/data/predictions_{_ds}.json が無い/空 = ダッシュボードが404"}
+            missing_slots.append({"slot": "dashboard_predictions",
+                                  "workflow": "auto_post_x.yml",
+                                  "fallback_mode": "predict"})
+            results["summary"]["missing"] = results["summary"].get("missing", 0) + 1
+        else:
+            _ev = {"slot": "dashboard_predictions", "status": "ok",
+                   "expected": "開催日は常時",
+                   "actual": f"{_n}レース (exported_at={_exported})"}
+            results["summary"]["ok"] = results["summary"].get("ok", 0) + 1
+        results["slots"]["dashboard_predictions"] = _ev
 
     results["missed_slots"] = missed_slots
 

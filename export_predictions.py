@@ -351,6 +351,23 @@ def export_predictions(date_str=None):
             }
 
             out_path = os.path.join(output_dir, f"predictions_{ds}.json")
+            # #150c: 既存 JSON より大幅にレースが減る上書きを止める。
+            # 前夜 prefetch が36レースを公開した後、翌朝の predict が部分成功すると
+            # その export が N レースで **全置換**し、ダッシュボードが前夜より後退する
+            # (10時ロック以降は再予測されないので、その日は復旧しない)。
+            _prev_n = 0
+            if os.path.exists(out_path):
+                try:
+                    with open(out_path, encoding="utf-8") as _f:
+                        _prev_n = int(json.load(_f).get("total_races") or 0)
+                except Exception:
+                    _prev_n = 0
+            if _prev_n and len(all_races) < _prev_n * 0.8:
+                print(f"  🚫 {ds}: 既存JSON {_prev_n}レース → 今回 {len(all_races)}レース "
+                      f"(2割超の減少) のため上書きを中止。部分的な予測で公開済みの内容を"
+                      f"後退させない (再予測で揃ってから再実行してください)")
+                continue
+
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(output, f, ensure_ascii=False, separators=(',', ':'))
 
@@ -374,8 +391,16 @@ def export_predictions(date_str=None):
         # マージして重複排除・ソート
         all_dates = sorted(set(existing_dates + exported))
 
+        # #150c: latest は「今日以前の最大日付」にする。
+        # 前夜 prefetch が土日2日分を同時に export するようになったため、
+        # 旧実装 (all_dates[-1]) だと土曜の朝に latest=日曜 になり、
+        # ダッシュボードの既定表示が「明日のレース」になってしまう。
+        _today = datetime.now(JST).strftime("%Y%m%d")
+        _past = [d for d in all_dates if d <= _today]
+        _latest = _past[-1] if _past else all_dates[-1]
+
         index = {
-            "latest": all_dates[-1],
+            "latest": _latest,
             "dates": all_dates,
             "updated_at": datetime.now(JST).isoformat(),
         }

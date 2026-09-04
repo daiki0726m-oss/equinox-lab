@@ -238,6 +238,24 @@ jobs:
               echo "PAT の失効 (前回 #63) か、GAS 側のトリガー消滅を疑ってください。"
               echo "確認: GAS プロジェクトの実行ログ / https://github.com/settings/personal-access-tokens"
             } >> "$GITHUB_STEP_SUMMARY"
+            # #150c: step summary だけでは誰も見ない。#40 で Threads token には
+            # 専用の自動更新 workflow を付けたのに、GAS の PAT には何も無い。
+            # 実測で GAS は発火率100%・GitHub スケジューラは48% = 実質この層が
+            # 配信を支えているので、止まったら必ず気づける経路に載せる。
+            TITLE="🔑 GASトリガーが停止しています ($(TZ=Asia/Tokyo date '+%Y-%m-%d'))"
+            if [ "$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length' 2>/dev/null || echo 0)" = "0" ]; then
+              gh issue create --title "$TITLE" --body "$(printf '%s\n' \
+                "直近26時間、GAS (Google Apps Script) 起点の workflow_dispatch が0件です。" "" \
+                "GAS は GitHub スケジューラと独立した唯一の時計で、実測では毎日" \
+                "秒単位で正確に発火し、GitHub cron が落ちた日の配信を実際に支えています。" "" \
+                "**確認手順**" \
+                "1. https://github.com/settings/personal-access-tokens で PAT の期限を確認" \
+                "2. 失効していれば再発行し、GAS の「プロジェクトの設定 → スクリプト プロパティ」の" \
+                "   GITHUB_TOKEN を更新" \
+                "3. ついでに scripts/gas_trigger.js を Code.gs に貼り直して setupTriggers() を1回実行" \
+                "   (収集系トリガーが未インストールのため)" "" \
+                "_posting_watchdog.yml が自動生成_")" 2>&1 || echo "⚠️ Issue 作成失敗"
+            fi
           else
             echo "✅ GAS 生存 (直近26時間に $N 件の外部 dispatch)"
           fi

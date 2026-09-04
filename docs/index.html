@@ -1798,7 +1798,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (idxRes.ok) {
       const idx = await idxRes.json();
       if (idx.latest) {
-        const ds = idx.latest;
+        // #150c: 当日の予想が無い時、旧実装は黙って「先週のレースカード」を
+        // 最新として表示していた。ユーザーには今日の予想に見えるので危険。
+        // 開催日 (土日) なら今日を優先し、無ければ「準備中」と明示したうえで
+        // 直近の日付にフォールバックする (何の日付を見ているかを必ず示す)。
+        const _now = new Date();
+        const _todayStr = `${_now.getFullYear()}${String(_now.getMonth()+1).padStart(2,'0')}${String(_now.getDate()).padStart(2,'0')}`;
+        const _isRaceDay = (_now.getDay() === 0 || _now.getDay() === 6);
+        let ds = idx.latest;
+        if (_isRaceDay && Array.isArray(idx.dates) && !idx.dates.includes(_todayStr)) {
+          const _b = document.createElement('div');
+          _b.style.cssText = 'padding:10px 14px;margin:8px 0;border-radius:8px;background:#3a2a00;color:#ffd479;font-size:13px;line-height:1.6';
+          _b.textContent = `本日 ${_now.getMonth()+1}/${_now.getDate()} の予想は準備中です（通常は朝までに公開）。`
+            + `下に表示しているのは ${ds.slice(4,6)}/${ds.slice(6,8)} の内容です。`;
+          const _host = document.querySelector('.container') || document.body;
+          _host.insertBefore(_b, _host.firstChild);
+        } else if (_isRaceDay && Array.isArray(idx.dates) && idx.dates.includes(_todayStr)) {
+          ds = _todayStr;   // 未来日 (前夜生成した翌日分) を既定表示にしない
+        }
         dateInput.value = `${ds.slice(0,4)}-${ds.slice(4,6)}-${ds.slice(6,8)}`;
 
         // 利用可能な日付をdatelistに追加
