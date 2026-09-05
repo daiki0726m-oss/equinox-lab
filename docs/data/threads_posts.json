@@ -498,5 +498,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "17904468780512486",
+  "posted_at": "2026-09-05T10:24:30.632952+09:00",
+  "slot": "post_predict",
+  "pattern": "minimal",
+  "race_id": "202601020511",
+  "race_name": "札幌2歳S",
+  "chunk": 0,
+  "chars": 216
  }
 ]
