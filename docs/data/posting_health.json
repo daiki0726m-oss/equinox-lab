@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-05T10:54:44.438924+09:00",
+  "generated_at": "2026-09-05T15:29:21.617111+09:00",
   "today": "2026-09-05 (Sat)",
   "weekday": 5,
   "slots": {
@@ -55,12 +55,12 @@
       "expected": "10:15 JST",
       "deadline": "10:50 JST",
       "recent_success": {
-        "created_at": "2026-09-05T10:23:38+09:00",
-        "title": "post_predict",
-        "event": "workflow_dispatch",
-        "delay_minutes": 9
+        "created_at": "2026-09-05T13:42:02+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 207
       },
-      "delay_minutes": 9,
+      "delay_minutes": 207,
       "workflow": "auto_post_x.yml"
     },
     "results": {
@@ -111,7 +111,7 @@
       "slot": "dashboard_predictions",
       "status": "ok",
       "expected": "開催日は常時",
-      "actual": "36レース (exported_at=2026-09-05T10:48:21.910764+09:00)"
+      "actual": "36レース (exported_at=2026-09-05T15:27:50.801928+09:00)"
     }
   },
   "summary": {
