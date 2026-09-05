@@ -405,6 +405,19 @@ class BettingStrategy:
                 structure = 'A' if flags.get('BET_KEEP_D', '1') == '0' else 'D'
             elif _ax_od > 0:
                 structure = 'A'
+        # #150d (2026-09-05): band と 適応型構造D の**条件が完全に重なっていた**。
+        #   band  = ◎2.0-2.9倍 × S/A/B          (#95)
+        #   構造D = ◎2.0-2.9倍 × 11頭以上        (#113)
+        # 三連複は `structure != 'D'` の時しか生成されないため、両方成立すると
+        # band が謳う「三連複◎軸2倍額」が **1点も作られず**、代わりに三連単が並ぶ。
+        # さらに band レースは should_bet=0 のことが多く、その三連単は金額0に潰されるので、
+        # 実際に残るのはワイドだけ = 「三連複/ワイドのみ投資」という説明と実態が食い違う
+        # (2026-09-05 の中山12R・阪神12R で実発生)。
+        # #139 で D は全構成中の最下位 (69.0 vs A 79.8) と実証済みなので、
+        # 重なった時は band (三連複) を優先する。
+        if trio_focus and structure == 'D':
+            print("  ↩️ trio-focus band と構造D が競合 → band (三連複) を優先 (#150d)")
+            structure = None
         if structure == 'D':
             budget = max(budget, amt * 29)  # 三連単24点+ワイド5点の途中切れ防止
         elif structure is not None:
@@ -455,6 +468,11 @@ class BettingStrategy:
                                   if q["horse_number"] != center),
                                  key=lambda q: -(q.get('pred_top3') or 0))[:4]
                 pairs = list(combinations(_a_pool, 2))
+            elif trio_focus:
+                # #150d: band の設計は「◎軸 5頭流し = 10点」(#95 の実測構成)。
+                # 相手上限が 5→6 に広がった (#146/#149) 影響で 15点に膨らむと
+                # 2倍額と合わせて予算 (line_amount*25) を超えて途中で切れる。
+                pairs = list(combinations(partners[:5], 2))
             else:
                 pairs = list(combinations(partners[:6], 2))
             for pair in pairs:
