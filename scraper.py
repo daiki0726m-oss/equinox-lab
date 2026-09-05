@@ -1009,7 +1009,21 @@ class NetkeibaScraper:
             # 問題を根絶。確定済 (finish_position>0) は保護し、出走馬段階のみ最新スクレイプ
             # で完全同期する。UNIQUE(race_id,horse_number) は同一馬の異馬番重複を防げない。
             scraped_nums = [r.get("horse_number", 0) for r in horse_records if r.get("horse_number")]
-            if scraped_nums:
+            # 🚨 #150e (2026-09-05): この削除には「スクレイプが完全か」の検査が無く、
+            # **発走直後の結果ページを部分取得しただけで残りの出走馬を全部消していた**。
+            # 実害: 札幌4R (11:20発走) が 11:28 の収集で 14頭 → **1頭** に。
+            # 勝ち馬1頭だけ載った状態のページを掴み、残り13頭 (finish=0) を削除した。
+            # ガード: (a) 着順を含むスクレイプ (= 結果ページ) では絶対に削除しない。
+            #   幽霊馬 (#43) は「枠順確定前の仮馬番」の問題なので、出馬表スクレイプ
+            #   でしか起きない。結果ページは部分描画が普通にあるので削除の根拠にならない。
+            # (b) 5頭未満のスクレイプでは削除しない (JRA の最小出走頭数を下回る = 取得失敗)。
+            _has_finish = any((r.get("finish_position") or 0) > 0 for r in horse_records)
+            _sync_ok = bool(scraped_nums) and not _has_finish and len(scraped_nums) >= 5
+            if scraped_nums and not _sync_ok:
+                print(f"  🛡 {race_data['race_id']}: 同期削除をスキップ "
+                      f"({len(scraped_nums)}頭{'・着順あり' if _has_finish else ''}) "
+                      f"— 部分取得で出走馬を消さない (#150e)")
+            if _sync_ok:
                 _ph = ",".join("?" * len(scraped_nums))
                 conn.execute(
                     f"DELETE FROM results WHERE race_id = ? AND finish_position = 0 "

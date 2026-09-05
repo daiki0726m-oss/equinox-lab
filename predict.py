@@ -361,6 +361,11 @@ def cmd_predict(args):
                     # 🆕 幽霊馬対策 (#43): 最新スクレイプの馬番に無い結果未確定レコードを削除
                     # (枠順確定前の仮馬番が確定後も残る「幽霊馬」を根絶。save_race_to_db と同じ)
                     _snums = [e.get("horse_number", 0) for e in entries if e.get("horse_number")]
+                    # #150e: 5頭未満のスクレイプは取得失敗とみなし削除しない
+                    # (部分取得で出走馬を消す事故: 9/5 札幌4R 14頭→1頭)
+                    if _snums and len(_snums) < 5:
+                        print(f"  🛡 {race_id}: 同期削除をスキップ ({len(_snums)}頭のみ取得)")
+                        _snums = []
                     if _snums:
                         _ph = ",".join("?" * len(_snums))
                         conn.execute(

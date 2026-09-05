@@ -2706,6 +2706,10 @@ def fetch_weekend_races():
                         # 🆕 幽霊馬対策 (#43): 最新スクレイプの馬番に無い結果未確定レコードを削除
                         # (枠順確定前の仮馬番が確定後も残る「幽霊馬」を根絶。save_race_to_db と同じ)
                         _snums = [e.get('horse_number', 0) for e in entries if e.get('horse_number')]
+                        # #150e: 5頭未満のスクレイプは取得失敗とみなし削除しない
+                        if _snums and len(_snums) < 5:
+                            print(f"  🛡 {rid}: 同期削除をスキップ ({len(_snums)}頭のみ取得)")
+                            _snums = []
                         if _snums:
                             _ph = ",".join("?" * len(_snums))
                             conn.execute(
