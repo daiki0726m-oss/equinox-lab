@@ -598,5 +598,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "17987097054061401",
+  "posted_at": "2026-09-06T10:21:19.849301+09:00",
+  "slot": "post_predict",
+  "pattern": "transparency",
+  "race_id": "202606040211",
+  "race_name": "紫苑S",
+  "chunk": 0,
+  "chars": 158
  }
 ]
