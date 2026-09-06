@@ -568,5 +568,35 @@
   "race_name": "",
   "chunk": 5,
   "chars": 0
+ },
+ {
+  "post_id": "18103628204353815",
+  "posted_at": "2026-09-06T09:54:47.095570+09:00",
+  "slot": "odds_flash",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
+ },
+ {
+  "post_id": "18107312123597359",
+  "posted_at": "2026-09-06T09:54:55.215609+09:00",
+  "slot": "odds_flash",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
+ },
+ {
+  "post_id": "18073071803720810",
+  "posted_at": "2026-09-06T09:55:02.485722+09:00",
+  "slot": "odds_flash",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
  }
 ]
