@@ -74,6 +74,15 @@ jobs:
 
       # #95: 週次 ROI モニタ (segments 監視: trio-focus band / whitelist / 注) を配線。
       # これまでどの workflow からも呼ばれておらず降格 flag が発火し得なかった (レビュー指摘)。
+      # #151: レース条件別の実測値 (印の捕捉率・三連複配当) と、
+      # 現行の印ロジックの分布から引いた信頼度の閾値を毎週更新する。
+      # 固定閾値は印ロジックやモデルが変わるたびに陳腐化する (#36/#120/#147 で三度再発)
+      # ので、週末が終わるたびに実分布から引き直す。
+      - name: Rebuild race baseline (#151)
+        if: always() && steps.check.outputs.age != ''
+        run: |
+          python3 scripts/build_race_baseline.py || echo "⚠️ 基準表の更新に失敗 (既存の値を使い続ける)"
+
       - name: ROI weekly monitor
         id: roimon
         if: always() && steps.check.outputs.age != ''
@@ -120,7 +129,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           bash scripts/db_pack.sh
-          git add models/ keiba.db.gz docs/data/roi_weekly.json docs/data/mark_tracker.json models/train_boundary.json
+          git add models/ keiba.db.gz docs/data/roi_weekly.json docs/data/mark_tracker.json models/train_boundary.json docs/data/race_baseline.json
           if git diff --staged --quiet; then
             echo "📭 変更なし"
           else

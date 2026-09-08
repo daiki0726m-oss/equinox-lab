@@ -277,13 +277,25 @@ def evaluate(
     # 渡すこと。温度1 の値を入れると S/A/B がほぼ消滅する (144R 実測 49→7)。
     # この後 predict.py で volatility (未勝利 -2 等) 補正が入り、ノイズの多い
     # 未勝利戦の高勝率本命は適切に減格される。
-    def _win_grade(w: float) -> str:
-        if w >= 45: return "S"
-        if w >= 30: return "A"
-        if w >= 20: return "B"
-        if w >= 13: return "C"
-        return "D"
-    rating = _win_grade(top_win_pct)
+    # ★ #151 (2026-09-08): 閾値を **分布から引き直す** 方式に変更。
+    # 固定閾値 (S≥45/A≥30/B≥20/C≥13) は「◎=ML勝率ほぼ1位」時代の分布に
+    # 合わせたもので、#147 で ◎ が点数表 (オッズ非依存) 由来になった瞬間に
+    # ◎表示勝率の中央値が 28.4% → 17.6% に下がり、**D が 11% → 39% に激増**した。
+    # #36/#120 で二度「閾値と分布はペア」と書いた失敗の三度目。
+    # race_baseline が現行の印ロジックの実分布から目標構成比を満たす閾値を
+    # 毎回引き直すので、次に印の選び方を変えても構成比は保たれる。
+    # 基準表が無い環境では従来の固定値にフォールバックする。
+    try:
+        from race_baseline import grade as _rb_grade
+        rating = _rb_grade(top_win_pct)
+    except Exception:
+        def _win_grade(w: float) -> str:
+            if w >= 45: return "S"
+            if w >= 30: return "A"
+            if w >= 20: return "B"
+            if w >= 13: return "C"
+            return "D"
+        rating = _win_grade(top_win_pct)
 
     label = GRADE_LABELS[rating]
     br = result['breakdown']

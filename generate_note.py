@@ -722,7 +722,10 @@ def generate_article(date_str, featured_races, all_races, free=False):
 
     # ━━━ 5. 今日のラインナップ ━━━
     lines.append("## 今日の注目レース\n")
-    lines.append("| レース | コース | 頭数 | AI評価 | 💎妙味 | レース傾向 |")
+    # #151: 「AI評価 S/A/B」というラベルの表示をやめ、その条件の実測値にする。
+    # ラベルは ◎を選ぶモデル (点数表) と連動しておらず、1番人気オッズ+頭数+クラスに
+    # 足しても予測力の増分が AUC +0.0009 (p=0.455) = 独自情報を持たなかった。
+    lines.append("| レース | コース | 頭数 | 印5頭で3着内が揃う実測 | 💎妙味 | レース傾向 |")
     lines.append("|--------|--------|:----:|:------:|:------:|-----------|")
     for r in featured_races:
         info = r["race_info"]
@@ -738,18 +741,29 @@ def generate_article(date_str, featured_races, all_races, free=False):
         is_main = (rnum == 11
                    or info.get("grade", "") in ("G1", "G2", "G3"))
         icon = "🏆" if is_main else "🔥"
+        _cap = "-"
+        try:
+            import race_baseline as _rb
+            _st = _rb.stats(hcount, rname)
+            if _st:
+                _cap = f"{round(_st['cap5'] * 100)}%"
+        except Exception:
+            _cap = f"**{conf}**"      # 基準表が無い環境では従来のラベル
         lines.append(f"| {icon} **{venue}{rnum}R {rname}** | {surface}{distance}m | "
-                     f"{hcount}頭 | **{conf}** | {myomi or '-'} | {tend} |")
+                     f"{hcount}頭 | {_cap} | {myomi or '-'} | {tend} |")
     lines.append("")
 
-    lines.append("\n**AI評価の見方:**")
-    lines.append("| 評価 | 意味 |")
+    lines.append("\n**「印5頭で3着内が揃う実測」の見方:**")
+    lines.append("")
+    lines.append("同じ頭数・同じ層（平場／未勝利・新馬）の過去レースで、"
+                 "AIが打った印5頭（◎○▲△△）が3着内3頭を全部押さえられた割合です。"
+                 "このレースの予言ではなく、条件ごとの実績値です。")
+    lines.append("")
+    lines.append("| 実測 | 買い方の目安 |")
     lines.append("|:----:|------|")
-    lines.append("| **S** | ◎が非常に強い — 堅いレース |")
-    lines.append("| **A** | ◎の信頼度が高い |")
-    lines.append("| **B** | ◎は標準的 — 相手次第 |")
-    lines.append("| **C** | ◎の信頼度は低め — 波乱含み |")
-    lines.append("| **D** | ◎が弱い — 見送りが無難 |")
+    lines.append("| 35%以上 | 印の中で決まりやすい条件。点数を絞る側 |")
+    lines.append("| 22〜34% | 印だけでは半端に届かないことが多い条件 |")
+    lines.append("| 21%以下 | 印5頭では届きにくい条件。手広く取るか見送る側 |")
     lines.append("")
     lines.append("**💎妙味の見方:**")
     lines.append("| 表示 | 意味 |")

@@ -12,6 +12,15 @@ from database import get_db
 JST = timezone(timedelta(hours=9))
 
 
+def _race_baseline_stats(n_horses, race_name=None):
+    """#151: 頭数×層 別の実測値 (印の捕捉率・三連複配当)。基準表が無ければ None。"""
+    try:
+        import race_baseline
+        return race_baseline.stats(n_horses, race_name)
+    except Exception:
+        return None
+
+
 def export_predictions(date_str=None):
     """指定日の予測データをJSONファイルに書き出し"""
 
@@ -302,6 +311,11 @@ def export_predictions(date_str=None):
                     "race_tendency": race_tendency,
                     # #96: 同名レースの歴史的荒れ度 (temporal-safe、out-of-time検証済)
                     "upset_hist": upset_hist,
+                    # #151: この頭数のレースで実際に何が起きたかの実測値。
+                    # 「信頼度S」というラベル (◎を選ぶモデルと連動しておらず、
+                    # 1番人気オッズ+頭数+クラスに足しても AUC +0.0009) の代わりに、
+                    # 買い目の点数設計にそのまま使える数字を出す。
+                    "baseline": _race_baseline_stats(len(horses), race_info.get("race_name", "")),
                     "has_results": has_results,
                     "payouts": race_payouts if has_results else [],
                     "prediction_locked": datetime.now(JST).hour >= 10,

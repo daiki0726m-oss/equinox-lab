@@ -260,6 +260,21 @@ body {
 .conf-badge.B { background: var(--conf-b); }
 .conf-badge.C { background: var(--conf-c); }
 .conf-badge.D { background: var(--conf-d); }
+/* #151: 実測バッジ。色は良し悪しでなく率の大きさだけを表す */
+.conf-badge.cap { color: #fff; background: #4B5563; }
+.conf-badge.cap.hi  { background: #C9A227; color: #1a1a1a; }
+.conf-badge.cap.mid { background: #3B82F6; }
+.conf-badge.cap.lo  { background: #4B5563; opacity: 0.75; }
+.cap-block {
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px; padding: 10px 12px; margin: 0 0 10px; font-size: 12px; line-height: 1.7;
+}
+.cap-title { font-weight: 700; margin-bottom: 6px; }
+.cap-title span { font-weight: 400; opacity: 0.6; font-size: 11px; margin-left: 4px; }
+.cap-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cap-row b { font-size: 15px; font-weight: 800; color: #f0c040; }
+.cap-row i { font-style: normal; opacity: 0.6; font-size: 11px; }
+.cap-note { margin-top: 6px; opacity: 0.8; }
 .toggle-icon {
   font-size: 10px; color: var(--text-muted);
   transition: transform var(--transition);
@@ -1174,14 +1189,15 @@ function renderRaceCards() {
     });
   }
 
-  // 信頼度フィルター
+  // #151: 実測の捕捉率でフィルタ (旧: 信頼度アルファベット階層)
   if (state.confFilter !== 'ALL') {
-    const ranks = ['S','A','B','C','D'];
-    const minIdx = ranks.indexOf(state.confFilter);
-    races = races.filter(race => {
-      const rIdx = ranks.indexOf(race.confidence || 'D');
-      return rIdx <= minIdx;
-    });
+    const min = state.confFilter === 'HI' ? 0.35 : state.confFilter === 'MID' ? 0.22 : null;
+    if (min != null) {
+      races = races.filter(race => {
+        const c = race.baseline && race.baseline.cap5;
+        return c == null ? true : c >= min;
+      });
+    }
   }
 
   if (races.length === 0) {
@@ -1191,6 +1207,47 @@ function renderRaceCards() {
   }
 
   container.innerHTML = races.map(race => createRaceCard(race)).join('');
+}
+
+// #151: 「信頼度S」ラベルの表示をやめ、そのレース条件の実測値に置き換える。
+// ラベルは ◎を選ぶモデル (点数表) と連動しておらず、1番人気オッズ+頭数+クラスに
+// 足しても予測力の増分は AUC +0.0009 (p=0.455) = 独自情報を持たなかった。
+function capBadge(race) {
+  const b = race.baseline;
+  if (!b || b.cap5 == null) {
+    const c = race.confidence || 'C';
+    return `<span class="conf-badge ${c}">${(typeof CONF_ICONS !== 'undefined' ? (CONF_ICONS[c] || '') : '')}${c}</span>`;
+  }
+  const pct = Math.round(b.cap5 * 100);
+  const cls = pct >= 35 ? 'hi' : pct >= 22 ? 'mid' : 'lo';
+  const tip = `${b.label}のレースで、印5頭(◎○▲△△)が3着内3頭を全部押さえられた割合の実測値`
+            + ` (過去${b.n}レース)。穴2枠も入れた7頭なら${Math.round((b.cap7||0)*100)}%。`
+            + (b.trio_median ? ` 三連複の配当は中央値${b.trio_median.toLocaleString()}円。` : '');
+  return `<span class="conf-badge cap ${cls}" title="${tip}">${pct}%</span>`;
+}
+
+function capBlock(race) {
+  const b = race.baseline;
+  if (!b || b.cap5 == null) return '';
+  const p5 = Math.round(b.cap5 * 100);
+  const p7 = b.cap7 != null ? Math.round(b.cap7 * 100) : null;
+  const note = p5 >= 35 ? '印の中で決まりやすい条件。点数を絞る側'
+             : p5 >= 22 ? '印だけでは半端に届かないことが多い条件'
+             : '印5頭では届きにくい条件。手広く取るか見送る側';
+  let pay = '';
+  if (b.trio_median) {
+    pay = `<div class="cap-row"><span>三連複の配当</span>`
+        + `<b>中央値 ${b.trio_median.toLocaleString()}円</b>`
+        + (b.trio_over10k != null ? `<i>1万円超 ${Math.round(b.trio_over10k*100)}%</i>` : '')
+        + `</div>`;
+  }
+  return `<div class="cap-block">
+    <div class="cap-title">📐 この条件（${b.label}）の実測 <span>※過去${b.n}レース</span></div>
+    <div class="cap-row"><span>印5頭で3着内3頭が全部揃う</span><b>${p5}%</b>`
+    + (p7 != null ? `<i>穴2枠込みの7頭なら ${p7}%</i>` : '') + `</div>
+    ${pay}
+    <div class="cap-note">${note}</div>
+  </div>`;
 }
 
 function createRaceCard(race) {
@@ -1221,7 +1278,7 @@ function createRaceCard(race) {
         </div>
         <div class="race-right">
           ${race.myomi ? `<span class="myomi-badge ${race.myomi.includes('★★★') ? 'myomi-3' : race.myomi.includes('★★') ? 'myomi-2' : 'myomi-1'}">${race.myomi}</span>` : ''}
-          <span class="conf-badge ${confClass}">${confIcon}${confClass}</span>
+          ${capBadge(race)}
           <span class="result-badge ${race.has_results ? 'done' : 'pending'}">${race.has_results ? '確定' : '未確定'}</span>
           <span class="toggle-icon">▼</span>
         </div>
@@ -1289,7 +1346,7 @@ function renderPredTab(race) {
   const bt = state.activeBetType;
   const bets = scaleBets((race.all_bets || {})[bt] || [], state.budget);
 
-  let html = '<div class="horse-list">';
+  let html = capBlock(race) + '<div class="horse-list">';
   top3.forEach(h => { html += renderHorseRow(h, true); });
   if (rest.length > 0) {
     html += `<div id="rest-${race.race_id}" style="display:none;">`;

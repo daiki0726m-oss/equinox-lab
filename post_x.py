@@ -1012,8 +1012,26 @@ def cmd_predict(args):
         conf_emoji = "🔥" if race['confidence'] == 'S' else "⭐" if race['confidence'] == 'A' else "📊"
         is_main = "メイン" if race['race_number'] == 11 else ""
 
-        t = f"{conf_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}\n"
-        t += f"信頼度{race['confidence']}({_conf_label.get(race['confidence'], '')}) {is_main}\n\n"
+        t = f"{conf_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}"
+        t += f" {is_main}\n" if is_main else "\n"
+        # #151: 「信頼度S(鉄板級)」というラベルの表示をやめ、**そのレース条件の実測値**にする。
+        # 検証で (a) ◎を選ぶモデル (点数表) と信頼度を計算するモデル (ML勝率) が
+        # 連動していない (◎がAI勝率1位なのは42%)、(b) ラベル自体は
+        # 1番人気オッズ+頭数+クラスに足しても AUC +0.0009 (p=0.455) = 独自情報ゼロ、
+        # と判明したため。実測値なら「印5頭で足りるのか、手広く取るべきか」が直接わかる。
+        # 基準表が無い環境では従来のラベルに戻る (フォールバック)。
+        _rb_line = _rb_line_short = ""
+        try:
+            import race_baseline as _rb
+            _rn = race.get('race_name') or ''
+            _rb_line = _rb.line(len(preds), compact=True, race_name=_rn)
+            _rb_line_short = _rb.line(len(preds), compact=True, with_payout=False, race_name=_rn)
+        except Exception:
+            _rb_line = _rb_line_short = ""
+        if _rb_line:
+            t += f"{_rb_line}\n\n"
+        else:
+            t += f"信頼度{race['confidence']}({_conf_label.get(race['confidence'], '')})\n\n"
 
         # 印（全て表示)— 「{mark} {番号}番 {馬名}」形式で fact_check に確実に通す
         # #100: 注 (妙味longshot) はオッズを併記 — 「夢の配当枠」であることを
@@ -1028,6 +1046,16 @@ def cmd_predict(args):
                     t += f"{mk}{p.get('horse_number',0)}番 {p.get('horse_name','?')}（想定単{p.get('odds_win'):.0f}倍）\n"
                 else:
                     t += f"{mk}{p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
+
+        # #151: 印行まで積んだ時点で字数が厳しければ、実測行から配当を落として捕捉率だけ残す。
+        # 印 (本体) と ⚡荒れ度 (#102) を押し出さないための優先順位: 印 > 捕捉率 > 配当。
+        def _xw0(_s):
+            return sum(2 if ord(ch) > 127 else 1 for ch in _s)
+        # t はこの時点で「見出し + 実測行(配当込み) + 印7行」。
+        # この後に 🎯締め行 (~20) が付き、⚡等の補足は 272 予算で入る。
+        # 配当込みで 252 を超えるなら、その分を配当から返す。
+        if _rb_line and _rb_line_short and _xw0(t) > 252:
+            t = t.replace(_rb_line, _rb_line_short, 1)
 
         # ── #102: 追加情報 (⚡荒れ度/穴注意/💡能力) は X の280字予算内で優先度順に追記 ──
         # (無条件追記だと6印+⚡2行+穴+💡で350字超になり X が投稿拒否する — 実測350字)

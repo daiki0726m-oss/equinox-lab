@@ -21,6 +21,15 @@ app.config["SECRET_KEY"] = "keiba-prediction-2025"
 JST = timezone(timedelta(hours=9))
 
 
+def _baseline_stats(n_horses, race_name=None):
+    """#151: 頭数×層 別の実測値 (印の捕捉率・三連複配当)。基準表が無ければ None。"""
+    try:
+        import race_baseline
+        return race_baseline.stats(n_horses, race_name)
+    except Exception:
+        return None
+
+
 def _bg_result_fetcher():
     """バックグラウンドで5分ごとにレース結果＆オッズを取得"""
     import requests as bg_requests
@@ -1047,6 +1056,9 @@ def api_predict_date(date_str):
                 "myomi": myomi,
                 "max_ev": round(max_ev, 1),
                 "race_tendency": race_tendency,
+                # #151: この頭数×層のレースで実際に何が起きたかの実測値。
+                # ダッシュボードは「信頼度S」ラベルでなくこの数字を出す。
+                "baseline": _baseline_stats(len(horses), race_info.get("race_name", "")),
                 "has_results": has_results,
                 "payouts": race_payouts if has_results else [],
                 "prediction_locked": is_locked and cached is not None,

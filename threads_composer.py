@@ -351,25 +351,41 @@ def _p_chu_value(race, horses, n_other, stats=None):
     return "\n".join(lines)
 
 
-def _p_confidence(race, horses, n_other, stats=None):
-    """信頼度が高い日だけ「今日はここ」と言い切る型。"""
-    if race.get("confidence") not in ("S", "A"):
+def _p_capture(race, horses, n_other, stats=None):
+    """このレース条件の実測値を主役にする型 (#151)。
+
+    旧 _p_confidence は「AIが自信のあるレース」と信頼度ラベルで語っていたが、
+    そのラベルは ◎を選ぶモデルと連動しておらず、1番人気オッズ+頭数+クラスに
+    足しても予測力の増分が AUC +0.0009 (p=0.455) = 独自情報を持たなかった。
+    代わりに「この条件で印5頭がどれだけ3着内を押さえられたか」の実測を出す。
+    読者が点数を絞るか手広く取るかを決められる数字であり、水増しが無い。
+    """
+    try:
+        import race_baseline
+    except Exception:
+        return None
+    st = race_baseline.stats(len(horses or []), race.get("race_name", ""))
+    if not st:
         return None
     mk = _mark_map(horses)
     honmei = mk.get("◎")
     if not honmei:
         return None
-    disp = honmei.get("pred_win_display_pct") or 0
-    if disp < 25:
-        return None
-    grade = "今週で最も自信のある" if race.get("confidence") == "S" else "自信のある"
+    p5 = round(st["cap5"] * 100)
     aite = [mk[m].get("horse_name", "") for m in ("○", "▲") if m in mk]
-    lines = [f"今日、AIが{grade}レースは {_race_title(race)}。", "",
-             f"◎ {honmei.get('horse_name','?')}{_label(honmei)}",
-             f"AI勝率 {disp:.0f}% — 出走馬の中で頭ひとつ抜けています。", ""]
+    lines = [f"{_race_title(race)}（{len(horses)}頭）", ""]
+    body = f"この条件のレース、印5頭で3着内3頭が全部揃ったのは実測{p5}%。"
+    if st.get("cap7") is not None:
+        body += f" 穴2枠も入れた7頭なら{round(st['cap7']*100)}%。"
+    lines += [body]
+    if st.get("trio_median"):
+        lines += [f"三連複の配当は中央値{st['trio_median']:,}円、"
+                  f"1万円超が{round(st['trio_over10k']*100)}%。"]
+    lines += ["", race_baseline.advice(len(horses), race.get("race_name", "")) + "。", "",
+              f"◎ {honmei.get('horse_name','?')}{_label(honmei)}"]
     if aite:
-        lines += ["相手 " + " / ".join(aite), ""]
-    lines += [f"※{FREEZE}", ""]
+        lines += ["相手 " + " / ".join(aite)]
+    lines += ["", f"※数字は過去{st['n']}レースの実測。{FREEZE}", ""]
     lines += _footer(body="\n".join(lines))
     return "\n".join(lines)
 
@@ -380,7 +396,7 @@ PATTERNS = [
     ("upset", _p_upset),
     ("transparency", _p_transparency),
     ("chu_value", _p_chu_value),
-    ("confidence", _p_confidence),
+    ("capture", _p_capture),
 ]
 
 
