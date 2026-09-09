@@ -1,12 +1,15 @@
 {
-  "generated_at": "2026-09-10T06:02:00.804609+09:00",
+  "generated_at": "2026-09-10T08:22:50.369167+09:00",
   "today": "2026-09-10 (Thu)",
   "weekday": 3,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "future",
+      "status": "missing",
       "expected": "07:30 JST",
+      "deadline": "11:00 JST",
+      "fallback_mode": "morning",
+      "action": "gh workflow run auto_post_x.yml --ref main -f mode=morning",
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
@@ -78,8 +81,8 @@
   },
   "summary": {
     "ok": 0,
-    "missing": 0,
-    "future": 3,
+    "missing": 1,
+    "future": 2,
     "not_today": 9,
     "missed": 0,
     "ok_delayed": 0,
