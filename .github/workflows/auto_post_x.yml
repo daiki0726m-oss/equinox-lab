@@ -688,15 +688,30 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # docs/data/のJSONのみをデプロイ（predict.htmlはindex.htmlが本体）
           git add docs/data/
-          # 🔒 #41 (2026-06-07): 全 post 系で keiba.db を push する
+          # 🔒 #41 (2026-06-07): post 系で keiba.db を push する
           # 理由: posted_slots テーブルに記録した atomic lock 状態を、後続の cron/watchdog
           # /手動 trigger に確実に引き継ぐため。これがないと「checkout 直後の DB に lock なし」
           # → lock 取得 → 二重投稿 が発生する (5/23, 6/7 で実際に発生)。
+          #
+          # 📉 #153 (2026-09-10): **平日スロット (morning/weekday/evening) を対象から外した**。
+          # 上記の理由は #141 で失効している — lock の正本は
+          # docs/data/posted_slots_YYYYMMDD.json (テキスト) に移り、_acquire_or_exit は
+          # DB より先にサイドカーを見て exit する (post_x.py:204)。サイドカーは
+          # `git add docs/data/` で毎回 push されるので、DB を運ぶ必要がない。
+          # 平日スロットが DB に書くのは実質この lock 行だけで、200バイトの情報のために
+          # 33MB の gz を 1日11-12回 push していた (実測 平日 252コミット/30日 = 8.1GB)。
+          # リポジトリは既に 79.4GB で GitHub から容量警告が出ており、push が拒否されると
+          # ダッシュボード更新・二重投稿防止・結果報告がまとめて壊れる。
+          # 週末 (predict/post_predict/odds_flash/results) は DB が予測キャッシュと着順を
+          # 運んでおり後続 workflow が読むので従来どおり push する。
           case "${{ steps.determine.outputs.type }}" in
-            morning|weekday|evening|predict|post_predict|odds_flash|results)
+            predict|post_predict|odds_flash|results)
               bash scripts/db_pack.sh
               git add keiba.db.gz
-              echo "🔒 keiba.db を add (atomic lock 状態を後続 trigger に引き継ぎ)"
+              echo "🔒 keiba.db を add (予測キャッシュ/着順を後続 trigger に引き継ぎ)"
+              ;;
+            morning|weekday|evening)
+              echo "📉 #153: 平日スロットは keiba.db を push しない (lock 正本はテキストサイドカー)"
               ;;
           esac
           if git diff --staged --quiet; then
