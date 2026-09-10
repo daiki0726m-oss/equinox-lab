@@ -192,8 +192,38 @@ jobs:
             # 🆕 #68: iter ごとに DB 結果も push する (旧版は loop 後の最終 step まで保留 →
             # collect で結果が入っても origin に届かず JSON の has_results=False 状態が
             # 終日続く事故が 6/13 に発生)。
-            bash scripts/db_pack.sh 2>/dev/null || true
-            git add keiba.db.gz 2>/dev/null || true
+            #
+            # 📉 #153 (2026-09-10): **毎iterから「約1時間ごと + 投稿トリガー直前」に間引いた**。
+            # リポジトリが 79.4GB に達し GitHub が容量警告を返した (push が拒否されると
+            # ダッシュボード更新・二重投稿防止・結果報告がまとめて壊れる)。増加の主因が
+            # ここで、33MB の gz を 10分ごと = 土日で 19.3GB/月 を積んでいた。
+            #
+            # 毎iter push が不要な根拠:
+            #  - `git reset --hard origin/main` は **ループの外** (起動時1回) なので、
+            #    ループ内の push は自分の状態保持には要らない。DB はプロセス内で蓄積される。
+            #  - ダッシュボードの鮮度は docs/data の JSON が担う。export_predictions は
+            #    **ローカル DB** から書き出すので、DB を push しなくても JSON は毎iter最新。
+            #  - collect は当日の完走レースを毎回全件取り直す (#150e) ので、
+            #    runner が落ちて再起動しても DB は再構築される = クラッシュ復旧にも不要。
+            #  - 実際に DB を必要とするのは「別 workflow が origin の DB から再 export する」
+            #    瞬間だけ (results 17:30 / refresh_dashboard 18:30 など)。古い DB で再 export
+            #    されると JSON が巻き戻る (#68/#90 のイタチごっこ)。
+            #    → **投稿トリガー時刻の直前は必ず push** して、これを防ぐ。
+            #  - 万一ずれても次の iter (10分後) の export で自己修復する。
+            #
+            # DB_PUSH_EVERY=1 にすれば旧挙動 (毎iter) に即戻せる。
+            DB_PUSH=0
+            if [ $((ITER % ${DB_PUSH_EVERY:-6})) -eq 0 ]; then DB_PUSH=1; fi
+            case "$JST_HM" in
+              092*|093*|100*|101*|172*|173*|181*|182*) DB_PUSH=1 ;;  # 投稿トリガー直前
+            esac
+            if [ "$DB_PUSH" = "1" ]; then
+              bash scripts/db_pack.sh 2>/dev/null || true
+              git add keiba.db.gz 2>/dev/null || true
+              echo "💾 keiba.db.gz を add (iter=$ITER, JST=$JST_HM)"
+            else
+              echo "📉 #153: この iter は DB を push しない (JSON のみ)"
+            fi
             if git diff --cached --quiet; then
               echo "📭 変更なし"
             else
