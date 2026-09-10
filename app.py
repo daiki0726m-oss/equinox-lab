@@ -551,8 +551,12 @@ def api_predict_date(date_str):
                     (race_id,)
                 ).fetchone()
 
-            # ロック中かつキャッシュありなら即座に返す
-            use_cache = cached and is_locked
+            # ロック中かつキャッシュありなら即座に返す。
+            # #152: 過去日もキャッシュを正とする。旧実装は is_today でない日を必ず
+            # 再生成しており、ダッシュボードで過去日を開くだけで その日の
+            # all_bets_json が確定オッズ由来の買い目に置き換わっていた
+            # (= 週次採点が読む「投稿時点の買い目」の汚染経路)。
+            use_cache = cached and (is_locked or not is_today)
 
             if use_cache:
                 # キャッシュから復元
@@ -933,11 +937,22 @@ def api_predict_date(date_str):
 
                 # ── キャッシュに保存 ──
                 with get_db() as conn:
+                    # #152: INSERT OR REPLACE は渡していない列を NULL に落とすため、
+                    # posted_at (seal) と posted_marks_json (投稿印の凍結記録) まで
+                    # 消えていた。seal が消えると predict --force も通ってしまう。
+                    # 上書きするのは自分が計算した7列だけにする。
                     conn.execute("""
-                        INSERT OR REPLACE INTO predictions_cache
+                        INSERT INTO predictions_cache
                         (race_id, predictions_json, all_bets_json, confidence,
                          conf_reason, should_bet, bet_reason)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(race_id) DO UPDATE SET
+                            predictions_json = excluded.predictions_json,
+                            all_bets_json    = excluded.all_bets_json,
+                            confidence       = excluded.confidence,
+                            conf_reason      = excluded.conf_reason,
+                            should_bet       = excluded.should_bet,
+                            bet_reason       = excluded.bet_reason
                     """, (
                         race_id,
                         json.dumps(horses, ensure_ascii=False),

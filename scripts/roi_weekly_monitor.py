@@ -202,7 +202,7 @@ def collect_weekly_stats(conn, weeks_back):
             if amt > 0:
                 seg["hits"] += 1
 
-        # (3) 注印の複勝率 (妙味 longshot 健全性。#100 OOS検証: 複勝~71%/単勝~78% が実力値)
+        # (3) 注印の複勝率 (妙味 longshot 健全性。#100: OOS 複勝71.3% / 実運用 複勝76.9%・単勝24.9%)
         chu = next((p for p in preds if p.get("mark") == "注"), None)
         if chu and chu.get("horse_number"):
             segments["chu_mark_複勝"]["n"] += 1
@@ -361,8 +361,12 @@ def format_markdown(report):
         chu = segs.get("chu_mark_複勝", {})
         if chu.get("n"):
             lines.append("")
+            # #152: 「複勝期待回収135円」は #77 の in-sample 値で、#100 が
+            # 「OOS 71.3% / 実運用 複勝76.9%・単勝24.9%」と下方訂正済み。
+            # 撤回された数字を毎週ベンチマークとして刷り続けていたので実測値に差し替える。
             lines.append(f"- 注印 複勝率: {chu.get('top3_rate_pct', 0)}% "
-                         f"({chu['top3_hits']}/{chu['n']}、設計値 ~11% / 複勝期待回収135円)")
+                         f"({chu['top3_hits']}/{chu['n']}、設計値 ~11%／"
+                         f"複勝回収は OOS 71円・実運用 77円 が実力値 — #77 の135円は撤回済み)")
 
     return "\n".join(lines)
 
