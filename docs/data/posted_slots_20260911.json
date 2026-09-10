@@ -1,3 +1,9 @@
 {
- "slots": {}
+ "slots": {
+  "morning": {
+   "posted_at": "2026-09-11 08:17:10",
+   "run_id": "34541392912",
+   "event": "workflow_dispatch"
+  }
+ }
 }
