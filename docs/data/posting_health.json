@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-12T00:28:46.026887+09:00",
+  "generated_at": "2026-09-12T03:41:49.385516+09:00",
   "today": "2026-09-12 (Sat)",
   "weekday": 5,
   "slots": {
@@ -77,17 +77,14 @@
     },
     "dashboard_predictions": {
       "slot": "dashboard_predictions",
-      "status": "missing",
+      "status": "ok",
       "expected": "開催日は常時",
-      "deadline": "1R発走まで",
-      "fallback_mode": "predict",
-      "workflow": "auto_post_x.yml",
-      "note": "docs/data/predictions_20260912.json が無い/空 = ダッシュボードが404"
+      "actual": "24レース (exported_at=2026-09-12T02:15:09.023378+09:00)"
     }
   },
   "summary": {
-    "ok": 0,
-    "missing": 1,
+    "ok": 1,
+    "missing": 0,
     "future": 5,
     "not_today": 7,
     "missed": 0,
