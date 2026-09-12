@@ -798,5 +798,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18096942146067864",
+  "posted_at": "2026-09-12T10:18:00.674457+09:00",
+  "slot": "post_predict",
+  "pattern": "minimal",
+  "race_id": "202609040311",
+  "race_name": "チャレンジC",
+  "chunk": 0,
+  "chars": 234
  }
 ]
