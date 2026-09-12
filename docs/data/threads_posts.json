@@ -808,5 +808,25 @@
   "race_name": "チャレンジC",
   "chunk": 0,
   "chars": 234
+ },
+ {
+  "post_id": "18089609315278835",
+  "posted_at": "2026-09-12T10:23:49.651139+09:00",
+  "slot": "odds_flash",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
+ },
+ {
+  "post_id": "18066280289770084",
+  "posted_at": "2026-09-12T10:23:57.397748+09:00",
+  "slot": "odds_flash",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
  }
 ]
