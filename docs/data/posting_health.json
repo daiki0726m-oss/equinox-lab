@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-12T08:24:11.170258+09:00",
+  "generated_at": "2026-09-12T10:17:10.721211+09:00",
   "today": "2026-09-12 (Sat)",
   "weekday": 5,
   "slots": {
@@ -23,23 +23,39 @@
     },
     "weekend_morning_predict": {
       "slot": "weekend_morning_predict",
-      "status": "ok",
+      "status": "ok_late",
       "expected": "07:00 JST",
-      "actual": "2026-09-12T07:42:47+09:00",
+      "deadline": "09:30 JST",
+      "recent_success": {
+        "created_at": "2026-09-12T07:42:47+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 43
+      },
       "delay_minutes": 43,
-      "event": "schedule",
       "workflow": "auto_post_x.yml"
     },
     "odds_flash": {
       "slot": "odds_flash",
-      "status": "future",
+      "status": "ok_late",
       "expected": "09:30 JST",
+      "deadline": "10:15 JST",
+      "recent_success": {
+        "created_at": "2026-09-12T09:36:41+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 7
+      },
+      "delay_minutes": 7,
       "workflow": "auto_post_x.yml"
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "future",
+      "status": "missing",
       "expected": "10:15 JST",
+      "deadline": "10:50 JST",
+      "fallback_mode": "post_predict",
+      "action": "gh workflow run auto_post_x.yml --ref main -f mode=post_predict",
       "workflow": "auto_post_x.yml"
     },
     "results": {
@@ -68,11 +84,16 @@
     },
     "fetch_saturday": {
       "slot": "fetch_saturday",
-      "status": "ok_delayed",
+      "status": "ok_late",
       "expected": "05:00 JST",
-      "actual": "2026-09-12T07:10:06+09:00",
+      "deadline": "09:00 JST",
+      "recent_success": {
+        "created_at": "2026-09-12T07:10:06+09:00",
+        "title": "📅 fetch weekend races",
+        "event": "schedule",
+        "delay_minutes": 130
+      },
       "delay_minutes": 130,
-      "event": "schedule",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_sunday": {
@@ -85,17 +106,17 @@
       "slot": "dashboard_predictions",
       "status": "ok",
       "expected": "開催日は常時",
-      "actual": "24レース (exported_at=2026-09-12T07:53:42.195003+09:00)"
+      "actual": "24レース (exported_at=2026-09-12T09:47:13.648088+09:00)"
     }
   },
   "summary": {
-    "ok": 2,
-    "missing": 0,
-    "future": 3,
+    "ok": 1,
+    "missing": 1,
+    "future": 1,
     "not_today": 7,
     "missed": 0,
-    "ok_delayed": 1,
-    "ok_late": 0
+    "ok_delayed": 0,
+    "ok_late": 3
   },
   "missed_slots": []
 }
