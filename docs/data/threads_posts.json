@@ -898,5 +898,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18129459412754395",
+  "posted_at": "2026-09-13T10:27:39.443028+09:00",
+  "slot": "post_predict",
+  "pattern": "upset",
+  "race_id": "202609040411",
+  "race_name": "ローズS",
+  "chunk": 0,
+  "chars": 200
  }
 ]
