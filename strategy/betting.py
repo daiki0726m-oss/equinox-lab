@@ -213,20 +213,35 @@ class BettingStrategy:
         top_prob = max(p["pred_win"] for p in predictions)
         sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
 
-        # 最上位馬の勝率が12%未満 → 信頼度が低い
-        # v11 (2026-05-24): 8% → 12% に厳格化。閾値感度分析で
-        # ≥12%/≥30% にすると推奨レース ROI 132% → 141% に改善が判明。
-        # 印・買い目は常に出すが、推奨フラグだけ厳しくして「見送り」表示。
-        # UI 上で「✅ 推奨 / ⏭️ 見送り」バッジを通じて投資判断を補助。
-        if top_prob < 0.12:
+        # 混戦すぎるレースを弾く判定。
+        # v11 (2026-05-24): 8%→12% / 23%→30% に厳格化 (#16/#25 の感度分析)。
+        #
+        # 🎚 #156 (2026-09-15): **閾値を分位ベースに変更**。
+        # この 0.12 / 0.30 は意思決定チャネル `pred_win_norm` に対する絶対値だが、
+        # そのチャネルは生 softmax のまま (#120 は表示チャネルだけ z-score 化した) で、
+        # rank_score のレース内 sd が再学習のたびに動く。実キャッシュの実測:
+        #   2026-05 sd 0.493 → 遮断 30.7%   2026-06 sd 0.219 → 67.8%
+        #   2026-07 sd 0.347 → 29.2%        2026-08 sd 0.115 → **70.1%**
+        #   2026-09 sd 0.869 → **1.7%**
+        # = 「いくら投資するか」が予測の中身でなく再学習の引きで決まっていた。
+        # #36/#120/#147 が三度書いた「閾値と分布はペア」の、投資ゲートでの4度目。
+        # 基準表 (race_baseline.json) が 2026-05 と同じ遮断率になる分位を毎週引き直す。
+        # ROI を上げる変更ではない — 週で投資額が7倍動くのを止める変更 (#140)。
+        # BET_GATE_FIXED=1 で旧来の固定値に戻せる。
+        _gate = {"top_prob": 0.12, "top3_sum": 0.30}
+        try:
+            import flags as _fl
+            if not _fl.is_on('BET_GATE_FIXED'):
+                import race_baseline as _rb
+                _gate = _rb.bet_gate_thresholds()
+        except Exception:
+            pass
+
+        if top_prob < _gate["top_prob"]:
             return False, f"予測確率が低い (最大{top_prob:.1%})"
 
-        # 上位3頭の合計勝率が30%未満 → 分散しすぎ
-        # v11 (2026-05-24): 23% → 30% に厳格化。
-        # 「推奨だけ買えば ROI 141%、全レースだと 132%」の感度分析結果から。
-        # 印付け・買い目生成自体は動く設計で、ここは「推奨判定」のみ厳格化。
         top3_sum = sum(p["pred_win"] for p in sorted_preds[:3])
-        if top3_sum < 0.30:
+        if top3_sum < _gate["top3_sum"]:
             return False, f"上位3頭の合計勝率{top3_sum:.1%}で混戦"
 
         # 本命が堅すぎてオッズに旨味なし

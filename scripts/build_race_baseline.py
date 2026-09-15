@@ -39,6 +39,7 @@ AUC 0.5005 = 情報ゼロ)、他のオッズ非依存な候補はどれも頭数
 """
 import argparse
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -177,6 +178,116 @@ def build_payout(conn):
             "source": "確定配当 (全レース、平場 / 未勝利・新馬・障害 を分けて集計)"}
 
 
+
+def current_model_deployed_at(conn=None):
+    """現在出荷されているモデルが配備された時刻 (JST の naive 文字列)。
+
+    #156: 閾値は「そのモデルが出した分布」から引かないと意味がない。
+    weekly_retrain は再学習しても再予測しないので、直後に基準表を作ると
+    **前モデルの predictions_cache から閾値を引く**ことになる (実測: 09/14 に
+    書かれた閾値の元データは全件 09/13 以前 = 前モデルの出力)。
+    ここでモデルの配備時刻を取り、それ以降に作られた予測だけを窓にする。
+    """
+    import subprocess
+    mp = os.path.join(ROOT, "models", "model_rank.pkl")
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%cI", "--", mp],
+                             cwd=ROOT, capture_output=True, text=True, timeout=30)
+        if out.returncode == 0 and out.stdout.strip():
+            dt = datetime.fromisoformat(out.stdout.strip()).astimezone(
+                timezone(timedelta(hours=9)))
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
+    try:
+        dt = datetime.fromtimestamp(os.path.getmtime(mp), timezone(timedelta(hours=9)))
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        return None
+
+
+def build_bet_gate_thresholds(conn):
+    """投資ゲートの「混戦すぎるレースを弾く」閾値を、現行モデルの分布から引く (#156)。
+
+    なぜ固定値ではダメか
+    --------------------
+    `should_bet_race` は `top_prob < 0.12` / `top3_sum < 0.30` という**絶対値**で
+    弾いている。この値は 2026-05 の分布 (#16/#25) で決められたが、意思決定チャネル
+    `pred_win_norm` は生 softmax のままで (#120 は表示チャネルだけ z-score 化した)、
+    rank_score のレース内 sd は再学習のたびに大きく動く。実測:
+
+        2026-05 sd 0.493 → 遮断 30.7%
+        2026-06 sd 0.219 → 遮断 67.8%
+        2026-07 sd 0.347 → 遮断 29.2%
+        2026-08 sd 0.115 → 遮断 70.1%     ← 7割のレースで投資が止まっていた
+        2026-09 sd 0.869 → 遮断  1.7%     ← ほぼ素通り
+
+    つまり「どれだけ投資するか」が、予測の中身でなく**再学習の引き**で決まっていた。
+    #36/#120/#147 が三度書いた「閾値と分布はペア」が、投資ゲートにだけ未適用だった。
+
+    ここでは 2026-05 (0.12/0.30 が設計された時期) の遮断率を目標として、
+    現行モデルの分布から同じ割合を弾く分位点を引く。ROI を上げるための変更ではない
+    — 週ごとに投資額が7倍動くのを止めるための変更 (#140 の「分散の削減」)。
+    """
+    # 2026-05 の実測遮断率 = 閾値が意図した水準
+    TARGET = {"top_prob": 0.30, "top3_sum": 0.25}
+    FALLBACK = {"top_prob": 0.12, "top3_sum": 0.30}
+    # #156: 現モデルが出した予測だけを窓にする。足りなければ全期間に広げ、
+    # 「前モデルの分布から引いた」ことをログと JSON に明示する。
+    since = current_model_deployed_at(conn)
+    rows, fresh = [], True
+    if since:
+        rows = list(conn.execute("""
+            SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
+            JOIN races g ON pc.race_id = g.race_id
+            WHERE pc.created_at >= ? ORDER BY g.race_date DESC LIMIT 400
+        """, (since,)))
+    if len(rows) < MIN_SAMPLE_FOR_THRESHOLDS:
+        fresh = False
+        rows = list(conn.execute("""
+            SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
+            JOIN races g ON pc.race_id = g.race_id
+            ORDER BY g.race_date DESC LIMIT 400
+        """))
+    tops, sums = [], []
+    for r in rows:
+        if is_ml_out_of_domain(r["race_name"] or ""):
+            continue
+        try:
+            preds = json.loads(r["predictions_json"] or "[]")
+        except (ValueError, TypeError):
+            continue
+        rs = [p.get("rank_score") for p in preds if p.get("rank_score") is not None]
+        if len(rs) < 3:
+            continue
+        # 意思決定チャネルを再構成 (温度1 softmax = ml/model.py の pred_win_norm)
+        mx = max(rs)
+        ex = [math.exp(x - mx) for x in rs]
+        tot = sum(ex) or 1.0
+        pr = sorted((v / tot for v in ex), reverse=True)
+        tops.append(pr[0])
+        sums.append(sum(pr[:3]))
+
+    if len(tops) < MIN_SAMPLE_FOR_THRESHOLDS:
+        print(f"🎚 投資ゲート: 標本 {len(tops)} 件は不足 → 固定値 {FALLBACK} を維持")
+        return {"available": False, "n": len(tops), "thresholds": FALLBACK}
+
+    tops.sort(); sums.sort()
+    if not fresh:
+        print(f"   ⚠️ 現モデル ({since}) 以降の予測が {MIN_SAMPLE_FOR_THRESHOLDS} 件未満。"
+              f"前モデルの分布から引いています — 週末の予測生成後に再構築してください")
+    th = {
+        "top_prob": round(tops[int(len(tops) * TARGET["top_prob"])], 4),
+        "top3_sum": round(sums[int(len(sums) * TARGET["top3_sum"])], 4),
+    }
+    print(f"🎚 投資ゲートの閾値 (n={len(tops)}): "
+          f"top_prob≥{th['top_prob']:.3f} / top3_sum≥{th['top3_sum']:.3f} "
+          f"(目標遮断率 {TARGET['top_prob']:.0%}/{TARGET['top3_sum']:.0%})")
+    return {"available": True, "n": len(tops), "target_block_rate": TARGET,
+            "model_deployed_at": since, "window_matches_model": fresh,
+            "thresholds": th}
+
+
 def build_confidence_thresholds(conn):
     """現行の印ロジックが出している ◎表示勝率の分布から、目標構成比を満たす閾値を引く。
 
@@ -242,6 +353,7 @@ def main():
         "capture": build_capture(conn),
         "payout": build_payout(conn),
         "confidence": build_confidence_thresholds(conn),
+        "bet_gate": build_bet_gate_thresholds(conn),   # #156
     }
 
     print("📊 レース条件別の実測値")

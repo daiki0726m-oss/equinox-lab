@@ -24,6 +24,8 @@ _CACHE = {"mtime": None, "data": None}
 
 # 基準表が無い/壊れている時の従来値 (#36/#120 で使っていた固定閾値)
 FALLBACK_THRESHOLDS = {"S": 45.0, "A": 30.0, "B": 20.0, "C": 13.0}
+# #156: 投資ゲートの固定値 (2026-05 の分布で決められた #16/#25 の値)
+FALLBACK_BET_GATE = {"top_prob": 0.12, "top3_sum": 0.30}
 
 
 def load(path=None):
@@ -164,3 +166,18 @@ def grade(win_pct):
     if w >= th["C"]:
         return "C"
     return "D"
+
+
+def bet_gate_thresholds():
+    """投資ゲート (should_bet_race) の混戦判定の閾値。基準表が無ければ従来の固定値。
+
+    #156: `top_prob < 0.12` / `top3_sum < 0.30` は意思決定チャネル (生 softmax) に
+    対する絶対値で、rank_score の分散が再学習のたびに動くため遮断率が
+    1.7%〜70.1% の範囲で暴れていた。分位で引き直して遮断率を一定に保つ。
+    """
+    d = load()
+    bg = (d or {}).get("bet_gate") or {}
+    th = bg.get("thresholds")
+    if bg.get("available") and isinstance(th, dict) and "top_prob" in th and "top3_sum" in th:
+        return {"top_prob": float(th["top_prob"]), "top3_sum": float(th["top3_sum"])}
+    return dict(FALLBACK_BET_GATE)

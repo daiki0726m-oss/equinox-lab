@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-09-14T17:55:09.944811+09:00",
+ "generated_at": "2026-09-15T11:08:56.772230+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -214,6 +214,20 @@
    "A": 17.3,
    "B": 13.7,
    "C": 9.1
+  }
+ },
+ "bet_gate": {
+  "available": true,
+  "n": 193,
+  "target_block_rate": {
+   "top_prob": 0.3,
+   "top3_sum": 0.25
+  },
+  "model_deployed_at": "2026-09-14 17:55:30",
+  "window_matches_model": false,
+  "thresholds": {
+   "top_prob": 0.0867,
+   "top3_sum": 0.2358
   }
  }
 }
