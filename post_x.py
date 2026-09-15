@@ -1020,14 +1020,15 @@ def cmd_predict(args):
         # 1番人気オッズ+頭数+クラスに足しても AUC +0.0009 (p=0.455) = 独自情報ゼロ、
         # と判明したため。実測値なら「印5頭で足りるのか、手広く取るべきか」が直接わかる。
         # 基準表が無い環境では従来のラベルに戻る (フォールバック)。
-        _rb_line = _rb_line_short = ""
+        _rb_line = _rb_line_short = _rb_line_min = ""
         try:
             import race_baseline as _rb
             _rn = race.get('race_name') or ''
             _rb_line = _rb.line(len(preds), compact=True, race_name=_rn)
             _rb_line_short = _rb.line(len(preds), compact=True, with_payout=False, race_name=_rn)
+            _rb_line_min = _rb.line(len(preds), race_name=_rn, minimal=True)   # #154
         except Exception:
-            _rb_line = _rb_line_short = ""
+            _rb_line = _rb_line_short = _rb_line_min = ""
         if _rb_line:
             t += f"{_rb_line}\n\n"
         else:
@@ -1048,14 +1049,31 @@ def cmd_predict(args):
                     t += f"{mk}{p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
 
         # #151: 印行まで積んだ時点で字数が厳しければ、実測行から配当を落として捕捉率だけ残す。
-        # 印 (本体) と ⚡荒れ度 (#102) を押し出さないための優先順位: 印 > 捕捉率 > 配当。
+        # 優先順位: 印 > 捕捉率 > **⚡荒れ度/💡能力値** > 配当。
         def _xw0(_s):
             return sum(2 if ord(ch) > 127 else 1 for ch in _s)
+
+        def _shrink_baseline():
+            """実測行を1段階だけ縮める。配当込み → 捕捉率のみ → 最短形。
+
+            #154: 印が7つ (#143) になり、実測行 (#151) が旧ラベルの3倍の予算を
+            食うため、2段階では ⚡/💡 の席が作れなかった (9/12-13 で 16/16 全滅)。
+            """
+            nonlocal t
+            if _rb_line and _rb_line_short and _rb_line in t:
+                t = t.replace(_rb_line, _rb_line_short, 1)
+                return True
+            if _rb_line_short and _rb_line_min and _rb_line_short in t \
+                    and _rb_line_min != _rb_line_short:
+                t = t.replace(_rb_line_short, _rb_line_min, 1)
+                return True
+            return False
+
         # t はこの時点で「見出し + 実測行(配当込み) + 印7行」。
         # この後に 🎯締め行 (~20) が付き、⚡等の補足は 272 予算で入る。
         # 配当込みで 252 を超えるなら、その分を配当から返す。
-        if _rb_line and _rb_line_short and _xw0(t) > 252:
-            t = t.replace(_rb_line, _rb_line_short, 1)
+        if _xw0(t) > 252:
+            _shrink_baseline()
 
         # ── #102: 追加情報 (⚡荒れ度/穴注意/💡能力) は X の280字予算内で優先度順に追記 ──
         # (無条件追記だと6印+⚡2行+穴+💡で350字超になり X が投稿拒否する — 実測350字)
@@ -1114,6 +1132,17 @@ def cmd_predict(args):
                                    f"(想定{_ab_pop}人気)\n")
         except Exception:
             pass
+        # 📉 #154 (2026-09-15): **補足より先に配当を落とす**。
+        # #151 で実測行 (32-53字) が旧「信頼度S(鉄板級)」(15字) を置き換えた結果、
+        # 予算が 20-38字 圧迫され、9/12-13 の実配信 16/16 で ⚡/💡/🔒 が全滅した
+        # (#114・#150 に続く3度目の silent drop)。旧実装は 252字で配当を落とすかを
+        # **補足の長さを知る前に**決めていたため、補足のぶんを確保できていなかった。
+        # 補足が入らないなら、まず配当 (三連複中央値、~21字) を返して席を空ける。
+        # ⚡荒れ度・💡能力値は「市場を見ない独自視点」= 数少ない差別化要素なので、
+        # 配当より優先する (#98/#102)。
+        _need = sum(_xw(_e) for _e in _extras)
+        while _extras and _xw(t) + _need > 272 and _shrink_baseline():
+            print(f"   ℹ️ 補足(⚡/💡)の席を作るため実測行を短縮 (#154, 現在{_xw(t)}字)")
         _dropped = []
         for _ex in _extras:
             if _xw(t) + _xw(_ex) <= 272:  # ハッシュタグ等の余白を8字残す

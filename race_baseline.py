@@ -89,7 +89,7 @@ def stats(n_horses, race_name=None):
     return out
 
 
-def line(n_horses, compact=True, with_payout=True, race_name=None):
+def line(n_horses, compact=True, with_payout=True, race_name=None, minimal=False):
     """読者向けの1行。数字が無ければ空文字 (呼び出し側は出さない)。
 
     compact=True  : X 投稿用 (短い)
@@ -100,6 +100,11 @@ def line(n_horses, compact=True, with_payout=True, race_name=None):
     if not s:
         return ""
     cap5 = f"{100 * s['cap5']:.0f}%"
+    if minimal:
+        # #154: ⚡荒れ度/💡能力値 と席を争う時だけ使う最短形。
+        # 「印5頭で3着内が揃う」の説明はスレッド先頭の凡例が担うので、
+        # ここは頭数と率だけ残す (40字 → 18字)。
+        return f"📐{n_horses}頭 印5頭の実測{cap5}"
     if compact:
         # X は280字 (全角2) の予算が厳しく、印7行と競合する。
         # 配当は「小頭数=当てやすいが安い / 多頭数=難しいが大きい」という
