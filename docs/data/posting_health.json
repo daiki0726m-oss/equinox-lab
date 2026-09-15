@@ -1,21 +1,29 @@
 {
-  "generated_at": "2026-09-15T09:44:22.421340+09:00",
+  "generated_at": "2026-09-15T14:34:05.053760+09:00",
   "today": "2026-09-15 (Tue)",
   "weekday": 1,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "ok",
+      "status": "ok_late",
       "expected": "07:30 JST",
-      "actual": "2026-09-15T07:34:34+09:00",
-      "delay_minutes": 5,
-      "event": "workflow_dispatch",
+      "deadline": "11:00 JST",
+      "recent_success": {
+        "created_at": "2026-09-15T09:47:29+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 137
+      },
+      "delay_minutes": 137,
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
       "slot": "weekday",
-      "status": "future",
+      "status": "ok",
       "expected": "12:30 JST",
+      "actual": "2026-09-15T12:34:51+09:00",
+      "delay_minutes": 5,
+      "event": "workflow_dispatch",
       "workflow": "auto_post_x.yml"
     },
     "evening": {
@@ -82,11 +90,11 @@
   "summary": {
     "ok": 1,
     "missing": 0,
-    "future": 2,
+    "future": 1,
     "not_today": 9,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 0
+    "ok_late": 1
   },
   "missed_slots": []
 }
