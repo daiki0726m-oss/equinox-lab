@@ -42,6 +42,39 @@ jobs:
           [ -z "$CODE" ] && CODE=$?
           echo "検査の終了コード: $CODE"
           echo "code=$CODE" >> $GITHUB_OUTPUT
+      # ── #155: 起動層 (GitHub スケジューラから独立した層) の生存確認 ──
+      # GAS が 2026-09-08 に PAT 失効で停止し 7日間誰も気づかなかった。
+      # GitHub cron が生きている限り配信は続くので、外部層の死は障害が起きるまで
+      # 潜伏する (#57 でも同型: 「GAS がメイン」と yml に書きながら実際は死んでいた)。
+      - name: 🛰 起動層の生存確認
+        id: layers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          set -o pipefail
+          python3 scripts/check_trigger_layers.py --days 3 | tee /tmp/layers.txt
+          CODE=${PIPESTATUS[0]}
+          [ -z "$CODE" ] && CODE=$?
+          echo "起動層チェックの終了コード: $CODE"
+          echo "code=$CODE" >> $GITHUB_OUTPUT
+      - name: 🔔 Notify on dead external layer
+        # 2 = API 到達不能 (判定不能) なので通知しない。1 = 沈黙を検知。
+        if: steps.layers.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="🛰 外部の起動層 (GAS) が沈黙しています"
+          EXISTING=$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+          [ "$EXISTING" != "0" ] && exit 0
+          gh issue create --title "$TITLE" \
+            --body "$(printf '%s\n' \
+              "GitHub スケジューラから故障モードが独立した唯一の層 (GAS) が沈黙しています。" "" \
+              "この状態でも GitHub cron が生きている限り配信は続くため、**次にスケジューラが落ちた日まで障害は表に出ません**。" "" \
+              "前例 (2026-09-08): Fine-grained PAT の失効。Apps Script の実行ログで 401 を確認し、PAT を再発行して Script Properties の GITHUB_TOKEN を更新してください (docs/GAS_SETUP.md)。" "" \
+              "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" "" \
+              '```' "$(cat /tmp/layers.txt | tail -22)" '```')" 2>&1 || echo "Issue作成失敗"
+
       - name: 🔔 Notify on new mismatch
         # #150: KNOWN_SKEW を空にしたので「警告(1)」も実質的な不一致を意味する。
         # 0 以外はすべて通知する (免除リストで沈黙させない)。
