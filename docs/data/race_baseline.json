@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-09-19T02:20:43.253446+09:00",
+ "generated_at": "2026-09-19T06:16:44.449947+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -210,8 +210,8 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 26.5,
-   "A": 19.5,
+   "S": 26.3,
+   "A": 20.0,
    "B": 13.7,
    "C": 9.2
   }
@@ -223,7 +223,7 @@
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
-  "model_deployed_at": "2026-09-19 02:00:01",
+  "model_deployed_at": "2026-09-19 03:34:49",
   "window_matches_model": false,
   "thresholds": {
    "top_prob": 0.0874,
