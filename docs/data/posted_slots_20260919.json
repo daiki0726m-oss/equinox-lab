@@ -4,6 +4,11 @@
    "posted_at": "2026-09-19 10:20:35",
    "run_id": "35412312779",
    "event": "workflow_dispatch"
+  },
+  "odds_flash": {
+   "posted_at": "2026-09-19 10:25:10",
+   "run_id": "35412474565",
+   "event": "workflow_dispatch"
   }
  }
 }
