@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-20T04:44:42.429027+09:00",
+  "generated_at": "2026-09-20T06:54:18.162133+09:00",
   "today": "2026-09-20 (Sun)",
   "weekday": 6,
   "slots": {
@@ -71,21 +71,24 @@
     },
     "fetch_sunday": {
       "slot": "fetch_sunday",
-      "status": "future",
+      "status": "missing",
       "expected": "05:00 JST",
+      "deadline": "09:00 JST",
+      "fallback_mode": "auto",
+      "action": "gh workflow run auto_post_x.yml --ref main -f mode=auto",
       "workflow": "fetch_weekend_races.yml"
     },
     "dashboard_predictions": {
       "slot": "dashboard_predictions",
       "status": "ok",
       "expected": "開催日は常時",
-      "actual": "24レース (exported_at=2026-09-20T01:20:12.114236+09:00)"
+      "actual": "24レース (exported_at=2026-09-20T06:33:48.033878+09:00)"
     }
   },
   "summary": {
     "ok": 1,
-    "missing": 0,
-    "future": 5,
+    "missing": 1,
+    "future": 4,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
