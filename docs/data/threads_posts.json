@@ -1068,5 +1068,25 @@
   "race_name": "ながつきS",
   "chunk": 0,
   "chars": 249
+ },
+ {
+  "post_id": "18008205599972729",
+  "posted_at": "2026-09-19T10:25:17.371137+09:00",
+  "slot": "odds_flash",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
+ },
+ {
+  "post_id": "17916979566449626",
+  "posted_at": "2026-09-19T10:25:23.635755+09:00",
+  "slot": "odds_flash",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
  }
 ]
