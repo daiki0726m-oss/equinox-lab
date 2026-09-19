@@ -1058,5 +1058,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18011013191968305",
+  "posted_at": "2026-09-19T10:20:43.373298+09:00",
+  "slot": "post_predict",
+  "pattern": "capture",
+  "race_id": "202606040511",
+  "race_name": "ながつきS",
+  "chunk": 0,
+  "chars": 249
  }
 ]
