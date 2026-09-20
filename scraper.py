@@ -99,8 +99,15 @@ class NetkeibaScraper:
             match = re.search(r"race_id=(\d{12})", href)
             if match:
                 race_id = match.group(1)
-                # result.html のリンクのみ（movie.html は重複なので除外）
-                if "result.html" in href or "shutuba.html" in href:
+                # result.html / shutuba.html のリンクのみ (movie.html は重複なので除外)
+                # 🐴 #159 (2026-09-21): **新馬戦は shutuba_debut.html にリンクされる**ため、
+                # "shutuba.html" の部分一致から漏れて当日一覧から恒久的に消えていた。
+                # 実測 2026-09-21: 阪神は12R組まれているのに一覧は10R しか返さず、
+                # 落ちていたのは 4R・5R = どちらも2歳新馬 (中山も 5R・6R の新馬が欠落)。
+                # 影響はダッシュボードだけでなく結果収集にも及ぶ = デビュー戦が DB に入らず
+                # 各馬の初戦が欠ける。
+                if ("result.html" in href or "shutuba.html" in href
+                        or "shutuba_debut.html" in href):
                     if race_id not in race_ids:
                         race_ids.append(race_id)
 
