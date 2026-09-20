@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-20T11:15:18.303176+09:00",
+  "generated_at": "2026-09-20T16:49:59.036231+09:00",
   "today": "2026-09-20 (Sun)",
   "weekday": 6,
   "slots": {
@@ -111,7 +111,7 @@
       "slot": "dashboard_predictions",
       "status": "ok",
       "expected": "開催日は常時",
-      "actual": "24レース (exported_at=2026-09-20T11:09:02.511806+09:00)"
+      "actual": "24レース (exported_at=2026-09-20T16:49:11.121361+09:00)"
     }
   },
   "summary": {
