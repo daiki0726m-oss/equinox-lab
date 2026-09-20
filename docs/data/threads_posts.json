@@ -1158,5 +1158,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18125303986883376",
+  "posted_at": "2026-09-20T10:20:23.174991+09:00",
+  "slot": "post_predict",
+  "pattern": "minimal",
+  "race_id": "202606040611",
+  "race_name": "オールカマー",
+  "chunk": 0,
+  "chars": 208
  }
 ]
