@@ -155,6 +155,21 @@ def cmd_collect(args):
         # 特定日のレースを収集
         print(f"🏇 {args.date} のレースデータを収集...")
         race_ids = scraper.get_race_list_by_date(args.date)
+        # 🐴 #159: 当日一覧は取りこぼす (2歳新馬が shutuba_debut.html で漏れていた実績、
+        # および netkeiba 側の日付ズレ)。**DB に登録済みのその日のレースを必ず合流**させる。
+        # 一覧は「増やす」方向にしか使わないので、漏れても DB が保険になる。
+        try:
+            _d = args.date
+            _iso = f"{_d[:4]}-{_d[4:6]}-{_d[6:8]}" if len(_d) == 8 else _d
+            with get_db() as _c:
+                _db_ids = [r[0] for r in _c.execute(
+                    "SELECT race_id FROM races WHERE race_date=? ORDER BY race_id", (_iso,))]
+            _add = [r for r in _db_ids if r not in race_ids]
+            if _add:
+                print(f"  ➕ DB から {len(_add)} レースを合流 (一覧の取りこぼし補完 #159)")
+                race_ids = list(race_ids) + _add
+        except Exception as _e:
+            print(f"  ⚠️ DB合流に失敗 (一覧のみで続行): {_e}")
         for i, rid in enumerate(race_ids):
             print(f"  [{i+1}/{len(race_ids)}] {rid}")
             data = scraper.scrape_race_result(rid)
@@ -253,6 +268,21 @@ def cmd_predict(args):
     elif args.date:
         scraper = NetkeibaScraper()
         race_ids = scraper.get_race_list_by_date(args.date)
+        # 🐴 #159: 当日一覧は取りこぼす (2歳新馬が shutuba_debut.html で漏れていた実績、
+        # および netkeiba 側の日付ズレ)。**DB に登録済みのその日のレースを必ず合流**させる。
+        # 一覧は「増やす」方向にしか使わないので、漏れても DB が保険になる。
+        try:
+            _d = args.date
+            _iso = f"{_d[:4]}-{_d[4:6]}-{_d[6:8]}" if len(_d) == 8 else _d
+            with get_db() as _c:
+                _db_ids = [r[0] for r in _c.execute(
+                    "SELECT race_id FROM races WHERE race_date=? ORDER BY race_id", (_iso,))]
+            _add = [r for r in _db_ids if r not in race_ids]
+            if _add:
+                print(f"  ➕ DB から {len(_add)} レースを合流 (一覧の取りこぼし補完 #159)")
+                race_ids = list(race_ids) + _add
+        except Exception as _e:
+            print(f"  ⚠️ DB合流に失敗 (一覧のみで続行): {_e}")
     else:
         print("❌ --race-id か --date を指定してください")
         return
