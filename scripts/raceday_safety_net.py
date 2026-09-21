@@ -150,10 +150,20 @@ def main():
 
     # ── 1. 予測 (ダッシュボード + 後続 slot の前提) ───────────────────────
     # 朝5時以降に予測JSONが無ければ生成。既に走っていれば重ねない。
-    if hm >= 500 and n_pred == 0:
+    #
+    # 「一部だけ生成された」場合も埋め直す。オッズが順次公開される日は
+    # 先に売り出された数レースだけ予測が通り、残りが #52 のオッズゲートで
+    # skip される (export は生成できた分だけ書く)。0件しか見ないと、
+    # 1レースでも通った瞬間に「予測済み」と誤認して残りが永久に埋まらない。
+    # 投稿窓が閉じる 11:00 までは不足があれば再試行する。
+    n_cal = info.get("races") or 0
+    short = n_cal and n_pred and n_pred < n_cal and hm < 1100
+    if short:
+        print(f"   ⚠️ 予測が不足 ({n_pred}/{n_cal}R) → 埋め直しを試みる")
+    if hm >= 500 and (n_pred == 0 or short):
         active = gh_runs_active("auto_post_x.yml", title="predict")
         if active == 0:
-            print("🚨 開催日なのに予測JSONが無い → predict を dispatch")
+            print(f"🚨 開催日なのに予測が{'不足' if short else '無い'} → predict を dispatch")
             if dispatch("auto_post_x.yml", "predict", args.dry_run):
                 acted.append("predict")
         elif active < 0:
