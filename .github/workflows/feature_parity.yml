@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write   # #160: race_calendar.json を commit
       issues: write
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +42,29 @@ jobs:
           [ -z "$CODE" ] && CODE=$?
           echo "検査の終了コード: $CODE"
           echo "code=$CODE" >> $GITHUB_OUTPUT
+      # ── #160: 開催カレンダーを毎日 DB から作り直す ──
+      # 曜日ガードは JRA の月曜・祝日・順延開催を取りこぼす (2026-09-21 月/祝 阪神、
+      # 2026-09-22 火 中山=台風順延)。posting_watchdog の開催日セーフティネットは
+      # このファイルを唯一の判定材料にするので、毎日必ず更新して commit する。
+      - name: 📅 開催カレンダーを更新 (#160)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -e
+          python3 scripts/build_race_calendar.py
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/race_calendar.json
+          if git diff --cached --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "calendar: 開催日カレンダーを更新 (#160)"
+            for i in 1 2 3; do
+              git pull --rebase --autostash -X theirs origin main || git rebase --abort || true
+              git push origin HEAD:main && break || sleep 5
+            done
+          fi
+
       # ── #155: 起動層 (GitHub スケジューラから独立した層) の生存確認 ──
       # GAS が 2026-09-08 に PAT 失効で停止し 7日間誰も気づかなかった。
       # GitHub cron が生きている限り配信は続くので、外部層の死は障害が起きるまで

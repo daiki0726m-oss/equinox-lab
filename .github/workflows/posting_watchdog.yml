@@ -260,6 +260,31 @@ jobs:
             echo "✅ GAS 生存 (直近26時間に $N 件の外部 dispatch)"
           fi
 
+      # 🏇 #160 (2026-09-21): 平日・祝日開催のセーフティネット (曜日でなくカレンダー駆動)
+      #
+      # auto_post_x.yml の race-day cron は全て DOW '6,0' (土日) 固定、race_day_runner も
+      # '5,6'/'6,0' 固定。そのため **月曜・祝日・順延開催の日は起動層がゼロ** になる。
+      # 実例: 2026-09-21(月・祝) 阪神12R と 2026-09-22(火) 中山12R (台風順延) は、
+      # 予測生成・odds_flash・post_predict・results・結果収集のすべてが発火しなかった。
+      # 曜日は開催日の代理変数として壊れている (JRA は月曜・祝日にも開催する) ので、
+      # DB から生成した docs/data/race_calendar.json を正として判定する。
+      #
+      # 土日はネイティブ cron + GAS + runner の4層が既に機能しているので触らない
+      # (DOW<=5 のみ発火)。dispatch は全て posted_slots サイドカー (#141) の
+      # atomic lock を事前 check するので、多重発火しても投稿は1回。
+      - name: 🏇 平日・祝日開催のセーフティネット (calendar-driven)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DOW=$(TZ=Asia/Tokyo date +%u)
+          if [ "$DOW" -ge 6 ]; then
+            echo "⏭️ 土日はネイティブ cron/GAS/runner が担当 → skip"; exit 0
+          fi
+          python3 scripts/raceday_safety_net.py
+
       - name: Ensure race_day_runner alive (weekend)
         if: always()
         env:
