@@ -98,6 +98,26 @@ def gh_runs_active(workflow, title=None):
     return total
 
 
+
+def gh_minutes_since_last_run(workflow):
+    """その workflow の直近 run から何分経ったか。取得できなければ -1。"""
+    try:
+        out = subprocess.run(
+            ["gh", "api", f"repos/{os.environ.get('GITHUB_REPOSITORY','')}"
+             f"/actions/workflows/{workflow}/runs?per_page=1",
+             "--jq", ".workflow_runs[0].created_at // empty"],
+            capture_output=True, text=True, timeout=60,
+        )
+        ts = out.stdout.strip()
+        if out.returncode != 0 or not ts:
+            return -1
+        t = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc)
+        return int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() // 60)
+    except Exception:
+        return -1
+
+
 def dispatch(workflow, mode=None, dry=False):
     cmd = ["gh", "workflow", "run", workflow, "--ref", "main"]
     if mode:
@@ -204,6 +224,20 @@ def main():
         print(f"🚨 開催日なのに {mode} が未実施 → dispatch")
         if dispatch("auto_post_x.yml", mode, args.dry_run):
             acted.append(mode)
+
+    # ── 4. 夜間の最終スイープ (遅出し配当・取りこぼし回収) ──────────────
+    # collect_results.yml の cron も '6,0' 固定で、race_day_runner は 19:00 で
+    # 終わる。平日開催の日は 19時以降に確定する配当を拾う層が誰も居ない。
+    if 2000 <= hm < 2100 or 2200 <= hm < 2300:
+        since = gh_minutes_since_last_run("collect_results.yml")
+        if since < 0:
+            print("   ⚠️ collect_results の実行履歴を確認できない → 見送り")
+        elif since < 90:
+            print(f"   ✅ collect_results は {since}分前に実行済み")
+        else:
+            print("🚨 開催日なのに夜間スイープが未実行 → collect_results を dispatch")
+            if dispatch("collect_results.yml", None, args.dry_run):
+                acted.append("collect_results")
 
     print(f"\n📋 dispatch: {acted or 'なし'}")
     return 0
