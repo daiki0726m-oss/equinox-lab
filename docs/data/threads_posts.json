@@ -1238,5 +1238,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18105331660964444",
+  "posted_at": "2026-09-21T10:21:06.992677+09:00",
+  "slot": "post_predict",
+  "pattern": "upset",
+  "race_id": "202609040711",
+  "race_name": "神戸新聞杯",
+  "chunk": 0,
+  "chars": 203
  }
 ]
