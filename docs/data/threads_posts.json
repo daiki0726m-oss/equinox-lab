@@ -1278,5 +1278,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18086457353272841",
+  "posted_at": "2026-09-22T10:43:15.365730+09:00",
+  "slot": "post_predict",
+  "pattern": "transparency",
+  "race_id": "202606040711",
+  "race_name": "JRAアニバーサリーS",
+  "chunk": 0,
+  "chars": 174
  }
 ]
