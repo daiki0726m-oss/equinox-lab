@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-09-26T03:14:24.623776+09:00",
+ "generated_at": "2026-09-26T06:57:33.548187+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -223,7 +223,7 @@
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
-  "model_deployed_at": "2026-09-26 02:51:03",
+  "model_deployed_at": "2026-09-26 06:42:29",
   "window_matches_model": false,
   "thresholds": {
    "top_prob": 0.0985,
