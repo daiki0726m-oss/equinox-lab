@@ -1,135 +1,95 @@
 {
-  "generated_at": "2026-09-26T23:10:02.433631+09:00",
-  "today": "2026-09-26 (Sat)",
-  "weekday": 5,
+  "generated_at": "2026-09-27T02:49:53.861675+09:00",
+  "today": "2026-09-27 (Sun)",
+  "weekday": 6,
   "slots": {
     "morning": {
       "slot": "morning",
       "status": "not_today",
-      "reason": "今日 (weekday=5) は対象外",
+      "reason": "今日 (weekday=6) は対象外",
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
       "slot": "weekday",
       "status": "not_today",
-      "reason": "今日 (weekday=5) は対象外",
+      "reason": "今日 (weekday=6) は対象外",
       "workflow": "auto_post_x.yml"
     },
     "evening": {
       "slot": "evening",
       "status": "not_today",
-      "reason": "今日 (weekday=5) は対象外",
+      "reason": "今日 (weekday=6) は対象外",
       "workflow": "auto_post_x.yml"
     },
     "weekend_morning_predict": {
       "slot": "weekend_morning_predict",
-      "status": "ok_late",
+      "status": "future",
       "expected": "07:00 JST",
-      "deadline": "09:30 JST",
-      "recent_success": {
-        "created_at": "2026-09-26T07:11:24+09:00",
-        "title": "cron",
-        "event": "schedule",
-        "delay_minutes": 11
-      },
-      "delay_minutes": 11,
       "workflow": "auto_post_x.yml"
     },
     "odds_flash": {
       "slot": "odds_flash",
-      "status": "ok_late",
+      "status": "future",
       "expected": "09:30 JST",
-      "deadline": "10:15 JST",
-      "recent_success": {
-        "created_at": "2026-09-26T09:52:25+09:00",
-        "title": "cron",
-        "event": "schedule",
-        "delay_minutes": 22
-      },
-      "delay_minutes": 22,
       "workflow": "auto_post_x.yml"
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "ok_late",
+      "status": "future",
       "expected": "10:15 JST",
-      "deadline": "10:50 JST",
-      "recent_success": {
-        "created_at": "2026-09-26T10:17:59+09:00",
-        "title": "post_predict",
-        "event": "workflow_dispatch",
-        "delay_minutes": 3
-      },
-      "delay_minutes": 3,
       "workflow": "auto_post_x.yml"
     },
     "results": {
       "slot": "results",
-      "status": "ok_late",
+      "status": "future",
       "expected": "17:30 JST",
-      "deadline": "18:30 JST",
-      "recent_success": {
-        "created_at": "2026-09-26T22:47:26+09:00",
-        "title": "cron",
-        "event": "schedule",
-        "delay_minutes": 317
-      },
-      "delay_minutes": 317,
       "workflow": "auto_post_x.yml"
     },
     "fetch_monday": {
       "slot": "fetch_monday",
       "status": "not_today",
-      "reason": "今日 (weekday=5) は対象外",
+      "reason": "今日 (weekday=6) は対象外",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_wednesday": {
       "slot": "fetch_wednesday",
       "status": "not_today",
-      "reason": "今日 (weekday=5) は対象外",
+      "reason": "今日 (weekday=6) は対象外",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_friday": {
       "slot": "fetch_friday",
       "status": "not_today",
-      "reason": "今日 (weekday=5) は対象外",
+      "reason": "今日 (weekday=6) は対象外",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_saturday": {
       "slot": "fetch_saturday",
-      "status": "ok_late",
-      "expected": "05:00 JST",
-      "deadline": "09:00 JST",
-      "recent_success": {
-        "created_at": "2026-09-26T08:01:28+09:00",
-        "title": "📅 fetch weekend races",
-        "event": "schedule",
-        "delay_minutes": 181
-      },
-      "delay_minutes": 181,
+      "status": "not_today",
+      "reason": "今日 (weekday=6) は対象外",
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_sunday": {
       "slot": "fetch_sunday",
-      "status": "not_today",
-      "reason": "今日 (weekday=5) は対象外",
+      "status": "future",
+      "expected": "05:00 JST",
       "workflow": "fetch_weekend_races.yml"
     },
     "dashboard_predictions": {
       "slot": "dashboard_predictions",
       "status": "ok",
       "expected": "開催日は常時",
-      "actual": "24レース (exported_at=2026-09-26T22:49:38.918726+09:00)"
+      "actual": "1レース (exported_at=2026-09-26T06:57:33.470864+09:00)"
     }
   },
   "summary": {
     "ok": 1,
     "missing": 0,
-    "future": 0,
+    "future": 5,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 5
+    "ok_late": 0
   },
   "missed_slots": []
 }
