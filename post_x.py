@@ -4435,7 +4435,10 @@ def cmd_odds_flash(args):
                 key=lambda x: x.get('pred_win_display_pct') or x.get('pred_win_pct', 0),
                 reverse=True)[:3]
 
-        tweet = f"📊 朝オッズ チェック（9:30時点・確定は発走直前）\n\n"
+        # #161: 実際の時刻を書く。旧版は常に「9:30時点」と書いていたが、ガードは 10:59 まで
+        # 通すので、cron 遅延や平日開催のセーフティネット経由では事実と違う時刻を公開していた (#118 と同型)。
+        _t = now_jst()
+        tweet = f"📊 朝オッズ チェック（{_t.hour}:{_t.minute:02d}時点・確定は発走直前）\n\n"
         tweet += f"{venue}11R {rname}{grade}\n\n"
 
         _fallback_medals = ['🥇', '🥈', '🥉']

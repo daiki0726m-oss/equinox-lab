@@ -125,6 +125,7 @@ jobs:
               "GitHub スケジューラから故障モードが独立した唯一の層 (GAS) が沈黙しています。" "" \
               "この状態でも GitHub cron が生きている限り配信は続くため、**次にスケジューラが落ちた日まで障害は表に出ません**。" "" \
               "前例 (2026-09-08): Fine-grained PAT の失効。Apps Script の実行ログで 401 を確認し、PAT を再発行して Script Properties の GITHUB_TOKEN を更新してください (docs/GAS_SETUP.md)。" "" \
+              "GAS を復旧した日は、翌日の2回目の発火で「生存」と判定されるまでこの警報が続きます (手動 dispatch と区別するため)。" "" \
               "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" "" \
               '```' "$(cat /tmp/layers.txt | tail -22)" '```')" 2>&1 || echo "Issue作成失敗"
 

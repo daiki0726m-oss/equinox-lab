@@ -68,24 +68,25 @@ jobs:
       - name: Determine race dates
         id: date
         run: |
-          TODAY=$(TZ=Asia/Tokyo date +%Y%m%d)
+          # 「今日」= 6時間前の JST 日付。22:00 の cron は実測で毎週翌 0〜2時台に発火するので、
+          # 0時を過ぎても前日 (= 開催日) を対象にする (旧版の「月曜なら前日」を一般化したもの)。
+          TODAY=$(TZ=Asia/Tokyo date -d '6 hours ago' +%Y%m%d 2>/dev/null \
+                  || TZ=Asia/Tokyo date -v-6H +%Y%m%d)
           INPUT="${{ inputs.date }}"
-          if [ -n "$INPUT" ]; then
-            DATES=$(echo "$INPUT" | tr ',' ' ')
-            echo "📅 指定日: $DATES"
-          else
-            BACKFILL=$(python3 - <<'PYEOF'
+          BACKFILL=$(python3 - <<'PYEOF'
           import datetime as dt
           from database import get_db
           jst = dt.timezone(dt.timedelta(hours=9))
-          today = dt.datetime.now(jst).date()
+          today = (dt.datetime.now(jst) - dt.timedelta(hours=6)).date()
           lo = (today - dt.timedelta(days=10)).isoformat()
           with get_db() as c:
               rows = c.execute("""
                   SELECT g.race_date,
-                         SUM(CASE WHEN EXISTS (SELECT 1 FROM results w
-                                               WHERE w.race_id = g.race_id AND w.finish_position = 1)
-                                  THEN 0 ELSE 1 END) AS missing
+                         -- 1着が無い、または 1着はあるが配当が1件も無い (遅れて出る配当・部分取得)
+                  SUM(CASE WHEN EXISTS (SELECT 1 FROM results w
+                                        WHERE w.race_id = g.race_id AND w.finish_position = 1)
+                            AND EXISTS (SELECT 1 FROM payouts p WHERE p.race_id = g.race_id)
+                           THEN 0 ELSE 1 END) AS missing
                   FROM races g
                   WHERE g.race_date >= ? AND g.race_date < ?
                     AND CAST(substr(g.race_id, 5, 2) AS INT) BETWEEN 1 AND 10   -- JRA のみ
@@ -95,10 +96,16 @@ jobs:
               """, (lo, today.isoformat())).fetchall()
           print(" ".join(r[0].replace("-", "") for r in rows))
           PYEOF
-            )
-            DATES="$TODAY $BACKFILL"
-            [ -n "$BACKFILL" ] && echo "🩹 着順が欠けた過去の開催日を回収: $BACKFILL"
+          ) || BACKFILL=""
+          if [ -n "$INPUT" ]; then
+            BASE=$(echo "$INPUT" | tr ',' ' ')
+            echo "📅 指定日: $BASE"
+          else
+            BASE="$TODAY"
           fi
+          # 日付指定の時も欠け日の回収は必ず行う (平日開催が2日続いた時に1日目を取り残さない)
+          DATES="$BASE $BACKFILL"
+          [ -n "$BACKFILL" ] && echo "🩹 着順・配当が欠けた過去の開催日を回収: $BACKFILL"
           echo "dates=$(echo $DATES | xargs -n1 | sort -u | xargs)" >> $GITHUB_OUTPUT
           echo "today=$TODAY" >> $GITHUB_OUTPUT
 

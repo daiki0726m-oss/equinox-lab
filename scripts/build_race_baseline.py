@@ -225,6 +225,29 @@ def current_model_deployed_at(conn=None):
             utc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
 
 
+def _gate_samples(rows):
+    """predictions_cache の行から、意思決定チャネル (温度1 softmax = ml/model.py の
+    pred_win_norm) の ◎勝率と上位3頭合計を復元する。障害・未勝利・新馬は除く。"""
+    tops, sums = [], []
+    for r in rows:
+        if is_ml_out_of_domain(r["race_name"] or ""):
+            continue
+        try:
+            preds = json.loads(r["predictions_json"] or "[]")
+        except (ValueError, TypeError):
+            continue
+        rs = [p.get("rank_score") for p in preds if p.get("rank_score") is not None]
+        if len(rs) < 3:
+            continue
+        mx = max(rs)
+        ex = [math.exp(x - mx) for x in rs]
+        tot = sum(ex) or 1.0
+        pr = sorted((v / tot for v in ex), reverse=True)
+        tops.append(pr[0])
+        sums.append(sum(pr[:3]))
+    return tops, sums
+
+
 def build_bet_gate_thresholds(conn):
     """投資ゲートの「混戦すぎるレースを弾く」閾値を、現行モデルの分布から引く (#156)。
 
@@ -254,38 +277,30 @@ def build_bet_gate_thresholds(conn):
     # #156: 現モデルが出した予測だけを窓にする。足りなければ全期間に広げ、
     # 「前モデルの分布から引いた」ことをログと JSON に明示する。
     since, since_utc = current_model_deployed_at(conn)
-    rows, fresh = [], True
+    fresh = bool(since_utc)
+    rows = []
     if since_utc:
         rows = list(conn.execute("""
             SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
             JOIN races g ON pc.race_id = g.race_id
             WHERE pc.created_at >= ? ORDER BY g.race_date DESC LIMIT 400
         """, (since_utc,)))   # created_at は UTC (SQLite CURRENT_TIMESTAMP)
-    if len(rows) < MIN_SAMPLE_FOR_THRESHOLDS:
+    tops, sums = _gate_samples(rows)
+    # #161: 標本数は **使えるレース数** (障害・未勝利・新馬を除いた後) で判定する。
+    # 旧版は除外前の行数で判定したため、30〜55行の窓 (= 再学習直後の週末1日分) では
+    # 除外後に30を割って固定値 0.12/0.30 に落ちていた。足りなければ全期間に広げ、
+    # 「前モデルの分布を含む」と明示する (window_matches_model=False)。
+    # 広げる範囲は **直近120レース** (使えるのは約60)。旧版の 400 は 2〜3世代前のモデル
+    # (8月は sd 0.115 と平坦) まで混ぜるので、再学習直後の閾値が 0.1001/0.2613 =
+    # ほぼ素通りに戻っていた (#161 review)。直前のモデルが新モデルに最も近い手掛かり。
+    if len(tops) < MIN_SAMPLE_FOR_THRESHOLDS:
         fresh = False
         rows = list(conn.execute("""
             SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
             JOIN races g ON pc.race_id = g.race_id
-            ORDER BY g.race_date DESC LIMIT 400
+            ORDER BY g.race_date DESC, pc.created_at DESC LIMIT 120
         """))
-    tops, sums = [], []
-    for r in rows:
-        if is_ml_out_of_domain(r["race_name"] or ""):
-            continue
-        try:
-            preds = json.loads(r["predictions_json"] or "[]")
-        except (ValueError, TypeError):
-            continue
-        rs = [p.get("rank_score") for p in preds if p.get("rank_score") is not None]
-        if len(rs) < 3:
-            continue
-        # 意思決定チャネルを再構成 (温度1 softmax = ml/model.py の pred_win_norm)
-        mx = max(rs)
-        ex = [math.exp(x - mx) for x in rs]
-        tot = sum(ex) or 1.0
-        pr = sorted((v / tot for v in ex), reverse=True)
-        tops.append(pr[0])
-        sums.append(sum(pr[:3]))
+        tops, sums = _gate_samples(rows)
 
     if len(tops) < MIN_SAMPLE_FOR_THRESHOLDS:
         print(f"🎚 投資ゲート: 標本 {len(tops)} 件は不足 → 固定値 {FALLBACK} を維持")
@@ -293,8 +308,9 @@ def build_bet_gate_thresholds(conn):
 
     tops.sort(); sums.sort()
     if not fresh:
-        print(f"   ⚠️ 現モデル ({since}) 以降の予測が {MIN_SAMPLE_FOR_THRESHOLDS} 件未満。"
-              f"前モデルの分布から引いています — 週末の予測生成後に再構築してください")
+        print(f"   ⚠️ 現モデル ({since or '配備時刻不明'}) 以降の使えるレースが "
+              f"{MIN_SAMPLE_FOR_THRESHOLDS} 件未満。直前のモデルを含む直近120レースから引いています "
+              f"(window_matches_model=False)")
     th = {
         "top_prob": round(tops[int(len(tops) * TARGET["top_prob"])], 4),
         "top3_sum": round(sums[int(len(sums) * TARGET["top3_sum"])], 4),
@@ -359,6 +375,26 @@ def build_confidence_thresholds(conn):
             "target_mix": TARGET_MIX, "thresholds": th}
 
 
+def _bet_gate_or_keep(conn):
+    """KEEP_BET_GATE=1 なら既存の bet_gate をそのまま使う (#161)。
+
+    weekend_prefetch は金曜夜だけでなく**土曜夜 (日曜 03:30)** にも走り、基準表を作り直す。
+    そこで投資ゲートの閾値が変わると、同じ週末の土曜と日曜で見送りの基準が変わる
+    (#161 の修正後は 0/24 → 約3割見送り)。週末の途中では投資判断を動かさない。
+    """
+    if os.environ.get("KEEP_BET_GATE") == "1":
+        try:
+            with open(OUT, encoding="utf-8") as f:
+                prev = json.load(f).get("bet_gate")
+            if prev:
+                print(f"🎚 投資ゲート: KEEP_BET_GATE=1 → 既存の閾値を維持 {prev.get('thresholds')}")
+                return prev
+        except (OSError, ValueError):
+            pass
+        print("🎚 投資ゲート: KEEP_BET_GATE=1 だが既存値が読めない → 作り直す")
+    return build_bet_gate_thresholds(conn)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -372,7 +408,7 @@ def main():
         "capture": build_capture(conn),
         "payout": build_payout(conn),
         "confidence": build_confidence_thresholds(conn),
-        "bet_gate": build_bet_gate_thresholds(conn),   # #156
+        "bet_gate": _bet_gate_or_keep(conn),   # #156 / #161
     }
 
     print("📊 レース条件別の実測値")

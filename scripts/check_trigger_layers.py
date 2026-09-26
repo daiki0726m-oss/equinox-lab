@@ -72,17 +72,19 @@ def scheduled_like(ext):
     #161: 旧版は github-actions[bot] 以外を全部「外部層 = GAS」と数えていた。
     2026-09-21 に私が手で2回 dispatch した瞬間、GAS が13日止まっていたのに
     silent_days が 0 にリセットされ、外部層の死を3日間隠した。
-    GAS の time-based trigger は毎日同じ分に発火する (実測 07:49:36±1秒) ので、
-    同じ workflow/mode が別の日に ±3分以内でもう一度来ていれば定刻とみなす。
-    手動 dispatch は時刻がばらつくのでここで落ちる。
+    GAS の time-based trigger は毎日同じ時刻に発火する (実測 07:49:36±1秒) ので、
+    同じ workflow/mode が **7日以内の別の日に ±1分以内**でもう一度来ていれば定刻とみなす。
+    手動 dispatch は時刻がばらつくのでここで落ちる (#161 review: ±3分では習慣的な時刻の
+    手動 dispatch が偶然ペアになりうるので絞った)。
+    代償として、GAS を復旧した日は「翌日の2回目の発火」まで生存と判定されない。
     """
     out = []
     for i, (ts, _a, key) in enumerate(ext):
-        mod = ts.hour * 60 + ts.minute
+        sod = ts.hour * 3600 + ts.minute * 60 + ts.second
         for j, (ts2, _a2, key2) in enumerate(ext):
-            if i == j or key2 != key or ts2.date() == ts.date():
+            if i == j or key2 != key or ts2.date() == ts.date() or abs((ts2 - ts).days) > 7:
                 continue
-            if abs((ts2.hour * 60 + ts2.minute) - mod) <= 3:
+            if abs((ts2.hour * 3600 + ts2.minute * 60 + ts2.second) - sod) <= 60:
                 out.append(ts)
                 break
     return out

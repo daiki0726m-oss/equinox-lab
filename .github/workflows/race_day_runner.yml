@@ -100,6 +100,11 @@ jobs:
         run: |
           DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
           END_HH=${END_HOUR:-19}
+          # #161: 手入力の end_hour を検証する。1900・"19:00"・24以上などが入ると終了判定が
+          # 成立せず、バトンで自分を再起動し続けて日付を越えても止まらなくなる。
+          case "$END_HH" in ''|*[!0-9]*) echo "⚠️ end_hour='$END_HH' は不正 → 19"; END_HH=19 ;; esac
+          END_HH=$((10#$END_HH))
+          if [ "$END_HH" -lt 1 ] || [ "$END_HH" -gt 23 ]; then echo "⚠️ end_hour=$END_HH は範囲外 → 19"; END_HH=19; fi
           # 投稿トリガーフラグ(/tmp は run 内で永続)
           TRIGGER_FILE="/tmp/race_day_post_${DATE}.flags"
           touch "$TRIGGER_FILE"
@@ -165,6 +170,10 @@ jobs:
           MAX_LOOP_SEC=${MAX_LOOP_SEC:-19200}   # 5h20m (+ 最終 commit で 6h 未満に収める)
           handoff_if_due() {
             local extra=${1:-0}
+            # 日付を越えた runner は後継を作らずに終わる (二重の備え)
+            if [ "$(TZ=Asia/Tokyo date +%Y%m%d)" != "$DATE" ]; then
+              echo "📅 日付が変わった → 後続を作らずに終了"; return 0
+            fi
             if [ $(( $(date +%s) - RUN_START + extra )) -ge "$MAX_LOOP_SEC" ]; then
               echo "⏳ 6時間上限の手前 → 後続 runner を dispatch して終了 (end_hour=${END_HH})"
               gh workflow run race_day_runner.yml -R ${{ github.repository }} -f end_hour="$END_HH" \

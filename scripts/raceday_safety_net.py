@@ -117,9 +117,14 @@ def predictions_ready(day8):
 
 
 def gh_runs_active(workflow, title=None):
-    """in_progress / queued の run 数。失敗時は -1 (判定不能 → dispatch しない側に倒す)。"""
+    """実行中・待機中の run 数。失敗時は -1 (判定不能 → dispatch しない側に倒す)。
+
+    #161: concurrency で順番待ちの run は API 上 status=pending になり、queued には出ない。
+    旧版はそれを数えず、待機中の run を「無い」と読んで重ねて dispatch していた
+    (GitHub の concurrency は待機を1本しか持たないので、新しい方が古い方を取り消す)。
+    """
     total = 0
-    for status in ("in_progress", "queued"):
+    for status in ("in_progress", "queued", "pending", "waiting", "requested"):
         try:
             out = subprocess.run(
                 ["gh", "api", f"repos/{os.environ.get('GITHUB_REPOSITORY','')}"
@@ -128,6 +133,7 @@ def gh_runs_active(workflow, title=None):
                 capture_output=True, text=True, timeout=60,
             )
             if out.returncode != 0:
+                print(f"::warning::gh api 失敗 ({workflow} status={status}) — セーフティネットが判定できない")
                 return -1
             titles = [t for t in out.stdout.split("\n") if t.strip()]
             total += len(titles) if title is None else sum(1 for t in titles if t == title)
@@ -154,6 +160,23 @@ def gh_minutes_since_last_run(workflow):
         return int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() // 60)
     except Exception:
         return -1
+
+
+def _auto_post_pending():
+    """auto_post_x の待機中 (pending/queued/waiting/requested) run 数。判定不能なら 0。"""
+    n = 0
+    for status in ("pending", "queued", "waiting", "requested"):
+        try:
+            out = subprocess.run(
+                ["gh", "api", f"repos/{os.environ.get('GITHUB_REPOSITORY','')}"
+                 f"/actions/workflows/auto_post_x.yml/runs?status={status}&per_page=20",
+                 "--jq", ".total_count"],
+                capture_output=True, text=True, timeout=60)
+            if out.returncode == 0 and out.stdout.strip().isdigit():
+                n += int(out.stdout.strip())
+        except Exception:
+            pass
+    return n
 
 
 def dispatch(workflow, mode=None, dry=False, fields=None):
@@ -214,6 +237,13 @@ def main():
     print(f"   予測JSON: {n_pred}R / lock 済み slot: {sorted(locked) or 'なし'}")
 
     acted = []
+    # #161: auto_post_x への dispatch は 1 tick に1本まで。すでに待機中の run があれば出さない。
+    # concurrency group は待機を1本しか持たず、2本目を投げると1本目が黙って取り消される
+    # (9/22 に odds_flash と post_predict が2秒差で互いを取り消したのを実測)。
+    ap_busy = _auto_post_pending()
+    if ap_busy:
+        print(f"   ⏳ auto_post_x に待機中の run が {ap_busy} 本 → この tick では auto_post_x を dispatch しない")
+    sent_ap = bool(ap_busy)
 
     # ── 1. 予測 (ダッシュボード + 後続 slot の前提) ───────────────────────
     # 無い・足りないなら生成。オッズが順次公開される日は先に売り出された数レースだけ
@@ -223,7 +253,7 @@ def main():
     # 予測を再実行しないので、10時以降に dispatch しても何も起きない (旧版は 11:00 まで
     # 空打ちしていた)。10時を過ぎて足りない場合は人に知らせる。
     short = n_pred < n_exp
-    if short and 500 <= hm < 1000:
+    if short and 500 <= hm < 1000 and not sent_ap:
         if n_pred:
             print(f"   ⚠️ 予測が不足 ({n_pred}/{n_exp}R) → 埋め直しを試みる")
         active = gh_runs_active("auto_post_x.yml", title="predict")
@@ -231,6 +261,7 @@ def main():
             print(f"🚨 開催日なのに予測が{'不足' if n_pred else '無い'} → predict を dispatch")
             if dispatch("auto_post_x.yml", "predict", args.dry_run):
                 acted.append("predict")
+                sent_ap = True
         elif active < 0:
             print("   ⚠️ 実行中 run を確認できない → predict dispatch を見送り")
         else:
@@ -269,8 +300,9 @@ def main():
     # refresh_dashboard はここでは叩かない: 投稿 lock を取らない mode なので「実施済み」を
     # 判定できず、tick のたびに DB を push し直してしまう (容量 #153 / 上書き #70)。
     # ダッシュボードの再生成は runner の trigger_post (18:30) と夜間スイープ (export) が担う。
-    SLOTS = (("odds_flash", 930, 1100),
-             ("post_predict", 1015, 1155),
+    # 優先順: 本体の予想 (post_predict) > 朝オッズ (odds_flash) > 結果 (results)
+    SLOTS = (("post_predict", 1015, 1155),
+             ("odds_flash", 930, 1100),
              ("results", 1730, 2400))
     for mode, start, end in SLOTS:
         if not (start <= hm < end):
@@ -283,6 +315,9 @@ def main():
             # 2分差で同じ mode が2本走る (9/22 に odds_flash/post_predict で実測)。
             print(f"   ⏭️ {mode}: 今起動した runner の trigger_post に任せる (二重 dispatch 防止)")
             continue
+        if sent_ap:
+            print(f"   ⏭️ {mode}: この tick は auto_post_x を既に1本出した/待機中 → 次の tick に回す")
+            continue
         if mode in ("odds_flash", "post_predict") and n_pred == 0:
             print(f"   ⏳ {mode}: 予測JSONが未生成 → 次の tick に回す")
             continue
@@ -291,8 +326,12 @@ def main():
             print(f"   ⏳ {mode} は実行中/確認不能 ({active}) → 重ねない")
             continue
         print(f"🚨 開催日なのに {mode} が未実施 → dispatch")
-        if dispatch("auto_post_x.yml", mode, args.dry_run):
+        # results は日付を明示する: 0時前後に投げると auto_post_x 側で翌日 (非開催日) 扱いになり、
+        # 「予測データがありません」で終わっていた (#161 review)。
+        fields = {"date_override": day8} if mode == "results" else None
+        if dispatch("auto_post_x.yml", mode, args.dry_run, fields):
             acted.append(mode)
+            sent_ap = True
 
     # ── 4. 夜間の最終スイープ (遅出し配当・取りこぼし回収) ──────────────
     # collect_results.yml の cron は '6,0' 固定。#161: 旧版は日付を渡せず、同 workflow は
@@ -330,4 +369,12 @@ def _finish(alerts, acted, day_iso):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception as e:   # #161: 例外で落ちても黙らない (旧版は run が緑のまま痕跡が残らなかった)
+        import traceback
+        traceback.print_exc()
+        sys.exit(_finish([f"セーフティネットが例外で停止: {type(e).__name__}: {e}"], [],
+                         jst_now().strftime("%Y-%m-%d")))

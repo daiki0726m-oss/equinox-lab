@@ -245,7 +245,8 @@ jobs:
                 "2. 失効していれば再発行し、GAS の「プロジェクトの設定 → スクリプト プロパティ」の" \
                 "   GITHUB_TOKEN を更新 (docs/GAS_SETUP.md)" \
                 "3. scripts/gas_trigger.js を Code.gs に貼り直して setupTriggers() を1回実行" "" \
-                "復旧すると、この Issue は自動では閉じません。発火を確認したら手で閉じてください。" "" \
+                "GAS を復旧した日は、翌日の2回目の発火で「生存」と判定されるまでこの警報が続きます (手動 dispatch と区別するため)。" \
+                "復旧すると、この Issue は自動では閉じません。翌日の発火を確認してから手で閉じてください。" "" \
                 "_posting_watchdog.yml が自動生成 (初回検知 $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M'))_")" \
                 2>&1 || echo "⚠️ Issue 作成失敗"
             else

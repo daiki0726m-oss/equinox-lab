@@ -137,6 +137,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # #161: モデルの本当の配備時刻を API で引く
         run: |
+          # #161: 日曜未明の回 (土曜夜の cron) は週末の途中なので、投資ゲートの閾値は動かさない。
+          # 土曜と日曜で見送りの基準が変わるのを防ぐ (信頼度・捕捉率などは従来どおり更新)。
+          if [ "$(TZ=Asia/Tokyo date +%u)" = "7" ]; then
+            export KEEP_BET_GATE=1
+            echo "🎚 週末の途中 (日曜) → 投資ゲートの閾値は据え置き"
+          fi
           python3 scripts/build_race_baseline.py || echo "⚠️ 基準表の再構築に失敗 → 既存値を継続使用"
 
       - name: 公開 (docs/data のみ)
