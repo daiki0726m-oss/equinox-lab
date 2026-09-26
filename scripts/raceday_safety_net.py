@@ -41,19 +41,57 @@ def _load(path):
         return None
 
 
+CALENDAR_MAX_AGE_H = 36   # 日次再生成 + GitHub cron の遅延 (最大 ~8h) を見込んだ上限
+
+
+def calendar_age_hours(cal, now=None):
+    """race_calendar.json の古さ (時間)。generated_at が読めなければ None。"""
+    try:
+        gen = datetime.datetime.fromisoformat(cal.get("generated_at"))
+        now = now or jst_now()
+        if gen.tzinfo is None:
+            gen = gen.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=9)))
+        return (now - gen).total_seconds() / 3600
+    except Exception:
+        return None
+
+
 def is_race_day(day_iso):
-    """race_calendar.json で今日が開催日か。カレンダーが無い/古い時は None (判定不能)。"""
+    """race_calendar.json で今日が開催日か。(True/False/None, cal, 理由)
+
+    #161: 旧版は docstring で「古い時は None」と書きながら generated_at を一切見ておらず、
+    窓内で dates に無い日は **確信を持って False** を返していた。カレンダーは1日1回しか
+    作られないので、後から DB に登録された開催 (台風順延・急な月曜開催) は翌日まで載らない。
+    その間セーフティネットは「開催日でない」と断定して全 slot を黙って skip する。
+
+    - dates に載っている → True (肯定は古くても信用できる: 開催予定は消えない)
+    - 載っていない & カレンダーが新しい → False
+    - 載っていない & カレンダーが古い/鮮度不明 → None (判定不能 = 通知する)
+    """
     cal = _load(os.path.join(DATA, "race_calendar.json"))
     if not cal or not isinstance(cal.get("dates"), dict):
-        return None, None
-    entry = (cal["dates"] or {}).get(day_iso)
-    if not entry:
-        # 窓 (±14日) の中なら「開催日でない」と確定できる。窓外なら判定不能。
-        win = cal.get("window") or []
-        if len(win) == 2 and win[0] <= day_iso <= win[1]:
-            return False, cal
-        return None, cal
-    return True, cal
+        return None, None, "race_calendar.json が無い/壊れている"
+    if (cal["dates"] or {}).get(day_iso):
+        return True, cal, ""
+    age = calendar_age_hours(cal)
+    if age is None or age > CALENDAR_MAX_AGE_H:
+        return None, cal, (f"カレンダーが古い (生成 {cal.get('generated_at')}, "
+                           f"{'不明' if age is None else f'{age:.0f}時間前'})")
+    win = cal.get("window") or []
+    if len(win) == 2 and win[0] <= day_iso <= win[1]:
+        return False, cal, ""
+    return None, cal, f"{day_iso} はカレンダーの窓 {win} の外"
+
+
+def expected_races(info):
+    """その日に予測されているべきレース数の下限。
+
+    #161: カレンダーの races は **生成時点の DB スナップショット**で、週末の出走馬登録
+    (fetch_weekend_races) より前に作られると過少になる (実測: 2026-09-25 07:52 生成の版は
+    9/26 を 7R と記録、実際は 24R)。それを不足判定の分母にすると 7/24 で「揃った」と
+    誤認していた。JRA は1場1日12レースなので、場数×12 を下限として併用する。
+    """
+    return max(int(info.get("races") or 0), 12 * len(info.get("venues") or []))
 
 
 def locked_slots(day8):
@@ -118,11 +156,14 @@ def gh_minutes_since_last_run(workflow):
         return -1
 
 
-def dispatch(workflow, mode=None, dry=False):
+def dispatch(workflow, mode=None, dry=False, fields=None):
     cmd = ["gh", "workflow", "run", workflow, "--ref", "main"]
     if mode:
         cmd += ["-f", f"mode={mode}"]
-    label = f"{workflow}" + (f" mode={mode}" if mode else "")
+    for k, v in (fields or {}).items():
+        cmd += ["-f", f"{k}={v}"]
+    label = f"{workflow}" + (f" mode={mode}" if mode else "") + \
+        "".join(f" {k}={v}" for k, v in (fields or {}).items())
     if dry:
         print(f"   [dry-run] would dispatch: {label}")
         return True
@@ -150,16 +191,22 @@ def main():
     else:
         hm = now.hour * 100 + now.minute
 
-    raceday, cal = is_race_day(day_iso)
+    alerts = []   # 人が対応すべき異常。1つでもあれば exit 2 → workflow が Issue を立てる
+
+    raceday, cal, why = is_race_day(day_iso)
     if raceday is None:
-        print(f"⚠️ race_calendar.json で {day_iso} を判定できない → 何もしない")
-        return 0
+        print(f"⚠️ {day_iso} が開催日か判定できない: {why}")
+        alerts.append(f"開催日の判定ができない — {why}。"
+                      f"この状態ではセーフティネットは何もしない (開催日なら全 slot が無防備)")
+        return _finish(alerts, [], day_iso)
     if not raceday:
         print(f"⏭️ {day_iso} は開催日でない → skip")
         return 0
 
     info = (cal["dates"] or {}).get(day_iso, {})
-    print(f"🏇 {day_iso} は開催日 ({info.get('races')}R / {'・'.join(info.get('venues') or [])}), "
+    n_exp = expected_races(info)
+    print(f"🏇 {day_iso} は開催日 (カレンダー {info.get('races')}R / "
+          f"{'・'.join(info.get('venues') or [])} → 期待 {n_exp}R), "
           f"現在 {hm//100:02d}:{hm%100:02d} JST")
 
     locked = locked_slots(day8)
@@ -169,50 +216,72 @@ def main():
     acted = []
 
     # ── 1. 予測 (ダッシュボード + 後続 slot の前提) ───────────────────────
-    # 朝5時以降に予測JSONが無ければ生成。既に走っていれば重ねない。
-    #
-    # 「一部だけ生成された」場合も埋め直す。オッズが順次公開される日は
-    # 先に売り出された数レースだけ予測が通り、残りが #52 のオッズゲートで
-    # skip される (export は生成できた分だけ書く)。0件しか見ないと、
-    # 1レースでも通った瞬間に「予測済み」と誤認して残りが永久に埋まらない。
-    # 投稿窓が閉じる 11:00 までは不足があれば再試行する。
-    n_cal = info.get("races") or 0
-    short = n_cal and n_pred and n_pred < n_cal and hm < 1100
-    if short:
-        print(f"   ⚠️ 予測が不足 ({n_pred}/{n_cal}R) → 埋め直しを試みる")
-    if hm >= 500 and (n_pred == 0 or short):
+    # 無い・足りないなら生成。オッズが順次公開される日は先に売り出された数レースだけ
+    # 予測が通り、残りが #52 のオッズゲートで skip される — 0件しか見ないと
+    # 1レース通った瞬間に「予測済み」と誤認して残りが埋まらない。
+    # #161: 上限は 10:00。auto_post_x の predict は「10時以降は確定済み予測を保護」で
+    # 予測を再実行しないので、10時以降に dispatch しても何も起きない (旧版は 11:00 まで
+    # 空打ちしていた)。10時を過ぎて足りない場合は人に知らせる。
+    short = n_pred < n_exp
+    if short and 500 <= hm < 1000:
+        if n_pred:
+            print(f"   ⚠️ 予測が不足 ({n_pred}/{n_exp}R) → 埋め直しを試みる")
         active = gh_runs_active("auto_post_x.yml", title="predict")
         if active == 0:
-            print(f"🚨 開催日なのに予測が{'不足' if short else '無い'} → predict を dispatch")
+            print(f"🚨 開催日なのに予測が{'不足' if n_pred else '無い'} → predict を dispatch")
             if dispatch("auto_post_x.yml", "predict", args.dry_run):
                 acted.append("predict")
         elif active < 0:
             print("   ⚠️ 実行中 run を確認できない → predict dispatch を見送り")
         else:
             print(f"   ⏳ predict が実行中/待機中 ({active}件) → 重ねない")
+    elif short and hm >= 1000:
+        msg = (f"予測が {n_pred}/{n_exp}R のまま 10:00 を過ぎた "
+               f"(auto_post_x は10時以降に予測を作らない)")
+        print(f"🚨 {msg}")
+        alerts.append(msg)
 
     # ── 2. race_day_runner (結果収集ループ) ──────────────────────────────
-    if 840 <= hm < 1700:
+    # #161: 窓の終わりを runner 自身の終了時刻 (end_hour=19) に揃えた。旧版は 17:00 で
+    # 閉じており、runner が 15:08 に6時間上限で死んだ 9/21 は 17:03 の tick が
+    # 「窓外」で素通りし、最終3レースと results が失われた。
+    runner_started = False
+    if 840 <= hm < 1900:
         active = gh_runs_active("race_day_runner.yml")
         if active == 0:
             print("🚨 開催日なのに race_day_runner 不在 → 起動")
             if dispatch("race_day_runner.yml", None, args.dry_run):
                 acted.append("race_day_runner")
+                runner_started = True
         elif active < 0:
             print("   ⚠️ runner の稼働状況を確認できない → 起動を見送り")
         else:
             print(f"   ✅ race_day_runner 稼働中 ({active}件)")
 
     # ── 3. 投稿 slot (lock があれば触らない) ─────────────────────────────
-    #  odds_flash 9:30 / post_predict 10:15 / results 17:30。
-    #  post_predict は post_x.py の 12:00 ハード上限 (#69) 手前までしか出さない。
-    for mode, start, end in (("odds_flash", 930, 1130),
-                             ("post_predict", 1015, 1155),
-                             ("results", 1730, 2300)):
+    # #161 で窓を実ガードに合わせた:
+    #  - odds_flash: post_x.py 側は 9:00-10:59 のみ受け付ける → 旧 11:30 までの dispatch は空打ち
+    #  - post_predict: post_x.py の 12:00 ハード上限 (#69) の手前まで
+    #  - results / refresh_dashboard: 日付が変わるまで続ける。旧版は 17:30-23:00 と
+    #    夜間スイープの 20-21/22-23 時が分断しており、watchdog の実発火 (中央値 195分) が
+    #    その隙間に落ちると一晩中何も起きなかった (9/21)。cmd_results は未完走なら
+    #    lock を解放して投稿しない (#91) ので、早め・多めに叩いても安全。
+    # refresh_dashboard はここでは叩かない: 投稿 lock を取らない mode なので「実施済み」を
+    # 判定できず、tick のたびに DB を push し直してしまう (容量 #153 / 上書き #70)。
+    # ダッシュボードの再生成は runner の trigger_post (18:30) と夜間スイープ (export) が担う。
+    SLOTS = (("odds_flash", 930, 1100),
+             ("post_predict", 1015, 1155),
+             ("results", 1730, 2400))
+    for mode, start, end in SLOTS:
         if not (start <= hm < end):
             continue
         if mode in locked:
             print(f"   ⏭️ {mode} は lock 済み ({locked[mode].get('posted_at')}) → skip")
+            continue
+        if runner_started:
+            # 起動した runner は1周目で trigger_post が同じ slot を叩く。ここでも叩くと
+            # 2分差で同じ mode が2本走る (9/22 に odds_flash/post_predict で実測)。
+            print(f"   ⏭️ {mode}: 今起動した runner の trigger_post に任せる (二重 dispatch 防止)")
             continue
         if mode in ("odds_flash", "post_predict") and n_pred == 0:
             print(f"   ⏳ {mode}: 予測JSONが未生成 → 次の tick に回す")
@@ -226,20 +295,37 @@ def main():
             acted.append(mode)
 
     # ── 4. 夜間の最終スイープ (遅出し配当・取りこぼし回収) ──────────────
-    # collect_results.yml の cron も '6,0' 固定で、race_day_runner は 19:00 で
-    # 終わる。平日開催の日は 19時以降に確定する配当を拾う層が誰も居ない。
-    if 2000 <= hm < 2100 or 2200 <= hm < 2300:
+    # collect_results.yml の cron は '6,0' 固定。#161: 旧版は日付を渡せず、同 workflow は
+    # 月曜に「前日」を対象にしていたので、月曜開催の日は発火しても当日を拾えなかった。
+    # 日付を明示して渡す。窓も 20:00 から日付が変わるまで連続させた。
+    if 2000 <= hm < 2400:
         since = gh_minutes_since_last_run("collect_results.yml")
         if since < 0:
             print("   ⚠️ collect_results の実行履歴を確認できない → 見送り")
-        elif since < 90:
+        elif since < 150:   # 1晩あたり最大2回 (1回ごとに DB を push するので打ち過ぎない)
             print(f"   ✅ collect_results は {since}分前に実行済み")
         else:
             print("🚨 開催日なのに夜間スイープが未実行 → collect_results を dispatch")
-            if dispatch("collect_results.yml", None, args.dry_run):
+            if dispatch("collect_results.yml", None, args.dry_run, {"date": day8}):
                 acted.append("collect_results")
 
+    return _finish(alerts, acted, day_iso)
+
+
+def _finish(alerts, acted, day_iso):
     print(f"\n📋 dispatch: {acted or 'なし'}")
+    if alerts:
+        # workflow 側がこのファイルを読んで Issue を立てる (#161: 旧版は常に exit 0 で、
+        # 取りこぼしが一切通知されなかった — 9/21 の欠落は監査まで5日間誰も知らなかった)
+        body = "\n".join(f"- {a}" for a in alerts)
+        try:
+            with open(os.environ.get("SAFETY_NET_ALERTS", "/tmp/safety_net_alerts.md"),
+                      "w", encoding="utf-8") as f:
+                f.write(f"{day_iso}\n{body}\n")
+        except OSError:
+            pass
+        print(f"🔔 要対応:\n{body}")
+        return 2
     return 0
 
 

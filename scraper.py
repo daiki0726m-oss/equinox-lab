@@ -94,22 +94,40 @@ class NetkeibaScraper:
         race_ids = []
 
         # race_id=XXXXXXXXXXXX の形式でクエリパラメータから取得
+        link_kinds = {}   # race_id → そのレースを指していたリンクのページ名 (診断用)
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
             match = re.search(r"race_id=(\d{12})", href)
             if match:
                 race_id = match.group(1)
-                # result.html / shutuba.html のリンクのみ (movie.html は重複なので除外)
-                # 🐴 #159 (2026-09-21): **新馬戦は shutuba_debut.html にリンクされる**ため、
-                # "shutuba.html" の部分一致から漏れて当日一覧から恒久的に消えていた。
-                # 実測 2026-09-21: 阪神は12R組まれているのに一覧は10R しか返さず、
-                # 落ちていたのは 4R・5R = どちらも2歳新馬 (中山も 5R・6R の新馬が欠落)。
-                # 影響はダッシュボードだけでなく結果収集にも及ぶ = デビュー戦が DB に入らず
-                # 各馬の初戦が欠ける。
+                page = re.search(r"/([a-z_]+)\.html", href)
+                link_kinds.setdefault(race_id, set()).add(page.group(1) if page else "?")
+                # result.html / shutuba.html のリンクのみ (movie.html は重複なので除外)。
+                # shutuba_debut.html は shutuba.html と同じページの別名なので念のため許可。
+                # #161 訂正: #159 で「新馬戦は shutuba_debut.html にリンクされるため毎週消えていた
+                # (年50レース欠落)」と書いたが誤り。現行の一覧8日分に shutuba_debut は1件も無く、
+                # 新馬の登録率も同じ期間で比べれば過去5年と同水準 (1-9月と通年を比べた取り違え)。
+                # 2026-09-21 に阪神の一覧が 10R しか返さなかった真因は未特定 — 下の検査で次に備える。
                 if ("result.html" in href or "shutuba.html" in href
                         or "shutuba_debut.html" in href):
                     if race_id not in race_ids:
                         race_ids.append(race_id)
+
+        # #161: JRA は1場1日12レース。場ごとに12に満たなければ、取りこぼしの証拠を残す
+        # (欠けたレース番号と、そのレースを指していたリンクの種類)。呼び出し側 (predict.py)
+        # は DB 登録済みのレースを合流させるので、ここは止めずに警告だけ出す。
+        by_venue = {}
+        for rid in link_kinds:
+            by_venue.setdefault(rid[4:6], set()).add(rid)
+        for code, rids in sorted(by_venue.items()):
+            if not 1 <= int(code) <= 10:
+                continue
+            got = {int(r[-2:]) for r in race_ids if r[4:6] == code}
+            missing = sorted(set(range(1, 13)) - got)
+            if missing:
+                kinds = sorted({k for r in rids if int(r[-2:]) in missing for k in link_kinds[r]})
+                print(f"  ⚠️ レース一覧 {date_str} 場{code}: {len(got)}/12R "
+                      f"(欠け {missing} / そのリンク種別 {kinds or 'リンク自体が無い'})")
 
         return race_ids
 
@@ -1124,7 +1142,10 @@ class NetkeibaScraper:
                     p.get("popularity", 0)
                 ))
 
-        print(f"💾 保存完了: {race_data['race_id']} ({len(race_data.get('results', []))}頭, {len(race_data.get('payouts', []))}配当)")
+        # #161: 出馬表の保存は entries キー (#14 で両キー対応済み)。results だけ数えていたため
+        # refresh_entries が実際には保存しているのに毎回「0頭」と表示していた。
+        _n = len(race_data.get('results') or race_data.get('entries') or [])
+        print(f"💾 保存完了: {race_data['race_id']} ({_n}頭, {len(race_data.get('payouts', []))}配当)")
 
     # =========================================================
     # 一括収集

@@ -223,41 +223,34 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SINCE=$(date -u -d '26 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
-                  || date -u -v-26H '+%Y-%m-%dT%H:%M:%SZ')
-          N=$(gh api "repos/${{ github.repository }}/actions/workflows/auto_post_x.yml/runs?event=workflow_dispatch&per_page=100" \
-                --jq "[.workflow_runs[] | select(.created_at > \"$SINCE\") | select(.triggering_actor.login != \"github-actions[bot]\")] | length" 2>/dev/null || echo "-1")
-          if [ "$N" = "-1" ]; then
-            echo "ℹ️ GAS 生存確認をスキップ (API 取得失敗)"
-          elif [ "$N" = "0" ]; then
-            echo "⚠️ 直近26時間に外部 (GAS) 起点の dispatch がありません"
-            {
-              echo "### ⚠️ GAS トリガーが発火していません"
-              echo ""
-              echo "GitHub スケジューラが全滅した時の唯一の独立層です。"
-              echo "PAT の失効 (前回 #63) か、GAS 側のトリガー消滅を疑ってください。"
-              echo "確認: GAS プロジェクトの実行ログ / https://github.com/settings/personal-access-tokens"
-            } >> "$GITHUB_STEP_SUMMARY"
-            # #150c: step summary だけでは誰も見ない。#40 で Threads token には
-            # 専用の自動更新 workflow を付けたのに、GAS の PAT には何も無い。
-            # 実測で GAS は発火率100%・GitHub スケジューラは48% = 実質この層が
-            # 配信を支えているので、止まったら必ず気づける経路に載せる。
-            TITLE="🔑 GASトリガーが停止しています ($(TZ=Asia/Tokyo date '+%Y-%m-%d'))"
-            if [ "$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length' 2>/dev/null || echo 0)" = "0" ]; then
+          # #161: 判定を scripts/check_trigger_layers.py に一本化。旧 inline 版は
+          # github-actions[bot] 以外を全部 GAS と数えたため、手動 dispatch 1回で
+          # 「GAS 生存」と誤判定した (9/21 に私の手動2回が13日間の沈黙を隠した)。
+          set +e
+          python3 scripts/check_trigger_layers.py --days 2
+          CODE=$?
+          set -e
+          if [ "$CODE" = "1" ]; then
+            # #161: タイトルに日付を入れていたため dedup が効かず、同一障害で
+            # 18本の Issue が積まれて誰も読まなくなっていた。固定タイトル1本に集約する。
+            TITLE="🛰 外部の起動層 (GAS) が沈黙しています"   # feature_parity.yml と同じ題 = 1障害1本
+            OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -z "$OPEN" ]; then
               gh issue create --title "$TITLE" --body "$(printf '%s\n' \
-                "直近26時間、GAS (Google Apps Script) 起点の workflow_dispatch が0件です。" "" \
-                "GAS は GitHub スケジューラと独立した唯一の時計で、実測では毎日" \
-                "秒単位で正確に発火し、GitHub cron が落ちた日の配信を実際に支えています。" "" \
+                "定刻に発火する外部 dispatch (GAS) が直近2日間ありません。手動 dispatch は数えていません。" "" \
+                "GAS は GitHub スケジューラから故障モードが独立した唯一の時計です。" \
+                "止まっていると、GitHub cron が落ちた日に予想・結果・収集がまとめて止まります。" "" \
                 "**確認手順**" \
                 "1. https://github.com/settings/personal-access-tokens で PAT の期限を確認" \
                 "2. 失効していれば再発行し、GAS の「プロジェクトの設定 → スクリプト プロパティ」の" \
-                "   GITHUB_TOKEN を更新" \
-                "3. ついでに scripts/gas_trigger.js を Code.gs に貼り直して setupTriggers() を1回実行" \
-                "   (収集系トリガーが未インストールのため)" "" \
-                "_posting_watchdog.yml が自動生成_")" 2>&1 || echo "⚠️ Issue 作成失敗"
+                "   GITHUB_TOKEN を更新 (docs/GAS_SETUP.md)" \
+                "3. scripts/gas_trigger.js を Code.gs に貼り直して setupTriggers() を1回実行" "" \
+                "復旧すると、この Issue は自動では閉じません。発火を確認したら手で閉じてください。" "" \
+                "_posting_watchdog.yml が自動生成 (初回検知 $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M'))_")" \
+                2>&1 || echo "⚠️ Issue 作成失敗"
+            else
+              echo "ℹ️ 既存 Issue #$OPEN が open のまま → 追加しない"
             fi
-          else
-            echo "✅ GAS 生存 (直近26時間に $N 件の外部 dispatch)"
           fi
 
       # 🏇 #160 (2026-09-21): 平日・祝日開催のセーフティネット (曜日でなくカレンダー駆動)
@@ -283,7 +276,22 @@ jobs:
           if [ "$DOW" -ge 6 ]; then
             echo "⏭️ 土日はネイティブ cron/GAS/runner が担当 → skip"; exit 0
           fi
+          export SAFETY_NET_ALERTS=/tmp/safety_net_alerts.md
+          set +e
           python3 scripts/raceday_safety_net.py
+          CODE=$?
+          set -e
+          # #161: 旧版は常に exit 0 で、取りこぼしが誰にも通知されなかった。
+          # 開催日ごとに1本だけ Issue を立てる (同じ日の2回目以降は追記しない)。
+          if [ "$CODE" = "2" ] && [ -s "$SAFETY_NET_ALERTS" ]; then
+            DAY=$(head -1 "$SAFETY_NET_ALERTS")
+            TITLE="🏇 開催日の自動運転に要対応: $DAY"
+            OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -z "$OPEN" ]; then
+              gh issue create --title "$TITLE" --body "$(tail -n +2 "$SAFETY_NET_ALERTS"; printf '\n_posting_watchdog.yml の開催日セーフティネット (#160/#161) が自動生成_\n')" \
+                || echo "⚠️ Issue 作成失敗"
+            fi
+          fi
 
       - name: Ensure race_day_runner alive (weekend)
         if: always()
@@ -292,7 +300,7 @@ jobs:
         run: |
           DOW=$(TZ=Asia/Tokyo date +%u)   # 6=土, 7=日
           HM=$((10#$(TZ=Asia/Tokyo date +%H) * 100 + 10#$(TZ=Asia/Tokyo date +%M)))
-          if [ "$DOW" -lt 6 ] || [ "$HM" -lt 840 ] || [ "$HM" -ge 1700 ]; then
+          if [ "$DOW" -lt 6 ] || [ "$HM" -lt 840 ] || [ "$HM" -ge 1900 ]; then  # #161: runner の end_hour=19 に揃える (旧 1700)
             echo "⏭️ 平日 or 窓外 ($HM) → runner check skip"; exit 0
           fi
           ALIVE=$(gh api "repos/${{ github.repository }}/actions/workflows/race_day_runner.yml/runs?status=in_progress&per_page=1" --jq '.total_count')

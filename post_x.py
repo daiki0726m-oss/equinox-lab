@@ -1428,7 +1428,10 @@ def _is_stakes_race(r):
     # 2026年だけで121件が特別なのに未判定だった。「賞金」等の誤爆は除外。
     if '賞金' in nm:
         return bool(_re.search(r'特別|ステークス|ｽﾃｰｸｽ|杯|記念', nm))
-    return bool(_re.search(r'特別|ステークス|ｽﾃｰｸｽ|[ぁ-んァ-ヶー一-龥A-Za-z0-9]S(\b|$|\()|杯|記念|賞', nm))
+    # #161: 「○○C」(カップの略記) も特別競走。キタサンブラックC / マイラーズC / AJCC 等
+    # 67種中65種が未判定で、2026-09-21 10R キタサンブラックC が投稿対象から漏れた。
+    return bool(_re.search(r'特別|ステークス|ｽﾃｰｸｽ|[ぁ-んァ-ヶー一-龥A-Za-z0-9]S(\b|$|\()|'
+                           r'[ぁ-んァ-ヶー一-龥A-Za-z0-9]C$|杯|記念|賞', nm))
 
 
 def _select_target_races(all_races, max_total=None):

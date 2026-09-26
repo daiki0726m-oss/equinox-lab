@@ -11,6 +11,11 @@ on:
     # 土日 22:00 JST (UTC 13:00) - 最終確認
     - cron: '0 13 * * 6,0'
   workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 YYYYMMDD (カンマ区切りで複数可)。空なら「今日 + 直近10日で着順が欠けている開催日」'
+        required: false
+        default: ''
 
 concurrency:
   group: keiba-db-accum          # #70 part1: 蓄積系writerを直列化しgz clobberを防ぐ
@@ -54,55 +59,65 @@ jobs:
       - name: Init DB
         run: python -c "from database import init_db; init_db()"
 
-      - name: Determine race date
+      # 🏇 #161 (2026-09-26): 対象日を「今日」固定から「今日 + 直近で着順が欠けた開催日」に拡張。
+      # 旧版は日付を受け取れず、月曜は前日(日曜)を対象にハードコードしていたため、
+      # 月曜・祝日開催 (2026-09-21 阪神) の取りこぼしを原理的に拾えなかった。実害:
+      # 9/21 の 10R/11R(神戸新聞杯G2)/12R は runner が6時間上限で 15:08 に止まった後
+      # 誰も収集せず、5日間 DB とダッシュボードから欠落していた。
+      # 取りこぼしは「翌晩以降の夜間スイープが自動で拾う」形にして、人が気づく必要を無くす。
+      - name: Determine race dates
         id: date
         run: |
-          DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
-          DOW=$(TZ=Asia/Tokyo date +%u)
-          # 日曜の深夜(UTC月曜)は土曜の結果も取得
-          if [ "$DOW" = "1" ]; then
-            YESTERDAY=$(TZ=Asia/Tokyo date -d "yesterday" +%Y%m%d 2>/dev/null || TZ=Asia/Tokyo date -v-1d +%Y%m%d)
-            echo "date=$YESTERDAY" >> $GITHUB_OUTPUT
-            echo "today=$DATE" >> $GITHUB_OUTPUT
+          TODAY=$(TZ=Asia/Tokyo date +%Y%m%d)
+          INPUT="${{ inputs.date }}"
+          if [ -n "$INPUT" ]; then
+            DATES=$(echo "$INPUT" | tr ',' ' ')
+            echo "📅 指定日: $DATES"
           else
-            echo "date=$DATE" >> $GITHUB_OUTPUT
-            echo "today=$DATE" >> $GITHUB_OUTPUT
+            BACKFILL=$(python3 - <<'PYEOF'
+          import datetime as dt
+          from database import get_db
+          jst = dt.timezone(dt.timedelta(hours=9))
+          today = dt.datetime.now(jst).date()
+          lo = (today - dt.timedelta(days=10)).isoformat()
+          with get_db() as c:
+              rows = c.execute("""
+                  SELECT g.race_date,
+                         SUM(CASE WHEN EXISTS (SELECT 1 FROM results w
+                                               WHERE w.race_id = g.race_id AND w.finish_position = 1)
+                                  THEN 0 ELSE 1 END) AS missing
+                  FROM races g
+                  WHERE g.race_date >= ? AND g.race_date < ?
+                    AND CAST(substr(g.race_id, 5, 2) AS INT) BETWEEN 1 AND 10   -- JRA のみ
+                    AND EXISTS (SELECT 1 FROM results r WHERE r.race_id = g.race_id)
+                  GROUP BY g.race_date HAVING missing > 0
+                  ORDER BY g.race_date
+              """, (lo, today.isoformat())).fetchall()
+          print(" ".join(r[0].replace("-", "") for r in rows))
+          PYEOF
+            )
+            DATES="$TODAY $BACKFILL"
+            [ -n "$BACKFILL" ] && echo "🩹 着順が欠けた過去の開催日を回収: $BACKFILL"
           fi
-          echo "📅 対象日: $DATE"
+          echo "dates=$(echo $DATES | xargs -n1 | sort -u | xargs)" >> $GITHUB_OUTPUT
+          echo "today=$TODAY" >> $GITHUB_OUTPUT
 
-      - name: Collect results
+      - name: Collect results / payouts / export
         run: |
-          DATE="${{ steps.date.outputs.date }}"
-          echo "📥 ${DATE} の結果を収集..."
-          python predict.py collect --date "$DATE"
-          echo "🔄 race_id同期..."
-          python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')"
-
-      - name: Collect payouts
-        run: |
-          DATE="${{ steps.date.outputs.date }}"
-          echo "💰 ${DATE} の配当を収集..."
-          python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集スキップ"
-
-      # 🛡 Pre-flight: races/出走馬/予測キャッシュ完整性チェック + auto-fix
-      # 5/23 事故 (export_predictions が「予測データなし」で空 JSON 出力) の再発防止
-      - name: Pre-flight check (data integrity)
-        run: |
-          DATE="${{ steps.date.outputs.date }}"
-          echo "🛡 Pre-flight check: $DATE"
-          python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || {
-            EXIT_CODE=$?
-            if [ $EXIT_CODE -eq 2 ]; then
-              echo "❌ Pre-flight 致命的問題が残っている (auto-fix失敗)"
-              # この workflow は collect なので、致命的でも JSON 更新は試みる
-              # (export 側で「予測なしならスキップ」される設計を維持)
+          TODAY="${{ steps.date.outputs.today }}"
+          for DATE in ${{ steps.date.outputs.dates }}; do
+            echo "════════ ${DATE} ════════"
+            python predict.py collect --date "$DATE" || echo "⚠️ collect エラー(継続)"
+            python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')" || true
+            python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集スキップ"
+            # 🛡 Pre-flight は **今日だけ**。auto-fix は予測を再生成しうるので、
+            # 過去日に走らせると確定済みの印を後出しで作り直す (#99 の look-ahead)。
+            if [ "$DATE" = "$TODAY" ]; then
+              python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || \
+                echo "⚠️ Pre-flight 警告 (collect なので JSON 更新は続行)"
             fi
-          }
-
-      - name: Export predictions JSON
-        run: |
-          DATE="${{ steps.date.outputs.date }}"
-          python export_predictions.py "$DATE"
+            python export_predictions.py "$DATE" || echo "⚠️ export エラー"
+          done
 
       - name: Save keiba.db to cache
         uses: actions/cache/save@v4

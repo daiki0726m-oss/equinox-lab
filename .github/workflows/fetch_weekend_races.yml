@@ -178,6 +178,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           bash scripts/db_pack.sh || true
           git add keiba.db.gz 2>/dev/null || true
+          # #161: 開催カレンダーは「出走馬を DB に入れた直後」に作り直す。feature_parity (毎朝) だけだと
+          # このジョブより前に作られ、週末を 7R (実際 24R) と過少に記録していた。
+          python3 scripts/build_race_calendar.py || echo "⚠️ カレンダー再生成に失敗 (続行)"
+          git add docs/data/race_calendar.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "no DB changes to commit"
           else

@@ -42,7 +42,11 @@ def main():
     dates = {}
     for r in conn.execute(
         "SELECT race_date, COUNT(*) n, GROUP_CONCAT(DISTINCT venue) v FROM races "
-        "WHERE race_date BETWEEN ? AND ? AND race_date != '' GROUP BY race_date",
+        "WHERE race_date BETWEEN ? AND ? AND race_date != '' "
+        # #161: JRA の場コード (01-10) だけ。地方競馬の残骸行 (venue 空) が1行でもあると、
+        # その日が「開催日」になり非開催日に予測・投稿を dispatch しうる。
+        "AND CAST(substr(race_id, 5, 2) AS INT) BETWEEN 1 AND 10 AND venue != '' "
+        "GROUP BY race_date",
             (lo.isoformat(), hi.isoformat())):
         dates[r["race_date"]] = {
             "races": r["n"],

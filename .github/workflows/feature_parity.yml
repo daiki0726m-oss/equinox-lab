@@ -65,6 +65,36 @@ jobs:
             done
           fi
 
+      # ── #161: 前日までの開催が「最後まで終わったか」を毎朝確かめる ──
+      # 9/21 は着順3R の取りこぼしと結果報告の未配信が、5日間誰にも知られなかった。
+      # 各層は自分の担当時刻しか見ておらず、「その日が完了したか」を見る者がいなかった。
+      - name: 🔎 開催日の完了検査 (#161)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPLETENESS_REPORT: /tmp/raceday_gaps.md
+        run: |
+          set +e
+          python3 scripts/check_raceday_completeness.py --days 7
+          CODE=$?
+          set -e
+          if [ "$CODE" = "1" ] && [ -s /tmp/raceday_gaps.md ]; then
+            TITLE="🏇 開催日のやり残し (着順の未収集・結果報告の未配信)"
+            OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            BODY="$(cat /tmp/raceday_gaps.md)
+
+          着順の未収集は collect_results の夜間スイープが直近10日分を自動で拾い直す。ここに残るのはそれでも拾えなかったもの。
+          結果報告の遅れ配信は自動では行わない — 出す場合は auto_post_x を mode=results・date_override=YYYYMMDD で手動実行。
+
+          _feature_parity.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_"
+            if [ -z "$OPEN" ]; then
+              gh issue create --title "$TITLE" --body "$BODY" || echo "⚠️ Issue 作成失敗"
+            else
+              gh issue comment "$OPEN" --body "$BODY" || true
+            fi
+          fi
+
       # ── #155: 起動層 (GitHub スケジューラから独立した層) の生存確認 ──
       # GAS が 2026-09-08 に PAT 失効で停止し 7日間誰も気づかなかった。
       # GitHub cron が生きている限り配信は続くので、外部層の死は障害が起きるまで
@@ -113,3 +143,18 @@ jobs:
               "同じ特徴量名に学習と推論で別の値が入っている状態です。放置すると予測が静かに劣化します。" "" \
               "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" "" \
               '```' "$(cat /tmp/parity.txt | tail -20)" '```')" 2>&1 || echo "Issue作成失敗"
+
+      # #161: #155 で「常時可視化」と書いた trigger_health.json は一度も commit されていなかった。
+      - name: 📝 trigger_health.json を commit
+        if: always()
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/trigger_health.json 2>/dev/null || true
+          if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
+          git commit -m "watchdog: 起動層の生存状況 (#155/#161)"
+          for i in 1 2 3; do
+            git pull --rebase --autostash -X theirs origin main || git rebase --abort || true
+            git push origin HEAD:main && break || sleep 5
+          done

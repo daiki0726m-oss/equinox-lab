@@ -52,7 +52,10 @@ env:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 600
+    # #161: GitHub hosted runner のジョブは **6時間で強制終了**する。旧値 600 (10h) は
+    # 到達不能な設定で、09時台に起動した runner は例外なく 15時台に cancelled されていた
+    # (直近5回すべて厳密に 6h00m)。loop 側で 5h20m 経過したら後続を起動して抜ける。
+    timeout-minutes: 350
     permissions:
       contents: write
       actions: write   # ← cron 不発時に auto_post_x.yml を内部 dispatch できるように
@@ -152,6 +155,26 @@ jobs:
           echo "🏇 Race Day Runner start. date=$DATE, end_hour=${END_HH}:00 JST"
           echo "📋 投稿 safety net: odds_flash@9:30 / post_predict@10:15 / results@17:30 / refresh_dashboard@18:30"
 
+          # 🏃 #161: 6時間上限の手前でバトンを渡す。
+          # 9/21(月・祝) は 09:08 起動の runner が 15:08 に殺され、10R/11R(神戸新聞杯)/12R と
+          # 17:30 の results トリガーが丸ごと失われた。土日は 11/13/15 時の保険 cron が
+          # 偶然次の runner を起こしていただけで、平日開催には何も無かった。
+          # 起動方法 (cron / watchdog / 手動) に関係なく、runner 自身が後継を用意する。
+          # 1 iter は最大 ~10分 + sleep 10分 なので、判定は iter 頭と sleep 前の2か所で行う。
+          RUN_START=$(date +%s)
+          MAX_LOOP_SEC=${MAX_LOOP_SEC:-19200}   # 5h20m (+ 最終 commit で 6h 未満に収める)
+          handoff_if_due() {
+            local extra=${1:-0}
+            if [ $(( $(date +%s) - RUN_START + extra )) -ge "$MAX_LOOP_SEC" ]; then
+              echo "⏳ 6時間上限の手前 → 後続 runner を dispatch して終了 (end_hour=${END_HH})"
+              gh workflow run race_day_runner.yml -R ${{ github.repository }} -f end_hour="$END_HH" \
+                && echo "  ✅ 後続を dispatch (concurrency で本 run 終了後に開始)" \
+                || echo "  ⚠️ 後続 dispatch 失敗 — watchdog / safety net の再起動に委ねる"
+              return 0
+            fi
+            return 1
+          }
+
           ITER=0
           while true; do
             JST_HOUR=$(TZ=Asia/Tokyo date +%H)
@@ -164,10 +187,11 @@ jobs:
             echo "============================================="
 
             # 終了時刻判定
-            if [ "$JST_HOUR" -ge "$END_HH" ]; then
+            if [ "$((10#$JST_HOUR))" -ge "$END_HH" ]; then
               echo "🏁 終了時刻($END_HH時) 到達 → loop終了"
               break
             fi
+            handoff_if_due && break
 
             ITER_START=$(date +%s)
 
@@ -252,6 +276,8 @@ jobs:
 
             # 次のiterまで sleep (合計10分間隔を保つ)
             SLEEP=$(( 600 - ELAPSED ))
+            # 次の iter の頭では上限を越えている → 寝る前に渡す (sleep 中に殺されない)
+            if [ "$SLEEP" -gt 0 ] && handoff_if_due "$(( SLEEP + 600 ))"; then break; fi
             if [ "$SLEEP" -gt 0 ]; then
               echo "💤 sleep ${SLEEP}s"
               sleep "$SLEEP"

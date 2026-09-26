@@ -80,6 +80,8 @@ jobs:
       # ので、週末が終わるたびに実分布から引き直す。
       - name: Rebuild race baseline (#151)
         if: always() && steps.check.outputs.age != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # #161: モデルの本当の配備時刻を API で引く
         run: |
           python3 scripts/build_race_baseline.py || echo "⚠️ 基準表の更新に失敗 (既存の値を使い続ける)"
 

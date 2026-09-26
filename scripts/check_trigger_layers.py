@@ -40,30 +40,52 @@ REPO = os.environ.get("GITHUB_REPOSITORY", "daiki0726m-oss/equinox-lab")
 
 
 def fetch_dispatches(pages=2):
-    """直近の workflow_dispatch を (日時JST, actor) で返す。"""
+    """直近の workflow_dispatch を (日時JST, actor, workflow名|title) で返す。"""
     rows = []
     for page in range(1, pages + 1):
         try:
             out = subprocess.run(
                 ["gh", "api",
                  f"repos/{REPO}/actions/runs?event=workflow_dispatch&per_page=100&page={page}",
-                 "--jq", ".workflow_runs[] | \"\\(.created_at) \\(.triggering_actor.login)\""],
+                 "--jq", ".workflow_runs[] | \"\\(.created_at) \\(.triggering_actor.login) \\(.path)|\\(.display_title)\""],
                 capture_output=True, text=True, timeout=60)
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return None
         if out.returncode != 0:
             return None
         for line in out.stdout.splitlines():
-            parts = line.strip().split()
-            if len(parts) != 2:
+            parts = line.strip().split(" ", 2)
+            if len(parts) < 2:
                 continue
             try:
                 ts = datetime.strptime(parts[0], "%Y-%m-%dT%H:%M:%SZ").replace(
                     tzinfo=timezone.utc).astimezone(JST)
             except ValueError:
                 continue
-            rows.append((ts, parts[1]))
+            rows.append((ts, parts[1], parts[2] if len(parts) > 2 else ""))
     return rows
+
+
+def scheduled_like(ext):
+    """外部 dispatch のうち「毎日ほぼ同じ時刻に来る」もの = 定刻トリガー (GAS) らしいもの。
+
+    #161: 旧版は github-actions[bot] 以外を全部「外部層 = GAS」と数えていた。
+    2026-09-21 に私が手で2回 dispatch した瞬間、GAS が13日止まっていたのに
+    silent_days が 0 にリセットされ、外部層の死を3日間隠した。
+    GAS の time-based trigger は毎日同じ分に発火する (実測 07:49:36±1秒) ので、
+    同じ workflow/mode が別の日に ±3分以内でもう一度来ていれば定刻とみなす。
+    手動 dispatch は時刻がばらつくのでここで落ちる。
+    """
+    out = []
+    for i, (ts, _a, key) in enumerate(ext):
+        mod = ts.hour * 60 + ts.minute
+        for j, (ts2, _a2, key2) in enumerate(ext):
+            if i == j or key2 != key or ts2.date() == ts.date():
+                continue
+            if abs((ts2.hour * 60 + ts2.minute) - mod) <= 3:
+                out.append(ts)
+                break
+    return out
 
 
 def main():
@@ -78,23 +100,28 @@ def main():
         return 2
 
     now = datetime.now(JST)
-    ext = [(ts, a) for ts, a in rows if a != BOT]
-    last_ext = max((ts for ts, _ in ext), default=None)
-    recent = [ts for ts, _ in ext if (now - ts).days < args.days]
+    ext = [(ts, a, k) for ts, a, k in rows if a != BOT]
+    sched = scheduled_like(ext)
+    manual = len(ext) - len(sched)
+    last_ext = max(sched, default=None)
+    recent = [ts for ts in sched if (now - ts).days < args.days]
 
     # 直近14日の日別内訳 (人が読んで原因を推測できるように)
     daily = {}
-    for ts, a in rows:
+    sched_set = set(sched)
+    for ts, a, _k in rows:
         if (now - ts).days >= 14:
             continue
         d = ts.strftime("%Y-%m-%d")
-        daily.setdefault(d, {}).setdefault("外部" if a != BOT else "bot", 0)
-        daily[d]["外部" if a != BOT else "bot"] += 1
+        kind = "bot" if a == BOT else ("定刻(GAS)" if ts in sched_set else "手動")
+        daily.setdefault(d, {}).setdefault(kind, 0)
+        daily[d][kind] += 1
 
     ok = bool(recent)
     silent_days = (now - last_ext).days if last_ext else None
 
-    print(f"🔎 起動層の生存確認 ({now:%Y-%m-%d %H:%M JST})")
+    print(f"🔎 起動層の生存確認 ({now:%Y-%m-%d %H:%M JST})  "
+          f"※手動 dispatch {manual}件は生存の根拠に数えない")
     for d in sorted(daily)[-14:]:
         print(f"   {d}: " + " / ".join(f"{k}={v}" for k, v in sorted(daily[d].items())))
     if ok:
@@ -114,6 +141,7 @@ def main():
         "external_layer_ok": ok,
         "last_external_dispatch": last_ext.isoformat() if last_ext else None,
         "silent_days": silent_days,
+        "manual_dispatches_ignored": manual,
         "window_days": args.days,
         "daily": daily,
     }

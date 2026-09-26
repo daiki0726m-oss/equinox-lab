@@ -134,6 +134,8 @@ jobs:
       # ここは新モデルが週末2日分を予測し終えた直後なので、「閾値と分布がペア」
       # (#36/#120/#147/#156) が初めて成立する唯一の地点。
       - name: 🎚 基準表を新モデルの分布で引き直す
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # #161: モデルの本当の配備時刻を API で引く
         run: |
           python3 scripts/build_race_baseline.py || echo "⚠️ 基準表の再構築に失敗 → 既存値を継続使用"
 

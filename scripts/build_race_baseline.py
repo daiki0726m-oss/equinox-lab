@@ -180,30 +180,49 @@ def build_payout(conn):
 
 
 def current_model_deployed_at(conn=None):
-    """現在出荷されているモデルが配備された時刻 (JST の naive 文字列)。
+    """現在出荷されているモデルが配備された時刻を (JST表示用, UTC比較用) で返す。
 
-    #156: 閾値は「そのモデルが出した分布」から引かないと意味がない。
-    weekly_retrain は再学習しても再予測しないので、直後に基準表を作ると
-    **前モデルの predictions_cache から閾値を引く**ことになる (実測: 09/14 に
-    書かれた閾値の元データは全件 09/13 以前 = 前モデルの出力)。
-    ここでモデルの配備時刻を取り、それ以降に作られた予測だけを窓にする。
+    #156: 閾値は「そのモデルが出した分布」から引かないと意味がない。weekly_retrain は
+    再学習しても再予測しないので、直後に基準表を作ると前モデルの predictions_cache から
+    閾値を引くことになる。そこでモデルの配備時刻以降に作られた予測だけを窓にする。
+
+    #161: 旧版は `git log -1 -- models/model_rank.pkl` で配備時刻を取っていたが、
+    Actions の checkout は shallow (fetch-depth 1) なので **HEAD コミットの時刻**が返り、
+    毎回「配備されたばかり」扱い → 窓がほぼ空 → 全期間 (前モデルの分布) にフォールバック
+    していた。しかも created_at (SQLite CURRENT_TIMESTAMP = UTC) を JST 文字列と比べていた。
+    結果、閾値 0.0985/0.2608 は現行分布より大幅に低く、9/19・9/20・9/26 の遮断は 0/24。
+    → (1) GitHub API でモデルファイルの本当の最終コミットを引く、(2) shallow な git log は
+    信用しない、(3) 比較は UTC で行う。
     """
-    import subprocess
-    mp = os.path.join(ROOT, "models", "model_rank.pkl")
+    import subprocess, urllib.request
+    rel = "models/model_rank.pkl"
+    utc = None
+    repo = os.environ.get("GITHUB_REPOSITORY", "daiki0726m-oss/equinox-lab")
     try:
-        out = subprocess.run(["git", "log", "-1", "--format=%cI", "--", mp],
-                             cwd=ROOT, capture_output=True, text=True, timeout=30)
-        if out.returncode == 0 and out.stdout.strip():
-            dt = datetime.fromisoformat(out.stdout.strip()).astimezone(
-                timezone(timedelta(hours=9)))
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/commits?path={rel}&per_page=1",
+            headers={"Accept": "application/vnd.github+json",
+                     **({"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"}
+                        if os.environ.get("GITHUB_TOKEN") else {})})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            ts = json.load(r)[0]["commit"]["committer"]["date"]
+        utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except Exception:
-        pass
-    try:
-        dt = datetime.fromtimestamp(os.path.getmtime(mp), timezone(timedelta(hours=9)))
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except OSError:
-        return None
+        try:
+            shallow = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=ROOT,
+                                     capture_output=True, text=True, timeout=30).stdout.strip()
+            if shallow == "false":
+                out = subprocess.run(["git", "log", "-1", "--format=%cI", "--", rel],
+                                     cwd=ROOT, capture_output=True, text=True, timeout=30)
+                if out.returncode == 0 and out.stdout.strip():
+                    utc = datetime.fromisoformat(out.stdout.strip())
+        except Exception:
+            pass
+    if utc is None:
+        return None, None     # 不明 → 呼び出し側は全期間を使い「窓が合っていない」と明示する
+    jst = utc.astimezone(timezone(timedelta(hours=9)))
+    return (jst.strftime("%Y-%m-%d %H:%M:%S"),
+            utc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
 
 
 def build_bet_gate_thresholds(conn):
@@ -234,14 +253,14 @@ def build_bet_gate_thresholds(conn):
     FALLBACK = {"top_prob": 0.12, "top3_sum": 0.30}
     # #156: 現モデルが出した予測だけを窓にする。足りなければ全期間に広げ、
     # 「前モデルの分布から引いた」ことをログと JSON に明示する。
-    since = current_model_deployed_at(conn)
+    since, since_utc = current_model_deployed_at(conn)
     rows, fresh = [], True
-    if since:
+    if since_utc:
         rows = list(conn.execute("""
             SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
             JOIN races g ON pc.race_id = g.race_id
             WHERE pc.created_at >= ? ORDER BY g.race_date DESC LIMIT 400
-        """, (since,)))
+        """, (since_utc,)))   # created_at は UTC (SQLite CURRENT_TIMESTAMP)
     if len(rows) < MIN_SAMPLE_FOR_THRESHOLDS:
         fresh = False
         rows = list(conn.execute("""
