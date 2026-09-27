@@ -76,6 +76,20 @@ def _get_known_grade_races() -> Set[str]:
         return set()
 
 
+def _get_known_race_katakana() -> Set[str]:
+    """全レース名 (格付け不問) に含まれるカタカナ3字以上の語 (#162)。"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute("SELECT DISTINCT race_name FROM races WHERE race_name != ''").fetchall()
+        conn.close()
+    except Exception:
+        return set()
+    out = set()
+    for (nm,) in rows:
+        out.update(re.findall(r"[ァ-ヴー]{3,}", nm or ""))
+    return out
+
+
 def _is_horse_in_db(conn, name: str) -> bool:
     """horse_name または sire/damsire が DB に存在するか (完全/部分一致)。
 
@@ -116,6 +130,11 @@ def check_horse_names(tweet_text: str) -> List[str]:
     # 重賞レース名も除外
     grade_races = _get_known_grade_races()
     candidates -= grade_races
+    # #162: レース名の **カタカナ部分** も除外する。候補はカタカナの連なりだけを抜くので
+    # 「スプリンターズS」からは「スプリンターズ」が候補になり、レース名そのものとの照合では
+    # 一致しなかった。普段は未確認1件=警告で済んでいたが、2026-09-27 は G1 スプリンターズS と
+    # リステッドのポートアイランドS が並んで2件になり、予想投稿がまるごと止まった。
+    candidates -= _get_known_race_katakana()
 
     if not candidates:
         return issues
