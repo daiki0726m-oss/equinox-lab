@@ -189,6 +189,44 @@ jobs:
           fi
           echo "should_run=true" >> $GITHUB_OUTPUT
 
+  # 🏃 #162 (2026-09-27): 開催日に auto_post_x が動いたら、ついでに race_day_runner の生存を確かめる。
+  # 9/27(日) は runner 自身の起動 cron (8:30/8:50/9:00/9:30/10:00) が GitHub スケジューラに
+  # 帯ごと飛ばされ、10:27 にユーザーが気づくまで結果収集がゼロだった。同じ朝、予想生成の
+  # auto_post_x は 06:55/07:18/08:03/09:04/09:51 と5回動いていた (cron は entry ごとに運命が違う)。
+  # watchdog は 08:00 の次が 10:3x で、runner 確認の窓 (08:40-) に1回も入らなかった。
+  # → よく動く方の workflow に相乗りして runner を起こす。同じスケジューラなので GAS のような
+  #   独立した時計の代わりにはならないが、「特定の cron 帯だけ落ちる」日は拾える。
+  #   08:30 より前は起こさない (朝の予想生成と runner の DB push が衝突するため)。
+  ensure_runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: 開催日なら race_day_runner の生存を確かめる
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HM=$((10#$(TZ=Asia/Tokyo date +%H%M)))
+          if [ "$HM" -lt 830 ] || [ "$HM" -ge 1830 ]; then echo "⏭️ runner の時間帯外 ($HM)"; exit 0; fi
+          D=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+          RD=$(curl -sf --max-time 20 "https://raw.githubusercontent.com/${{ github.repository }}/main/docs/data/race_calendar.json" \
+               | python3 -c "import json,sys; print('1' if (json.load(sys.stdin).get('dates') or {}).get('$D') else '0')" 2>/dev/null || echo "?")
+          if [ "$RD" != "1" ]; then echo "⏭️ $D は開催日でない/判定不能 ($RD)"; exit 0; fi
+          N=0
+          for st in in_progress queued pending waiting requested; do
+            C=$(gh api "repos/${{ github.repository }}/actions/workflows/race_day_runner.yml/runs?status=$st&per_page=1" \
+                  --jq '.total_count' 2>/dev/null || echo 1)   # 取得失敗は「居る」扱い (重ねて起動しない)
+            N=$((N + C))
+          done
+          if [ "$N" = "0" ]; then
+            echo "🚨 開催日 ${D} なのに race_day_runner が不在 → 起動"
+            gh workflow run race_day_runner.yml -R "${{ github.repository }}"
+          else
+            echo "✅ race_day_runner 稼働/待機中 ($N)"
+          fi
+
   post:
     needs: [dedup, dedup_cron]
     if: always() && (needs.dedup.outputs.should_run == 'true' || needs.dedup_cron.outputs.should_run == 'true')
