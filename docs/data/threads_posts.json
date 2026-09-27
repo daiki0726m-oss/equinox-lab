@@ -1518,5 +1518,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18225319825334047",
+  "posted_at": "2026-09-27T10:46:48.521776+09:00",
+  "slot": "post_predict",
+  "pattern": "transparency",
+  "race_id": "202606040911",
+  "race_name": "スプリンターズS",
+  "chunk": 0,
+  "chars": 164
  }
 ]
