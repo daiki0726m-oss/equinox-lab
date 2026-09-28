@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-09-27T06:31:19.430414+09:00",
+ "generated_at": "2026-09-28T18:38:24.423120+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -8,19 +8,19 @@
       "label": "10頭以下",
       "min": 0,
       "max": 10,
-      "n": 117,
-      "cap5": 0.4274,
-      "cap7": 0.5556,
-      "avg_captured": 2.299
+      "n": 118,
+      "cap5": 0.4322,
+      "cap7": 0.5593,
+      "avg_captured": 2.305
      },
      {
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 141,
-      "cap5": 0.2908,
-      "cap7": 0.3688,
-      "avg_captured": 2.092
+      "n": 145,
+      "cap5": 0.2828,
+      "cap7": 0.3655,
+      "avg_captured": 2.076
      },
      {
       "label": "13-14頭",
@@ -35,19 +35,19 @@
       "label": "15-16頭",
       "min": 15,
       "max": 16,
-      "n": 217,
-      "cap5": 0.2074,
-      "cap7": 0.2488,
-      "avg_captured": 1.816
+      "n": 224,
+      "cap5": 0.2009,
+      "cap7": 0.2411,
+      "avg_captured": 1.804
      },
      {
       "label": "17頭以上",
       "min": 17,
       "max": 99,
-      "n": 42,
-      "cap5": 0.119,
-      "cap7": 0.2381,
-      "avg_captured": 1.667
+      "n": 43,
+      "cap5": 0.1163,
+      "cap7": 0.2326,
+      "avg_captured": 1.628
      }
     ]
    },
@@ -57,19 +57,19 @@
       "label": "10頭以下",
       "min": 0,
       "max": 10,
-      "n": 125,
-      "cap5": 0.584,
-      "cap7": 0.712,
-      "avg_captured": 2.48
+      "n": 131,
+      "cap5": 0.5649,
+      "cap7": 0.7023,
+      "avg_captured": 2.45
      },
      {
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 114,
-      "cap5": 0.3333,
-      "cap7": 0.4474,
-      "avg_captured": 2.158
+      "n": 116,
+      "cap5": 0.3362,
+      "cap7": 0.4569,
+      "avg_captured": 2.164
      },
      {
       "label": "13-14頭",
@@ -84,10 +84,10 @@
       "label": "15-16頭",
       "min": 15,
       "max": 16,
-      "n": 247,
-      "cap5": 0.3563,
-      "cap7": 0.3968,
-      "avg_captured": 2.097
+      "n": 250,
+      "cap5": 0.356,
+      "cap7": 0.396,
+      "avg_captured": 2.096
      },
      {
       "label": "17頭以上",
@@ -101,7 +101,7 @@
     ]
    }
   },
-  "period": "2026-05-09〜2026-09-26",
+  "period": "2026-05-09〜2026-09-27",
   "source": "投稿時に凍結した印 × 確定着順 (平場 / 未勝利・新馬・障害 を分けて集計)"
  },
  "payout": {
@@ -112,7 +112,7 @@
       "label": "10頭以下",
       "min": 0,
       "max": 10,
-      "n": 2309,
+      "n": 2310,
       "trio_median": 1750,
       "trio_over10k": 0.1039
      },
@@ -120,9 +120,9 @@
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 2060,
+      "n": 2064,
       "trio_median": 4020,
-      "trio_over10k": 0.2519
+      "trio_over10k": 0.2515
      },
      {
       "label": "13-14頭",
@@ -136,17 +136,17 @@
       "label": "15-16頭",
       "min": 15,
       "max": 16,
-      "n": 5124,
-      "trio_median": 9140,
-      "trio_over10k": 0.477
+      "n": 5131,
+      "trio_median": 9150,
+      "trio_over10k": 0.4775
      },
      {
       "label": "17頭以上",
       "min": 17,
       "max": 99,
-      "n": 881,
-      "trio_median": 12420,
-      "trio_over10k": 0.5619
+      "n": 882,
+      "trio_median": 12460,
+      "trio_over10k": 0.5624
      }
     ]
    },
@@ -156,17 +156,17 @@
       "label": "10頭以下",
       "min": 0,
       "max": 10,
-      "n": 1384,
-      "trio_median": 1390,
-      "trio_over10k": 0.0968
+      "n": 1390,
+      "trio_median": 1400,
+      "trio_over10k": 0.0971
      },
      {
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 1507,
+      "n": 1509,
       "trio_median": 2980,
-      "trio_over10k": 0.2004
+      "trio_over10k": 0.2001
      },
      {
       "label": "13-14頭",
@@ -180,7 +180,7 @@
       "label": "15-16頭",
       "min": 15,
       "max": 16,
-      "n": 4782,
+      "n": 4785,
       "trio_median": 5100,
       "trio_over10k": 0.3312
      },
@@ -195,7 +195,7 @@
     ]
    }
   },
-  "period": "2020-01-05〜2026-09-26",
+  "period": "2020-01-05〜2026-09-27",
   "source": "確定配当 (全レース、平場 / 未勝利・新馬・障害 を分けて集計)"
  },
  "confidence": {
@@ -218,16 +218,16 @@
  },
  "bet_gate": {
   "available": true,
-  "n": 202,
+  "n": 66,
   "target_block_rate": {
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
-  "model_deployed_at": "2026-09-26 06:42:29",
-  "window_matches_model": false,
+  "model_deployed_at": "2026-09-14 17:55:30",
+  "window_matches_model": true,
   "thresholds": {
-   "top_prob": 0.0985,
-   "top3_sum": 0.2608
+   "top_prob": 0.1664,
+   "top3_sum": 0.404
   }
  }
 }
