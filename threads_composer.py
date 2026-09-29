@@ -341,7 +341,7 @@ def _p_chu_value(race, horses, n_other, stats=None):
     pts = eval_points(chu, horses, stats)
     if not pts:
         return None          # 具体的な根拠が出せないなら、この型は使わない
-    lines = [f"{_race_title(race)}、AIが妙味とみた1頭。", "",
+    lines = [f"{_race_title(race)}、AIが人気以上に評価した1頭。", "",
              f"⚡ {chu.get('horse_name','?')}{_label(chu)}", ""]
     lines += [f"・{p}" for p in pts]
     lines += ["",
@@ -351,41 +351,51 @@ def _p_chu_value(race, horses, n_other, stats=None):
     return "\n".join(lines)
 
 
-def _p_capture(race, horses, n_other, stats=None):
-    """このレース条件の実測値を主役にする型 (#151)。
+def _p_ev(race, horses, n_other, stats=None):
+    """◎の期待値 (実測) を主役にする型 (#163)。
 
-    旧 _p_confidence は「AIが自信のあるレース」と信頼度ラベルで語っていたが、
-    そのラベルは ◎を選ぶモデルと連動しておらず、1番人気オッズ+頭数+クラスに
-    足しても予測力の増分が AUC +0.0009 (p=0.455) = 独自情報を持たなかった。
-    代わりに「この条件で印5頭がどれだけ3着内を押さえられたか」の実測を出す。
-    読者が点数を絞るか手広く取るかを決められる数字であり、水増しが無い。
+    旧 _p_capture (#151) は「この頭数で印5頭が3着内を揃えた割合」を出していたが、
+    頭数で決まる数字で読者にとって意味が薄い (ユーザー判断で廃止)。
+    AI勝率×オッズ の期待値は実際の回収と合わないので出さない。出すのは
+    「同じくらいのオッズの馬を過去に100円ずつ買い続けた実測」= 的中率 × 的中時の平均払戻。
+    券種 (単複) と点数を決める材料として、水増しの無い数字だけを並べる。
     """
     try:
-        import race_baseline
+        import ev_table
     except Exception:
-        return None
-    st = race_baseline.stats(len(horses or []), race.get("race_name", ""))
-    if not st:
         return None
     mk = _mark_map(horses)
     honmei = mk.get("◎")
-    if not honmei:
+    if not honmei or not (honmei.get("popularity") or 0):
         return None
-    p5 = round(st["cap5"] * 100)
+    n = len(horses or [])
+    rn = race.get("race_name", "")
+    e = ev_table.expect(honmei.get("odds_win"), n, "◎", race_name=rn)
+    if not e:
+        return None
+
+    def _row(kind, r, pay, ev):
+        return (f"・{kind} 的中{ev_table.fmt_rate(r)}%×平均{ev_table.fmt_yen(pay)}円"
+                f" → 期待値約{ev_table.fmt_ev(ev)}円")
+
+    lines = [f"{_race_title(race)}（{n}頭）", "",
+             f"◎ {honmei.get('horse_name','?')}{_label(honmei)}",
+             f"同じくらいのオッズの馬を{ev_table.since_label()}、100円ずつ買い続けた実測:"]
+    if e.get("place_rate"):
+        lines.append(_row("複勝", e["place_rate"], e["place_pay"], e["place_ev"]))
+    lines.append(_row("単勝", e["win_rate"], e["win_pay"], e["win_ev"]))
     aite = [mk[m].get("horse_name", "") for m in ("○", "▲") if m in mk]
-    lines = [f"{_race_title(race)}（{len(horses)}頭）", ""]
-    body = f"この条件のレース、印5頭で3着内3頭が全部揃ったのは実測{p5}%。"
-    if st.get("cap7") is not None:
-        body += f" 穴2枠も入れた7頭なら{round(st['cap7']*100)}%。"
-    lines += [body]
-    if st.get("trio_median"):
-        lines += [f"三連複の配当は中央値{st['trio_median']:,}円、"
-                  f"1万円超が{round(st['trio_over10k']*100)}%。"]
-    lines += ["", race_baseline.advice(len(horses), race.get("race_name", "")) + "。", "",
-              f"◎ {honmei.get('horse_name','?')}{_label(honmei)}"]
     if aite:
-        lines += ["相手 " + " / ".join(aite)]
-    lines += ["", f"※数字は過去{st['n']}レースの実測。{FREEZE}", ""]
+        lines += ["", "相手 " + " / ".join(aite)]
+    chu = mk.get("注")
+    if chu and (chu.get("popularity") or 0):
+        ce = ev_table.expect(chu.get("odds_win"), n, "注", race_name=rn)
+        if ce and ce.get("place_rate"):
+            lines.append(f"注 {chu.get('horse_name','?')}{_label(chu)}: 複勝 的中"
+                         f"{ev_table.fmt_rate(ce['place_rate'])}%×平均"
+                         f"{ev_table.fmt_yen(ce['place_pay'])}円"
+                         f" → 期待値約{ev_table.fmt_ev(ce['place_ev'])}円")
+    lines += ["", f"※期待値は100円あたりの過去の実測。{FREEZE}", ""]
     lines += _footer(body="\n".join(lines))
     return "\n".join(lines)
 
@@ -396,7 +406,7 @@ PATTERNS = [
     ("upset", _p_upset),
     ("transparency", _p_transparency),
     ("chu_value", _p_chu_value),
-    ("capture", _p_capture),
+    ("ev", _p_ev),
 ]
 
 

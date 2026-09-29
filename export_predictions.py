@@ -12,11 +12,43 @@ from database import get_db
 JST = timezone(timedelta(hours=9))
 
 
-def _race_baseline_stats(n_horses, race_name=None):
-    """#151: 頭数×層 別の実測値 (印の捕捉率・三連複配当)。基準表が無ければ None。"""
+def _load_posted_marks(ds, output_dir):
+    """その日の投稿印の凍結記録 (race_id → [{mark, horse_number, horse_name, odds_win_at_post, ...}])。"""
     try:
-        import race_baseline
-        return race_baseline.stats(n_horses, race_name)
+        with open(os.path.join(output_dir, f"posted_marks_{ds}.json"), encoding="utf-8") as f:
+            return (json.load(f) or {}).get("races") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _race_ev(horses, race_id, race_name, has_results, posted, ds):
+    """#163: 印馬ごとの期待値 (同じくらいのオッズの馬を過去に100円ずつ買った実測)。
+
+    どのオッズを使い、締切までの動きを混ぜるかは時点で変える (#163 レビュー:
+    発走前の画面で、既に締切に近づいた現在オッズへさらに「締切までの動き」を掛けていた)。
+      - 確定済み            : 確定オッズ、動きは混ぜない               → 「確定」
+      - 予想を投稿したレース : 投稿時点のオッズ (凍結記録)、動きを混ぜる → 「想定」 (X/Threads と同じ数字)
+      - 投稿前 (10:15 まで)  : 現在のオッズ、動きを混ぜる               → 「想定」
+      - それ以降             : 現在のオッズ、動きは混ぜない             → 「現在」
+    """
+    try:
+        import ev_table
+        if has_results:
+            return ev_table.race_payload(horses, final_odds=True, race_name=race_name,
+                                         odds_label="確定")
+        snap = posted.get(race_id)
+        if snap:
+            hs = [{"mark": m.get("mark"), "horse_number": m.get("horse_number"),
+                   "horse_name": m.get("horse_name"),
+                   "odds_win": m.get("odds_win_at_post") or 0,
+                   "popularity": m.get("popularity_at_post") or 0} for m in snap]
+            return ev_table.race_payload(hs, n_runners=len(horses), final_odds=False,
+                                         race_name=race_name, odds_label="想定")
+        now = datetime.now(JST)
+        before_post = ds > now.strftime("%Y%m%d") or (
+            ds == now.strftime("%Y%m%d") and (now.hour, now.minute) < (10, 15))
+        return ev_table.race_payload(horses, final_odds=not before_post, race_name=race_name,
+                                     odds_label="想定" if before_post else "現在")
     except Exception:
         return None
 
@@ -45,6 +77,7 @@ def export_predictions(date_str=None):
 
     for ds in dates:
         race_date_hyphen = f"{ds[:4]}-{ds[4:6]}-{ds[6:8]}"
+        posted_marks = _load_posted_marks(ds, output_dir)
 
         with get_db() as conn:
             # レース一覧
@@ -208,55 +241,9 @@ def export_predictions(date_str=None):
                     'popularity': pr['popularity'],
                 } for pr in payout_rows]
 
-                # 妙味計算
-                # 実オッズがあるかチェック（推定オッズかどうか）
-                has_real_odds = any(h.get('popularity', 0) > 0 for h in horses)
-                
-                if has_real_odds:
-                    # 実オッズベース: ベットのEVを使用
-                    max_ev = 0.0
-                    for bt_key, bt_bets in all_bets.items():
-                        for b in bt_bets:
-                            ev = b.get("ev", 0)
-                            if ev > max_ev:
-                                max_ev = ev
-                else:
-                    # 推定オッズのみ: AI確信度ベースで妙味スコアを算出
-                    # ◎の勝率、上位集中度、穴馬の存在で判断
-                    win_pcts = sorted([h.get("pred_win_pct", 0) for h in horses], reverse=True)
-                    top1 = win_pcts[0] if win_pcts else 0
-                    top3_sum = sum(win_pcts[:3])
-                    gap = (win_pcts[0] - win_pcts[1]) if len(win_pcts) >= 2 else 0
-                    # 混戦度 = 上位が拮抗しているほど妙味あり
-                    entropy = -sum(p/100 * __import__('math').log2(max(p/100, 0.001)) for p in win_pcts if p > 0)
-                    # スコア: 確信度高い（本命明確）→低妙味、混戦→高妙味
-                    if top1 >= 25 and gap >= 10:
-                        max_ev = 1.0  # 堅いレース（妙味低い）
-                    elif top3_sum >= 45:
-                        max_ev = 2.0  # やや堅い
-                    elif entropy >= 3.5:
-                        max_ev = 5.0  # 大混戦（高妙味）
-                    elif entropy >= 3.0:
-                        max_ev = 3.5  # 混戦（妙味あり）
-                    else:
-                        max_ev = 2.5  # 普通
-
-                # 妙味判定 v2 (2026-05-17): 信頼度を考慮
-                # S/A (堅軸推奨) では ★★★ を出さない (堅軸 vs 大穴の矛盾解消)。
-                if confidence in ('S', 'A'):
-                    if max_ev >= 5.0: myomi = "💎★★"
-                    elif max_ev >= 3.0: myomi = "💎★"
-                    else: myomi = ""
-                elif confidence == 'B':
-                    if max_ev >= 5.0: myomi = "💎★★★"
-                    elif max_ev >= 2.5: myomi = "💎★★"
-                    elif max_ev >= 1.5: myomi = "💎★"
-                    else: myomi = ""
-                else:  # C/D
-                    if max_ev >= 4.0: myomi = "💎★★★"
-                    elif max_ev >= 2.0: myomi = "💎★★"
-                    elif max_ev >= 1.2: myomi = "💎★"
-                    else: myomi = ""
+                # #163: 旧「💎妙味」(買い目EVの最大 / 実オッズが無い日は混戦度から 1.0〜5.0 を
+                # 当てはめた値) は撤去。買い目ゼロのレース406件中201件に★が付き、★が多いほど
+                # むしろ配当が安いなど、実際の回収と逆向きだった。期待値は "ev" (実測) に置き換え。
 
                 # レース傾向 (pred_win_pct ベース: 0-100 範囲)
                 # 旧版は pred_win (0-1 範囲) を見ていたが、JSON には pred_win_pct のみ存在
@@ -306,16 +293,13 @@ def export_predictions(date_str=None):
                     "bet_reason": bet_reason,
                     "confidence": confidence,
                     "conf_reason": conf_reason,
-                    "myomi": myomi,
-                    "max_ev": round(max_ev, 1),
                     "race_tendency": race_tendency,
                     # #96: 同名レースの歴史的荒れ度 (temporal-safe、out-of-time検証済)
                     "upset_hist": upset_hist,
-                    # #151: この頭数のレースで実際に何が起きたかの実測値。
-                    # 「信頼度S」というラベル (◎を選ぶモデルと連動しておらず、
-                    # 1番人気オッズ+頭数+クラスに足しても AUC +0.0009) の代わりに、
-                    # 買い目の点数設計にそのまま使える数字を出す。
-                    "baseline": _race_baseline_stats(len(horses), race_info.get("race_name", "")),
+                    # #163: 印馬ごとの期待値 (実測)。#151 の頭数別捕捉率 (baseline) は
+                    # 頭数で決まる数字で読者にとって意味が薄いとして廃止 (ユーザー判断)。
+                    "ev": _race_ev(horses, race_id, race_info.get("race_name", ""),
+                                   has_results, posted_marks, ds),
                     "has_results": has_results,
                     "payouts": race_payouts if has_results else [],
                     "prediction_locked": datetime.now(JST).hour >= 10,
@@ -327,26 +311,6 @@ def export_predictions(date_str=None):
             if not all_races:
                 print(f"  ⏭️ {ds}: 予測データなし")
                 continue
-
-            # 妙味再計算（相対パーセンタイル、同値グループ均等分配）
-            # v2 (2026-05-17): 信頼度を考慮。S/A (堅軸推奨) は ★★★ を出さない
-            # (「予想固いのに大穴チャンス」と矛盾するため)。
-            if len(all_races) >= 2:
-                # EVでソートし、各レースに順位を付与
-                sorted_races = sorted(all_races, key=lambda r: r["max_ev"])
-                n = len(sorted_races)
-                for i, r in enumerate(sorted_races):
-                    pct = i / (n - 1) if n > 1 else 0.5
-                    conf = r.get('confidence', 'C')
-                    is_kataku = conf in ('S', 'A')  # 堅軸推奨レース
-                    if pct >= 0.80:
-                        r["myomi"] = "💎★★" if is_kataku else "💎★★★"
-                    elif pct >= 0.50:
-                        r["myomi"] = "💎★" if is_kataku else "💎★★"
-                    elif pct >= 0.20:
-                        r["myomi"] = "" if is_kataku else "💎★"
-                    else:
-                        r["myomi"] = ""
 
             # 会場グループ化
             venues = {}

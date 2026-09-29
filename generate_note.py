@@ -24,6 +24,21 @@ from strategy.betting import BettingStrategy
 from analyzers.speed_index import SpeedIndexCalculator
 
 
+
+def _ev_cell(race):
+    """#163: ◎の期待値 (同じくらいのオッズの馬を過去に100円ずつ買った実測) の短い表記。"""
+    try:
+        import ev_table
+        horses = race.get("horses") or []
+        hon = next((h for h in horses if h.get("mark") == "◎"), None)
+        if not hon or not (hon.get("popularity") or 0):
+            return "-"
+        rn = (race.get("race_info") or {}).get("race_name", "")
+        line = ev_table.line(hon.get("odds_win"), len(horses), "◎", minimal=True, race_name=rn)
+        return line.replace("💴◎", "") if line else "-"
+    except Exception:
+        return "-"
+
 def get_race_predictions(date_str, model, strategy):
     """指定日の全レースの予測を取得してEV付きで返す"""
     scraper = NetkeibaScraper()
@@ -722,11 +737,10 @@ def generate_article(date_str, featured_races, all_races, free=False):
 
     # ━━━ 5. 今日のラインナップ ━━━
     lines.append("## 今日の注目レース\n")
-    # #151: 「AI評価 S/A/B」というラベルの表示をやめ、その条件の実測値にする。
-    # ラベルは ◎を選ぶモデル (点数表) と連動しておらず、1番人気オッズ+頭数+クラスに
-    # 足しても予測力の増分が AUC +0.0009 (p=0.455) = 独自情報を持たなかった。
-    lines.append("| レース | コース | 頭数 | 印5頭で3着内が揃う実測 | 💎妙味 | レース傾向 |")
-    lines.append("|--------|--------|:----:|:------:|:------:|-----------|")
+    # #163: 表の数字は「◎の期待値 (実測)」。#151 の頭数別捕捉率と💎妙味は廃止
+    # (捕捉率は頭数で決まる数字で意味が薄い / 💎は実際の回収と逆向きだった)。
+    lines.append("| レース | コース | 頭数 | ◎の期待値（実測） | レース傾向 |")
+    lines.append("|--------|--------|:----:|:------:|-----------|")
     for r in featured_races:
         info = r["race_info"]
         rname = info.get("race_name", "")
@@ -735,44 +749,27 @@ def generate_article(date_str, featured_races, all_races, free=False):
         surface = info.get("surface", "")
         distance = info.get("distance", 0)
         hcount = info.get("horse_count", 0)
-        conf = r["confidence"]
         tend = r["tendency"]
-        myomi = r.get("myomi", "")
         is_main = (rnum == 11
                    or info.get("grade", "") in ("G1", "G2", "G3"))
         icon = "🏆" if is_main else "🔥"
-        _cap = "-"
-        try:
-            import race_baseline as _rb
-            _st = _rb.stats(hcount, rname)
-            if _st:
-                _cap = f"{round(_st['cap5'] * 100)}%"
-        except Exception:
-            _cap = f"**{conf}**"      # 基準表が無い環境では従来のラベル
         lines.append(f"| {icon} **{venue}{rnum}R {rname}** | {surface}{distance}m | "
-                     f"{hcount}頭 | {_cap} | {myomi or '-'} | {tend} |")
+                     f"{hcount}頭 | {_ev_cell(r)} | {tend} |")
     lines.append("")
 
-    lines.append("\n**「印5頭で3着内が揃う実測」の見方:**")
-    lines.append("")
-    lines.append("同じ頭数・同じ層（平場／未勝利・新馬）の過去レースで、"
-                 "AIが打った印5頭（◎○▲△△）が3着内3頭を全部押さえられた割合です。"
-                 "このレースの予言ではなく、条件ごとの実績値です。")
-    lines.append("")
-    lines.append("| 実測 | 買い方の目安 |")
-    lines.append("|:----:|------|")
-    lines.append("| 35%以上 | 印の中で決まりやすい条件。点数を絞る側 |")
-    lines.append("| 22〜34% | 印だけでは半端に届かないことが多い条件 |")
-    lines.append("| 21%以下 | 印5頭では届きにくい条件。手広く取るか見送る側 |")
-    lines.append("")
-    lines.append("**💎妙味の見方:**")
-    lines.append("| 表示 | 意味 |")
-    lines.append("|:----:|------|")
-    lines.append("| 💎★★★ | 大穴チャンス — オッズ以上の穴馬あり |")
-    lines.append("| 💎★★ | 妙味あり — 穴買い目に期待 |")
-    lines.append("| 💎★ | やや妙味 |")
-    lines.append("| - | 妙味なし — 堅いレース |")
-    lines.append("")
+    if any(_ev_cell(r) != "-" for r in featured_races):
+        try:
+            import ev_table as _evt
+            _since = _evt.since_label()
+        except Exception:
+            _since = "2020年以降"
+        lines.append("\n**「◎の期待値」の見方:**")
+        lines.append("")
+        lines.append(f"◎と同じくらいのオッズの馬を{_since}、100円ずつ複勝で買い続けた実測です。"
+                     "「複勝の的中率 × 的中した時の平均払戻」が100円あたりの期待値になります。"
+                     "AIの勝率は使っていません（オッズ・頭数・レース区分と、締切までのオッズの動きの実測で決まります）。"
+                     "当たりやすさと当たった時の額を、券種や点数を決める材料にしてください。")
+        lines.append("")
     lines.append("---\n")
 
     # ━━━ 6. 無料プレビュー（メインレース1つ） ━━━
@@ -843,14 +840,14 @@ def generate_article(date_str, featured_races, all_races, free=False):
             hcount = info.get("horse_count", 0)
             conf = race["confidence"]
             tend = race["tendency"]
-            myomi = race.get("myomi", "")
             rnum = info.get("race_number", 0)
             is_main = (rnum == 11 or info.get("grade", "") in ("G1", "G2", "G3"))
             icon = "🏆" if is_main else ""
 
-            myomi_str = f" {myomi}" if myomi else " -"
+            _evc = _ev_cell(race)
+            _evs = f" [◎ {_evc}]" if _evc != "-" else ""
             lines.append(f"### {icon}{rnum}R {rname} {surface}{distance}m・"
-                         f"{hcount}頭 [AI評価: {conf}] [妙味:{myomi_str}]\n")
+                         f"{hcount}頭 [AI評価: {conf}]{_evs}\n")
 
             # 予想印
             lines.append("| 印 | 馬番 | 馬名 | AI勝率 | SI |")
@@ -914,26 +911,6 @@ def main():
         print("❌ 分析可能なレースがありません")
         return
 
-    # 妙味を相対判定（当日レースのEV分布に基づく）
-    evs = sorted([r.get("max_ev", 0) for r in all_races], reverse=True)
-    n = len(evs)
-    if n > 0:
-        # 上位20% = ★★★, 次の30% = ★★, 次の30% = ★, 下位20% = -
-        thresh3 = evs[max(0, int(n * 0.2) - 1)]  # 上位20%ライン
-        thresh2 = evs[max(0, int(n * 0.5) - 1)]  # 上位50%ライン
-        thresh1 = evs[max(0, int(n * 0.8) - 1)]  # 上位80%ライン
-        for r in all_races:
-            ev = r.get("max_ev", 0)
-            if ev >= thresh3 and ev > 0:
-                r["myomi"] = "💎★★★"
-            elif ev >= thresh2 and ev > 0:
-                r["myomi"] = "💎★★"
-            elif ev >= thresh1 and ev > 0:
-                r["myomi"] = "💎★"
-            else:
-                r["myomi"] = ""
-        print(f"  💎 妙味閾値: ★★★≥{thresh3:.2f} ★★≥{thresh2:.2f} ★≥{thresh1:.2f}")
-
     # 厳選レース選定
     featured = select_featured_races(all_races, top_n=args.top)
     print(f"\n📝 厳選 {len(featured)} レースを記事化...\n")
@@ -981,8 +958,6 @@ def main():
         issues.append('❌ 無料記事に「有料エリア」の文言が残っている')
     if '特別価格' in article and getattr(args, 'free', False):
         issues.append('❌ 無料記事に「特別価格」の文言が残っている')
-    if '| - |' not in article and '💎' not in article:
-        issues.append('⚠️ 妙味表示が各レースにない可能性')
     # 注目レースのテーブル行に会場名があるか
     import re
     featured_lines = [l for l in article.split('\n') if l.startswith('|') and ('🏆' in l or '🔥' in l)]

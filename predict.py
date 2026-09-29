@@ -1097,7 +1097,7 @@ def cmd_predict(args):
             _tr3 = _t3_rank.get(p['horse_number'], 99)
             _ab = _ab_rank.get(p['horse_number'], 99)
             if _pop >= 6 and _tr3 <= 3:
-                reasons.append(f"市場{_pop}人気に対しAI複勝評価{_tr3}位 — 過小評価の妙味")
+                reasons.append(f"市場{_pop}人気に対しAI複勝評価{_tr3}位")   # #163: 「妙味」は回収の裏付けが無いので付けない
             elif _pop == 1 and _ab >= 5:
                 reasons.append(f"1人気だがオッズ非依存の能力評価は{_ab}位 — 過剰人気に注意")
             elif _pop and _tr3 < 99 and _pop - _tr3 >= 3:

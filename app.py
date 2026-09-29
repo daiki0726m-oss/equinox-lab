@@ -21,11 +21,11 @@ app.config["SECRET_KEY"] = "keiba-prediction-2025"
 JST = timezone(timedelta(hours=9))
 
 
-def _baseline_stats(n_horses, race_name=None):
-    """#151: 頭数×層 別の実測値 (印の捕捉率・三連複配当)。基準表が無ければ None。"""
+def _race_ev(horses, final_odds=False, race_name=None):
+    """#163: 印馬ごとの期待値 (同じ想定オッズの馬を過去に100円ずつ買った実測)。"""
     try:
-        import race_baseline
-        return race_baseline.stats(n_horses, race_name)
+        import ev_table
+        return ev_table.race_payload(horses, final_odds=final_odds, race_name=race_name)
     except Exception:
         return None
 
@@ -609,32 +609,6 @@ def api_predict_date(date_str):
                 elif top_p <= 12: race_tendency = "波乱含み（大混戦）"
                 else: race_tendency = "普通（中穴狙い可）"
 
-                # キャッシュからmyomi再計算
-                max_ev = 0.0
-                for bt_key, bt_bets in all_bets.items():
-                    for b in bt_bets:
-                        ev = b.get("ev", 0)
-                        if ev > max_ev:
-                            max_ev = ev
-                # 妙味判定 v2 (2026-05-17): 信頼度を考慮
-                # 旧版は max_ev のみで判定 → S レース (堅軸推奨) でも ★★★ になり
-                # 「予想固いのに大穴チャンス」と矛盾していた。
-                # 新版は信頼度 S/A では ★★★ を出さない (堅軸 vs 大穴の矛盾解消)。
-                conf_for_myomi = locals().get('confidence', 'C')
-                if conf_for_myomi in ('S', 'A'):
-                    if max_ev >= 5.0: myomi = "💎★★"
-                    elif max_ev >= 3.0: myomi = "💎★"
-                    else: myomi = ""
-                elif conf_for_myomi == 'B':
-                    if max_ev >= 5.0: myomi = "💎★★★"
-                    elif max_ev >= 2.5: myomi = "💎★★"
-                    elif max_ev >= 1.5: myomi = "💎★"
-                    else: myomi = ""
-                else:  # C/D
-                    if max_ev >= 4.0: myomi = "💎★★★"
-                    elif max_ev >= 2.0: myomi = "💎★★"
-                    elif max_ev >= 1.2: myomi = "💎★"
-                    else: myomi = ""
             else:
                 # ── 出馬表確保 ──
                 with get_db() as conn:
@@ -899,24 +873,6 @@ def api_predict_date(date_str):
                 honmei = next((h for h in horses if h.get('mark') == '◎'), None)
                 honmei_win = honmei['pred_win'] if honmei else 0
 
-                # ── 妙味（EVベース）──
-                max_ev = 0.0
-                for bt_key, bt_bets in all_bets.items():
-                    for b in bt_bets:
-                        ev = b.get("ev", 0)
-                        if ev > max_ev:
-                            max_ev = ev
-
-                if max_ev >= 5.0:
-                    myomi = "💎★★★"
-                elif max_ev >= 2.5:
-                    myomi = "💎★★"
-                elif max_ev >= 1.5:
-                    myomi = "💎★"
-                else:
-                    myomi = ""
-                conf_reason += f" / 妙味:{myomi or 'なし'}(EV{max_ev:.1f})"
-
                 # ── レース傾向（堅い/混戦/波乱）──
                 sorted_probs = sorted([h["pred_win"] for h in horses], reverse=True)
                 top_prob = sorted_probs[0]
@@ -1068,31 +1024,14 @@ def api_predict_date(date_str):
                 "bet_reason": bet_reason,
                 "confidence": confidence,
                 "conf_reason": conf_reason,
-                "myomi": myomi,
-                "max_ev": round(max_ev, 1),
                 "race_tendency": race_tendency,
-                # #151: この頭数×層のレースで実際に何が起きたかの実測値。
-                # ダッシュボードは「信頼度S」ラベルでなくこの数字を出す。
-                "baseline": _baseline_stats(len(horses), race_info.get("race_name", "")),
+                # #163: 印馬ごとの期待値 (実測)。#151 の頭数別捕捉率は廃止 (ユーザー判断)。
+                "ev": _race_ev(horses, final_odds=has_results,
+                               race_name=race_info.get("race_name", "")),
                 "has_results": has_results,
                 "payouts": race_payouts if has_results else [],
                 "prediction_locked": is_locked and cached is not None,
             })
-
-        # ── 妙味を相対パーセンタイルで再計算 ──
-        if len(all_races) >= 2:
-            ev_values = sorted([r["max_ev"] for r in all_races])
-            for r in all_races:
-                rank = ev_values.index(r["max_ev"])
-                pct = rank / (len(ev_values) - 1) if len(ev_values) > 1 else 0.5
-                if pct >= 0.80:
-                    r["myomi"] = "💎★★★"
-                elif pct >= 0.50:
-                    r["myomi"] = "💎★★"
-                elif pct >= 0.20:
-                    r["myomi"] = "💎★"
-                else:
-                    r["myomi"] = ""
 
         # 会場でグループ化
         venues = {}

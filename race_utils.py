@@ -16,6 +16,9 @@ def is_jump_race(race_name, distance=0, surface=""):
     - "障害" / "ジャンプ" を含む   … 未勝利・OP クラス戦、中山大障害、中山グランドジャンプ
     - 名前が "JS" で終わる          … 新潟JS / 東京JS / イルミネーションJS 等 (73レース)
       ただし "YJS" (ヤングジョッキーズシリーズ) は平地なので除外する
+    - 名前が "J" で終わる           … 中山グランドJ / 阪神スプリングJ / 東京HJ / 小倉サマーJ /
+      京都ハイJ / 阪神SJ 等の障害重賞 (#163 のレビューで発見、8名称26レースが平地扱いだった)。
+      DB 上 "J" で終わるレース名は全て 3,110m 以上の障害で、平地は1件も無い。
     """
     name = (race_name or "").strip()
     if not name:
@@ -23,6 +26,8 @@ def is_jump_race(race_name, distance=0, surface=""):
     if any(w in name for w in _JUMP_WORDS):
         return True
     if name.endswith("JS") and not name.endswith("YJS") and "YJS" not in name:
+        return True
+    if name.endswith("J"):
         return True
     return False
 

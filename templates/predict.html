@@ -1133,7 +1133,6 @@ function createRaceCard(race) {
           </div>
         </div>
         <div class="race-right">
-          ${race.myomi ? `<span class="myomi-badge ${race.myomi.includes('★★★') ? 'myomi-3' : race.myomi.includes('★★') ? 'myomi-2' : 'myomi-1'}">${race.myomi}</span>` : ''}
           <span class="conf-badge ${confClass}">${confIcon}${confClass}</span>
           <span class="result-badge ${race.has_results ? 'done' : 'pending'}">${race.has_results ? '確定' : '未確定'}</span>
           <span class="toggle-icon">▼</span>

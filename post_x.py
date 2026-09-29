@@ -975,8 +975,9 @@ def cmd_predict(args):
         t1 += f"\n🔥 AI高信頼レース: {_high_conf_n}件\n"
 
     t1 += f"\nAI印は🧵↓で事前公開\n"
-    t1 += f"{data_credit(short=True)}\n"
-    t1 += "#AI競馬 #競馬予想"
+    # #163: 💴 行の凡例は、各レースのツイートを組んだ後に「💴 行が1本でもあれば」先頭か末尾の
+    # 入る方に1回だけ足す (下の _t1_tail / _add_ev_legend)。
+    _t1_tail = f"{data_credit(short=True)}\n#AI競馬 #競馬予想"
 
     # ── ツイート2以降: 各レースの印 ──
     bet_tweets = []
@@ -984,8 +985,6 @@ def cmd_predict(args):
     # 旧実装は結果側が cache/JSON の「現在の印」を読み直すため、日中に cache が
     # 再生成されると朝の予想と別の印で採点される事故が起きた (6/28 函館記念で実発生)。
     _posted_marks = {}
-    # 信頼度の読者向けラベル (「信頼度D」の無説明配信をやめる)
-    _conf_label = {'S': '鉄板級', 'A': '有力', 'B': '標準', 'C': '混戦', 'D': '大混戦'}
     try:
         from volatility import compute_race_upset_history as _upset_hist
     except Exception:
@@ -1014,25 +1013,27 @@ def cmd_predict(args):
 
         t = f"{conf_emoji} {race['venue']}{race['race_number']}R {race['race_name']}{grade}"
         t += f" {is_main}\n" if is_main else "\n"
-        # #151: 「信頼度S(鉄板級)」というラベルの表示をやめ、**そのレース条件の実測値**にする。
-        # 検証で (a) ◎を選ぶモデル (点数表) と信頼度を計算するモデル (ML勝率) が
-        # 連動していない (◎がAI勝率1位なのは42%)、(b) ラベル自体は
-        # 1番人気オッズ+頭数+クラスに足しても AUC +0.0009 (p=0.455) = 独自情報ゼロ、
-        # と判明したため。実測値なら「印5頭で足りるのか、手広く取るべきか」が直接わかる。
-        # 基準表が無い環境では従来のラベルに戻る (フォールバック)。
-        _rb_line = _rb_line_short = _rb_line_min = ""
+        # #163: 見出しの下は「◎の期待値 (実測)」。
+        # #151 の「頭数別の捕捉率 (📐)」はユーザー判断で廃止 (頭数で決まる数字で意味が薄い)。
+        # AI勝率×オッズ の期待値は実際の回収と合わない (「期待値1.2超え」の馬は AI の見込みの
+        # 約1/3しか勝たない) ので出さない。出すのは「同じくらいのオッズの馬を過去に100円ずつ
+        # 買い続けた実測」= 複勝の的中率 × 的中時の平均払戻。投稿印で答え合わせ済み。
+        # 実オッズ (人気あり) の時だけ出す。推定オッズは AI勝率の逆算なので実測表に当てない。
+        _ev_levels = []          # 標準 → 短縮 → 最短
         try:
-            import race_baseline as _rb
-            _rn = race.get('race_name') or ''
-            _rb_line = _rb.line(len(preds), compact=True, race_name=_rn)
-            _rb_line_short = _rb.line(len(preds), compact=True, with_payout=False, race_name=_rn)
-            _rb_line_min = _rb.line(len(preds), race_name=_rn, minimal=True)   # #154
+            import ev_table as _ev
+            _hon = next((p for p in marked_list if p.get('mark') == '◎'), None)
+            if _hon and (_hon.get('popularity') or 0) > 0:
+                _rn = race.get('race_name') or ''
+                _o = _hon.get('odds_win')
+                _ev_levels = [x for x in (
+                    _ev.line(_o, len(preds), '◎', race_name=_rn),
+                    _ev.line(_o, len(preds), '◎', minimal=True, race_name=_rn),
+                    _ev.line(_o, len(preds), '◎', tiny=True, race_name=_rn)) if x]
         except Exception:
-            _rb_line = _rb_line_short = _rb_line_min = ""
-        if _rb_line:
-            t += f"{_rb_line}\n\n"
-        else:
-            t += f"信頼度{race['confidence']}({_conf_label.get(race['confidence'], '')})\n\n"
+            _ev_levels = []
+        _ev_line = _ev_levels[0] if _ev_levels else ""
+        t += f"{_ev_line}\n\n" if _ev_line else "\n"
 
         # 印（全て表示)— 「{mark} {番号}番 {馬名}」形式で fact_check に確実に通す
         # #100: 注 (妙味longshot) はオッズを併記 — 「夢の配当枠」であることを
@@ -1048,32 +1049,39 @@ def cmd_predict(args):
                 else:
                     t += f"{mk}{p.get('horse_number',0)}番 {p.get('horse_name','?')}\n"
 
-        # #151: 印行まで積んだ時点で字数が厳しければ、実測行から配当を落として捕捉率だけ残す。
-        # 優先順位: 印 > 捕捉率 > **⚡荒れ度/💡能力値** > 配当。
+        # 印行まで積んだ時点で字数が厳しければ、期待値行を最短形に縮める。
+        # 優先順位: 印 > 期待値 (最短形) > **⚡荒れ度/💡能力値** > 期待値の標準形。
         def _xw0(_s):
             return sum(2 if ord(ch) > 127 else 1 for ch in _s)
 
-        def _shrink_baseline():
-            """実測行を1段階だけ縮める。配当込み → 捕捉率のみ → 最短形。
+        _ev_cur = [0]            # 今 t に入っている期待値行の段階
 
-            #154: 印が7つ (#143) になり、実測行 (#151) が旧ラベルの3倍の予算を
-            食うため、2段階では ⚡/💡 の席が作れなかった (9/12-13 で 16/16 全滅)。
+        def _ev_at(_tt, _k):
+            """t の期待値行を段階 _k に差し替えた文字列 (差し替えられなければ None)。"""
+            if not _ev_levels or _k >= len(_ev_levels) or _ev_levels[_ev_cur[0]] not in _tt:
+                return None
+            return _tt.replace(_ev_levels[_ev_cur[0]], _ev_levels[_k], 1)
+
+        def _shrink_baseline():
+            """期待値行を1段階縮める。
+
+            #154: 印が7つ (#143) になり、見出し下の行が長いと ⚡/💡 の席が作れない
+            (9/12-13 で 16/16 全滅した)。標準 (X加重~49) → 短縮 (~34) → 最短 (~26)。
             """
             nonlocal t
-            if _rb_line and _rb_line_short and _rb_line in t:
-                t = t.replace(_rb_line, _rb_line_short, 1)
-                return True
-            if _rb_line_short and _rb_line_min and _rb_line_short in t \
-                    and _rb_line_min != _rb_line_short:
-                t = t.replace(_rb_line_short, _rb_line_min, 1)
-                return True
-            return False
+            _nt = _ev_at(t, _ev_cur[0] + 1)
+            if _nt is None:
+                return False
+            t = _nt
+            _ev_cur[0] += 1
+            return True
 
-        # t はこの時点で「見出し + 実測行(配当込み) + 印7行」。
-        # この後に 🎯締め行 (~20) が付き、⚡等の補足は 272 予算で入る。
-        # 配当込みで 252 を超えるなら、その分を配当から返す。
-        if _xw0(t) > 252:
-            _shrink_baseline()
+        # t はこの時点で「見出し + 期待値行 + 印7行」。⚡等の補足は下で 272 予算に入れる
+        # (入れるために縮めるかは、縮めて補足が増える時だけ決める)。
+        # 旧版は「🎯締め行 (~20)」の席として 252 で縮めていたが、締め行は別ツイートに
+        # 移っており、この予約は期待値行を無駄に短くするだけだった。
+        while _xw0(t) > 272 and _shrink_baseline():
+            pass
 
         # ── #102: 追加情報 (⚡荒れ度/穴注意/💡能力) は X の280字予算内で優先度順に追記 ──
         # (無条件追記だと6印+⚡2行+穴+💡で350字超になり X が投稿拒否する — 実測350字)
@@ -1132,17 +1140,35 @@ def cmd_predict(args):
                                    f"(想定{_ab_pop}人気)\n")
         except Exception:
             pass
-        # 📉 #154 (2026-09-15): **補足より先に配当を落とす**。
-        # #151 で実測行 (32-53字) が旧「信頼度S(鉄板級)」(15字) を置き換えた結果、
-        # 予算が 20-38字 圧迫され、9/12-13 の実配信 16/16 で ⚡/💡/🔒 が全滅した
-        # (#114・#150 に続く3度目の silent drop)。旧実装は 252字で配当を落とすかを
-        # **補足の長さを知る前に**決めていたため、補足のぶんを確保できていなかった。
-        # 補足が入らないなら、まず配当 (三連複中央値、~21字) を返して席を空ける。
-        # ⚡荒れ度・💡能力値は「市場を見ない独自視点」= 数少ない差別化要素なので、
-        # 配当より優先する (#98/#102)。
-        _need = sum(_xw(_e) for _e in _extras)
-        while _extras and _xw(t) + _need > 272 and _shrink_baseline():
-            print(f"   ℹ️ 補足(⚡/💡)の席を作るため実測行を短縮 (#154, 現在{_xw(t)}字)")
+        # 📉 #154 (2026-09-15): **補足より先に見出し下の行を縮める**。
+        # 見出し下の行が長いと予算が圧迫され、9/12-13 の実配信 16/16 で ⚡/💡/🔒 が全滅した
+        # (#114・#150 に続く3度目の silent drop)。縮めるかどうかは**補足の長さを知った後**に
+        # 決める。⚡荒れ度・💡能力値は「市場を見ない独自視点」= 数少ない差別化要素なので、
+        # 期待値行の標準形より優先する (#98/#102)。最短形は残す。
+        # #163: 縮めても補足が1件も増えないなら縮めない (旧ループは「全補足の合計」が
+        # 入るまで縮め続け、縮めても⚡が入らない時に期待値行だけ短くなっていた)。
+        def _n_fit(_tt):
+            """補足ごとに入る(1)/入らない(0) を _extras の順 (= 優先順) に並べた tuple。
+            件数でなく優先順で比べる — 件数だと ⚡ が落ちて 💡 が入る入れ替わりを「同点」と見てしまう。"""
+            _cur, _flags = _xw(_tt), []
+            for _e in _extras:
+                if _cur + _xw(_e) <= 272:
+                    _cur += _xw(_e)
+                    _flags.append(1)
+                else:
+                    _flags.append(0)
+            return tuple(_flags)
+        if _extras and _ev_levels:
+            # 優先度の高い補足が入る段階のうち、いちばん長い (情報の多い) ものを選ぶ
+            _best_k, _best_n = _ev_cur[0], _n_fit(t)
+            for _k in range(_ev_cur[0] + 1, len(_ev_levels)):
+                _cand = _ev_at(t, _k)
+                if _cand is not None and _n_fit(_cand) > _best_n:
+                    _best_k, _best_n = _k, _n_fit(_cand)
+            if _best_k != _ev_cur[0]:
+                t = _ev_at(t, _best_k)
+                _ev_cur[0] = _best_k
+                print(f"   ℹ️ 補足(⚡/💡)の席を作るため期待値行を短縮 (#154/#163, 現在{_xw(t)}字)")
         _dropped = []
         for _ex in _extras:
             if _xw(t) + _xw(_ex) <= 272:  # ハッシュタグ等の余白を8字残す
@@ -1185,6 +1211,25 @@ def cmd_predict(args):
         if race['grade']:
             tag = race['race_name'].replace(' ', '').replace('　', '')
             t_last += f" #{tag}"
+
+    # #163: 💴 行 (◎の期待値) の凡例。どの形の 💴 行にも「複勝/期待値」の語は入っているので
+    # 凡例は補足扱い: 💴 行が1本も無い日は出さず、先頭 → 末尾の順に 280字に入る方へ1回だけ足す。
+    # (3場開催の日は先頭ツイートが埋まっていて入らないことが多い — レビューで 17/24 日)
+    _xwl = lambda _s: sum(2 if ord(ch) > 127 else 1 for ch in _s)  # noqa: E731
+    try:
+        import ev_table as _evt
+        _since = _evt.since_label()
+    except Exception:
+        _since = "2020年以降"
+    _legend = f"💴＝同じくらいのオッズの馬の{_since}の複勝実績（100円あたり）\n"
+    if any("💴" in bt for bt in bet_tweets):
+        if _xwl(t1 + _legend + _t1_tail) <= 280:
+            t1 += _legend
+        elif _xwl(_legend + t_last) <= 280:
+            t_last = _legend + "\n" + t_last
+        else:
+            print("   ℹ️ 💴 の凡例は字数で省略 (各 💴 行に複勝/期待値の語は残る)")
+    t1 += _t1_tail
 
     tweets = [t1] + bet_tweets + [t_last]
 
@@ -3185,48 +3230,6 @@ def data_credit(conn=None, short=False):
         return "🧠 AI KEIBA PREDICTOR | EQUINOX Lab"
 
 
-def generate_analysis_column():
-    """水曜: 分析コラム（3ツイート）"""
-    columns = [
-        {
-            "title": "重馬場になると穴馬が走る理由",
-            "t1_body": "雨で馬場が悪化すると\n人気馬が凡走することがあります\n\nなぜでしょう？",
-            "t2_body": "📊 重馬場のポイント\n\n・パワーが必要になり小柄な馬は不利\n・泥を被ると嫌がる馬がいる\n・重馬場巧者の血統がある\n\n良馬場の実績だけでは判断できない",
-            "t3_body": "💡 AIの対応\n\n当モデルは馬場状態ごとの\n過去成績を個別に分析\n\n「良馬場では凡走→重で好走」\nこういう馬をデータから発見します🧠",
-        },
-        {
-            "title": "なぜ人気馬を買わない方がいいのか",
-            "t1_body": "1番人気の勝率は約30%\nつまり70%は1番人気以外が勝つ\n\nでも多くの人は人気馬ばかり買う",
-            "t2_body": "📊 回収率の現実\n\n1番人気の平均回収率は約80%\n→ 長期的には20%損する\n\n一方、穴馬の中には\n期待値が100%を超える馬もいる",
-            "t3_body": "💡 AIが見るのは「期待値」\n\n期待値 = 勝率 × オッズ\n\nAIは勝率とオッズを比較し\n市場が過小評価している馬を発見\n\nこれが回収率187%の理由です📊",
-        },
-        {
-            "title": "騎手と調教師の相性が成績を左右する",
-            "t1_body": "同じ騎手でも\n調教師によって成績が全く違う\n\nこの「コンビ力」知ってますか？",
-            "t2_body": "📊 コンビの重要性\n\n・調教方針と騎乗スタイルの相性\n・コミュニケーションの質\n・レース前の作戦共有\n\n実はAIの最重要特徴量がこれ",
-            "t3_body": "💡 データで見ると\n\n当モデルの予測で最も影響力が大きい\nのが騎手×調教師コンビの複勝率\n\n人が見落としがちな相性を\nAIは数万レースから検出します🤝",
-        },
-        {
-            "title": "3つのAIモデルを組み合わせる理由",
-            "t1_body": "当予測は1つではなく\n3つのAIモデルを組み合わせています\n\nなぜ1つではダメなのか？",
-            "t2_body": "📊 3モデル統合の仕組み\n\n1. LambdaRank→着順を直接予測\n2. 勝率モデル→1着の確率\n3. 複勝率モデル→3着以内の確率\n\n得意分野が異なる=弱点を補い合う",
-            "t3_body": "💡 なぜ精度が上がる？\n\n例えばモデル1が◎でもモデル2,3が\n低評価なら危険信号\n\n3つが一致して高評価→信頼度が高い\nこの仕組みで安定した予測を実現🎯",
-        },
-    ]
-
-    col = random.choice(columns)
-
-    t1 = f"🧠 {col['title']}\n\n"
-    t1 += col["t1_body"]
-    t1 += f"\n\n{data_credit(short=True)}\n#競馬予想 #AI予想 🧵↓"
-
-    t2 = col["t2_body"]
-
-    t3 = col["t3_body"]
-
-    return [t1, t2, t3]
-
-
 def generate_pickup_horse():
     """木曜: 今週末の注目馬（3つの切り口）"""
     today = now_jst()
@@ -4438,7 +4441,9 @@ def cmd_odds_flash(args):
         # #161: 実際の時刻を書く。旧版は常に「9:30時点」と書いていたが、ガードは 10:59 まで
         # 通すので、cron 遅延や平日開催のセーフティネット経由では事実と違う時刻を公開していた (#118 と同型)。
         _t = now_jst()
-        tweet = f"📊 朝オッズ チェック（{_t.hour}:{_t.minute:02d}時点・確定は発走直前）\n\n"
+        # #163: 見出し・字下げ・「番人気」を詰めて 💴 行の席を作る (旧版は本文だけで 221-256字あり、
+        # 💴 行が一度も入らなかった — レビューで 0/73)。
+        tweet = f"📊 朝オッズ（{_t.hour}:{_t.minute:02d}時点・確定は発走直前）\n\n"
         tweet += f"{venue}11R {rname}{grade}\n\n"
 
         _fallback_medals = ['🥇', '🥈', '🥉']
@@ -4450,21 +4455,34 @@ def cmd_odds_flash(args):
             name = p.get('horse_name', '?')
             pop = p.get('popularity', '?')
             tweet += f"{mk} {name}\n"
-            tweet += f"  AI勝率{win_pct}% / {odds}倍(想定{pop}番人気)\n"
+            tweet += f"AI勝率{win_pct}% / {odds}倍(想定{pop}人気)\n"
 
-        # 妙味判定: AI勝率が高いのにオッズが高い馬
-        # #95: EV は意思決定用の温度1勝率 (pred_win_pct) で計算 (display だと約2倍過大)
-        for p in top3:
-            win_pct = p.get('pred_win_pct', 0)
-            odds = p.get('odds_win', 0)
-            if win_pct > 0 and odds > 0:
-                ev = (win_pct / 100) * odds
-                if ev > 1.2:
-                    tweet += f"\n💎 {p['horse_name']}は妙味あり！\n"
-                    break
+        # #163: 旧「💎◯◯は妙味あり！」(AI勝率×オッズ > 1.2) は撤去。
+        # 検証で AI勝率×オッズ の期待値は実際の回収と合わず (期待値1.2超えの馬は AI の見込みの
+        # 約1/3しか勝たない)、根拠の無い「妙味あり」を毎週公開していた。
+        # 代わりに ◎ の期待値 (同じくらいのオッズの馬を過去に100円ずつ買った実測) を1行出す。
+        # 実際に後ろへ付く分 (改行 + ハッシュタグ) で字数を測り、標準 → 短縮 → 最短の順に入る形を使う。
+        _tags = "\n#競馬予想 #AI予想"
+        try:
+            import ev_table as _ev
+            _hon = next((p for p in top3 if p.get('mark') == '◎'), None)
+            if _hon and 0 < (_hon.get('popularity') or 0) < 100:
+                _xw_f = lambda s: sum(2 if ord(ch) > 127 else 1 for ch in s)  # noqa: E731
+                _o = _hon.get('odds_win')
+                _cands = [_ev.line(_o, len(preds), '◎', race_name=rname),
+                          _ev.line(_o, len(preds), '◎', minimal=True, race_name=rname),
+                          _ev.line(_o, len(preds), '◎', tiny=True, race_name=rname)]
+                _cands = [c for c in _cands if c]
+                _fit = next((c for c in _cands if _xw_f(tweet + "\n" + c + "\n" + _tags) <= 280), None)
+                if _fit:
+                    tweet += f"\n{_fit}\n"
+                elif _cands:
+                    print(f"   ℹ️ 💴 行を字数で省略 ({venue} {rname}: 本文{_xw_f(tweet)}字)")
+        except Exception as _e:
+            print(f"   ⚠️ 💴 行の作成に失敗 ({_e})")
 
         # #79: note は手動投稿のため自動リンクを入れない (ユーザー指示)。
-        tweet += f"\n#競馬予想 #AI予想"
+        tweet += _tags
 
         # ファクトチェック
         print(f"\n📊 ファクトチェック: {venue} {rname}")

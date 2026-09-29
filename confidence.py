@@ -93,7 +93,7 @@ DEFAULT_RATING = "D"
 
 GRADE_LABELS = {
     "S": "本命爆発",      # ROI 174% 期待
-    "A": "高妙味",        # ROI 156%
+    "A": "有力",          # #163: 旧「高妙味」— 妙味 (回収) の裏付けが無いので名前から外す
     "B": "標準推奨",      # ROI 142%
     "C": "様子見",        # ROI 99%
     "D": "見送り",
@@ -298,19 +298,20 @@ def evaluate(
         rating = _win_grade(top_win_pct)
 
     label = GRADE_LABELS[rating]
-    br = result['breakdown']
     odds_disp = f"{top_odds:.1f}倍" if top_odds > 0 else "?"
     reason = (
         f"◎勝率{top_win_pct:.1f}% → 自信度{label} / "
-        f"複勝{top_top3_pct:.1f}% / オッズ{odds_disp} / 上位3計{top3_sum_pct:.1f}% / "
-        f"(参考)妙味 三連複EV {br['trio_ev']:.2f} / オッズ妙味 {br['odds_pot']:.2f}"
+        f"複勝{top_top3_pct:.1f}% / オッズ{odds_disp} / 上位3計{top3_sum_pct:.1f}%"
     )
+    # #163: 旧版は「(参考)妙味 三連複EV x.xx / オッズ妙味 x.xx」を併記していたが、
+    # 中身は期待値でなく「EV/2 を1で頭打ちにした点数」(74%が1.00) で、名前が実態と違った。
+    # 読者に見える理由欄から外す (内部の breakdown は返り値に残す)。
     return {
         'confidence': rating,
         'score': round(result['composite'], 3),
         'reason': reason,
         'is_graded': result['is_graded'],
-        'breakdown': {k: round(v, 3) for k, v in br.items()},
+        'breakdown': {k: round(v, 3) for k, v in result['breakdown'].items()},
     }
 
 
