@@ -351,62 +351,14 @@ def _p_chu_value(race, horses, n_other, stats=None):
     return "\n".join(lines)
 
 
-def _p_ev(race, horses, n_other, stats=None):
-    """◎の期待値 (実測) を主役にする型 (#163)。
-
-    旧 _p_capture (#151) は「この頭数で印5頭が3着内を揃えた割合」を出していたが、
-    頭数で決まる数字で読者にとって意味が薄い (ユーザー判断で廃止)。
-    AI勝率×オッズ の期待値は実際の回収と合わないので出さない。出すのは
-    「同じくらいのオッズの馬を過去に100円ずつ買い続けた実測」= 的中率 × 的中時の平均払戻。
-    券種 (単複) と点数を決める材料として、水増しの無い数字だけを並べる。
-    """
-    try:
-        import ev_table
-    except Exception:
-        return None
-    mk = _mark_map(horses)
-    honmei = mk.get("◎")
-    if not honmei or not (honmei.get("popularity") or 0):
-        return None
-    n = len(horses or [])
-    rn = race.get("race_name", "")
-    e = ev_table.expect(honmei.get("odds_win"), n, "◎", race_name=rn)
-    if not e:
-        return None
-
-    def _row(kind, r, pay, ev):
-        return (f"・{kind} 的中{ev_table.fmt_rate(r)}%×平均{ev_table.fmt_yen(pay)}円"
-                f" → 期待値約{ev_table.fmt_ev(ev)}円")
-
-    lines = [f"{_race_title(race)}（{n}頭）", "",
-             f"◎ {honmei.get('horse_name','?')}{_label(honmei)}",
-             f"同じくらいのオッズの馬を{ev_table.since_label()}、100円ずつ買い続けた実測:"]
-    if e.get("place_rate"):
-        lines.append(_row("複勝", e["place_rate"], e["place_pay"], e["place_ev"]))
-    lines.append(_row("単勝", e["win_rate"], e["win_pay"], e["win_ev"]))
-    aite = [mk[m].get("horse_name", "") for m in ("○", "▲") if m in mk]
-    if aite:
-        lines += ["", "相手 " + " / ".join(aite)]
-    chu = mk.get("注")
-    if chu and (chu.get("popularity") or 0):
-        ce = ev_table.expect(chu.get("odds_win"), n, "注", race_name=rn)
-        if ce and ce.get("place_rate"):
-            lines.append(f"注 {chu.get('horse_name','?')}{_label(chu)}: 複勝 的中"
-                         f"{ev_table.fmt_rate(ce['place_rate'])}%×平均"
-                         f"{ev_table.fmt_yen(ce['place_pay'])}円"
-                         f" → 期待値約{ev_table.fmt_ev(ce['place_ev'])}円")
-    lines += ["", f"※期待値は100円あたりの過去の実測。{FREEZE}", ""]
-    lines += _footer(body="\n".join(lines))
-    return "\n".join(lines)
-
-
+# #163: 「頭数別の捕捉率」(capture #151) と、その代わりの「◎の期待値」(ev) の型は
+# どちらもユーザー判断で投稿から外した (期待値はダッシュボードだけに出す)。
 PATTERNS = [
     ("ability_gap", _p_ability_gap),
     ("minimal", _p_minimal),
     ("upset", _p_upset),
     ("transparency", _p_transparency),
     ("chu_value", _p_chu_value),
-    ("ev", _p_ev),
 ]
 
 
