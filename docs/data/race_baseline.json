@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-09-28T18:38:24.423120+09:00",
+ "generated_at": "2026-10-03T03:48:37.031309+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -112,25 +112,25 @@
       "label": "10頭以下",
       "min": 0,
       "max": 10,
-      "n": 2310,
-      "trio_median": 1750,
-      "trio_over10k": 0.1039
+      "n": 2295,
+      "trio_median": 1740,
+      "trio_over10k": 0.1037
      },
      {
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 2064,
-      "trio_median": 4020,
-      "trio_over10k": 0.2515
+      "n": 2055,
+      "trio_median": 4010,
+      "trio_over10k": 0.2511
      },
      {
       "label": "13-14頭",
       "min": 13,
       "max": 14,
-      "n": 2302,
+      "n": 2300,
       "trio_median": 6240,
-      "trio_over10k": 0.3671
+      "trio_over10k": 0.3674
      },
      {
       "label": "15-16頭",
@@ -156,25 +156,25 @@
       "label": "10頭以下",
       "min": 0,
       "max": 10,
-      "n": 1390,
-      "trio_median": 1400,
-      "trio_over10k": 0.0971
+      "n": 1405,
+      "trio_median": 1410,
+      "trio_over10k": 0.0975
      },
      {
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 1509,
-      "trio_median": 2980,
-      "trio_over10k": 0.2001
+      "n": 1518,
+      "trio_median": 2990,
+      "trio_over10k": 0.2009
      },
      {
       "label": "13-14頭",
       "min": 13,
       "max": 14,
-      "n": 1911,
+      "n": 1913,
       "trio_median": 4420,
-      "trio_over10k": 0.281
+      "trio_over10k": 0.2807
      },
      {
       "label": "15-16頭",
@@ -200,7 +200,7 @@
  },
  "confidence": {
   "available": true,
-  "n": 124,
+  "n": 139,
   "sample": "点数表 (現行)",
   "target_mix": {
    "S": 0.18,
@@ -218,13 +218,13 @@
  },
  "bet_gate": {
   "available": true,
-  "n": 66,
+  "n": 69,
   "target_block_rate": {
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
-  "model_deployed_at": "2026-09-14 17:55:30",
-  "window_matches_model": true,
+  "model_deployed_at": "2026-09-28 18:38:42",
+  "window_matches_model": false,
   "thresholds": {
    "top_prob": 0.1664,
    "top3_sum": 0.404
