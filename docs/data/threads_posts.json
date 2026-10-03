@@ -1718,5 +1718,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18220093924331228",
+  "posted_at": "2026-10-03T10:19:59.203344+09:00",
+  "slot": "post_predict",
+  "pattern": "chu_value",
+  "race_id": "202605040111",
+  "race_name": "グリーンチャンネルC",
+  "chunk": 0,
+  "chars": 205
  }
 ]
