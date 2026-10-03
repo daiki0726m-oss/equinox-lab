@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-03T11:49:12.356726+09:00",
+  "generated_at": "2026-10-03T17:41:42.526286+09:00",
   "today": "2026-10-03 (Sat)",
   "weekday": 5,
   "slots": {
@@ -65,8 +65,11 @@
     },
     "results": {
       "slot": "results",
-      "status": "future",
+      "status": "ok_delayed",
       "expected": "17:30 JST",
+      "actual": "2026-10-03T15:33:41+09:00",
+      "delay_minutes": -116,
+      "event": "schedule",
       "workflow": "auto_post_x.yml"
     },
     "fetch_monday": {
@@ -111,16 +114,16 @@
       "slot": "dashboard_predictions",
       "status": "ok",
       "expected": "開催日は常時",
-      "actual": "24レース (exported_at=2026-10-03T11:48:41.503102+09:00)"
+      "actual": "24レース (exported_at=2026-10-03T17:41:02.858201+09:00)"
     }
   },
   "summary": {
     "ok": 1,
     "missing": 0,
-    "future": 1,
+    "future": 0,
     "not_today": 7,
     "missed": 0,
-    "ok_delayed": 0,
+    "ok_delayed": 1,
     "ok_late": 4
   },
   "missed_slots": []
