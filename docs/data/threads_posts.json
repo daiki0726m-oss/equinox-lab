@@ -1818,5 +1818,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "17915004177463932",
+  "posted_at": "2026-10-04T10:27:05.653061+09:00",
+  "slot": "post_predict",
+  "pattern": "minimal",
+  "race_id": "202608040211",
+  "race_name": "京都大賞典",
+  "chunk": 0,
+  "chars": 210
  }
 ]
