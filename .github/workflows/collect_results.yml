@@ -10,6 +10,10 @@ on:
     - cron: '0 11 * * 6,0'
     # 土日 22:00 JST (UTC 13:00) - 最終確認
     - cron: '0 13 * * 6,0'
+    # #164: 月曜 20:00 JST (UTC 11:00) - 日曜分の通過順を拾い直す。
+    # 通過順 (コーナー通過順) は当日夜の時点ではまだ結果ページに出ておらず、翌日以降に載る。
+    # 土曜分は日曜夜の回で、日曜分はこの回で、下の「通過順が欠けた開催日」として取り直す。
+    - cron: '0 11 * * 1'
   workflow_dispatch:
     inputs:
       date:
@@ -86,12 +90,19 @@ jobs:
                   SUM(CASE WHEN EXISTS (SELECT 1 FROM results w
                                         WHERE w.race_id = g.race_id AND w.finish_position = 1)
                             AND EXISTS (SELECT 1 FROM payouts p WHERE p.race_id = g.race_id)
-                           THEN 0 ELSE 1 END) AS missing
+                           THEN 0 ELSE 1 END) AS missing,
+                         -- #164: 着順はあるのに通過順が空の馬 (当日夜はまだページに載っていない)
+                  (SELECT COUNT(*) FROM results x JOIN races y ON y.race_id = x.race_id
+                    WHERE y.race_date = g.race_date AND x.finish_position > 0
+                      AND COALESCE(x.passing_order, '') = '') AS no_passing,
+                  (SELECT COUNT(*) FROM results x JOIN races y ON y.race_id = x.race_id
+                    WHERE y.race_date = g.race_date AND x.finish_position > 0) AS finished
                   FROM races g
                   WHERE g.race_date >= ? AND g.race_date < ?
                     AND CAST(substr(g.race_id, 5, 2) AS INT) BETWEEN 1 AND 10   -- JRA のみ
                     AND EXISTS (SELECT 1 FROM results r WHERE r.race_id = g.race_id)
-                  GROUP BY g.race_date HAVING missing > 0
+                  GROUP BY g.race_date
+                  HAVING missing > 0 OR (finished > 0 AND no_passing > 0.2 * finished)
                   ORDER BY g.race_date
               """, (lo, today.isoformat())).fetchall()
           print(" ".join(r[0].replace("-", "") for r in rows))
@@ -101,11 +112,18 @@ jobs:
             BASE=$(echo "$INPUT" | tr ',' ' ')
             echo "📅 指定日: $BASE"
           else
-            BASE="$TODAY"
+            # #164: 月曜の回など、今日が開催日でなければ「今日」は対象にしない
+            # (非開催日に preflight の auto-fix を走らせない)
+            HAS=$(python3 -c "
+          from database import get_db
+          d='$TODAY'; iso=f'{d[:4]}-{d[4:6]}-{d[6:]}'
+          with get_db() as c: print(c.execute('SELECT COUNT(*) FROM races WHERE race_date=?',(iso,)).fetchone()[0])
+          " 2>/dev/null || echo 1)
+            if [ "${HAS:-0}" -gt 0 ]; then BASE="$TODAY"; else BASE=""; echo "📅 今日 ($TODAY) は開催日でない"; fi
           fi
           # 日付指定の時も欠け日の回収は必ず行う (平日開催が2日続いた時に1日目を取り残さない)
           DATES="$BASE $BACKFILL"
-          [ -n "$BACKFILL" ] && echo "🩹 着順・配当が欠けた過去の開催日を回収: $BACKFILL"
+          [ -n "$BACKFILL" ] && echo "🩹 着順・配当・通過順が欠けた過去の開催日を回収: $BACKFILL"
           echo "dates=$(echo $DATES | xargs -n1 | sort -u | xargs)" >> $GITHUB_OUTPUT
           echo "today=$TODAY" >> $GITHUB_OUTPUT
 
