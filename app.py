@@ -21,15 +21,6 @@ app.config["SECRET_KEY"] = "keiba-prediction-2025"
 JST = timezone(timedelta(hours=9))
 
 
-def _race_ev(horses, final_odds=False, race_name=None):
-    """#163: 印馬ごとの期待値 (同じ想定オッズの馬を過去に100円ずつ買った実測)。"""
-    try:
-        import ev_table
-        return ev_table.race_payload(horses, final_odds=final_odds, race_name=race_name)
-    except Exception:
-        return None
-
-
 def _bg_result_fetcher():
     """バックグラウンドで5分ごとにレース結果＆オッズを取得"""
     import requests as bg_requests
@@ -1025,9 +1016,6 @@ def api_predict_date(date_str):
                 "confidence": confidence,
                 "conf_reason": conf_reason,
                 "race_tendency": race_tendency,
-                # #163: 印馬ごとの期待値 (実測)。#151 の頭数別捕捉率は廃止 (ユーザー判断)。
-                "ev": _race_ev(horses, final_odds=has_results,
-                               race_name=race_info.get("race_name", "")),
                 "has_results": has_results,
                 "payouts": race_payouts if has_results else [],
                 "prediction_locked": is_locked and cached is not None,

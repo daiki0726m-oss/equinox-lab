@@ -24,21 +24,6 @@ from strategy.betting import BettingStrategy
 from analyzers.speed_index import SpeedIndexCalculator
 
 
-
-def _ev_cell(race):
-    """#163: ◎の期待値 (同じくらいのオッズの馬を過去に100円ずつ買った実測) の短い表記。"""
-    try:
-        import ev_table
-        horses = race.get("horses") or []
-        hon = next((h for h in horses if h.get("mark") == "◎"), None)
-        if not hon or not (hon.get("popularity") or 0):
-            return "-"
-        rn = (race.get("race_info") or {}).get("race_name", "")
-        line = ev_table.line(hon.get("odds_win"), len(horses), "◎", minimal=True, race_name=rn)
-        return line.replace("💴◎", "") if line else "-"
-    except Exception:
-        return "-"
-
 def get_race_predictions(date_str, model, strategy):
     """指定日の全レースの予測を取得してEV付きで返す"""
     scraper = NetkeibaScraper()
@@ -737,10 +722,9 @@ def generate_article(date_str, featured_races, all_races, free=False):
 
     # ━━━ 5. 今日のラインナップ ━━━
     lines.append("## 今日の注目レース\n")
-    # #163: 表の数字は「◎の期待値 (実測)」。#151 の頭数別捕捉率と💎妙味は廃止
-    # (捕捉率は頭数で決まる数字で意味が薄い / 💎は実際の回収と逆向きだった)。
-    lines.append("| レース | コース | 頭数 | ◎の期待値（実測） | レース傾向 |")
-    lines.append("|--------|--------|:----:|:------:|-----------|")
+    # #163: #151 の頭数別捕捉率・💎妙味・その後の「◎の期待値」は、いずれもユーザー判断で撤去。
+    lines.append("| レース | コース | 頭数 | レース傾向 |")
+    lines.append("|--------|--------|:----:|-----------|")
     for r in featured_races:
         info = r["race_info"]
         rname = info.get("race_name", "")
@@ -754,22 +738,9 @@ def generate_article(date_str, featured_races, all_races, free=False):
                    or info.get("grade", "") in ("G1", "G2", "G3"))
         icon = "🏆" if is_main else "🔥"
         lines.append(f"| {icon} **{venue}{rnum}R {rname}** | {surface}{distance}m | "
-                     f"{hcount}頭 | {_ev_cell(r)} | {tend} |")
+                     f"{hcount}頭 | {tend} |")
     lines.append("")
 
-    if any(_ev_cell(r) != "-" for r in featured_races):
-        try:
-            import ev_table as _evt
-            _since = _evt.since_label()
-        except Exception:
-            _since = "2020年以降"
-        lines.append("\n**「◎の期待値」の見方:**")
-        lines.append("")
-        lines.append(f"◎と同じくらいのオッズの馬を{_since}、100円ずつ複勝で買い続けた実測です。"
-                     "「複勝の的中率 × 的中した時の平均払戻」が100円あたりの期待値になります。"
-                     "AIの勝率は使っていません（オッズ・頭数・レース区分と、締切までのオッズの動きの実測で決まります）。"
-                     "当たりやすさと当たった時の額を、券種や点数を決める材料にしてください。")
-        lines.append("")
     lines.append("---\n")
 
     # ━━━ 6. 無料プレビュー（メインレース1つ） ━━━
@@ -844,10 +815,8 @@ def generate_article(date_str, featured_races, all_races, free=False):
             is_main = (rnum == 11 or info.get("grade", "") in ("G1", "G2", "G3"))
             icon = "🏆" if is_main else ""
 
-            _evc = _ev_cell(race)
-            _evs = f" [◎ {_evc}]" if _evc != "-" else ""
             lines.append(f"### {icon}{rnum}R {rname} {surface}{distance}m・"
-                         f"{hcount}頭 [AI評価: {conf}]{_evs}\n")
+                         f"{hcount}頭 [AI評価: {conf}]\n")
 
             # 予想印
             lines.append("| 印 | 馬番 | 馬名 | AI勝率 | SI |")

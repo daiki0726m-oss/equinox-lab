@@ -275,12 +275,6 @@ body {
 .cap-row b { font-size: 15px; font-weight: 800; color: #f0c040; }
 .cap-row i { font-style: normal; opacity: 0.6; font-size: 11px; }
 .cap-note { margin-top: 6px; opacity: 0.8; }
-.conf-badge.cap.ev { min-width: auto; padding: 0 8px; }
-.ev-row { display: flex; gap: 6px; align-items: baseline; margin-top: 5px; }
-.ev-row b { color: #f0c040; min-width: 1.2em; }
-.ev-row i { font-style: normal; opacity: 0.6; font-size: 11px; }
-.ev-sub { padding-left: 1.8em; opacity: 0.85; font-size: 11.5px; }
-.ev-sub em { font-style: normal; font-weight: 700; }
 .toggle-icon {
   font-size: 10px; color: var(--text-muted);
   transition: transform var(--transition);
@@ -852,12 +846,7 @@ body {
   <div class="summary-item"><div class="summary-value" id="sumROI">-</div><div class="summary-label">ROI</div></div>
 </div>
 
-<!-- Confidence Filter -->
-<div class="conf-filter" id="confFilter">
-  <button class="conf-filter-btn" onclick="setConfFilter('ALL')">全て</button>
-  <button class="conf-filter-btn" onclick="setConfFilter('HI')">◎複勝的中 50%+</button>
-  <button class="conf-filter-btn" onclick="setConfFilter('MID')">30%以上</button>
-</div>
+<!-- #163: 期待値のバッジ・一覧・フィルタはユーザー判断で撤去 (期待値の説明はいらない) -->
 
 <!-- Main -->
 <div class="main" id="mainContent">
@@ -891,24 +880,6 @@ function toggleBetsFilter() {
   state.filterBetsOnly = !state.filterBetsOnly;
   document.getElementById('sumBetsItem').classList.toggle('active', state.filterBetsOnly);
   if (state.allData) renderAllPreservingOpenState();
-}
-
-function setConfFilter(level) {
-  state.confFilter = state.confFilter === level ? 'ALL' : level;
-  document.querySelectorAll('.conf-filter-btn').forEach(btn => {
-    const labels = { 'ALL': '全て', 'HI': '◎複勝的中 50%+', 'MID': '30%以上' };
-    btn.classList.toggle('active', btn.textContent === labels[state.confFilter]);
-  });
-  if (state.allData) {
-    // 開閉状態を記憶→再描画→復元
-    const openIds = Array.from(document.querySelectorAll('.race-card.open'))
-      .map(c => c.id.replace('race-', ''));
-    renderRaceCards();
-    openIds.forEach(id => {
-      const card = document.getElementById('race-' + id);
-      if (card) card.classList.add('open');
-    });
-  }
 }
 
 const BET_COLORS = {
@@ -1030,7 +1001,6 @@ function renderVenueTabs(venues) {
   if (names.length === 0) { container.style.display = 'none'; return; }
 
   container.style.display = 'flex';
-  document.getElementById('confFilter').classList.add('visible');
   container.innerHTML = names.map(v => {
     const count = venues[v].length;
     const cls = v === state.activeVenue ? 'active' : '';
@@ -1194,17 +1164,6 @@ function renderRaceCards() {
     });
   }
 
-  // #163: ◎の複勝的中率 (実測) でフィルタ。数字が無いレース (オッズ発売前) は残す。
-  if (state.confFilter !== 'ALL') {
-    const min = state.confFilter === 'HI' ? 0.50 : state.confFilter === 'MID' ? 0.30 : null;
-    if (min != null) {
-      races = races.filter(race => {
-        const c = _evPlacePct(race);
-        return c == null ? true : c >= min * 100;
-      });
-    }
-  }
-
   if (races.length === 0) {
     const msg = state.filterBetsOnly ? '推奨ありのレースがありません（フィルター解除: 推奨数をタップ）' : 'レースがありません';
     container.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-title">${msg}</div></div>`;
@@ -1212,79 +1171,6 @@ function renderRaceCards() {
   }
 
   container.innerHTML = races.map(race => createRaceCard(race)).join('');
-}
-
-// #163: バッジと予想タブ先頭のブロックは「期待値 (実測)」。
-// #151 の頭数別捕捉率 (📐) は頭数で決まる数字で読者にとって意味が薄いとして廃止。
-// AI勝率×オッズ の期待値は実際の回収と合わない (期待値1.2超えの馬は AI の見込みの
-// 約1/3しか勝たなかった) ので出さない。出すのは「同じくらいのオッズの馬を過去に
-// 100円ずつ買い続けた実測」= 的中率 × 的中時の平均払戻。
-// 数字の丸めは Python 側 (ev.marks[].fmt) で1回だけ行う — JS で丸め直すと X/Threads とずれる。
-// 色は良し悪しでなく ◎ の複勝的中率の大きさだけを表す (期待値はどの帯もほぼ同じ)。
-function _evHonmei(race) {
-  const ev = race.ev;
-  if (!ev || !ev.marks) return null;
-  return ev.marks.find(m => m.mark === '◎') || null;
-}
-function _evF(m, k) {
-  if (m.fmt && m.fmt[k] != null) return m.fmt[k];
-  const v = m[k];
-  if (v == null) return '-';
-  if (k.endsWith('_rate')) { const p = v * 100; return p >= 10 ? String(Math.round(p)) : p.toFixed(1); }
-  if (k.endsWith('_ev')) return String(Math.round(v / 5) * 5);
-  if (k === 'odds') return v < 10 ? v.toFixed(1) : String(Math.round(v));
-  return v < 200 ? String(Math.round(v)) : (Math.round(v / 10) * 10).toLocaleString();
-}
-// バッジの数字とフィルタは同じ値で判定する (◎複50% と表示した馬がフィルタで消えないように)
-function _evPlacePct(race) {
-  const h = _evHonmei(race);
-  if (!h || h.place_rate == null) return null;
-  const s = _evF(h, 'place_rate');
-  const p = parseFloat(s);
-  return isNaN(p) ? null : p;
-}
-function _evSkipReason(race) {
-  const ev = race.ev;
-  if (ev === undefined) return 'この日は期待値の表示を始める前のデータです';
-  if (!ev) return '期待値の表を読めませんでした';
-  if (ev.skip === 'jump') return '障害は実測の表が無いため期待値を出していません';
-  if (ev.skip === 'no_honmei') return '◎が無いため期待値を出していません';
-  return 'オッズ発売前のため、期待値はまだ出していません';
-}
-
-function evBadge(race) {
-  const h = _evHonmei(race);
-  if (!h) {
-    return `<span class="conf-badge cap ev lo" title="${_evSkipReason(race)}">-</span>`;
-  }
-  const hasPlace = h.place_rate != null;
-  const pct = hasPlace ? _evPlacePct(race) : parseFloat(_evF(h, 'win_rate'));
-  const cls = !hasPlace ? 'lo' : pct >= 50 ? 'hi' : pct >= 30 ? 'mid' : 'lo';
-  const odl = race.ev.odds_label || (race.ev.final_odds ? '確定' : '想定');
-  const since = race.ev.since || '2020年以降';
-  const tip = `◎${h.horse_name}（${odl}${_evF(h, 'odds')}倍）: 同じくらいのオッズの馬を${since}、100円ずつ買い続けた実測。`
-    + (hasPlace ? ` 複勝 的中${_evF(h, 'place_rate')}%×平均${_evF(h, 'place_pay')}円→期待値約${_evF(h, 'place_ev')}円。` : '')
-    + ` 単勝 的中${_evF(h, 'win_rate')}%×平均${_evF(h, 'win_pay')}円→期待値約${_evF(h, 'win_ev')}円。`;
-  return `<span class="conf-badge cap ev ${cls}" title="${tip}">◎${hasPlace ? '複' : '単'}${_evF(h, hasPlace ? 'place_rate' : 'win_rate')}%</span>`;
-}
-
-function evBlock(race) {
-  const ev = race.ev;
-  if (!ev || !ev.marks || !ev.marks.length) return '';
-  const odl = ev.odds_label || (ev.final_odds ? '確定' : '想定');
-  const since = ev.since || '2020年以降';
-  const rows = ev.marks.map(m => {
-    const plc = m.place_rate != null
-      ? `複勝 ${_evF(m, 'place_rate')}%×${_evF(m, 'place_pay')}円→約<em>${_evF(m, 'place_ev')}円</em>` : '複勝なし';
-    const win = `単勝 ${_evF(m, 'win_rate')}%×${_evF(m, 'win_pay')}円→約<em>${_evF(m, 'win_ev')}円</em>`;
-    return `<div class="ev-row"><b>${m.mark}</b><span>${m.horse_number} ${m.horse_name}</span><i>${odl}${_evF(m, 'odds')}倍</i></div>`
-      + `<div class="ev-sub">${plc} ／ ${win}</div>`;
-  }).join('');
-  return `<div class="cap-block">
-    <div class="cap-title">💴 期待値 <span>同じくらいのオッズの馬を${since}、100円ずつ買い続けた実測</span></div>
-    ${rows}
-    <div class="cap-note">期待値＝的中率×的中時の平均払戻（100円あたり）。AIの勝率は使っていません（オッズ・頭数・レース区分と、印ごとに実測した締切までのオッズの動きで決まります。☆・注は締切までにオッズが伸びやすいぶん、同じオッズでも的中率は低めに出ます）。</div>
-  </div>`;
 }
 
 function createRaceCard(race) {
@@ -1314,7 +1200,6 @@ function createRaceCard(race) {
           </div>
         </div>
         <div class="race-right">
-          ${evBadge(race)}
           <span class="result-badge ${race.has_results ? 'done' : 'pending'}">${race.has_results ? '確定' : '未確定'}</span>
           <span class="toggle-icon">▼</span>
         </div>
@@ -1382,7 +1267,7 @@ function renderPredTab(race) {
   const bt = state.activeBetType;
   const bets = scaleBets((race.all_bets || {})[bt] || [], state.budget);
 
-  let html = evBlock(race) + '<div class="horse-list">';
+  let html = '<div class="horse-list">';
   top3.forEach(h => { html += renderHorseRow(h, true); });
   if (rest.length > 0) {
     html += `<div id="rest-${race.race_id}" style="display:none;">`;

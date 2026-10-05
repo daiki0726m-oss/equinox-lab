@@ -85,14 +85,6 @@ jobs:
         run: |
           python3 scripts/build_race_baseline.py || echo "⚠️ 基準表の更新に失敗 (既存の値を使い続ける)"
 
-      # #163: 予想の見出し下に出す「◎の期待値」の実測表 (オッズ帯 × 層 × 頭数) と、
-      # 想定オッズ → 締切オッズの動き (投稿印の記録) を毎週引き直す。
-      # 失敗しても前週の表が残るので投稿は止まらない。
-      - name: Rebuild EV table (#163)
-        if: always() && steps.check.outputs.age != ''
-        run: |
-          python3 scripts/build_ev_table.py || echo "⚠️ 期待値表の更新に失敗 (既存の値を使い続ける)"
-
       - name: ROI weekly monitor
         id: roimon
         if: always() && steps.check.outputs.age != ''
@@ -139,7 +131,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           bash scripts/db_pack.sh
-          git add models/ keiba.db.gz docs/data/roi_weekly.json docs/data/mark_tracker.json models/train_boundary.json docs/data/race_baseline.json docs/data/ev_table.json
+          git add models/ keiba.db.gz docs/data/roi_weekly.json docs/data/mark_tracker.json models/train_boundary.json docs/data/race_baseline.json
           if git diff --staged --quiet; then
             echo "📭 変更なし"
           else

@@ -12,47 +12,6 @@ from database import get_db
 JST = timezone(timedelta(hours=9))
 
 
-def _load_posted_marks(ds, output_dir):
-    """その日の投稿印の凍結記録 (race_id → [{mark, horse_number, horse_name, odds_win_at_post, ...}])。"""
-    try:
-        with open(os.path.join(output_dir, f"posted_marks_{ds}.json"), encoding="utf-8") as f:
-            return (json.load(f) or {}).get("races") or {}
-    except (OSError, ValueError):
-        return {}
-
-
-def _race_ev(horses, race_id, race_name, has_results, posted, ds):
-    """#163: 印馬ごとの期待値 (同じくらいのオッズの馬を過去に100円ずつ買った実測)。
-
-    どのオッズを使い、締切までの動きを混ぜるかは時点で変える (#163 レビュー:
-    発走前の画面で、既に締切に近づいた現在オッズへさらに「締切までの動き」を掛けていた)。
-      - 確定済み            : 確定オッズ、動きは混ぜない               → 「確定」
-      - 予想を投稿したレース : 投稿時点のオッズ (凍結記録)、動きを混ぜる → 「想定」 (X/Threads と同じ数字)
-      - 投稿前 (10:15 まで)  : 現在のオッズ、動きを混ぜる               → 「想定」
-      - それ以降             : 現在のオッズ、動きは混ぜない             → 「現在」
-    """
-    try:
-        import ev_table
-        if has_results:
-            return ev_table.race_payload(horses, final_odds=True, race_name=race_name,
-                                         odds_label="確定")
-        snap = posted.get(race_id)
-        if snap:
-            hs = [{"mark": m.get("mark"), "horse_number": m.get("horse_number"),
-                   "horse_name": m.get("horse_name"),
-                   "odds_win": m.get("odds_win_at_post") or 0,
-                   "popularity": m.get("popularity_at_post") or 0} for m in snap]
-            return ev_table.race_payload(hs, n_runners=len(horses), final_odds=False,
-                                         race_name=race_name, odds_label="想定")
-        now = datetime.now(JST)
-        before_post = ds > now.strftime("%Y%m%d") or (
-            ds == now.strftime("%Y%m%d") and (now.hour, now.minute) < (10, 15))
-        return ev_table.race_payload(horses, final_odds=not before_post, race_name=race_name,
-                                     odds_label="想定" if before_post else "現在")
-    except Exception:
-        return None
-
-
 def export_predictions(date_str=None):
     """指定日の予測データをJSONファイルに書き出し"""
 
@@ -77,7 +36,6 @@ def export_predictions(date_str=None):
 
     for ds in dates:
         race_date_hyphen = f"{ds[:4]}-{ds[4:6]}-{ds[6:8]}"
-        posted_marks = _load_posted_marks(ds, output_dir)
 
         with get_db() as conn:
             # レース一覧
@@ -243,7 +201,7 @@ def export_predictions(date_str=None):
 
                 # #163: 旧「💎妙味」(買い目EVの最大 / 実オッズが無い日は混戦度から 1.0〜5.0 を
                 # 当てはめた値) は撤去。買い目ゼロのレース406件中201件に★が付き、★が多いほど
-                # むしろ配当が安いなど、実際の回収と逆向きだった。期待値は "ev" (実測) に置き換え。
+                # むしろ配当が安いなど、実際の回収と逆向きだった。
 
                 # レース傾向 (pred_win_pct ベース: 0-100 範囲)
                 # 旧版は pred_win (0-1 範囲) を見ていたが、JSON には pred_win_pct のみ存在
@@ -296,10 +254,6 @@ def export_predictions(date_str=None):
                     "race_tendency": race_tendency,
                     # #96: 同名レースの歴史的荒れ度 (temporal-safe、out-of-time検証済)
                     "upset_hist": upset_hist,
-                    # #163: 印馬ごとの期待値 (実測)。#151 の頭数別捕捉率 (baseline) は
-                    # 頭数で決まる数字で読者にとって意味が薄いとして廃止 (ユーザー判断)。
-                    "ev": _race_ev(horses, race_id, race_info.get("race_name", ""),
-                                   has_results, posted_marks, ds),
                     "has_results": has_results,
                     "payouts": race_payouts if has_results else [],
                     "prediction_locked": datetime.now(JST).hour >= 10,
