@@ -1,7 +1,7 @@
 {
- "train_max_date": "2025-05-25",
- "val_min_date": "2025-05-25",
- "train_races": 18680,
- "val_races": 4671,
+ "train_max_date": "2025-06-01",
+ "val_min_date": "2025-06-01",
+ "train_races": 18719,
+ "val_races": 4680,
  "feature_count": 51
 }
