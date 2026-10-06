@@ -1,7 +1,11 @@
 name: 🐎 Backfill passing_order
 
 # #65: 2021-2023 の通過順がほぼ全滅 (旧 seed が通過列の無いページを参照)。
-# db.netkeiba アーカイブから一括補完する。手動 dispatch のみ。
+# #164: 厩舎 (trainer_id) の欠けも同じアーカイブページから補う。年ごとに別ジョブ (2並列)。
+# 取得には1年あたり約3時間かかるので、その間に他の workflow (週末の出走馬登録など) が
+# keiba.db.gz を更新しても消さないよう、取得した値は JSONL に記録しておき、
+# push 直前に**最新の DB を取り直して空欄だけに当て直す** (#70 の丸ごと上書きを避ける)。
+# 手動 dispatch のみ。
 on:
   workflow_dispatch:
     inputs:
@@ -15,11 +19,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      years: ${{ steps.y.outputs.years }}
+    steps:
+      - id: y
+        run: |
+          Y=$(echo "${{ inputs.years }}" | tr -s ' ' '\n' | grep -E '^[0-9]{4}$' | jq -R . | jq -sc .)
+          echo "years=$Y" >> $GITHUB_OUTPUT
+          echo "対象: $Y"
+
   backfill:
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2            # netkeiba への負荷を 2 req/s 程度に抑える
+      matrix:
+        year: ${{ fromJSON(needs.plan.outputs.years) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,22 +55,26 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Backfill
-        run: python3 scripts/backfill_passing_order.py ${{ inputs.years }}
+      - name: Backfill (fetch and record)
+        run: python3 scripts/backfill_passing_order.py ${{ matrix.year }} --record "$RUNNER_TEMP/updates.jsonl"
 
-      - name: Commit
+      - name: Apply onto the latest DB and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          bash scripts/db_pack.sh
-          git add keiba.db.gz
-          if git diff --staged --quiet; then echo "📭 変更なし"; exit 0; fi
-          git commit -m "🐎 Backfill passing_order: ${{ inputs.years }}"
-          for i in 1 2 3 4 5; do
-            if git pull --rebase --autostash -X theirs origin main && git push origin HEAD:main; then
-              echo "🚀 pushed (try $i)"; exit 0
-            fi
-            git rebase --abort 2>/dev/null || true
-            sleep $((i*10))
+          U="$RUNNER_TEMP/updates.jsonl"
+          if [ ! -s "$U" ]; then echo "📭 補う値なし"; exit 0; fi
+          echo "記録: $(wc -l < "$U") 頭分"
+          for i in 1 2 3 4 5 6 7 8; do
+            # 取得中に他の workflow が DB を更新していても消さない: 毎回最新を取り直して当て直す
+            git fetch -q origin main && git reset -q --hard origin/main
+            bash scripts/db_unpack.sh
+            python3 scripts/backfill_passing_order.py --apply "$U"
+            bash scripts/db_pack.sh
+            git add keiba.db.gz
+            if git diff --staged --quiet; then echo "📭 変更なし (既に補完済み)"; exit 0; fi
+            git commit -q -m "🐎 Backfill passing_order/trainer: ${{ matrix.year }}"
+            if git push origin HEAD:main; then echo "🚀 pushed (try $i)"; exit 0; fi
+            sleep $((i*15))
           done
           exit 1
