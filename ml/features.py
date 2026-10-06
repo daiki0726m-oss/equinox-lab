@@ -354,7 +354,7 @@ class FeatureBuilder:
     # ── 新しいヘルパーメソッド ──
 
     def _get_past_performance(self, horse_id, race_date=None):
-        """馬の過去成績を集計（DB→馬ページ フォールバック付き）"""
+        """馬の過去成績を集計 (DB の走だけ。学習側 fast_train と同じ定義 #166)"""
         with get_db() as conn:
             if race_date:
                 rows = conn.execute("""
@@ -378,37 +378,12 @@ class FeatureBuilder:
                     LIMIT 10
                 """, (horse_id,)).fetchall()
 
-        # DB過去走が少ない場合は馬ページからキャリア成績で補完
-        db_total = len(rows) if rows else 0
-        if db_total < 3:
-            try:
-                from scraper import NetkeibaScraper
-                if not hasattr(self, '_scraper'):
-                    self._scraper = NetkeibaScraper()
-                career = self._scraper.scrape_horse_career(horse_id)
-                if career and career['total_races'] > db_total:
-                    # 馬ページの通算成績を使用（より完全なデータ）
-                    if db_total > 0:
-                        # DB着順データがある場合はトレンド計算に使う
-                        positions = [r["finish_position"] for r in rows]
-                        last5 = positions[:5]
-                        trend = 0
-                        if len(last5) >= 3:
-                            recent3 = last5[:3]
-                            trend = (recent3[0] - recent3[2]) / 2
-                        avg_finish = sum(last5) / len(last5) / 18
-                    else:
-                        trend = 0
-                        avg_finish = 0
-                    return {
-                        "avg_finish_5r": avg_finish,
-                        "win_rate_10r": career['win_rate'],
-                        "top3_rate_10r": career['top3_rate'],
-                        "finish_trend": np.clip(trend / 10, -1, 1),
-                        "race_experience": min(career['total_races'], 10) / 10,
-                    }
-            except Exception:
-                pass
+        # #166: 旧版は DB の過去走が3走未満の馬だけ、netkeiba の馬ページの通算成績で
+        # win_rate_10r / top3_rate_10r / race_experience を置き換えていた。学習側
+        # (fast_train) は DB の走だけを数えるので、新馬・地方からの転入馬で学習と本番の
+        # 物差しがずれていた (直近レースで race_experience の一致率69%)。さらに馬ページは
+        # 地方・海外の走や、過去日を照合する時はその日より後の走まで数える。
+        # 学習側と同じく DB の走だけで計算する (予想時のページ取得も無くなる)。
 
         if not rows:
             return {
