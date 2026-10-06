@@ -6,6 +6,7 @@
 """
 
 import sys
+import bisect
 import os
 import time
 import numpy as np
@@ -386,8 +387,77 @@ def _lookup_pedigree(records, target_date, min_runs=5):
     return t3_cum / total_cum
 
 
+class _SpeedIndexCache(dict):
+    """horse_id → その馬の走破記録のリスト (新しい順)。
+
+    #165: 基準タイムを「予想するレースの日付より前」のデータだけで作る。
+    旧版は DB 全期間 (未来のレースを含む) の上位5着平均で基準タイムを1回だけ作り、
+    学習用の特徴量に未来の情報が混ざっていた (印への影響は最大 0.16pt と小さいが誤り)。
+    規則は推論側 analyzers/speed_index.SpeedIndexCalculator._get_base_time と同じ:
+      ① 場×距離×芝ダ×馬場 の上位5着平均 (5件以上) → ② 場×距離×芝ダ (3件以上)
+      → ③ 距離×芝ダ → ④ 距離×0.06。馬場が空なら「良」として引く。
+    """
+
+    TRACK_ADJ = {"良": 0, "稍重": -1.5, "重": -3.0, "不良": -5.0}
+
+    def __init__(self, top5):
+        super().__init__()
+        self._levels = []
+        for keys in (["venue", "distance", "surface", "track_condition"],
+                     ["venue", "distance", "surface"],
+                     ["distance", "surface"]):
+            store = {}
+            for k, g in top5.groupby(keys, sort=False):
+                g = g.sort_values("race_date", kind="mergesort")
+                cs = np.concatenate([[0.0], np.cumsum(g["finish_time_seconds"].to_numpy(dtype=float))])
+                store[k if isinstance(k, tuple) else (k,)] = (g["race_date"].tolist(), cs)
+            self._levels.append(store)
+        self._bt_cache = {}
+
+    def _avg(self, level, key, before):
+        ent = self._levels[level].get(key)
+        if not ent:
+            return None, 0
+        dates, cs = ent
+        n = bisect.bisect_left(dates, before)
+        return (cs[n] / n, n) if n else (None, 0)
+
+    def base_time(self, venue, distance, surface, tc, before):
+        ck = (venue, distance, surface, tc, before)
+        if ck in self._bt_cache:
+            return self._bt_cache[ck]
+        avg, n = self._avg(0, (venue, distance, surface, tc), before)
+        if avg is not None and n >= 5:
+            bt = avg
+        else:
+            avg2, n2 = self._avg(1, (venue, distance, surface), before)
+            if avg2 is not None and n2 >= 3:
+                bt = avg2
+            else:
+                avg3, _ = self._avg(2, (distance, surface), before)
+                bt = avg3 if avg3 else distance * 0.06
+        self._bt_cache[ck] = bt
+        return bt
+
+    @staticmethod
+    def _dist_factor(d):
+        if d < 1200: return 15.0
+        elif d < 1600: return 12.0
+        elif d < 2000: return 10.0
+        elif d < 2500: return 8.5
+        else: return 7.0
+
+    def si(self, run, before):
+        """走破記録 run のスピード指数を、before より前のデータで作った基準タイムで出す。"""
+        bt = self.base_time(run["venue"], run["distance"], run["surface"], run["tc"], before)
+        if not bt or bt <= 0:
+            return 0
+        v = 80 + (bt - run["t"]) * self._dist_factor(run["distance"]) + self.TRACK_ADJ.get(run["tc"], 0)
+        return round(v, 1)
+
+
 def build_speed_index_cache(results_df, races_df):
-    """スピード指数をプリコンパイル"""
+    """スピード指数の材料をプリコンパイル (#165: 指数そのものは予想する日付ごとに出す)"""
     print("🔧 スピード指数を計算中...")
     t0 = time.time()
 
@@ -400,50 +470,22 @@ def build_speed_index_cache(results_df, races_df):
             races_df[["race_id"] + needed_cols],
             on="race_id", how="left"
         )
-    confirmed = res[(res["finish_position"] > 0) & (res["finish_time_seconds"] > 0)].copy()
+    if "race_date" not in res.columns:
+        res = res.merge(races_df[["race_id", "race_date"]], on="race_id", how="left")
+    res = res[res["finish_time_seconds"] > 0].copy()
 
-    # 基準タイム: venue-distance-surface-condition の上位5着平均
-    top5 = confirmed[confirmed["finish_position"] <= 5]
-    base_times = top5.groupby(["venue", "distance", "surface", "track_condition"])[
-        "finish_time_seconds"
-    ].mean().to_dict()
+    # 基準タイムの材料: 上位5着 (推論側と同じく finish_position 1-5、走破タイムあり)
+    top5 = res[res["finish_position"].between(1, 5)][
+        ["race_date", "venue", "distance", "surface", "track_condition", "finish_time_seconds"]]
+    si_cache = _SpeedIndexCache(top5)
 
-    # フォールバック: venue-distance-surface
-    base_times_fallback = top5.groupby(["venue", "distance", "surface"])[
-        "finish_time_seconds"
-    ].mean().to_dict()
-
-    # 距離ファクター
-    def get_dist_factor(d):
-        if d < 1200: return 15.0
-        elif d < 1600: return 12.0
-        elif d < 2000: return 10.0
-        elif d < 2500: return 8.5
-        else: return 7.0
-
-    # 馬場補正
-    track_adj = {"良": 0, "稍重": -1.5, "重": -3.0, "不良": -5.0}
-
-    # 各出走のSI計算
-    si_cache = {}
-    for _, row in confirmed.iterrows():
-        key = (row["venue"], row["distance"], row["surface"], row["track_condition"])
-        bt = base_times.get(key)
-        if bt is None:
-            bt = base_times_fallback.get((row["venue"], row["distance"], row["surface"]))
-        if bt is None or bt <= 0:
-            continue
-
-        time_diff = bt - row["finish_time_seconds"]
-        df = get_dist_factor(row["distance"])
-        ta = track_adj.get(row["track_condition"], 0)
-        si = 80 + (time_diff * df) + ta
-
-        if row["horse_id"] not in si_cache:
-            si_cache[row["horse_id"]] = []
-        si_cache[row["horse_id"]].append({
-            "si": round(si, 1),
-            "race_date": row.get("race_date", ""),
+    # 各馬の走破記録 (推論側 get_horse_indices と同じく走破タイム>0 の走)
+    for row in res[["horse_id", "race_date", "finish_time_seconds", "venue", "distance",
+                    "surface", "track_condition"]].itertuples(index=False):
+        si_cache.setdefault(row.horse_id, []).append({
+            "race_date": row.race_date, "t": row.finish_time_seconds,
+            "venue": row.venue, "distance": row.distance, "surface": row.surface,
+            "tc": row.track_condition or "良",
         })
 
     # 日付順にソート
@@ -451,7 +493,7 @@ def build_speed_index_cache(results_df, races_df):
         si_cache[hid].sort(key=lambda x: x["race_date"], reverse=True)
 
     elapsed = time.time() - t0
-    print(f"  ✅ {len(si_cache)}頭のSIを計算 ({elapsed:.1f}秒)")
+    print(f"  ✅ {len(si_cache)}頭の走破記録を準備 ({elapsed:.1f}秒)")
     return si_cache
 
 
@@ -501,8 +543,9 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
         # === SI系 (6) ===
         si_list = []
         if horse_id in si_cache:
-            si_list = [s["si"] for s in si_cache[horse_id]
-                      if s["race_date"] < race_date][:5]
+            # #165: 基準タイムもこのレースの日付より前のデータだけで作る (推論側と同じ)
+            si_list = [si_cache.si(s, race_date) for s in si_cache[horse_id]
+                       if s["race_date"] < race_date][:5]
 
         f["si_avg"] = np.mean(si_list) if si_list else 0
         f["si_max"] = max(si_list) if si_list else 0

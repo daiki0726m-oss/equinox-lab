@@ -46,14 +46,23 @@ class SpeedIndexCalculator:
                 return factor
         return 10.0
 
-    def _get_base_time(self, venue, distance, surface, track_condition="良"):
-        """基準タイムを取得 (DBから平均タイムを計算)"""
-        key = (venue, distance, surface, track_condition)
+    def _get_base_time(self, venue, distance, surface, track_condition="良", before=None):
+        """基準タイムを取得 (DBから平均タイムを計算)。
+
+        before (YYYY-MM-DD): その日より前のレースだけで基準タイムを作る (#165)。
+        予想するレースの日付を渡せば「予想時点で分かっていたデータ」だけになる。
+        学習側 (fast_train.build_speed_index_cache) も同じ規則 (同じ件数の閾値・同じ
+        フォールバック) で作るので、学習と本番で同じ値になる (パリティ検査 #135)。
+        before=None は従来どおり全期間 (表示用の calculate_race など)。
+        """
+        key = (venue, distance, surface, track_condition, before)
         if key in self.base_times:
             return self.base_times[key]
 
+        date_cond = "AND ra.race_date < ?" if before else ""
+        date_arg = (before,) if before else ()
         with get_db() as conn:
-            row = conn.execute("""
+            row = conn.execute(f"""
                 SELECT AVG(r.finish_time_seconds) as avg_time,
                        COUNT(*) as cnt
                 FROM results r
@@ -62,13 +71,14 @@ class SpeedIndexCalculator:
                   AND ra.track_condition = ?
                   AND r.finish_time_seconds > 0
                   AND r.finish_position BETWEEN 1 AND 5
-            """, (venue, distance, surface, track_condition)).fetchone()
+                  {date_cond}
+            """, (venue, distance, surface, track_condition) + date_arg).fetchone()
 
             if row and row["cnt"] >= 5:
                 base_time = row["avg_time"]
             else:
                 # データ不足の場合は馬場状態を問わず平均を使用
-                row2 = conn.execute("""
+                row2 = conn.execute(f"""
                     SELECT AVG(r.finish_time_seconds) as avg_time,
                            COUNT(*) as cnt
                     FROM results r
@@ -76,31 +86,34 @@ class SpeedIndexCalculator:
                     WHERE ra.venue = ? AND ra.distance = ? AND ra.surface = ?
                       AND r.finish_time_seconds > 0
                       AND r.finish_position BETWEEN 1 AND 5
-                """, (venue, distance, surface)).fetchone()
+                      {date_cond}
+                """, (venue, distance, surface) + date_arg).fetchone()
 
                 if row2 and row2["cnt"] >= 3:
                     base_time = row2["avg_time"]
                 else:
                     # さらにデータ不足の場合は距離のみで計算
-                    row3 = conn.execute("""
+                    row3 = conn.execute(f"""
                         SELECT AVG(r.finish_time_seconds) as avg_time
                         FROM results r
                         JOIN races ra ON r.race_id = ra.race_id
                         WHERE ra.distance = ? AND ra.surface = ?
                           AND r.finish_time_seconds > 0
                           AND r.finish_position BETWEEN 1 AND 5
-                    """, (distance, surface)).fetchone()
+                          {date_cond}
+                    """, (distance, surface) + date_arg).fetchone()
                     base_time = row3["avg_time"] if row3 and row3["avg_time"] else distance * 0.06
 
         self.base_times[key] = base_time
         return base_time
 
-    def calculate(self, finish_time_seconds, venue, distance, surface, track_condition="良"):
-        """スピード指数を1頭分計算"""
+    def calculate(self, finish_time_seconds, venue, distance, surface, track_condition="良",
+                  before=None):
+        """スピード指数を1頭分計算 (before: 基準タイムをその日より前のデータで作る #165)"""
         if finish_time_seconds <= 0:
             return 0
 
-        base_time = self._get_base_time(venue, distance, surface, track_condition)
+        base_time = self._get_base_time(venue, distance, surface, track_condition, before)
         if not base_time or base_time <= 0:
             return 0
 
@@ -173,10 +186,12 @@ class SpeedIndexCalculator:
 
         indices = []
         for row in rows:
+            # #165: 基準タイムも予想するレースの日付より前のデータだけで作る
             idx = self.calculate(
                 row["finish_time_seconds"],
                 row["venue"], row["distance"],
-                row["surface"], row["track_condition"] or "良"
+                row["surface"], row["track_condition"] or "良",
+                before=race_date,
             )
             indices.append(idx)
 
