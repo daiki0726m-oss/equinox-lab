@@ -2008,5 +2008,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18090986219282944",
+  "posted_at": "2026-10-10T10:24:28.653688+09:00",
+  "slot": "post_predict",
+  "pattern": "transparency",
+  "race_id": "202605040311",
+  "race_name": "サウジアラビアRC",
+  "chunk": 0,
+  "chars": 163
  }
 ]
