@@ -2018,5 +2018,55 @@
   "race_name": "サウジアラビアRC",
   "chunk": 0,
   "chars": 163
+ },
+ {
+  "post_id": "17925099516202341",
+  "posted_at": "2026-10-10T17:38:35.522812+09:00",
+  "slot": "results",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
+ },
+ {
+  "post_id": "18034029533666474",
+  "posted_at": "2026-10-10T17:38:35.522812+09:00",
+  "slot": "results",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 1,
+  "chars": 0
+ },
+ {
+  "post_id": "18337397683261859",
+  "posted_at": "2026-10-10T17:38:35.522812+09:00",
+  "slot": "results",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 2,
+  "chars": 0
+ },
+ {
+  "post_id": "17947750587067153",
+  "posted_at": "2026-10-10T17:38:35.522812+09:00",
+  "slot": "results",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 3,
+  "chars": 0
+ },
+ {
+  "post_id": "17990353260063316",
+  "posted_at": "2026-10-10T17:38:35.522812+09:00",
+  "slot": "results",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 4,
+  "chars": 0
  }
 ]
