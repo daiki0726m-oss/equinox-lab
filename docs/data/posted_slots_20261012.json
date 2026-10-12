@@ -19,6 +19,11 @@
    "posted_at": "2026-10-12 12:34:51",
    "run_id": "38200260832",
    "event": "workflow_dispatch"
+  },
+  "results": {
+   "posted_at": "2026-10-12 17:39:40",
+   "run_id": "38224755561",
+   "event": "workflow_dispatch"
   }
  }
 }
