@@ -2188,5 +2188,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "17985407616001659",
+  "posted_at": "2026-10-12T10:26:27.730954+09:00",
+  "slot": "post_predict",
+  "pattern": "upset",
+  "race_id": "202608040511",
+  "race_name": "スワンS",
+  "chunk": 0,
+  "chars": 207
  }
 ]
