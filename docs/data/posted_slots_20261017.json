@@ -1,3 +1,9 @@
 {
- "slots": {}
+ "slots": {
+  "odds_flash": {
+   "posted_at": "2026-10-17 09:44:39",
+   "run_id": "38987179264",
+   "event": "workflow_dispatch"
+  }
+ }
 }
