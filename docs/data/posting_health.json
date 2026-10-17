@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-17T09:02:18.502504+09:00",
+  "generated_at": "2026-10-17T13:44:00.757011+09:00",
   "today": "2026-10-17 (Sat)",
   "weekday": 5,
   "slots": {
@@ -23,23 +23,44 @@
     },
     "weekend_morning_predict": {
       "slot": "weekend_morning_predict",
-      "status": "ok",
+      "status": "ok_late",
       "expected": "07:00 JST",
-      "actual": "2026-10-17T07:56:47+09:00",
+      "deadline": "09:30 JST",
+      "recent_success": {
+        "created_at": "2026-10-17T07:56:47+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 57
+      },
       "delay_minutes": 57,
-      "event": "schedule",
       "workflow": "auto_post_x.yml"
     },
     "odds_flash": {
       "slot": "odds_flash",
-      "status": "future",
+      "status": "ok_late",
       "expected": "09:30 JST",
+      "deadline": "10:15 JST",
+      "recent_success": {
+        "created_at": "2026-10-17T09:45:41+09:00",
+        "title": "cron",
+        "event": "schedule",
+        "delay_minutes": 16
+      },
+      "delay_minutes": 16,
       "workflow": "auto_post_x.yml"
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "future",
+      "status": "ok_late",
       "expected": "10:15 JST",
+      "deadline": "10:50 JST",
+      "recent_success": {
+        "created_at": "2026-10-17T10:26:30+09:00",
+        "title": "post_predict",
+        "event": "workflow_dispatch",
+        "delay_minutes": 12
+      },
+      "delay_minutes": 12,
       "workflow": "auto_post_x.yml"
     },
     "results": {
@@ -90,17 +111,17 @@
       "slot": "dashboard_predictions",
       "status": "ok",
       "expected": "開催日は常時",
-      "actual": "36レース (exported_at=2026-10-17T08:07:18.858179+09:00)"
+      "actual": "36レース (exported_at=2026-10-17T13:35:48.492252+09:00)"
     }
   },
   "summary": {
-    "ok": 2,
+    "ok": 1,
     "missing": 0,
-    "future": 3,
+    "future": 1,
     "not_today": 7,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 1
+    "ok_late": 4
   },
   "missed_slots": []
 }
