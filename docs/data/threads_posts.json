@@ -2468,5 +2468,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "17888617143686126",
+  "posted_at": "2026-10-18T10:17:17.950937+09:00",
+  "slot": "post_predict",
+  "pattern": "transparency",
+  "race_id": "202608040711",
+  "race_name": "秋華賞",
+  "chunk": 0,
+  "chars": 163
  }
 ]
