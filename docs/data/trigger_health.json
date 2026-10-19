@@ -1,13 +1,16 @@
 {
- "generated_at": "2026-10-19T07:04:40.529994+09:00",
+ "generated_at": "2026-10-20T08:14:55.409768+09:00",
  "external_layer_ok": false,
  "last_external_dispatch": null,
  "silent_days": null,
  "manual_dispatches_ignored": 6,
  "window_days": 3,
  "daily": {
-  "2026-10-19": {
+  "2026-10-20": {
    "bot": 1
+  },
+  "2026-10-19": {
+   "bot": 4
   },
   "2026-10-18": {
    "bot": 9
@@ -46,11 +49,8 @@
    "bot": 4
   },
   "2026-10-06": {
-   "bot": 3,
-   "手動": 2
-  },
-  "2026-10-05": {
-   "bot": 4
+   "bot": 2,
+   "手動": 1
   }
  }
 }
