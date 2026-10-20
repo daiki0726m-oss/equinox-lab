@@ -16,6 +16,10 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(__file__))
 from database import init_db, get_db
+# 着差の読み方・格・近5走の連続項目は推論側 (ml/features.py) と **同じ関数** を使う。
+# 2か所に書くと中身がずれる (#128/#133/#134/#136) ため、定義は ml/features.py の1か所だけ。
+from ml.features import (margin_stats, class_level, recent_form_features,  # noqa: E402
+                         winner_times)
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 
@@ -53,6 +57,20 @@ def build_horse_history(results_df, races_df):
                         "grade", "track_condition", "horse_count"]
     avail = [c for c in needed_race_cols if c in races_df.columns]
     res = results_df.merge(races_df[avail], on="race_id", how="left", suffixes=("", "_r"))
+    # 点数表の連続項目 (recent_form_features) 用: 各走の格と、そのレースの勝ち馬のタイム。
+    # 推論側 (ml/features.FeatureBuilder._get_recent_form) と **同じ関数** を呼ぶ:
+    #   格 = class_level(grade, race_name) / 勝ち馬のタイム = winner_times (1着馬のタイム。
+    #   1着の行が無い・1着のタイムが欠けたレースは NaN = タイム差の計算から除く)。
+    _lvl = {rid: class_level(g, n) for rid, g, n in zip(
+        races_df["race_id"], races_df.get("grade", pd.Series([""] * len(races_df))),
+        races_df.get("race_name", pd.Series([""] * len(races_df))))}
+    res["class_level"] = res["race_id"].map(_lvl)
+    if "finish_time_seconds" in results_df.columns:
+        _wt = winner_times(zip(results_df["race_id"], results_df["finish_position"],
+                               results_df["finish_time_seconds"]))
+        res["win_time"] = res["race_id"].map(_wt)
+    else:
+        res["win_time"] = np.nan
     res = res.sort_values(["horse_id", "race_date"])
 
     # 馬ごとのデータをグループ化
@@ -63,6 +81,10 @@ def build_horse_history(results_df, races_df):
     elapsed = time.time() - t0
     print(f"  ✅ {len(history)}頭の履歴を構築 ({elapsed:.1f}秒)")
     return history
+
+
+# 騎手・調教師の時系列累積の末尾に置く番兵の日付 (どの実在の race_date よりも後)
+_STAT_SENTINEL_DATE = "9999-12-31"
 
 
 def build_jockey_trainer_stats(results_df, races_df):
@@ -123,6 +145,13 @@ def build_jockey_trainer_stats(results_df, races_df):
                 win_cum += 1
             if row["finish_position"] <= 3:
                 top3_cum += 1
+        # 末尾の番兵 = 「全走を含む」累積。records[i] は i 番目の走を含まない累積なので、
+        # 番兵が無いと最後の走より後の日付 (= 本番の予測 = 発走前のレース) で
+        # _lookup_at が records[-1] を返し、**最後の1走を落としていた**
+        # (推論側 FeatureBuilder は race_date より前の全確定走を数える → 発走前の照合で
+        #  jockey_cond_top3 / trainer_cond_top3 / combo_top3 が一致しなかった)。
+        # 学習データ (確定レース) では対象レース自身の行が records にあるので値は変わらない。
+        records.append((_STAT_SENTINEL_DATE, win_cum, top3_cum, total_cum))
         jockey_stats[jid] = records
 
     # 調教師別
@@ -138,6 +167,7 @@ def build_jockey_trainer_stats(results_df, races_df):
             total_cum += 1
             if row["finish_position"] <= 3:
                 top3_cum += 1
+        records.append((_STAT_SENTINEL_DATE, top3_cum, total_cum))   # 番兵 (騎手と同じ理由)
         trainer_stats[tid] = records
 
     # 騎手×調教師コンビ
@@ -153,6 +183,7 @@ def build_jockey_trainer_stats(results_df, races_df):
             total_cum += 1
             if row["finish_position"] <= 3:
                 top3_cum += 1
+        records.append((_STAT_SENTINEL_DATE, top3_cum, total_cum))   # 番兵 (騎手と同じ理由)
         combo_stats[(jid, tid)] = records
 
     elapsed = time.time() - t0
@@ -749,35 +780,16 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
             f["dist_top3_rate"] = 0
 
         # ── v5新規: 着差 (margin) ──
-        def _parse_margin(s):
-            if not s: return None
-            s = str(s).strip()
-            jp = {'ハナ':0.02, 'アタマ':0.05, 'クビ':0.15, '同着':0.0, '大差':10.0}
-            if s in jp: return jp[s]
-            try:
-                if ' ' in s:
-                    parts = s.split()
-                    base = float(parts[0])
-                    if '/' in parts[1]:
-                        num,den = parts[1].split('/')
-                        return base + float(num)/float(den)
-                    return base
-                if '/' in s:
-                    num,den = s.split('/')
-                    return float(num)/float(den)
-                return float(s)
-            except (ValueError, IndexError):
-                return None
-        margins = []
-        for pr in past_races[:5]:
-            m = _parse_margin(pr.get('margin'))
-            if m is not None:
-                if pr['finish_position'] == 1:
-                    margins.append(0.0)
-                else:
-                    margins.append(min(m, 10.0))
-        f["margin_avg"] = (sum(margins)/len(margins)) if margins else 5.0
-        f["margin_best"] = min(margins) if margins else 5.0
+        # 読み方は ml.features.parse_margin / margin_stats (推論側と同じ関数)。
+        # 旧実装は '1.1/4' (=1と1/4馬身) を 1.1÷4=0.275 と読み、'大'(大差) を捨て、
+        # 1着の走 (着差欄が空) も捨てていたため、勝ち続けた馬ほど最悪値 5.0 になっていた。
+        f["margin_avg"], f["margin_best"] = margin_stats(
+            [(pr["finish_position"], pr.get("margin")) for pr in past_races[:5]])
+
+        # ── 点数表の連続項目 (LGB の get_feature_columns には入れない) ──
+        # 格を考慮した近5走の着順 / 勝ち馬とのタイム差の最小 / 過去走の有無。
+        f.update(recent_form_features(
+            past_races, class_level(race.get("grade"), race.get("race_name"))))
 
         # ── v5新規: 同コース過去成績 (course familiarity) ──
         same_course_past = [pr for pr in past_races
@@ -792,12 +804,16 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
             f["same_course_runs"] = 0.0
 
         # ── v5新規: 斤量変化 (前走比) ──
-        current_impost = f.get("impost") or 57.0
+        # 今回の斤量が未発表 (0) の時は「変化なし」= 0。推論側 (FeatureBuilder._get_impost_diff)
+        # と同じ。旧実装は 57kg で代用しており、発走前 (斤量発表前) の照合で学習と推論が
+        # 食い違っていた (確定走で斤量0の行は無いので、学習データの値は変わらない)。
+        current_impost = f.get("impost") or 0.0
         try:
             prev_impost = float(past_races[0].get("impost") or 0) if past_races else 0
         except (TypeError, ValueError):
             prev_impost = 0
-        f["impost_diff"] = (current_impost - prev_impost) if prev_impost > 0 else 0.0
+        f["impost_diff"] = ((current_impost - prev_impost)
+                            if (prev_impost > 0 and current_impost > 0) else 0.0)
 
         # ── v5新規: 重賞経験 + 重賞複勝率 ──
         graded_past = [pr for pr in past_races if pr.get('grade') in ('G1','G2','G3')]
@@ -1246,12 +1262,16 @@ def run_backtest(df, models, feature_cols, year=2025):
         print(f"\n  📉 マイナス収支")
 
 
-def build_feature_table():
+def build_feature_table(start_date=None):
     """Step 1-3 (データロード → プリコンパイル → 全レース特徴量計算) を実行して
     特徴量 DataFrame を返す。
 
     #57: main() からの切り出し。scripts/train_ability_model.py (odds 非依存の
     能力モデル学習) からも同一の特徴量テーブルを再利用するための共通化。
+
+    start_date: 指定すると race_date >= start_date のレースだけ特徴量を計算する
+                (履歴・騎手/血統の累積は全期間から作るので値は全期間版と同じ)。
+                点数表の当てはめ (scripts/train_scorecard.py --mode lin) 用。
     """
     races_df, results_df, payouts_df = load_all_data()
 
@@ -1281,6 +1301,8 @@ def build_feature_table():
     total_races = len(races_df)
 
     for i, race in races_df.iterrows():
+        if start_date and str(race.get("race_date") or "") < start_date:
+            continue
         if (i + 1) % 500 == 0:
             elapsed = time.time() - t0
             speed = (i + 1) / elapsed

@@ -1117,16 +1117,42 @@ def sec_age_pattern(
     distance: int,
     grade: Optional[str] = None,
     years: int = 6,
+    race_id: Optional[str] = None,
 ) -> Tuple[str, List[str], int]:
-    """同条件で馬齢別の複勝率を集計。
+    """同条件で馬齢別の複勝率を集計し、**今週の出走馬がいる年齢だけ**出す。
 
-    クラシック (3歳限定) なら不要だが、古馬混合戦では「4歳が強い」等が出る。
+        🐴4歳 [3-2-4-25] 複勝率26% (今回5頭)
 
-    例:
-        🐴4歳 複勝率 38% (16/42)
-        🐴5歳 複勝率 30% (12/40)
+    #167 で直したこと:
+      - 旧実装は「race_year - birth_year + 1」(数え年) で 1歳多く出していた。
+        birth_year が全件 NULL だった間は表示されなかったので潜在していた。
+        JRA の馬齢は満年齢 (= race_year - birth_year)。
+      - 今週の出走馬と結び付けていなかった (2026-06-04 の「今週レース起点」ルール違反)。
+        race_id を受けて、出走馬の年齢に含まれる年齢だけを出す。
+        全頭が同じ年齢 (2歳戦・3歳限定戦) なら何も言っていないので出さない。
+      - 生年は horses.birth_year が空でも horse_id の先頭4桁で補う (= 生年。#167 で全件検証済み)。
     """
+    if not race_id:
+        return ("", [], 0)
     cur = conn.cursor()
+    by = ("COALESCE(h.birth_year, CASE WHEN h.horse_id GLOB '[12][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'"
+          " THEN CAST(substr(h.horse_id, 1, 4) AS INTEGER) END)")
+    # 今週の出走馬の年齢 (取消を含む登録馬。出走確定前は出馬表の登録)
+    cur.execute(
+        f"""
+        SELECT CAST(substr(r.race_date, 1, 4) AS INTEGER) - {by} AS age, COUNT(*)
+        FROM results res
+        JOIN races r ON r.race_id = res.race_id
+        JOIN horses h ON h.horse_id = res.horse_id
+        WHERE res.race_id = ? AND {by} IS NOT NULL
+        GROUP BY age
+        """,
+        (race_id,),
+    )
+    runners = {int(a): int(n) for a, n in cur.fetchall() if a is not None}
+    if len(runners) < 2:
+        return ("", [], 0)      # 出走馬未確定 or 全頭同じ年齢 = 言えることが無い
+
     from_date = f"{datetime.now().year - years}-01-01"
     base_where = "r.surface = ? AND r.distance = ? AND r.venue = ? AND r.race_date >= ?"
     params = [surface, distance, venue, from_date]
@@ -1134,11 +1160,10 @@ def sec_age_pattern(
         base_where += " AND r.grade = ?"
         params.append(grade)
 
-    # 馬齢計算: race_date.year - horse.birth_year + 1
     cur.execute(
         f"""
         SELECT
-            (CAST(substr(r.race_date, 1, 4) AS INTEGER) - h.birth_year + 1) AS age,
+            (CAST(substr(r.race_date, 1, 4) AS INTEGER) - {by}) AS age,
             COUNT(*) AS n,
             SUM(CASE WHEN res.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3,
             SUM(CASE WHEN res.finish_position = 1 THEN 1 ELSE 0 END) AS p1,
@@ -1149,27 +1174,36 @@ def sec_age_pattern(
         JOIN horses h ON res.horse_id = h.horse_id
         WHERE {base_where}
           AND res.finish_position > 0
-          AND h.birth_year IS NOT NULL AND h.birth_year > 0
+          AND r.race_id <> ?
+          AND {by} IS NOT NULL
+          -- 年齢限定戦 (2歳戦・3歳限定戦。名前に年齢が無い「はやぶさ賞」等も) は全頭が同じ年齢で
+          -- 年齢の比較にならないので除く = 出走馬の年齢に差があったレースだけ数える
+          AND r.race_id IN (
+              SELECT r2.race_id FROM races r2
+              JOIN results x2 ON x2.race_id = r2.race_id
+              JOIN horses h2 ON h2.horse_id = x2.horse_id
+              WHERE {base_where.replace("r.", "r2.")}
+              GROUP BY r2.race_id
+              HAVING MIN(CAST(substr(r2.race_date, 1, 4) AS INTEGER) - {by.replace("h.", "h2.")})
+                  <> MAX(CAST(substr(r2.race_date, 1, 4) AS INTEGER) - {by.replace("h.", "h2.")}))
         GROUP BY age
-        HAVING n >= 10 AND age BETWEEN 3 AND 9
+        HAVING n >= 10 AND age BETWEEN 2 AND 10
         ORDER BY (1.0 * top3 / n) DESC
         """,
-        params,
+        params + [race_id] + params,
     )
-    rows = cur.fetchall()
-    n_buckets = len(rows)
+    rows = [r for r in cur.fetchall() if int(r[0]) in runners]
     grade_label = f"{grade} " if grade else ""
     title = f"【{venue}{surface}{distance}m {grade_label}馬齢別 (過去{years}年)】"
-
-    if n_buckets == 0:
-        return (title, [f"年齢別データなし"], 0)
+    if len(rows) < 2:
+        return ("", [], 0)      # 比べる相手がいない年齢別は「傾向」にならない
 
     lines = []
     total_n = 0
     for age, runs, top3, p1, p2, p3 in rows[:3]:
         pct = 100 * top3 / runs
         # 競馬標準の着度数 [1-2-3-着外] 表記 (#55)
-        lines.append(f"🐴{age}歳 {_chakudosu(p1, p2, p3, runs)} 複勝率{pct:.0f}%")
+        lines.append(f"🐴{age}歳 {_chakudosu(p1, p2, p3, runs)} 複勝率{pct:.0f}% (今回{runners[int(age)]}頭)")
         total_n += runs
     return (title, lines, total_n)
 

@@ -60,9 +60,9 @@ def init_db(db_path=None):
                 horse_id TEXT PRIMARY KEY,          -- netkeiba上の馬ID
                 horse_name TEXT NOT NULL,           -- 馬名
                 sex TEXT,                           -- 性別（牡/牝/セ）
-                birth_year INTEGER,                -- 生年
+                birth_year INTEGER,                -- 生年 (horse_id 先頭4桁。birth_year_from_horse_id で入れる)
                 sire TEXT,                          -- 父（種牡馬）
-                dam TEXT,                           -- 母
+                dam TEXT,                           -- 母 (血統ページ ped から。collect_pedigree.save_pedigree)
                 damsire TEXT,                       -- 母父
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -129,7 +129,7 @@ def init_db(db_path=None):
                 race_id TEXT NOT NULL,
                 horse_id TEXT NOT NULL,
                 horse_number INTEGER,
-                evaluation_grade TEXT,         -- A/B/C
+                evaluation_grade TEXT,         -- A/B/C/D (netkeiba の4段階。評価なしは NULL)
                 evaluation_text TEXT,          -- "気力充実" 等の自然言語ラベル
                 comment TEXT,                  -- 詳細コメント(あれば)
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -204,6 +204,40 @@ def init_db(db_path=None):
             conn.execute("ALTER TABLE predictions_cache ADD COLUMN posted_marks_json TEXT")
             print("🔧 predictions_cache: posted_marks_json カラム追加 (#97: 投稿した印のスナップショット)")
     print("✅ データベース初期化完了")
+
+
+# ─── 馬マスターの生年 ─────────────────────────────────────────────
+# netkeiba の horse_id は 10桁の数字で、先頭4桁が生年 (例 2021103267 → 2021年生)。
+# netkeiba の馬ページの生年月日で確認済み (2021103267=2021年2月2日 / 2023100230=2023年4月10日 /
+# 2018190006=2018年10月17日)。外国馬などの英数字 ID (例 000a02c324) は生年を持たないので None。
+# horses への挿入経路は複数ある (#90) ので、どの経路もこのヘルパーで birth_year を入れ、
+# 既存行は BIRTH_YEAR_FILL_SQL で「NULL の時だけ」埋める (既存値は上書きしない)。
+BIRTH_YEAR_FILL_SQL = "birth_year = COALESCE(horses.birth_year, excluded.birth_year)"
+
+
+def birth_year_from_horse_id(horse_id):
+    """horse_id (netkeiba) から生年を返す。判定できなければ None。"""
+    s = str(horse_id or "").strip()
+    if len(s) != 10 or not s.isdigit():
+        return None
+    y = int(s[:4])
+    from datetime import date
+    if 1950 <= y <= date.today().year:
+        return y
+    return None
+
+
+def fill_birth_years(conn):
+    """birth_year が NULL の馬に horse_id から生年を入れる (ネット不要・冪等)。
+    Returns: 埋めた行数"""
+    rows = conn.execute(
+        "SELECT horse_id FROM horses WHERE birth_year IS NULL").fetchall()
+    upd = [(birth_year_from_horse_id(r[0]), r[0]) for r in rows]
+    upd = [u for u in upd if u[0] is not None]
+    if upd:
+        conn.executemany(
+            "UPDATE horses SET birth_year = ? WHERE horse_id = ? AND birth_year IS NULL", upd)
+    return len(upd)
 
 
 # ─── 投稿スロット排他制御 (#41) ───────────────────────────────────

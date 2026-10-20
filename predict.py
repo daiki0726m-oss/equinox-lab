@@ -125,8 +125,10 @@ def _attach_scorecard(pred_df, race_id=None):
         pred_df["_sc_reasons"] = [[] for _ in range(len(pred_df))]
         return pred_df
     try:
-        from ml.scorecard import FEATS, score_with_reasons
-        need = [c for c, _, _, _, _ in FEATS]
+        from ml.scorecard import required_columns, score_with_reasons
+        # v2 の点数表は区分項目の一部を外し (drop)、連続項目 (form_cls5 / tb_min5) と
+        # 過去走の有無 (has_past_runs) を使う。モデルが実際に使う列だけを要求する。
+        need = required_columns(m)
         missing = [c for c in need if c not in pred_df.columns]
         if missing:
             # #134 の silent 無効化の再発防止 — 黙って0にせず必ず警告する
@@ -199,10 +201,14 @@ def cmd_collect(args):
                         ))
                         for e in shutuba.get("entries", []):
                             if e.get("horse_id"):
-                                conn.execute("""
-                                    INSERT OR IGNORE INTO horses (horse_id, horse_name, sex)
-                                    VALUES (?, ?, ?)
-                                """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", "")))
+                                # 生年は horse_id 先頭4桁。既存行は NULL の時だけ埋める (他の列は従来どおり触らない)
+                                from database import birth_year_from_horse_id, BIRTH_YEAR_FILL_SQL
+                                conn.execute(f"""
+                                    INSERT INTO horses (horse_id, horse_name, sex, birth_year)
+                                    VALUES (?, ?, ?, ?)
+                                    ON CONFLICT(horse_id) DO UPDATE SET {BIRTH_YEAR_FILL_SQL}
+                                """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", ""),
+                                      birth_year_from_horse_id(e["horse_id"])))
                             if e.get("jockey_id"):
                                 conn.execute("""
                                     INSERT OR IGNORE INTO jockeys (jockey_id, jockey_name)
@@ -406,17 +412,21 @@ def cmd_predict(args):
                     for e in entries:
                         if e.get("horse_id"):
                             # #90: 化け名(U+FFFD)なら正しい名で自己修復 (OR IGNOREだと残存)
-                            conn.execute("""
-                                INSERT INTO horses (horse_id, horse_name, sex)
-                                VALUES (?, ?, ?)
+                            # 生年は horse_id 先頭4桁。既存行は NULL の時だけ埋める
+                            from database import birth_year_from_horse_id, BIRTH_YEAR_FILL_SQL
+                            conn.execute(f"""
+                                INSERT INTO horses (horse_id, horse_name, sex, birth_year)
+                                VALUES (?, ?, ?, ?)
                                 ON CONFLICT(horse_id) DO UPDATE SET
                                     horse_name = CASE
                                         WHEN (horses.horse_name IS NULL OR horses.horse_name = ''
                                               OR horses.horse_name LIKE '%'||CHAR(65533)||'%')
                                              AND excluded.horse_name != ''
                                              AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
-                                        THEN excluded.horse_name ELSE horses.horse_name END
-                            """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", "")))
+                                        THEN excluded.horse_name ELSE horses.horse_name END,
+                                    {BIRTH_YEAR_FILL_SQL}
+                            """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", ""),
+                                  birth_year_from_horse_id(e["horse_id"])))
                         if e.get("jockey_id"):
                             conn.execute("""
                                 INSERT OR IGNORE INTO jockeys (jockey_id, jockey_name)

@@ -8,7 +8,27 @@ import time
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-from database import get_db, init_db
+from database import get_db, init_db, birth_year_from_horse_id, BIRTH_YEAR_FILL_SQL
+
+
+# 追い切り評価 (netkeiba oikiri.html の「評価」列) の取り得る値。
+# 旧実装は A/B/C 以外を None にしており、実在する D 評価 (いま一息・動き平凡 等) を
+# 捨てていた (2026-05〜10 の NULL 842件のうち 660件が D、残り182件は評価なし=空欄)。
+# ページ上は A〜D の4段階。2026-10-19 に実ページ (202605040701 / 202604020111) で D を確認。
+WORKOUT_GRADES = ("A", "B", "C", "D")
+
+
+def normalize_workout_grade(raw, race_id="", horse_number=""):
+    """追い切り評価セルの文字列を A/B/C/D に正規化する。
+    空欄 (評価なし) は None。想定外の文字も None にしてログに出す (黙って捨てない)。"""
+    import unicodedata
+    g = unicodedata.normalize("NFKC", raw or "").strip().upper()
+    if not g:
+        return None
+    if g in WORKOUT_GRADES:
+        return g
+    print(f"⚠️ 追い切り評価が想定外の値: {raw!r} (race_id={race_id} 馬番={horse_number}) → None で保存")
+    return None
 
 
 class NetkeibaScraper:
@@ -831,7 +851,7 @@ class NetkeibaScraper:
 
         Returns:
             list[dict]: [{horse_id, horse_number, horse_name,
-                          evaluation_grade(A/B/C), evaluation_text, comment}, ...]
+                          evaluation_grade(A/B/C/D or None), evaluation_text, comment}, ...]
             取得失敗時は空リスト。
         """
         url = f"{self.BASE_URL}/race/oikiri.html?race_id={race_id}"
@@ -864,11 +884,8 @@ class NetkeibaScraper:
                 full_text = tds[3].get_text(strip=True)
                 comment = full_text.replace(horse_name, "").strip()
                 evaluation_text = tds[4].get_text(strip=True)
-                evaluation_grade = tds[5].get_text(strip=True) or None
-
-                # gradeはA/B/Cのみ正規化(他は None)
-                if evaluation_grade and evaluation_grade not in ("A", "B", "C"):
-                    evaluation_grade = None
+                evaluation_grade = normalize_workout_grade(
+                    tds[5].get_text(strip=True), race_id=race_id, horse_number=horse_number)
 
                 if not horse_id:
                     continue
@@ -1060,17 +1077,20 @@ class NetkeibaScraper:
                 # 馬マスター。#90: INSERT OR IGNORE だと #85 修正前(EUC-JP)に登録された
                 # 文字化け馬名 (U+FFFD 含む) が上書きされず残る → 化け名なら正しい名で自己修復。
                 if r.get("horse_id"):
-                    conn.execute("""
-                        INSERT INTO horses (horse_id, horse_name, sex)
-                        VALUES (?, ?, ?)
+                    # 生年は horse_id 先頭4桁 (NULL の時だけ埋める。既存値は上書きしない)
+                    conn.execute(f"""
+                        INSERT INTO horses (horse_id, horse_name, sex, birth_year)
+                        VALUES (?, ?, ?, ?)
                         ON CONFLICT(horse_id) DO UPDATE SET
                             horse_name = CASE
                                 WHEN (horses.horse_name IS NULL OR horses.horse_name = ''
                                       OR horses.horse_name LIKE '%'||CHAR(65533)||'%')
                                      AND excluded.horse_name != ''
                                      AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
-                                THEN excluded.horse_name ELSE horses.horse_name END
-                    """, (r["horse_id"], r.get("horse_name", ""), r.get("sex", "")))
+                                THEN excluded.horse_name ELSE horses.horse_name END,
+                            {BIRTH_YEAR_FILL_SQL}
+                    """, (r["horse_id"], r.get("horse_name", ""), r.get("sex", ""),
+                          birth_year_from_horse_id(r["horse_id"])))
 
                 # 騎手マスター
                 if r.get("jockey_id"):

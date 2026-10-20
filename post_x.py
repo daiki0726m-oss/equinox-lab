@@ -2733,17 +2733,21 @@ def fetch_weekend_races():
                                       entry.get('post_position', 0),
                                       entry.get('impost', 57.0)))
                                 # horsesテーブルにも登録。#90: 化け名(U+FFFD)なら正しい名で自己修復。
-                                conn.execute("""
-                                    INSERT INTO horses (horse_id, horse_name)
-                                    VALUES (?,?)
+                                # 生年は horse_id 先頭4桁。既存行は NULL の時だけ埋める
+                                from database import birth_year_from_horse_id, BIRTH_YEAR_FILL_SQL
+                                conn.execute(f"""
+                                    INSERT INTO horses (horse_id, horse_name, birth_year)
+                                    VALUES (?,?,?)
                                     ON CONFLICT(horse_id) DO UPDATE SET
                                         horse_name = CASE
                                             WHEN (horses.horse_name IS NULL OR horses.horse_name = ''
                                                   OR horses.horse_name LIKE '%'||CHAR(65533)||'%')
                                                  AND excluded.horse_name != ''
                                                  AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
-                                            THEN excluded.horse_name ELSE horses.horse_name END
-                                """, (entry['horse_id'], entry.get('horse_name', '')))
+                                            THEN excluded.horse_name ELSE horses.horse_name END,
+                                        {BIRTH_YEAR_FILL_SQL}
+                                """, (entry['horse_id'], entry.get('horse_name', ''),
+                                      birth_year_from_horse_id(entry['horse_id'])))
 
                         registered += 1
                         print(f"  ✅ {data['race_name']} ({data['venue']}{data['surface']}{data['distance']}m)")

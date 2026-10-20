@@ -119,7 +119,7 @@ jobs:
                   WHERE ra.race_date >= date('now')
                     AND ra.race_date <= date('now', '+10 days')
                     AND h.horse_id IS NOT NULL AND h.horse_id != ''
-                    AND (h.sire IS NULL OR h.sire = '')
+                    AND (h.sire IS NULL OR h.sire = '' OR h.dam IS NULL OR h.dam = '')
               ''').fetchall()
               horse_ids = [r['horse_id'] for r in rows]
 
@@ -131,10 +131,11 @@ jobs:
               for i, hid in enumerate(horse_ids):
                   p = collect_pedigree.scrape_horse_pedigree(sess, hid)
                   if p:
+                      # #167: 旧実装は sire/damsire だけ書いて母 (dam) を書き忘れていた
+                      # (2026年の出走馬の 25-31% で母が空だった原因の一つ)。
+                      # save_pedigree は父・母・母父を「空欄だけ」埋める (既存の表記は変えない)。
                       with get_db() as conn:
-                          conn.execute('UPDATE horses SET sire=?, damsire=? WHERE horse_id=?',
-                                       (p['sire'], p['damsire'], hid))
-                      ok += 1
+                          ok += collect_pedigree.save_pedigree(conn, hid, p)
                   if (i+1) % 20 == 0:
                       print(f'  [{i+1}/{len(horse_ids)}] OK:{ok}')
                   time.sleep(0.6)

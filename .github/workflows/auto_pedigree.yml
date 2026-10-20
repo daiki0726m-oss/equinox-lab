@@ -135,5 +135,8 @@ jobs:
           total = c.fetchone()[0]
           c.execute(\"SELECT COUNT(*) FROM horses WHERE sire IS NULL OR sire=''\")
           missing = c.fetchone()[0]
-          print(f'📊 全馬: {total}頭 / 血統未取得: {missing}頭 ({missing/total*100:.0f}%)')
+          # 父だけ数えていたため、母 (dam) の空欄 (新しい馬ほど多い) が報告に出ていなかった
+          c.execute(\"SELECT COUNT(*) FROM horses WHERE dam IS NULL OR dam=''\")
+          dam_missing = c.fetchone()[0]
+          print(f'📊 全馬: {total}頭 / 父が空: {missing}頭 ({missing/total*100:.0f}%) / 母が空: {dam_missing}頭 ({dam_missing/total*100:.0f}%)')
           "

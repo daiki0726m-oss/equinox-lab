@@ -80,6 +80,46 @@ FEATS = [
 ]
 NAMES = {c: n for c, n, _, _, _ in FEATS}
 
+# ── 連続項目 (v2, 2026-10) ──────────────────────────────────────────────
+# 区分点 (上の FEATS) の「近5走の平均着順」「自己ベスト着差」を外し (model["drop"])、
+# 代わりにレース内 z スコア × 係数 (model["lin"]) で足す項目。
+# 値は ml/features.recent_form_features (学習側 fast_train と同じ関数) が作る。
+#   form_cls5  近5走の 着順/18 − 0.06×(その走の格 − 今回の格) の平均 (小さいほど良い)
+#   tb_min5    近5走の 勝ち馬とのタイム差 (秒, 0〜3) の最小       (小さいほど良い)
+# 学習外 (A=2025-05-11〜12-31 で当てはめ → B=2026-01-01〜10-18 の 2,700R で評価、現行比):
+#   印5頭の平均捕捉 +0.024頭 [+0.008,+0.039] / 完全捕捉 +1.4pt [+0.4,+2.4] / ◎3着内 +0.8pt [-0.2,+1.8]
+# 内訳: 格の補正を外した版 (近5走の着順の連続値化・タイム差・初出走の減点だけ) で既に
+#   +0.018 [+0.003,+0.033]。格の補正の上乗せは +0.006 [-0.005,+0.016] で区間が0を跨ぐ
+#   (◎3着内は +0.8pt [-0.1,+1.6])。= 主効果は格の補正以外。格の補正は方向は正だが
+#   単独では有意と言えない (2026-10-19 再計測。作業前の想定「格の補正が本体」とは異なる)。
+# ⚠️ ◎ が人気馬に寄る (同じ評価 B、確定人気で数えた記述統計):
+#   ◎=1番人気 52.2%→55.3% (+3.1pt [+1.9,+4.3]) / ◎の平均人気 2.02→1.87。#147 で点数表を入れた時に
+#   1.45→1.99 へ下げた ◎ の平均人気を約3割戻す (新馬・未勝利でも、それ以外でも同じ方向)。
+#   ユーザー要望「人気だから9割はやめたい」(#147)「人気を弱くして」(#108) と逆向きなので、出荷は製品判断。
+#   近走の着順を使う版ほど人気に寄る。人気への寄りが最も小さい別構成は「タイム差だけ」
+#   (scripts/train_scorecard.py --mode lin --lin tb_min5 --drop margin_best = 近5走の平均着順の区分点は残す):
+#   捕捉 +0.018 [+0.005,+0.032] / 完全捕捉 +1.2pt [+0.3,+2.1] / ◎3着内 -0.3pt [-1.1,+0.5] /
+#   ◎=1番人気 +1.1pt [+0.3,+1.9] (うち新馬・未勝利以外は +0.3pt [-0.9,+1.3] で区間が0を跨ぐ)。
+# ⚠️ 上の数値は A だけで当てはめた版の学習外評価。出荷した models/scorecard.pkl は
+#   2025-05-11〜2026-10-18 の全期間で当てはめ直したもの (lin_fit_until) で、出荷版そのものには
+#   学習外の評価期間が無い。印を採点するバックテストは scripts/oos_window.get_oos_start() の既定
+#   (= 2026-10-19 以降) だけを使うこと。
+# (列名, 表示名, 良い方向)
+LIN_FEATS = [
+    # 表示名はダッシュボードの内訳欄 (約6文字、480px 以下は約5文字) に収まる長さにする。
+    # 長い名前は後半が「…」で切れて順位が読めなかった (#167 最終レビュー、実測)。
+    ("form_cls5", "近走の着順", "lo"),      # 格 (クラス) を考慮した近5走の着順
+    ("tb_min5",   "勝ち馬との差", "lo"),    # 近5走の勝ち馬とのタイム差の最小
+]
+LIN_NAMES = {c: n for c, n, _ in LIN_FEATS}
+LIN_DIR = {c: d for c, _, d in LIN_FEATS}
+# 過去の確定走が DB に1つも無い馬への専用の減点 (model["debut_penalty"])。
+# DB は JRA の走だけなので、地方・海外からの転入初戦もここに入る → 「デビュー戦」ではなく
+# 「JRA初出走」と表示する (転入馬にデビュー戦と書くと事実と違う)。
+DEBUT_COL = "has_past_runs"
+DEBUT_LABEL = "JRA初出走"
+DEBUT_BIN = "データなし"
+
 # 期間で係数の符号が反転する = 説明として出す資格がない項目は表示から除く
 # (検証で「同条件実績・馬番の内外・道悪実績・当コース実績」が不安定と判明)
 UNSTABLE_FOR_DISPLAY = {
@@ -133,10 +173,13 @@ def _rel_rank(df, col, direction, zero_na):
     return tmp.groupby(df["race_id"]).rank(ascending=(direction == "lo"), method="min")
 
 
-def label(df, spec):
-    """各行を「項目=区分」のラベルに変換する。spec は学習時に決めた区切り。"""
+def label(df, spec, skip=()):
+    """各行を「項目=区分」のラベルに変換する。spec は学習時に決めた区切り。
+    skip: 使わない項目 (model["drop"])。その列が df に無くても落ちない。"""
     out = {}
     for col, _, direction, zero_na, is_rel in FEATS:
+        if col in skip:
+            continue
         if is_rel:
             r = _rel_rank(df, col, direction, zero_na)
             lab = pd.Series(NODATA, index=df.index, dtype=object)
@@ -163,6 +206,28 @@ def load_model(path=None):
         return pickle.load(f)
 
 
+def required_columns(model):
+    """このモデルで点数を出すのに df に必要な列 (race_id は別途)。"""
+    drop = set((model or {}).get("drop") or [])
+    need = [c for c, *_ in FEATS if c not in drop]
+    need += list(((model or {}).get("lin") or {}).keys())
+    if (model or {}).get("debut_penalty"):
+        need.append(DEBUT_COL)
+    return need
+
+
+def race_z(values, race_ids, direction="hi"):
+    """レース内 z スコア (良い方向が正)。データ無し (NaN) と、レース内で
+    ばらつきが無い・1頭しかデータが無い場合は 0 (= レース平均扱い)。
+    標準偏差は不偏 (ddof=1) — 当てはめ (scripts/train_scorecard.py) と同じ。"""
+    v = pd.to_numeric(pd.Series(values), errors="coerce").astype(float)
+    v.index = range(len(v))
+    s = -v if direction == "lo" else v
+    g = s.groupby(np.asarray(race_ids))
+    z = (s - g.transform("mean")) / g.transform("std").replace(0, np.nan)
+    return z.fillna(0.0).to_numpy(float)
+
+
 def score_with_reasons(df, model, top_n=4):
     """点数と、その内訳を返す。
 
@@ -170,12 +235,22 @@ def score_with_reasons(df, model, top_n=4):
     内訳は [{'label':'騎手の複勝率', 'bin':'2-3位', 'points':3.9}, ...] を
     絶対値の大きい順に top_n 件。**表示不可の項目は除外**するが、
     点数そのものは全項目の合計 (内訳の和 ≠ 合計 になるのは意図通り)。
+
+    v2 のモデル (model に "lin" がある) では:
+      - model["drop"] の区分項目は点を足さない (内訳にも出さない)
+      - model["lin"] の連続項目は「レース内 z (データ無し=0) × 係数」を足す
+      - model["debut_penalty"] を過去走ゼロ (has_past_runs == 0) の馬に足す
+    係数は区分点と同じ単位 (log-odds) に揃えてあるので、点数のスケール (×10) は従来どおり。
+    "lin" が無い古い pkl は従来と完全に同じ計算になる。
     """
     pts, spec = model["pts"], model["spec"]
-    lab = label(df, spec)
+    drop = set(model.get("drop") or [])
+    lab = label(df, spec, skip=drop)
     total = np.zeros(len(df))
     per = [[] for _ in range(len(df))]
     for col, _, _, _, _ in FEATS:
+        if col in drop:
+            continue
         keys = (col + "=" + lab[col].astype(str)).values
         vals = np.array([pts.get(k, 0.0) for k in keys])
         total += vals
@@ -188,5 +263,40 @@ def score_with_reasons(df, model, top_n=4):
             _nb = (len(spec[col]) - 1) if col in spec else None
             per[i].append({"label": NAMES[col], "bin": display_bin(col, _raw, _nb),
                            "points": round(float(v) * 10, 1)})
+
+    lin = model.get("lin") or {}
+    if lin:
+        rid = df["race_id"].to_numpy()
+        for col, coef in lin.items():
+            if col not in LIN_DIR:
+                raise KeyError(f"scorecard: 未知の連続項目 {col} (ml/scorecard.LIN_FEATS に無い)")
+            direction = LIN_DIR[col]
+            raw = pd.to_numeric(df[col], errors="coerce").astype(float)
+            raw.index = range(len(raw))
+            contrib = float(coef) * race_z(raw.to_numpy(), rid, direction)
+            total += contrib
+            rank = raw.groupby(rid).rank(ascending=(direction == "lo"), method="min").to_numpy()
+            for i, v in enumerate(contrib):
+                if abs(v) < 0.02 or not np.isfinite(rank[i]):
+                    continue
+                per[i].append({"label": LIN_NAMES[col], "bin": f"{int(rank[i])}位",
+                               "points": round(float(v) * 10, 1)})
+
+    dp = float(model.get("debut_penalty") or 0.0)
+    if dp:
+        has = pd.to_numeric(df[DEBUT_COL], errors="coerce").fillna(1).to_numpy(float)
+        debut = has == 0
+        # 全頭が初出走のレース (新馬戦など) では減点が全頭に同じ値で乗るだけで順位は
+        # 変わらない。そこで点を引くと全頭に「JRA初出走 −14点」という差のつかない
+        # 理由が並び、合計点も全頭マイナスになって読み違えを招くので、足さない。
+        # (当てはめのソフトマックスもレース内で一定の項は無視するので、係数は同じ)
+        any_past = pd.Series(~debut).groupby(df["race_id"].to_numpy()).transform("any").to_numpy()
+        debut = debut & any_past
+        total += np.where(debut, dp, 0.0)
+        if abs(dp) >= 0.02:
+            for i in np.flatnonzero(debut):
+                per[i].append({"label": DEBUT_LABEL, "bin": DEBUT_BIN,
+                               "points": round(dp * 10, 1)})
+
     reasons = [sorted(p, key=lambda x: -abs(x["points"]))[:top_n] for p in per]
     return total * 10, reasons     # 点数は ×10 して読みやすく

@@ -1090,7 +1090,7 @@ def _morning_sec_pattern(conn, ctx):
 def _morning_sec_age(conn, ctx):
     _t, lines, n = sec_age_pattern(
         conn, ctx["venue"], ctx["surface"], ctx["distance"],
-        grade=ctx["grade"], years=6)
+        grade=ctx["grade"], years=6, race_id=ctx["race_id"])
     if lines and n > 0:
         return _make_section("【馬齢別 複勝率】", lines[:3]), n
     return None, n

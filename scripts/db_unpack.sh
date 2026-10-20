@@ -2,6 +2,10 @@
 # keiba.db.gz (git管理の正本) → keiba.db (作業ファイル) を展開 (#64)
 set -e
 if [ -f keiba.db.gz ]; then
+  # #167: 前のプロセスが接続を閉じずに死ぬと keiba.db-wal / -shm が残る (git 管理外なので
+  #   reset --hard でも消えない)。別の DB の WAL が展開した最新 DB に重なると壊れる
+  #   (最終レビューで再現: malformed、または当て直しが消えた gz が exit 0 で push 対象になる)。
+  rm -f keiba.db-wal keiba.db-shm
   gunzip -c keiba.db.gz > keiba.db
   # 📉 #153 (2026-09-10): db_pack.sh は索引を落として固めている (gz -35%)。
   #   _pack_meta に退避された DDL から元の索引を貼り直す (実測 0.6 秒)。

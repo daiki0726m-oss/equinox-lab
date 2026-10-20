@@ -193,10 +193,14 @@ def get_race_predictions(date_str, model, strategy):
                     ))
                     for e in shutuba.get("entries", []):
                         if e.get("horse_id"):
-                            conn.execute("""
-                                INSERT OR IGNORE INTO horses (horse_id, horse_name, sex)
-                                VALUES (?, ?, ?)
-                            """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", "")))
+                            # 生年は horse_id 先頭4桁。既存行は NULL の時だけ埋める (他の列は従来どおり触らない)
+                            from database import birth_year_from_horse_id, BIRTH_YEAR_FILL_SQL
+                            conn.execute(f"""
+                                INSERT INTO horses (horse_id, horse_name, sex, birth_year)
+                                VALUES (?, ?, ?, ?)
+                                ON CONFLICT(horse_id) DO UPDATE SET {BIRTH_YEAR_FILL_SQL}
+                            """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", ""),
+                                  birth_year_from_horse_id(e["horse_id"])))
                         if e.get("jockey_id"):
                             conn.execute("""
                                 INSERT OR IGNORE INTO jockeys (jockey_id, jockey_name)

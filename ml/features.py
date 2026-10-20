@@ -3,14 +3,233 @@
 オッズリーク排除 + 新特徴量追加 + LambdaRank対応
 """
 
+import math
+import re
+import unicodedata
+
 import numpy as np
 import pandas as pd
 from database import get_db
+from race_utils import is_jump_race
 from analyzers.speed_index import SpeedIndexCalculator
 from analyzers.pedigree import PedigreeAnalyzer
 from analyzers.jockey_trainer import JockeyTrainerAnalyzer
 from analyzers.track_bias import TrackBiasAnalyzer
 from analyzers.pace import PaceAnalyzer
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 学習側 (fast_train.compute_features_fast) と推論側 (FeatureBuilder) が
+# **同じ関数**を呼ぶ共通部品。#128/#133/#134/#136 は「同じ特徴量を2か所に
+# 書いて中身がずれる」ことで起きたので、新しく足す定義は1か所にしか書かない。
+# ══════════════════════════════════════════════════════════════════════
+
+# 着差の言葉 (馬身換算)。数値は従来の値をそのまま使う (読み方の修正だけで、
+# 物差しは変えない)。'大' は netkeiba の「大差」の表記 (DB 6,618件)。
+_MARGIN_WORDS = {"ハナ": 0.02, "アタマ": 0.05, "クビ": 0.15,
+                 "同着": 0.0, "大差": 10.0, "大": 10.0}
+MARGIN_CAP = 10.0          # 1走あたりの上限 (大差 = 10馬身)
+MARGIN_NODATA = 5.0        # 近5走に読める着差が1つも無い時の既定値 (従来どおり)
+_RE_MIXED = re.compile(r"^(\d+)[.\s](\d+)/(\d+)$")   # '1.1/4' '1 1/4' = 1と1/4馬身
+_RE_FRAC = re.compile(r"^(\d+)/(\d+)$")              # '3/4'
+_RE_NUM = re.compile(r"^\d+(?:\.\d+)?$")             # '2' '10'
+
+
+def parse_margin(s):
+    """results.margin (前の馬との着差のテキスト) を馬身に変換する。読めなければ None。
+
+    netkeiba の実表記 (DB の全29種で確認):
+      'クビ' 'ハナ' 'アタマ' / '1/2' '3/4' / '1' '2' … '10' /
+      '1.1/4' '1.1/2' '1.3/4' '2.1/2' '3.1/2' (= 帯分数「1と1/4馬身」) /
+      '大' (= 大差) / '同着' / 'クビ+1/2' '3+ハナ' '1/2+1/2' (= 和) /
+      '1位降着' '2位降着' (= 着差ではない → None) / '' と NULL (= 1着馬 or 取消)
+
+    旧実装は '1.1/4' を「1.1 ÷ 4 = 0.275」と読み、'大' と '+' 連結は None で捨てていた。
+    また学習側では NULL が pandas の NaN で渡り、str(nan)='nan' → float('nan') を着差として
+    採用して margin_avg が NaN になっていた (推論側は None で捨てる = 学習と推論で別物)。
+    実測で着差のある走の約4分の1 (1.1/4 23,219件, 1.1/2 16,348件, 2.1/2 15,912件,
+    1.3/4 12,225件, 3.1/2 8,214件) が 1馬身以上も小さく読まれていた。
+    """
+    if s is None:
+        return None
+    s = unicodedata.normalize("NFKC", str(s)).strip()
+    if not s:
+        return None
+    if "+" in s:
+        parts = [parse_margin(p) for p in s.split("+")]
+        if not parts or any(p is None for p in parts):
+            return None
+        return float(sum(parts))
+    if s in _MARGIN_WORDS:
+        return _MARGIN_WORDS[s]
+    m = _RE_MIXED.match(s)
+    if m:
+        den = float(m.group(3))
+        return float(m.group(1)) + float(m.group(2)) / den if den else None
+    m = _RE_FRAC.match(s)
+    if m:
+        den = float(m.group(2))
+        return float(m.group(1)) / den if den else None
+    if _RE_NUM.match(s):
+        return float(s)
+    return None        # '1位降着' など着差でない表記
+
+
+def margin_stats(runs):
+    """近走の着差 (前の馬との差) の平均と最小。runs は新しい順の (着順, 着差テキスト)。
+
+    1着の走は着差欄が空なので **着順1なら0馬身** として数える
+    (旧実装は空欄を None で捨てていたため、勝ち続けている馬ほど近5走が空になり
+     「データなし = 最悪値 5.0」になっていた)。読めない着差 ('1位降着' 等) は飛ばす。
+    """
+    ms = []
+    for fp, mg in runs:
+        if fp == 1:
+            ms.append(0.0)
+            continue
+        m = parse_margin(mg)
+        if m is None:
+            continue
+        ms.append(min(m, MARGIN_CAP))
+    if not ms:
+        return MARGIN_NODATA, MARGIN_NODATA
+    return sum(ms) / len(ms), min(ms)
+
+
+# race_name から格を読む (grade 列が空の時だけ使う)。'(GI)' '(GIII)' '（G1）' '(JpnI)' 等。
+# III → II → I の順に試す必要は無い (括弧で閉じているので '(GI)' が '(GIII)' に当たらない)。
+_RE_NAME_GRADE = re.compile(r"[(（](?:G|Jpn)(III|II|I|3|2|1)[)）]")
+_NAME_GRADE = {"I": 7, "1": 7, "II": 6, "2": 6, "III": 5, "3": 5}
+_RE_NAME_LISTED = re.compile(r"[(（](?:L|OP)[)）]")
+_NAME_CLASS = (("3勝クラス", 3), ("1600万", 3), ("2勝クラス", 2), ("1000万", 2),
+               ("1勝クラス", 1), ("500万", 1))
+
+
+def class_level(grade, race_name):
+    """レースの格 (G1=7, G2=6, G3=5, OP/L=4, 3勝=3, 2勝=2, 1勝=1, 新馬・未勝利=0)。
+    障害・不明は None。races.grade の実値は 'G1' 'G2' 'G3' 'OP' '１勝クラス'(全角)
+    '２勝クラス' '３勝クラス' '未勝利' '新馬' と空文字 (31件) の10種 (2026-10 時点の DB)。
+    障害は race_utils.is_jump_race も併用する (「中山グランドJ」は grade='OP' で入っている)。
+
+    grade が空の時は race_name から読む。grade 空の行は「過去走の補完で結果を1頭分だけ
+    取り込んだ JRA のレース」(例: '天皇賞(秋)(GI)' 'チャレンジC(GIII)' '日本海S(3勝クラス)'
+    '3歳以上1勝クラス') と地方のレース ('C12組' 等 = JRA の格に対応しないので None)。
+    名前を読まないと G1 の走りが「格不明 = 今回と同じ格」扱いになっていた。
+    """
+    g = grade if isinstance(grade, str) else ""
+    n = race_name if isinstance(race_name, str) else ""
+    if ("障害" in n or "ジャンプ" in n or n.endswith("JS") or "J.G" in g or "JG" in g
+            or is_jump_race(n)):
+        return None
+    if g == "G1":
+        return 7
+    if g == "G2":
+        return 6
+    if g == "G3":
+        return 5
+    if g in ("OP", "L"):
+        return 4
+    for k, v in (("3勝", 3), ("３勝", 3), ("2勝", 2), ("２勝", 2), ("1勝", 1), ("１勝", 1)):
+        if k in g:
+            return v
+    if "未勝利" in g or "新馬" in g:
+        return 0
+    # ── grade 列から決まらない時だけ race_name から読む ──
+    nn = unicodedata.normalize("NFKC", n)
+    m = _RE_NAME_GRADE.search(nn)
+    if m:
+        return _NAME_GRADE[m.group(1)]
+    if _RE_NAME_LISTED.search(nn):
+        return 4
+    for k, v in _NAME_CLASS:
+        if k in nn:
+            return v
+    if "未勝利" in nn or "新馬" in nn:
+        return 0
+    return None
+
+
+FORM_CLASS_COEF = 0.06     # 1クラス上の着順を何ポイント良く見るか (着順/18 の単位)
+TIMEGAP_CAP = 3.0          # 勝ち馬とのタイム差の上限 (秒)
+FORM_WINDOW = 5            # 近何走を見るか
+RECENT_FORM_COLS = ("form_cls5", "tb_min5", "has_past_runs")
+
+
+def recent_form_features(past_runs, cur_level):
+    """点数表 (ml/scorecard.py) の連続項目。LGB の特徴量リストには入れない。
+
+    past_runs: このレースより前の確定走 (着順>0) を **新しい順** に並べた dict の列。
+               使うキー: finish_position / finish_time_seconds / win_time / class_level
+    cur_level: 今回のレースの class_level() (不明なら None)
+
+      form_cls5     近5走の平均 of (着順/18 − 0.06 × (その走の格 − 今回の格))。小さいほど良い。
+                    格上で走った着順を良く、格下で走った着順を割り引く。
+                    その走の格が不明 (障害・地方など) ならクラス差0 (= 今回と同じ格とみなす)。
+                    **今回の格が不明 (障害戦など) なら全走でクラス差0** (= 格の補正なし)。
+                    旧版は「今回=0 (未勝利)」として補正していたが、そうすると格の分かる走だけが
+                    未勝利基準で補正され、格不明の走は補正されない — 同じレースの中で物差しが
+                    混ざる。今回の格が分からない以上、どの走とも比べられないので補正しない。
+                    (今回の格はレース内の全馬に同じ定数として効くだけなので、レース内 z を
+                     取る点数表では「格の分かる走 vs 分からない走」の扱いだけが結果を変える)
+      tb_min5       近5走の「勝ち馬とのタイム差」(秒, 0〜3秒に切る) の最小。小さいほど良い。
+                    勝ち馬のタイム = そのレースの **1着馬** のタイム (winner_times)。
+                    自分のタイムか勝ち馬のタイムが 0/欠けの走は計算から除く
+                    (1着の行が無いレース = 地方戦で JRA 所属馬の行しか無い・結果の欠けた
+                     レースでは勝ち馬のタイムが分からないので除く。「記録のある最速」で代用すると
+                     負けた馬が 0秒差 = 勝ち扱いになる)。
+      has_past_runs 過去の確定走が1つでもあれば 1、無ければ 0 (JRA初出走)。
+    データが無い項目は NaN (0 は「勝った」と区別できないので使わない)。
+    """
+    runs = list(past_runs or [])[:FORM_WINDOW]
+    if not runs:
+        return {"form_cls5": float("nan"), "tb_min5": float("nan"), "has_past_runs": 0}
+    cur = None
+    if cur_level is not None and not (isinstance(cur_level, float) and math.isnan(cur_level)):
+        cur = float(cur_level)
+    vals, tbs = [], []
+    for r in runs:
+        fp = float(r.get("finish_position") or 0)
+        lp = r.get("class_level")
+        if cur is None or lp is None or (isinstance(lp, float) and math.isnan(lp)):
+            dd = 0.0
+        else:
+            dd = float(lp) - cur
+        vals.append(fp / 18.0 - FORM_CLASS_COEF * dd)
+        ft, wt = r.get("finish_time_seconds"), r.get("win_time")
+        try:
+            ft, wt = float(ft or 0), float(wt or 0)
+        except (TypeError, ValueError):
+            ft, wt = 0.0, 0.0
+        if ft > 0 and wt > 0 and not (math.isnan(ft) or math.isnan(wt)):
+            # タイムは 0.1秒刻みなので、引き算の浮動小数の誤差 (1.2999999…) を丸めて
+            # 同タイム差の馬がレース内順位で同順位になるようにする
+            tbs.append(round(min(max(ft - wt, 0.0), TIMEGAP_CAP), 3))
+    return {"form_cls5": sum(vals) / len(vals),
+            "tb_min5": min(tbs) if tbs else float("nan"),
+            "has_past_runs": 1}
+
+
+def winner_times(rows):
+    """各レースの勝ち馬のタイム (秒) を {race_id: time} で返す。学習側・推論側の共通定義。
+
+    rows: (race_id, finish_position, finish_time_seconds) の列 (results の行)。
+    勝ち馬 = 着順1 (同着の1着が2頭なら速い方 = 同タイム)。1着の行が無い・1着のタイムが
+    0/欠けのレースは辞書に入れない (= 勝ち馬のタイム不明 → その走はタイム差の計算から除く)。
+    1着の行があるレースでは「記録のある最速」と全件一致することを DB で確認済み
+    (ずれるのは 1着の行が無いレースだけ)。
+    """
+    out = {}
+    for rid, fp, ft in rows:
+        try:
+            fp = int(fp)
+            ft = float(ft)
+        except (TypeError, ValueError):
+            continue
+        if fp != 1 or not (ft > 0) or math.isnan(ft):
+            continue
+        if rid not in out or ft < out[rid]:
+            out[rid] = ft
+    return out
 
 
 class FeatureBuilder:
@@ -187,9 +406,13 @@ class FeatureBuilder:
         features["dist_scope"] = dist_stats.get("dist_scope", 2)
 
         # ── 13. v5新規: 着差 (前走の走行品質) ──
-        margin_stats = self._get_margin_avg(horse_id, race_date, n=5)
-        features["margin_avg"] = margin_stats["margin_avg"]
-        features["margin_best"] = margin_stats["margin_best"]
+        _mg = self._get_margin_avg(horse_id, race_date, n=5, race_id=race_id)
+        features["margin_avg"] = _mg["margin_avg"]
+        features["margin_best"] = _mg["margin_best"]
+
+        # ── 13b. 点数表の連続項目 (LGB の get_feature_columns には入れない) ──
+        # 格を考慮した近5走の着順 / 勝ち馬とのタイム差 / 過去走の有無。
+        features.update(self._get_recent_form(horse_id, race_id, race_date))
 
         # ── 14. v5新規: 同コース過去成績 (course familiarity) ──
         same_course = self._get_same_course_stats(horse_id, venue, surface, distance, race_date)
@@ -507,7 +730,10 @@ class FeatureBuilder:
         return [row["passing_order"] for row in rows]
 
     def _get_rest_days(self, horse_id, race_date=None):
-        """前走からの休養日数を取得"""
+        """前走からの休養日数を取得。前走 = race_date より前の **確定走** (着順>0)。
+        学習側 (fast_train の past_races) と同じ。旧実装は着順で絞らず、取消の走や
+        同じ週末に重複登録された別レース (着順0) を「前走」として休養1日と数えていた
+        (例: 馬2023102661 は 10/25 の予測で 10/24 精進湖特別の登録を前走にしていた)。"""
         with get_db() as conn:
             if race_date:
                 rows = conn.execute("""
@@ -515,6 +741,7 @@ class FeatureBuilder:
                     FROM results r
                     JOIN races ra ON r.race_id = ra.race_id
                     WHERE r.horse_id = ?
+                      AND r.finish_position > 0
                       AND ra.race_date < ?
                     ORDER BY ra.race_date DESC
                     LIMIT 1
@@ -525,6 +752,7 @@ class FeatureBuilder:
                     FROM results r
                     JOIN races ra ON r.race_id = ra.race_id
                     WHERE r.horse_id = ?
+                      AND r.finish_position > 0
                     ORDER BY ra.race_date DESC
                     LIMIT 2
                 """, (horse_id,)).fetchall()
@@ -875,67 +1103,89 @@ class FeatureBuilder:
 
     @staticmethod
     def _parse_margin(margin_str):
-        """results.margin (テキスト) を着差(馬身)に変換。
-        例: 'クビ'→0.15, 'アタマ'→0.05, 'ハナ'→0.02, '1/2'→0.5,
-             '3/4'→0.75, '1'→1.0, '1 1/2'→1.5, '大差'→10.0
-        """
-        if not margin_str:
-            return None
-        s = str(margin_str).strip()
-        if not s:
-            return None
-        japanese_map = {'ハナ': 0.02, 'アタマ': 0.05, 'クビ': 0.15,
-                        '同着': 0.0, '大差': 10.0}
-        if s in japanese_map:
-            return japanese_map[s]
-        # 1 1/2 のような表記
-        try:
-            if ' ' in s:
-                parts = s.split()
-                base = float(parts[0])
-                if '/' in parts[1]:
-                    num, den = parts[1].split('/')
-                    return base + float(num) / float(den)
-                return base
-            if '/' in s:
-                num, den = s.split('/')
-                return float(num) / float(den)
-            return float(s)
-        except (ValueError, IndexError):
-            return None
+        """results.margin (テキスト) を着差(馬身)に変換。実体はモジュール関数 parse_margin
+        (学習側 fast_train と同じ関数を呼ぶ)。'1.1/4'→1.25, '大'→10.0, 'クビ+1/2'→0.65。"""
+        return parse_margin(margin_str)
 
-    def _get_margin_avg(self, horse_id, race_date=None, n=5):
-        """直近 N 走の平均着差 (1着馬からの差・馬身)。
-        着差が小さいほど高品質な走り。"""
+    @staticmethod
+    def _resolve_race_date(race_id=None, race_date=None):
+        """過去走を切る基準日。race_date が空なら races.race_date を引き直し、それでも
+        空なら None (= 呼び出し側は「過去走なし」として扱う)。
+
+        日付が空のまま `race_date < ?` を外すと、その馬の全確定走 (対象レース自身や
+        その後の走) が入る。学習側 (fast_train) は race_date='' だと `'' < ''` が常に偽で
+        過去走ゼロになるので、学習と推論で別物になる (#85/#106 で空日付のレースが実在)。
+        """
+        if race_date:
+            return race_date
+        if race_id:
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT race_date FROM races WHERE race_id = ?", (race_id,)
+                ).fetchone()
+            if row and row["race_date"]:
+                return row["race_date"]
+        return None
+
+    def _get_margin_avg(self, horse_id, race_date=None, n=5, race_id=None):
+        """直近 N 走の着差 (前の馬との差・馬身) の平均と最小。
+        着差が小さいほど高品質な走り。計算は margin_stats (学習側と共通)。
+        基準日が決まらない時は過去走なし (学習側と同じ: 既定値 5.0)。"""
+        race_date = self._resolve_race_date(race_id, race_date)
+        if not horse_id or not race_date:
+            avg, best = margin_stats([])
+            return {'margin_avg': avg, 'margin_best': best}
         with get_db() as conn:
-            date_filter = "AND ra.race_date < ?" if race_date else ""
-            params = (horse_id,) + ((race_date,) if race_date else ())
-            rows = conn.execute(f"""
+            rows = conn.execute("""
                 SELECT r.margin, r.finish_position
                 FROM results r
                 JOIN races ra ON r.race_id = ra.race_id
-                WHERE r.horse_id = ? AND r.finish_position > 0 {date_filter}
+                WHERE r.horse_id = ? AND r.finish_position > 0 AND ra.race_date < ?
                 ORDER BY ra.race_date DESC
                 LIMIT ?
-            """, params + (n,)).fetchall()
-        if not rows:
-            return {'margin_avg': 5.0, 'margin_best': 5.0}
-        margins = []
-        for r in rows:
-            m = self._parse_margin(r['margin'])
-            if m is None:
-                continue
-            # 1着馬は margin が空のことが多い → 0 として扱う
-            if r['finish_position'] == 1:
-                margins.append(0.0)
-            else:
-                margins.append(min(m, 10.0))
-        if not margins:
-            return {'margin_avg': 5.0, 'margin_best': 5.0}
-        return {
-            'margin_avg': sum(margins) / len(margins),
-            'margin_best': min(margins),
-        }
+            """, (horse_id, race_date, n)).fetchall()
+        avg, best = margin_stats([(r['finish_position'], r['margin']) for r in rows])
+        return {'margin_avg': avg, 'margin_best': best}
+
+    def _get_recent_form(self, horse_id, race_id=None, race_date=None):
+        """点数表の連続項目 (form_cls5 / tb_min5 / has_past_runs)。
+        定義は recent_form_features / winner_times (学習側 fast_train と共通)。
+        過去走は race_date より前の確定走だけ (当日の他レース・当該レースは混ぜない)。
+        基準日が決まらない時は過去走なし (学習側と同じ)。"""
+        cur_level = None
+        if race_id:
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT grade, race_name FROM races WHERE race_id = ?", (race_id,)
+                ).fetchone()
+            if row:
+                cur_level = class_level(row["grade"], row["race_name"])
+        race_date = self._resolve_race_date(race_id, race_date)
+        if not horse_id or not race_date:
+            return recent_form_features([], cur_level)
+        with get_db() as conn:
+            rows = conn.execute("""
+                SELECT r.race_id, r.finish_position, r.finish_time_seconds,
+                       ra.grade, ra.race_name
+                FROM results r
+                JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.horse_id = ? AND r.finish_position > 0 AND ra.race_date < ?
+                ORDER BY ra.race_date DESC
+                LIMIT ?
+            """, (horse_id, race_date, FORM_WINDOW)).fetchall()
+            wt = {}
+            rids = sorted({r["race_id"] for r in rows})
+            if rids:
+                q = ",".join("?" * len(rids))
+                # 勝ち馬のタイムは共通関数 winner_times で決める (定義を SQL に書かない)
+                wt = winner_times(conn.execute(
+                    f"SELECT race_id, finish_position, finish_time_seconds FROM results "
+                    f"WHERE race_id IN ({q})", rids).fetchall())
+        runs = [{"finish_position": r["finish_position"],
+                 "finish_time_seconds": r["finish_time_seconds"],
+                 "win_time": wt.get(r["race_id"]),
+                 "class_level": class_level(r["grade"], r["race_name"])} for r in rows]
+        return recent_form_features(runs, cur_level)
 
     def _get_same_course_stats(self, horse_id, venue, surface, distance, race_date=None):
         """同馬の同コース(venue+surface+distance) 過去成績。"""
