@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-10-19T17:52:13.005456+09:00",
+ "generated_at": "2026-10-20T09:30:27.148925+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -218,16 +218,16 @@
  },
  "bet_gate": {
   "available": true,
-  "n": 81,
+  "n": 69,
   "target_block_rate": {
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
-  "model_deployed_at": "2026-10-05 19:05:34",
-  "window_matches_model": true,
+  "model_deployed_at": "2026-10-19 17:52:32",
+  "window_matches_model": false,
   "thresholds": {
-   "top_prob": 0.167,
-   "top3_sum": 0.413
+   "top_prob": 0.1619,
+   "top3_sum": 0.412
   }
  }
 }
