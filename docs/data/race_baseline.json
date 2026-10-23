@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-10-20T09:30:27.148925+09:00",
+ "generated_at": "2026-10-24T03:05:46.601232+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -200,7 +200,7 @@
  },
  "confidence": {
   "available": true,
-  "n": 220,
+  "n": 222,
   "sample": "点数表 (現行)",
   "target_mix": {
    "S": 0.18,
@@ -212,22 +212,22 @@
   "thresholds": {
    "S": 29.9,
    "A": 21.4,
-   "B": 13.6,
-   "C": 8.9
+   "B": 13.5,
+   "C": 9.2
   }
  },
  "bet_gate": {
   "available": true,
-  "n": 69,
+  "n": 71,
   "target_block_rate": {
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
-  "model_deployed_at": "2026-10-19 17:52:32",
+  "model_deployed_at": "2026-10-20 09:30:46",
   "window_matches_model": false,
   "thresholds": {
-   "top_prob": 0.1619,
-   "top3_sum": 0.412
+   "top_prob": 0.1727,
+   "top3_sum": 0.4186
   }
  }
 }
