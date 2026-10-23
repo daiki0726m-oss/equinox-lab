@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-10-24T03:05:46.601232+09:00",
+ "generated_at": "2026-10-24T06:43:17.605058+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -210,10 +210,10 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 29.9,
-   "A": 21.4,
-   "B": 13.5,
-   "C": 9.2
+   "S": 30.4,
+   "A": 21.3,
+   "B": 13.4,
+   "C": 9.1
   }
  },
  "bet_gate": {
@@ -226,8 +226,8 @@
   "model_deployed_at": "2026-10-20 09:30:46",
   "window_matches_model": false,
   "thresholds": {
-   "top_prob": 0.1727,
-   "top3_sum": 0.4186
+   "top_prob": 0.1753,
+   "top3_sum": 0.4213
   }
  }
 }
