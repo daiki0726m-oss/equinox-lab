@@ -2798,5 +2798,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18110869736351624",
+  "posted_at": "2026-10-25T10:24:28.415751+09:00",
+  "slot": "post_predict",
+  "pattern": "transparency",
+  "race_id": "202608040911",
+  "race_name": "菊花賞",
+  "chunk": 0,
+  "chars": 158
  }
 ]
