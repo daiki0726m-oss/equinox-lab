@@ -16,7 +16,8 @@ rank 系 (model_rank/top3/win) とは別の日付まで学習・当てはめさ�
 train_boundary.json は rank 系しか記録していなかった。点数表を新しい日付で
 当てはめ直した瞬間に、ここが黙って楽観的な窓を返すことになる。
 → 窓の開始は「rank 系の学習境界」と「点数表の学習・当てはめ境界
-   (train_until と v2 の lin_fit_until の遅い方)」の **遅い方** の翌日にする。
+   (train_until / v3 の pts_fit_until と lin_fit_until / V2d 基準表のカットオフ の最も遅い日、#168)」
+   の **遅い方** の翌日にする。
 
 ただし点数表を使わない (rank 系のモデルだけを採点する) バックテストまで点数表の境界に
 巻き込むと、点数表を全期間で当てはめ直した瞬間に学習外の期間がゼロになる。
@@ -53,9 +54,25 @@ def _rank_meta():
         return json.load(f)
 
 
+# 点数表 (pkl) が見たデータの最終日を表すキー。v3 (#168 の二段 F2) で pts_fit_until が増えた。
+# 区分点の窓 (pts_fit_until = train_until) と連続項目・芝ダ替わりの窓 (lin_fit_until) の遅い方。
+_SC_DATE_KEYS = ("train_until", "pts_fit_until", "lin_fit_until")
+
+
+def _scorecard_dates(m):
+    """点数表が見た最後の日付の候補 {キー: 日付}。V2d の基準表のカットオフ (si_variant.cutoff、
+    μ̂・κ̂・c を決めたデータの最終日) も含める。"""
+    out = {k: str(m.get(k))[:10] for k in _SC_DATE_KEYS if m.get(k)}
+    sv = m.get("si_variant") or {}
+    if sv.get("cutoff"):
+        out["si_variant.cutoff"] = str(sv["cutoff"])[:10]
+    return out
+
+
 def scorecard_boundary(path=None):
-    """点数表が見た最後の日付 (YYYY-MM-DD)。train_until (区分点の学習) と
-    lin_fit_until (v2 の連続項目の当てはめ) の遅い方。点数表が無ければ None。
+    """点数表が見た最後の日付 (YYYY-MM-DD)。train_until / pts_fit_until (区分点の学習) と
+    lin_fit_until (連続項目・芝ダ替わりの当てはめ) と V2d 基準表のカットオフの最も遅い日。
+    点数表が無ければ None。
 
     pkl が読めない時は例外にする — 黙って None を返すと rank 系の境界だけで
     楽観的な窓を返してしまう (#157 の失敗そのもの)。"""
@@ -64,7 +81,7 @@ def scorecard_boundary(path=None):
         return None
     with open(p, "rb") as f:
         m = pickle.load(f)
-    ds = [str(m.get(k))[:10] for k in ("train_until", "lin_fit_until") if m.get(k)]
+    ds = list(_scorecard_dates(m).values())
     return max(ds) if ds else None
 
 
@@ -148,9 +165,11 @@ def describe(scorecard_path=None, db_path=None):
         with open(p, "rb") as f:
             m = pickle.load(f)
         lines.append(f"  点数表 (印 ◎○▲△△ を決める) の境界: race_date <= {sc}"
-                     f" — 区分点の学習 〜{m.get('train_until', '?')}"
+                     f" — 区分点の学習 {m.get('pts_fit_from', '')}〜{m.get('pts_fit_until') or m.get('train_until', '?')}"
                      + (f" / 連続項目の当てはめ {m.get('lin_fit_from', '?')}〜{m.get('lin_fit_until')}"
-                        if m.get("lin_fit_until") else ""))
+                        if m.get("lin_fit_until") else "")
+                     + (f" / V2d 基準表 〜{(m.get('si_variant') or {}).get('cutoff')}"
+                        if (m.get("si_variant") or {}).get("cutoff") else ""))
         which = "点数表" if _next_day(sc) >= _next_day(meta["train_max_date"]) else "rank系"
         lines.append(f"  → 既定の窓は遅い方 ({which}) の翌日")
     else:

@@ -105,6 +105,17 @@ def _load_scorecard():
         if _SCORECARD:
             print(f"  📋 点数表モデル読込 (学習〜{_SCORECARD.get('train_until')}"
                   f" / 係数{len(_SCORECARD.get('pts', {}))}個)")
+            # #168: V2d (si_avg_v) を使う点数表なのに基準表が無い・壊れている・当てはめ時と違う
+            # → 違う基準表の V2d を黙って使わず、指数の区分だけ現行の si_avg/si_latest で代用する
+            #   (印は点数表のまま。従来ロジック = 市場寄りの pred_top3 には落とさない)。
+            #   毎朝の feature_parity (check_models → check_si_variant) が同じ理由で Issue を立てる。
+            from ml.scorecard import check_si_variant, without_col_map
+            _msg = check_si_variant(_SCORECARD)
+            if _msg:
+                _SCORECARD = without_col_map(_SCORECARD, _msg)
+                print(f"  🚨 点数表: {_msg}")
+                print("  🚨 → 指数の区分は現行の si_avg/si_latest で代用して点数表を使う (要対応: "
+                      "基準表 models/si_variant_table.json と点数表を揃える)")
         else:
             print("  ⚠️ models/scorecard.pkl が無い → 点数表は使えません")
     except Exception as e:
@@ -119,6 +130,7 @@ def _attach_scorecard(pred_df, race_id=None):
     #145: ◎ を「説明できる点数表」から選ぶための土台。
     失敗しても純加算なので既存挙動は壊れない (点数0 = 従来ロジックにフォールバック)。
     """
+    global _SCORECARD
     m = _load_scorecard()
     if not m:
         pred_df["_sc_points"] = 0.0
@@ -130,6 +142,15 @@ def _attach_scorecard(pred_df, race_id=None):
         # 過去走の有無 (has_past_runs) を使う。モデルが実際に使う列だけを要求する。
         need = required_columns(m)
         missing = [c for c in need if c not in pred_df.columns]
+        _cm_targets = set((m.get("col_map") or {}).values())
+        if missing and _cm_targets and set(missing) <= _cm_targets:
+            # #168: V2d の列だけが無い (基準表が途中で読めなくなった等) → 指数の区分を現行の
+            # si_avg/si_latest で代用 (_load_scorecard と同じ扱い)
+            from ml.scorecard import without_col_map
+            _SCORECARD = m = without_col_map(m, f"V2d の列 {sorted(missing)} が作られていない")
+            print(f"  🚨 点数表: V2d の列 {sorted(missing)} が無い → 指数の区分は現行の si_avg/si_latest で代用")
+            need = required_columns(m)
+            missing = [c for c in need if c not in pred_df.columns]
         if missing:
             # #134 の silent 無効化の再発防止 — 黙って0にせず必ず警告する
             print(f"  ⚠️ 点数表: 特徴量 {len(missing)}列が無い ({missing[:3]}...) → 点数0")
@@ -1326,6 +1347,9 @@ def cmd_predict(args):
     # ─── 完了サマリー + sanity check ───
     print("\n" + "="*60)
     print(f"📊 予測完了: 成功 {_predicted_count}/{len(race_ids)} レース")
+    if _SCORECARD and _SCORECARD.get("_degraded"):
+        # #168: 点数表を代用モードで使った (印は点数表のまま、指数の区分だけ現行の si_avg/si_latest)
+        print(f"🚨 点数表は代用モード: {_SCORECARD['_degraded']}")
     if _skipped_races:
         print(f"⚠️  スキップ {len(_skipped_races)} レース:")
         for rid, reason in _skipped_races:

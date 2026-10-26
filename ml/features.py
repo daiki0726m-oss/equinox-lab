@@ -278,6 +278,10 @@ class FeatureBuilder:
         features["si_std"] = si_stats["std"]
         features["si_latest"] = si_stats["latest"]
         features["si_count"] = si_stats["count"]
+        # ── 1b. 点数表専用 (#168): 馬場差補正スピード指数 V2d / 芝ダ替わり ──
+        # 定義は ml/speed_variant (学習側 fast_train と同じ関数)。LGB の列には入れない。
+        features.update(self._get_si_variant(horse_id, race_id, race_date))
+        features.update(self._get_surface_switch(horse_id, race_id, surface, race_date))
 
         # ── 2. 血統系 (3次元) ──
         pedigree = self.pedigree_analyzer.analyze_horse(
@@ -1146,6 +1150,51 @@ class FeatureBuilder:
             """, (horse_id, race_date, n)).fetchall()
         avg, best = margin_stats([(r['finish_position'], r['margin']) for r in rows])
         return {'margin_avg': avg, 'margin_best': best}
+
+    def _get_si_variant(self, horse_id, race_id=None, race_date=None):
+        """si_avg_v / si_latest_v / si_v_nfb (ml/speed_variant)。基準表が無ければ列を作らない
+        (学習側 fast_train.build_si_variant と同じ扱い)。"""
+        from ml import speed_variant as sv
+        try:
+            table = sv.load_table()
+        except Exception as e:
+            # 基準表が壊れている (版・指紋の不一致) → 列を作らない。点数表が V2d を要求していれば
+            # predict._attach_scorecard が「列が無い → 点数0」と警告し、check_si_variant が 🚨 を出す。
+            if not getattr(self, "_sv_warned", False):
+                print(f"  🚨 V2d の基準表が読めない ({e}) → si_avg_v 等を作らない")
+                self._sv_warned = True
+            return {}
+        if table is None:
+            return {}
+        if getattr(self, "_sv", None) is None or self._sv.table is not table:
+            self._sv = sv.DbSiVariant(table, get_db)
+        return self._sv.row_features(horse_id, self._resolve_race_date(race_id, race_date))
+
+    def _get_surface_switch(self, horse_id, race_id=None, surface=None, race_date=None):
+        """sf_first_switch / sf_other_share5 (ml/speed_variant.surface_switch_features)。
+        過去走は race_date より前の確定走 (着順>0) を新しい順に全部 (初替わりの判定に全走が要る)。"""
+        from ml import speed_variant as sv
+        cur_jump = False
+        if race_id:
+            with get_db() as conn:
+                row = conn.execute("SELECT race_name, surface FROM races WHERE race_id = ?",
+                                   (race_id,)).fetchone()
+            if row:
+                cur_jump = is_jump_race(row["race_name"] or "")
+                if not surface:
+                    surface = row["surface"]
+        race_date = self._resolve_race_date(race_id, race_date)
+        if not horse_id or not race_date:
+            return sv.surface_switch_features([], surface, cur_jump)
+        with get_db() as conn:
+            rows = conn.execute("""
+                SELECT ra.surface, ra.race_name
+                FROM results r JOIN races ra ON r.race_id = ra.race_id
+                WHERE r.horse_id = ? AND r.finish_position > 0 AND ra.race_date < ?
+                ORDER BY ra.race_date DESC
+            """, (horse_id, race_date)).fetchall()
+        past = [{"surface": r["surface"], "is_jump": is_jump_race(r["race_name"] or "")} for r in rows]
+        return sv.surface_switch_features(past, surface, cur_jump)
 
     def _get_recent_form(self, horse_id, race_id=None, race_date=None):
         """点数表の連続項目 (form_cls5 / tb_min5 / has_past_runs)。

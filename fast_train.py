@@ -20,6 +20,10 @@ from database import init_db, get_db
 # 2か所に書くと中身がずれる (#128/#133/#134/#136) ため、定義は ml/features.py の1か所だけ。
 from ml.features import (margin_stats, class_level, recent_form_features,  # noqa: E402
                          winner_times)
+# 点数表専用の馬場差補正スピード指数 (V2d) と芝ダ替わりの項目 (#168)。
+# 推論側 (ml/features.FeatureBuilder) と **同じ関数** を呼ぶ。LGB の特徴量には入れない。
+from ml import speed_variant as _sv  # noqa: E402
+from race_utils import is_jump_race as _is_jump_race  # noqa: E402
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 
@@ -65,6 +69,10 @@ def build_horse_history(results_df, races_df):
         races_df["race_id"], races_df.get("grade", pd.Series([""] * len(races_df))),
         races_df.get("race_name", pd.Series([""] * len(races_df))))}
     res["class_level"] = res["race_id"].map(_lvl)
+    # 芝ダ替わりの項目 (speed_variant.surface_switch_features) 用: その走が障害か
+    _jump = {rid: _is_jump_race(n if isinstance(n, str) else "") for rid, n in zip(
+        races_df["race_id"], races_df.get("race_name", pd.Series([""] * len(races_df))))}
+    res["is_jump"] = res["race_id"].map(_jump).fillna(False)
     if "finish_time_seconds" in results_df.columns:
         _wt = winner_times(zip(results_df["race_id"], results_df["finish_position"],
                                results_df["finish_time_seconds"]))
@@ -511,9 +519,11 @@ def build_speed_index_cache(results_df, races_df):
     si_cache = _SpeedIndexCache(top5)
 
     # 各馬の走破記録 (推論側 get_horse_indices と同じく走破タイム>0 の走)
-    for row in res[["horse_id", "race_date", "finish_time_seconds", "venue", "distance",
+    # race_id は点数表専用の V2d (ml/speed_variant) が走を引くために持つ (現行の指数には使わない)
+    for row in res[["horse_id", "race_id", "race_date", "finish_time_seconds", "venue", "distance",
                     "surface", "track_condition"]].itertuples(index=False):
         si_cache.setdefault(row.horse_id, []).append({
+            "race_id": row.race_id,
             "race_date": row.race_date, "t": row.finish_time_seconds,
             "venue": row.venue, "distance": row.distance, "surface": row.surface,
             "tc": row.track_condition or "良",
@@ -528,16 +538,39 @@ def build_speed_index_cache(results_df, races_df):
     return si_cache
 
 
+def scorecard_extra_features(horse_id, race, past_races, si_runs, si_cache, si_variant):
+    """点数表専用の列 (#168)。compute_features_fast と augment_scorecard_columns が同じ関数を呼ぶ。
+
+    si_runs    : 予想日より前の走 (走破タイム>0) を新しい順に最大5走 (= 現行 si_avg と同じ走)
+    past_races : race_date より前の確定走 (着順>0) を新しい順に
+    si_variant : ml.speed_variant.TrainSiVariant (None なら V2d の列を作らない)
+    """
+    f = {}
+    race_date = race["race_date"]
+    if si_variant is not None:
+        # V2d (作れない走は現行の指数で埋める)
+        f.update(si_variant.row_features(
+            horse_id, si_runs, lambda s, _d=race_date: si_cache.si(s, _d)))
+    # 芝ダ替わり (race_date より前の確定平地走だけ。推論側と同じ関数)
+    _rn = race.get("race_name")
+    f.update(_sv.surface_switch_features(
+        past_races, race.get("surface", ""), _is_jump_race(_rn if isinstance(_rn, str) else "")))
+    return f
+
+
 def compute_features_fast(race, race_results, horse_history, jockey_stats,
                           trainer_stats, combo_stats, si_cache,
                           sire_course=None, sire_surface=None,
                           damsire_course=None, damsire_surface=None,
                           sire_distband=None, damsire_distband=None,
-                          sire_band_rel=None):
+                          sire_band_rel=None, si_variant=None):
     """1レース分の特徴量を高速計算
 
     v7: pedigree_cross 引数を追加(temporal-safe 血統 cross stats)。
     後方互換のため省略可。
+    si_variant: ml.speed_variant.TrainSiVariant (#168)。渡すと点数表専用の
+        si_avg_v / si_latest_v / si_v_nfb を足す (無ければ列を作らない)。
+        芝ダ替わりの sf_first_switch / sf_other_share5 は常に足す。どれも LGB には入らない。
     """
     rows = []
     race_date = race["race_date"]
@@ -573,10 +606,13 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
 
         # === SI系 (6) ===
         si_list = []
+        si_runs = []
         if horse_id in si_cache:
             # #165: 基準タイムもこのレースの日付より前のデータだけで作る (推論側と同じ)
-            si_list = [si_cache.si(s, race_date) for s in si_cache[horse_id]
-                       if s["race_date"] < race_date][:5]
+            si_runs = [s for s in si_cache[horse_id] if s["race_date"] < race_date][:5]
+            si_list = [si_cache.si(s, race_date) for s in si_runs]
+        # #168: 点数表専用の馬場差補正指数 V2d / 芝ダ替わり (LGB には入れない)
+        f.update(scorecard_extra_features(horse_id, race, past_races, si_runs, si_cache, si_variant))
 
         f["si_avg"] = np.mean(si_list) if si_list else 0
         f["si_max"] = max(si_list) if si_list else 0
@@ -1262,6 +1298,63 @@ def run_backtest(df, models, feature_cols, year=2025):
         print(f"\n  📉 マイナス収支")
 
 
+def build_si_variant(races_df, results_df, table_path=None):
+    """点数表専用の馬場差補正指数 V2d (#168) の学習側の部品。基準表 (models/si_variant_table.json)
+    が無ければ None (= si_avg_v 等の列を作らない。点数表がその列を要求していれば
+    predict/_attach_scorecard と verify_feature_parity が大きく警告する)。"""
+    try:
+        table = _sv.load_table(table_path)
+    except Exception as e:
+        print(f"  ⚠️ V2d の基準表が読めない ({e}) → si_avg_v 等を作らない")
+        return None
+    if table is None:
+        print("  ℹ️ V2d の基準表 (models/si_variant_table.json) が無い → si_avg_v 等を作らない")
+        return None
+    t0 = time.time()
+    sv = _sv.TrainSiVariant(races_df, results_df, table)
+    print(f"  ✅ V2d (基準表 {table['cutoff']} c={table['dirt_shift_c']:+g} "
+          f"指紋 {table['table_hash']}): {len(sv.lookup)}走 ({time.time() - t0:.1f}秒)")
+    return sv
+
+
+def augment_scorecard_columns(df, table_path=None):
+    """既存の特徴量テーブル (build_feature_table の出力のキャッシュ) に点数表専用の列 (#168:
+    si_avg_v / si_latest_v / si_v_nfb / sf_first_switch / sf_other_share5) を足す。
+    特徴量テーブルの作り直し (約2時間) をせずに済ませるため。値は compute_features_fast と
+    **同じ関数** (scorecard_extra_features) で、同じ材料 (horse_history / si_cache) から作る。
+    df.attrs["si_variant_table_hash"] に基準表の指紋を残す (train_scorecard が照合する)。"""
+    races_df, results_df, _ = load_all_data()
+    cols = ["race_date", "venue", "distance", "surface", "track_condition", "weather", "horse_count"]
+    race_info = races_df.set_index("race_id")[cols].to_dict("index")
+    for col in cols:
+        results_df[col] = results_df["race_id"].map(lambda rid, c=col: race_info.get(rid, {}).get(c, ""))
+    horse_history = build_horse_history(results_df, races_df)
+    si_cache = build_speed_index_cache(results_df, races_df)
+    si_variant = build_si_variant(races_df, results_df, table_path)
+    race_by_id = races_df.set_index("race_id", drop=False).to_dict("index")
+    t0 = time.time()
+    out = []
+    for rid, hid in zip(df["race_id"].values, df["horse_id"].values):
+        race = race_by_id.get(rid)
+        if race is None:
+            out.append({})
+            continue
+        race_date = race["race_date"]
+        past = []
+        if hid in horse_history:
+            past = [h for h in horse_history[hid]
+                    if h.get("race_date", "") < race_date and h.get("finish_position", 0) > 0][::-1]
+        si_runs = [s for s in si_cache.get(hid, []) if s["race_date"] < race_date][:5]
+        out.append(scorecard_extra_features(hid, race, past, si_runs, si_cache, si_variant))
+    add = pd.DataFrame(out, index=df.index)
+    df = df.copy()
+    for c in add.columns:
+        df[c] = add[c].values
+    df.attrs["si_variant_table_hash"] = (si_variant.table["table_hash"] if si_variant else None)
+    print(f"  ✅ 点数表専用の列を追加 {list(add.columns)} ({time.time() - t0:.1f}秒)")
+    return df
+
+
 def build_feature_table(start_date=None):
     """Step 1-3 (データロード → プリコンパイル → 全レース特徴量計算) を実行して
     特徴量 DataFrame を返す。
@@ -1289,6 +1382,7 @@ def build_feature_table(start_date=None):
     horse_history = build_horse_history(results_df, races_df)
     jockey_stats, trainer_stats, combo_stats = build_jockey_trainer_stats(results_df, races_df)
     si_cache = build_speed_index_cache(results_df, races_df)
+    si_variant = build_si_variant(races_df, results_df)
     # v7: 血統 cross stats (temporal-safe)
     (sire_course, sire_surface, damsire_course, damsire_surface,
      sire_distband, damsire_distband, sire_band_rel) = \
@@ -1322,12 +1416,14 @@ def build_feature_table(start_date=None):
             sire_course=sire_course, sire_surface=sire_surface,
             damsire_course=damsire_course, damsire_surface=damsire_surface,
             sire_distband=sire_distband, damsire_distband=damsire_distband,
-            sire_band_rel=sire_band_rel,
+            sire_band_rel=sire_band_rel, si_variant=si_variant,
         )
         all_rows.extend(rows)
 
     df = pd.DataFrame(all_rows)
     df["race_date"] = df["race_id"].map(lambda rid: race_info.get(rid, {}).get("race_date", ""))
+    # #168: どの基準表で si_avg_v を作ったか (train_scorecard が点数表の基準表と照合する)
+    df.attrs["si_variant_table_hash"] = (si_variant.table["table_hash"] if si_variant else None)
 
     elapsed = time.time() - t0
     print(f"  ✅ 特徴量計算完了: {len(df)}行 ({elapsed:.1f}秒)")

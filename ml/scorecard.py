@@ -120,6 +120,20 @@ DEBUT_COL = "has_past_runs"
 DEBUT_LABEL = "JRA初出走"
 DEBUT_BIN = "データなし"
 
+# ── 生の値 × 係数で足す項目 (v3, 2026-10 #168) ─────────────────────────
+# model["flags"] = {列名: 係数}。点 = 係数 × 値 (NaN は 0)。lin と違ってレース内 z を取らない
+# (0/1 の「初ダート」はそのまま、割合はそのまま足す)。値は ml/speed_variant.surface_switch_features
+# (学習側 fast_train と推論側 ml/features の同じ関数) が作る。
+#   sf_first_switch  過去の確定平地走があり、今回の芝ダの走が0 (=初ダート/初芝) なら 1
+#   sf_other_share5  近5走 (確定平地走) のうち今回と違う芝ダの走の割合 (0〜1)
+# (列名, 表示名, 区分の表示)
+FLAG_FEATS = [
+    ("sf_first_switch", "芝ダ初替り", "first"),
+    ("sf_other_share5", "芝ダ替わり", "share"),
+]
+FLAG_NAMES = {c: n for c, n, _ in FLAG_FEATS}
+FLAG_KIND = {c: k for c, _, k in FLAG_FEATS}
+
 # 期間で係数の符号が反転する = 説明として出す資格がない項目は表示から除く
 # (検証で「同条件実績・馬番の内外・道悪実績・当コース実績」が不安定と判明)
 UNSTABLE_FOR_DISPLAY = {
@@ -165,6 +179,12 @@ def display_bin(col, raw_bin, n_bins=None):
     return names[idx] if 0 <= idx < len(names) else raw_bin
 
 
+def _src(col, col_map=None):
+    """区分項目 col の値を読む列名。model["col_map"] で差し替える (例 si_avg → si_avg_v)。
+    点数のキー ("si_avg=1位") と表示名は元の項目名のまま (後方互換)。"""
+    return (col_map or {}).get(col, col)
+
+
 def _rel_rank(df, col, direction, zero_na):
     """レース内順位 (1=最良)。データ無しは NaN。"""
     v = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
@@ -173,21 +193,23 @@ def _rel_rank(df, col, direction, zero_na):
     return tmp.groupby(df["race_id"]).rank(ascending=(direction == "lo"), method="min")
 
 
-def label(df, spec, skip=()):
+def label(df, spec, skip=(), col_map=None):
     """各行を「項目=区分」のラベルに変換する。spec は学習時に決めた区切り。
-    skip: 使わない項目 (model["drop"])。その列が df に無くても落ちない。"""
+    skip: 使わない項目 (model["drop"])。その列が df に無くても落ちない。
+    col_map: 項目の値を読む列の差し替え (model["col_map"])。ラベルの列名は元の項目名のまま。"""
     out = {}
     for col, _, direction, zero_na, is_rel in FEATS:
         if col in skip:
             continue
+        src = _src(col, col_map)
         if is_rel:
-            r = _rel_rank(df, col, direction, zero_na)
+            r = _rel_rank(df, src, direction, zero_na)
             lab = pd.Series(NODATA, index=df.index, dtype=object)
             for lo, hi, nm in REL_BINS:
                 lab[(r >= lo) & (r <= hi)] = nm
         else:
             edges = spec[col]
-            v = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
+            v = pd.to_numeric(df[src], errors="coerce").fillna(0.0).astype(float)
             lab = pd.Series(
                 pd.cut(v, edges, labels=[f"{i+1}/5" for i in range(len(edges) - 1)]).astype(object),
                 index=df.index)
@@ -209,11 +231,45 @@ def load_model(path=None):
 def required_columns(model):
     """このモデルで点数を出すのに df に必要な列 (race_id は別途)。"""
     drop = set((model or {}).get("drop") or [])
-    need = [c for c, *_ in FEATS if c not in drop]
+    cmap = (model or {}).get("col_map") or {}
+    need = [_src(c, cmap) for c, *_ in FEATS if c not in drop]
     need += list(((model or {}).get("lin") or {}).keys())
+    need += list(((model or {}).get("flags") or {}).keys())
     if (model or {}).get("debut_penalty"):
         need.append(DEBUT_COL)
     return need
+
+
+def check_si_variant(model, table_path=None):
+    """点数表が V2d (model["si_variant"]) を前提にしているのに、基準表が無い・読めない・違う時の警告文。
+    問題なければ None。基準表が違うと si_avg_v の値が当てはめ時と別物になる (#134 型の silent 劣化)。
+    predict はこの文が返ると without_col_map で代用モデルに切り替え、verify_feature_parity は致命にする。"""
+    meta = (model or {}).get("si_variant")
+    if not meta:
+        return None
+    try:
+        from ml import speed_variant as _sv
+        t = _sv.load_table(table_path)
+    except Exception as e:
+        return f"V2d の基準表が読めない ({e})"
+    if t is None:
+        return "V2d の基準表 models/si_variant_table.json が無い — si_avg_v 等が作られない"
+    if t.get("table_hash") != meta.get("table_hash"):
+        return (f"V2d の基準表が点数表の当てはめ時と違う (表 {t.get('table_hash')} cutoff {t.get('cutoff')} "
+                f"c={t.get('dirt_shift_c')} / 点数表 {meta.get('table_hash')} cutoff {meta.get('cutoff')} "
+                f"c={meta.get('dirt_shift_c')})")
+    return None
+
+
+def without_col_map(model, reason):
+    """V2d が使えない時の代用モデル: 区分の差し替え (col_map) を外し、指数の区分を現行の
+    si_avg / si_latest (LGB と同じ列、学習↔推論の照合済み) で読む。区分点・連続項目・flags は
+    そのまま。印を市場寄りの従来ロジック (pred_top3) に落とすより、点数表の印のまま
+    「指数だけ近い代用品」にする方が変化が小さい (#168 レビュー)。model["_degraded"] に理由を残す。"""
+    m = dict(model or {})
+    m["col_map"] = {}
+    m["_degraded"] = reason
+    return m
 
 
 def race_z(values, race_ids, direction="hi"):
@@ -242,10 +298,16 @@ def score_with_reasons(df, model, top_n=4):
       - model["debut_penalty"] を過去走ゼロ (has_past_runs == 0) の馬に足す
     係数は区分点と同じ単位 (log-odds) に揃えてあるので、点数のスケール (×10) は従来どおり。
     "lin" が無い古い pkl は従来と完全に同じ計算になる。
+
+    v3 (#168) のモデルでは:
+      - model["col_map"] で区分項目の値を読む列を差し替える (例 si_avg → si_avg_v)。
+        点数のキー ("si_avg=1位") と表示名は元の項目名のまま
+      - model["flags"] の項目は「係数 × 生の値」を足す (芝ダ替わり)
+    col_map / flags が無い pkl は従来と完全に同じ計算になる。
     """
     pts, spec = model["pts"], model["spec"]
     drop = set(model.get("drop") or [])
-    lab = label(df, spec, skip=drop)
+    lab = label(df, spec, skip=drop, col_map=model.get("col_map"))
     total = np.zeros(len(df))
     per = [[] for _ in range(len(df))]
     for col, _, _, _, _ in FEATS:
@@ -297,6 +359,28 @@ def score_with_reasons(df, model, top_n=4):
             for i in np.flatnonzero(debut):
                 per[i].append({"label": DEBUT_LABEL, "bin": DEBUT_BIN,
                                "points": round(dp * 10, 1)})
+
+    flags = model.get("flags") or {}
+    if flags:
+        turf = (pd.to_numeric(df["surface_turf"], errors="coerce").to_numpy(float)
+                if "surface_turf" in df.columns else np.full(len(df), np.nan))
+        for col, coef in flags.items():
+            if col not in FLAG_KIND:
+                raise KeyError(f"scorecard: 未知の項目 {col} (ml/scorecard.FLAG_FEATS に無い)")
+            x = pd.to_numeric(df[col], errors="coerce").fillna(0.0).to_numpy(float)
+            contrib = float(coef) * x
+            total += contrib
+            for i, v in enumerate(contrib):
+                if abs(v) < 0.02 or x[i] == 0:
+                    continue
+                if FLAG_KIND[col] == "first":
+                    lab_i = ("初ダート" if turf[i] == 0 else "初芝") if np.isfinite(turf[i]) \
+                        else FLAG_NAMES[col]
+                    bin_i = "替わり初戦"
+                else:
+                    lab_i = FLAG_NAMES[col]
+                    bin_i = f"他馬場{int(round(x[i] * 100))}%"
+                per[i].append({"label": lab_i, "bin": bin_i, "points": round(float(v) * 10, 1)})
 
     reasons = [sorted(p, key=lambda x: -abs(x["points"]))[:top_n] for p in per]
     return total * 10, reasons     # 点数は ×10 して読みやすく

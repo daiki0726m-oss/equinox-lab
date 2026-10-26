@@ -43,7 +43,10 @@ CORR_ONLY = {"si_avg", "si_max", "si_min", "si_std", "si_latest", "avg_last_3f",
 # LGB の get_feature_columns() には入らないが、点数表 (ml/scorecard.py v2) が使う列。
 # 学習側 (fast_train) と推論側 (FeatureBuilder) の両方が出していることも検査する。
 # データ無しは NaN で、両方 NaN なら一致とみなす。
-EXTRA_COLS = ["form_cls5", "tb_min5", "has_past_runs"]
+EXTRA_COLS = ["form_cls5", "tb_min5", "has_past_runs",
+              # #168: 点数表専用の馬場差補正スピード指数 V2d (ml/speed_variant) と芝ダ替わり。
+              # si_v_nfb は「V2d が作れず現行の指数で埋めた走の数」(埋めた割合の監視用)。
+              "si_avg_v", "si_latest_v", "si_v_nfb", "sf_first_switch", "sf_other_share5"]
 # 既知の未解決 skew — 落とさず警告に留める免除リスト。
 # #150: #136/#137 で解消済みの9列と、#137 で特徴量から外れた体重系3列を削除。
 # 免除を残したままだと「点数表が使う5列 (jockey_cond_top3 / trainer_cond_top3 /
@@ -56,9 +59,9 @@ KNOWN_SKEW = set()
 def scorecard_strict_cols():
     """点数表が使う列 (区分項目 FEATS 全部 + 連続項目) — 厳密一致 (100%) を要求する。
     drop される区分項目もここに含める (別の pkl では使われうる)。"""
-    from ml.scorecard import FEATS, LIN_FEATS, DEBUT_COL
+    from ml.scorecard import FEATS, LIN_FEATS, DEBUT_COL, FLAG_FEATS
     return ({c for c, *_ in FEATS} | {c for c, *_ in LIN_FEATS} | {DEBUT_COL}
-            | set(EXTRA_COLS))
+            | {c for c, *_ in FLAG_FEATS} | set(EXTRA_COLS))
 
 
 def _same(a, b, tol=1e-6):
@@ -73,6 +76,42 @@ def _same(a, b, tol=1e-6):
     if math.isnan(fa) or math.isnan(fb):
         return math.isnan(fa) and math.isnan(fb)
     return abs(fa - fb) <= tol
+
+
+def _report_si_variant():
+    """V2d の基準表 (#168) の版・カットオフ・c・指紋を出す。"""
+    try:
+        from ml import speed_variant as _sv
+        t = _sv.load_table()
+    except Exception as e:
+        print(f"📐 V2d 基準表: 読めない ({e})")
+        return
+    if t is None:
+        print("📐 V2d 基準表: なし (models/si_variant_table.json) — si_avg_v 等は作られない")
+        return
+    print(f"📐 V2d 基準表: {t['version']} 指紋 {t['table_hash']} カットオフ {t['cutoff']} "
+          f"窓 {t['fit_from']}〜 c={t['dirt_shift_c']:+g} 年齢区分 {t['age_rule']} "
+          f"そろった日だけ {t['require_complete']} (作成 {t.get('created_at')})")
+
+
+def _has_si_table():
+    try:
+        from ml import speed_variant as _sv
+        return _sv.load_table() is not None
+    except Exception:
+        return False
+
+
+def _report_fallback(side, rows, keys):
+    """V2d が作れず現行の指数で埋めた走の割合 (si_v_nfb / si_count)。"""
+    n = k = 0
+    for key in keys:
+        r = rows.get(key) or {}
+        if "si_v_nfb" in r:
+            n += int(r.get("si_count") or 0)
+            k += int(r.get("si_v_nfb") or 0)
+    if n:
+        print(f"    {side}: V2d の材料の走 {n} のうち現行の指数で埋めた走 {k} ({100 * k / n:.1f}%)")
 
 
 def check_models():
@@ -108,7 +147,9 @@ def check_models():
             from ml.scorecard import FEATS as _SC_FEATS
             need = {c for c, *_ in _SC_FEATS}
             have = {k.split("=")[0] for k in sm.get("cols", [])} | set(sm.get("spec", {}))
-            miss = need - have
+            # drop した項目は区分点を持たない (v3 の F2 は当てはめ時から外す) ので欠けではない。
+            # 除かないと v3 の点数表で毎日「致命」を誤報し、週次の出荷ゲートも毎週落ちる (#168 レビュー)。
+            miss = need - have - set(sm.get("drop") or [])
             if miss:
                 problems.append(("致命", f"scorecard: コードの特徴量 {sorted(miss)[:4]} が "
                                          f"モデルに無い — 印が黙って従来ロジックに落ちる"))
@@ -123,6 +164,20 @@ def check_models():
             bad_drop = sorted(set(sm.get("drop") or []) - need)
             if bad_drop:
                 problems.append(("警告", f"scorecard: drop {bad_drop} がコードの FEATS に無い"))
+            # v3 (#168): 区分の差し替え列・生の値で足す項目をコードが作るか / 基準表が当てはめ時と同じか
+            from ml.scorecard import FLAG_KIND as _SC_FLAG, check_si_variant
+            from ml import speed_variant as _sv
+            known = set(_sv.SV_COLS) | {c for c, *_ in _SC_FEATS}
+            bad_map = sorted(set((sm.get("col_map") or {}).values()) - known)
+            if bad_map:
+                problems.append(("致命", f"scorecard: col_map の列 {bad_map} をコードが作らない "
+                                         f"— 点数の計算が失敗し印が従来ロジックに落ちる"))
+            bad_flag = sorted(set(sm.get("flags") or {}) - set(_SC_FLAG))
+            if bad_flag:
+                problems.append(("致命", f"scorecard: 項目 {bad_flag} がコード (FLAG_FEATS) に無い"))
+            msg = check_si_variant(sm)
+            if msg:
+                problems.append(("致命", f"scorecard: {msg}"))
         except Exception as e:
             problems.append(("致命", f"scorecard.pkl 読込失敗: {e} "
                                      f"— MARKS_SCORECARD=1 が silent 無効化される"))
@@ -162,6 +217,7 @@ def build_train_side(race_ids):
     js, ts, cs = ft.build_jockey_trainer_stats(results_df, races_df)
     si = ft.build_speed_index_cache(results_df, races_df)
     ped = ft.build_pedigree_cross_stats(results_df, races_df)
+    sv = ft.build_si_variant(races_df, results_df)     # #168 (基準表が無ければ None)
     grouped = {rid: g for rid, g in results_df.groupby("race_id")}
     out = {}
     for rid in race_ids:
@@ -171,7 +227,8 @@ def build_train_side(race_ids):
             continue
         rows = ft.compute_features_fast(
             race.iloc[0].to_dict(), rr.to_dict("records"), hh, js, ts, cs, si,
-            sire_course=ped[0], sire_surface=ped[1], damsire_course=ped[2], damsire_surface=ped[3])
+            sire_course=ped[0], sire_surface=ped[1], damsire_course=ped[2], damsire_surface=ped[3],
+            si_variant=sv)
         for r in rows:
             out[(rid, int(r.get("horse_number", 0)))] = r
     return out
@@ -213,6 +270,7 @@ def main():
         import database
         database.DB_PATH = args.db
 
+    _report_si_variant()
     print("🔍 モデル健全性を検査...")
     problems = check_models()
     for lv, msg in problems:
@@ -249,7 +307,14 @@ def main():
     train = build_train_side(all_ids)
     serve = build_serve_side(all_ids)
     from fast_train import get_feature_columns
-    cols = get_feature_columns() + [c for c in EXTRA_COLS if c not in get_feature_columns()]
+    extra = list(EXTRA_COLS)
+    if not _has_si_table():
+        # 基準表が無い時は両側とも V2d の列を作らない (= 照合対象が無い)。点数表が V2d を
+        # 要求していれば check_models が致命にしている (check_si_variant)。
+        from ml.speed_variant import SV_COLS
+        extra = [c for c in extra if c not in SV_COLS]
+        print(f"  ℹ️ V2d の基準表が無い — {list(SV_COLS)} は照合しない")
+    cols = get_feature_columns() + [c for c in extra if c not in get_feature_columns()]
     strict_cols = scorecard_strict_cols()
     bad_fatal, bad_warn = [], []
     any_common = False
@@ -264,8 +329,10 @@ def main():
             continue
         any_common = True
         print(f"  [{tag}] 照合対象: {len(common)}頭 × {len(cols)}特徴量"
-              f" (LGB {len(get_feature_columns())} + 点数表の連続項目 {len(EXTRA_COLS)})"
+              f" (LGB {len(get_feature_columns())} + 点数表専用の列 {len(cols) - len(get_feature_columns())})"
               f" — 点数表の列 {len(strict_cols & set(cols))}個は厳密一致")
+        _report_fallback("学習側", train, common)
+        _report_fallback("推論側", serve, common)
         fa, wa = _compare(train, serve, common, cols, strict_cols, args)
         bad_fatal += [(f"[{tag}] {c}", m, r) for c, m, r in fa]
         bad_warn += [(f"[{tag}] {c}", m, r) for c, m, r in wa]
