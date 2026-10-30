@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-10-26T17:21:16.378963+09:00",
+ "generated_at": "2026-10-31T03:51:47.270319+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -200,7 +200,7 @@
  },
  "confidence": {
   "available": true,
-  "n": 227,
+  "n": 228,
   "sample": "点数表 (現行)",
   "target_mix": {
    "S": 0.18,
@@ -218,7 +218,7 @@
  },
  "bet_gate": {
   "available": true,
-  "n": 42,
+  "n": 56,
   "target_block_rate": {
    "top_prob": 0.3,
    "top3_sum": 0.25
