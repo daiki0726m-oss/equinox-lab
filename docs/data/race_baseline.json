@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-10-31T03:51:47.270319+09:00",
+ "generated_at": "2026-10-31T07:39:26.234784+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -210,10 +210,10 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 31.6,
-   "A": 21.4,
+   "S": 32.0,
+   "A": 21.5,
    "B": 13.9,
-   "C": 9.4
+   "C": 9.3
   }
  },
  "bet_gate": {
@@ -227,7 +227,7 @@
   "window_matches_model": true,
   "thresholds": {
    "top_prob": 0.1841,
-   "top3_sum": 0.4241
+   "top3_sum": 0.423
   }
  }
 }
