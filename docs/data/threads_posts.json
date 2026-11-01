@@ -3068,5 +3068,25 @@
   "race_name": "",
   "chunk": 5,
   "chars": 0
+ },
+ {
+  "post_id": "18055891544686273",
+  "posted_at": "2026-11-01T09:47:45.636821+09:00",
+  "slot": "odds_flash",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
+ },
+ {
+  "post_id": "18120651202956004",
+  "posted_at": "2026-11-01T09:47:52.200124+09:00",
+  "slot": "odds_flash",
+  "pattern": "",
+  "race_id": "",
+  "race_name": "",
+  "chunk": 0,
+  "chars": 0
  }
 ]
