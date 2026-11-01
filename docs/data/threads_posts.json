@@ -3088,5 +3088,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18079296500415744",
+  "posted_at": "2026-11-01T10:26:00.371087+09:00",
+  "slot": "post_predict",
+  "pattern": "transparency",
+  "race_id": "202605041111",
+  "race_name": "天皇賞(秋)",
+  "chunk": 0,
+  "chars": 166
  }
 ]
