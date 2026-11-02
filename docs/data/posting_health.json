@@ -1,12 +1,15 @@
 {
-  "generated_at": "2026-11-02T05:55:09.359122+09:00",
+  "generated_at": "2026-11-02T09:01:27.096799+09:00",
   "today": "2026-11-02 (Mon)",
   "weekday": 0,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "future",
+      "status": "missing",
       "expected": "07:30 JST",
+      "deadline": "11:00 JST",
+      "fallback_mode": "morning",
+      "action": "gh workflow run auto_post_x.yml --ref main -f mode=morning",
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
@@ -47,9 +50,12 @@
     },
     "fetch_monday": {
       "slot": "fetch_monday",
-      "status": "future",
+      "status": "missing",
       "expected": "06:00 JST",
-      "workflow": "fetch_weekend_races.yml"
+      "deadline": "09:00 JST",
+      "fallback_mode": "auto",
+      "workflow": "fetch_weekend_races.yml",
+      "note": "deadline 超過だが生成系のため復旧を継続 (#150c)"
     },
     "fetch_wednesday": {
       "slot": "fetch_wednesday",
@@ -78,8 +84,8 @@
   },
   "summary": {
     "ok": 0,
-    "missing": 0,
-    "future": 4,
+    "missing": 2,
+    "future": 2,
     "not_today": 8,
     "missed": 0,
     "ok_delayed": 0,
