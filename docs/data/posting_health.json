@@ -1,21 +1,34 @@
 {
-  "generated_at": "2026-11-04T09:15:47.010689+09:00",
+  "generated_at": "2026-11-04T15:45:50.154780+09:00",
   "today": "2026-11-04 (Wed)",
   "weekday": 2,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "ok",
+      "status": "ok_late",
       "expected": "07:30 JST",
-      "actual": "2026-11-04T07:34:46+09:00",
+      "deadline": "11:00 JST",
+      "recent_success": {
+        "created_at": "2026-11-04T07:34:46+09:00",
+        "title": "morning",
+        "event": "workflow_dispatch",
+        "delay_minutes": 5
+      },
       "delay_minutes": 5,
-      "event": "workflow_dispatch",
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
       "slot": "weekday",
-      "status": "future",
+      "status": "ok_late",
       "expected": "12:30 JST",
+      "deadline": "15:00 JST",
+      "recent_success": {
+        "created_at": "2026-11-04T12:35:06+09:00",
+        "title": "weekday",
+        "event": "workflow_dispatch",
+        "delay_minutes": 5
+      },
+      "delay_minutes": 5,
       "workflow": "auto_post_x.yml"
     },
     "evening": {
@@ -56,12 +69,17 @@
     },
     "fetch_wednesday": {
       "slot": "fetch_wednesday",
-      "status": "missing",
+      "status": "ok_late",
       "expected": "06:00 JST",
       "deadline": "09:00 JST",
-      "fallback_mode": "auto",
-      "workflow": "fetch_weekend_races.yml",
-      "note": "deadline 超過だが生成系のため復旧を継続 (#150c)"
+      "recent_success": {
+        "created_at": "2026-11-04T10:09:36+09:00",
+        "title": "📅 fetch weekend races",
+        "event": "schedule",
+        "delay_minutes": 250
+      },
+      "delay_minutes": 250,
+      "workflow": "fetch_weekend_races.yml"
     },
     "fetch_friday": {
       "slot": "fetch_friday",
@@ -83,13 +101,13 @@
     }
   },
   "summary": {
-    "ok": 1,
-    "missing": 1,
-    "future": 2,
+    "ok": 0,
+    "missing": 0,
+    "future": 1,
     "not_today": 8,
     "missed": 0,
     "ok_delayed": 0,
-    "ok_late": 0
+    "ok_late": 3
   },
   "missed_slots": []
 }
