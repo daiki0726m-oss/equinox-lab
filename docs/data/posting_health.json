@@ -1,12 +1,15 @@
 {
-  "generated_at": "2026-11-04T04:40:36.366267+09:00",
+  "generated_at": "2026-11-04T09:15:47.010689+09:00",
   "today": "2026-11-04 (Wed)",
   "weekday": 2,
   "slots": {
     "morning": {
       "slot": "morning",
-      "status": "future",
+      "status": "ok",
       "expected": "07:30 JST",
+      "actual": "2026-11-04T07:34:46+09:00",
+      "delay_minutes": 5,
+      "event": "workflow_dispatch",
       "workflow": "auto_post_x.yml"
     },
     "weekday": {
@@ -53,9 +56,12 @@
     },
     "fetch_wednesday": {
       "slot": "fetch_wednesday",
-      "status": "future",
+      "status": "missing",
       "expected": "06:00 JST",
-      "workflow": "fetch_weekend_races.yml"
+      "deadline": "09:00 JST",
+      "fallback_mode": "auto",
+      "workflow": "fetch_weekend_races.yml",
+      "note": "deadline 超過だが生成系のため復旧を継続 (#150c)"
     },
     "fetch_friday": {
       "slot": "fetch_friday",
@@ -77,9 +83,9 @@
     }
   },
   "summary": {
-    "ok": 0,
-    "missing": 0,
-    "future": 4,
+    "ok": 1,
+    "missing": 1,
+    "future": 2,
     "not_today": 8,
     "missed": 0,
     "ok_delayed": 0,
