@@ -1356,7 +1356,12 @@ def cmd_predict(args):
             print(f"    {rid}: {reason}")
 
         # メインレース(11R)が含まれていたら異常終了
-        main_skipped = [(rid, r) for rid, r in _skipped_races if rid[10:12] == '11']
+        # #169: 投稿済み (seal) で見送ったのは意図した凍結なので異常に数えない。11R は必ず
+        # 投稿対象 (#71) なので、投稿後の predict --force (幽霊馬除去の再予測など) は毎回 11R を
+        # 見送る。これを異常扱いすると CI で exit 1 → 呼び出し側 (remove_ghost_horses) が
+        # 再予測失敗として export まで飛ばしていた。
+        main_skipped = [(rid, r) for rid, r in _skipped_races
+                        if rid[10:12] == '11' and r != '投稿済 seal']
         if main_skipped:
             print(f"\n❌ メインレース(11R)を {len(main_skipped)} 件スキップ → 異常状態")
             for rid, r in main_skipped:

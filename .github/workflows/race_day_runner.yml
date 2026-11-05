@@ -194,7 +194,10 @@ jobs:
           # 取り込むのは predictions_cache と未来レースだけ。着順・オッズは runner が毎回
           # 取り直す値が正なので触らない。取り込んだ origin の版は MERGE_STATE に記録する。
           MERGE_STATE="/tmp/db_merge_predictions_${DATE}.state"
-          export DB_MERGE_STATE="$MERGE_STATE"   # db_pack.sh 経由の取り込みも同じ記録を使う
+          # db_pack.sh は DB_MERGE_STATE がある時 (= この runner) は取り込まない。取り込みと JSON の
+          # 書き出し直しは下の関数が commit 直前と pull の後に行う (#169 レビュー: db_pack が取り込んで
+          # 版を記録すると、pull 後の確認が skip して古い JSON を push していた)
+          export DB_MERGE_STATE="$MERGE_STATE"
           merge_origin_predictions() {
             git fetch origin "${GITHUB_REF_NAME:-main}" --depth 1 >/dev/null 2>&1 \
               || echo "⚠️ #169: origin の fetch に失敗 (前回取得の origin で取り込む)"

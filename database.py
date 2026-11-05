@@ -364,13 +364,20 @@ def _is_degenerate_predictions(predictions_json):
     return max_win_pct < 12.0
 
 
-def seal_predictions_for_date(date_str):
+def seal_predictions_for_date(date_str, race_ids=None):
     """指定日の predictions_cache を「投稿済み」としてロック。
     post_predict 投稿成功時に呼ぶ。
 
     #41 (2026-06-07): degenerate (ML flat) な予測は seal しない (seal lockout 対策)。
     seal してしまうと以降 --force でも上書き不能になり、朝の bad prediction が
     1 日中固定されてしまう (6/7 で発生)。
+
+    #169: race_ids を渡すとそのレースだけを seal する (post_predict は実際に投稿したレースを渡す)。
+    旧実装は当日の**全レース**に posted_at を付けていた。並行 push で seal が消えていた間は
+    表に出なかったが、#169 で seal を非 NULL 優先で取り込むようになると、投稿していない
+    レースまで 10:25 以降ずっと凍結され、幽霊馬除去後の再予測 (predict --force) が全部
+    スキップされる / サイドカーが無い日の結果投稿の posted_at フォールバックが全レース報告になる
+    (#46 型)。投稿したレースの凍結は投稿記録サイドカーで保証している (is_prediction_sealed)。
     """
     if len(date_str) == 8:
         hy = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
@@ -384,6 +391,9 @@ def seal_predictions_for_date(date_str):
             JOIN races r ON pc.race_id = r.race_id
             WHERE (r.race_date = ? OR r.race_date = ?) AND pc.posted_at IS NULL
         """, (date_str, hy)).fetchall()
+        if race_ids is not None:
+            _want = {str(x) for x in race_ids if x}
+            candidates = [row for row in candidates if row['race_id'] in _want]
 
         sealed = 0
         skipped_degenerate = 0

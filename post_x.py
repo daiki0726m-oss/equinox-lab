@@ -1293,7 +1293,9 @@ def cmd_predict(args):
     if not args.dry_run:
         try:
             from database import seal_predictions_for_date
-            seal_predictions_for_date(date_str)
+            # #169: seal は実際に投稿したレースだけ (旧実装は当日の全レース)。
+            # 上の DB 記録が例外で途中終了した時の後追い (投稿したレースの正本はサイドカー)。
+            seal_predictions_for_date(date_str, [r.get('race_id') for r in target_races])
         except Exception as e:
             print(f"⚠️ seal失敗(非致命): {e}")
 
