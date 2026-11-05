@@ -1074,7 +1074,14 @@ def cmd_predict(args):
                 pass
         # #98: AI独自視点 (人気非依存の能力モデル) — 能力上位なのに人気薄の時のみ
         try:
-            _by_ab = sorted((q for q in preds if (q.get('ability_score') or 0) > 0),
+            # #169: 取消馬は名指ししない (取消馬は人気=頭数で来るので「想定15人気」の
+            # 能力値1位として出る条件を満たしてしまう。11/01 東京7R 11番で再現)。
+            # 予測時に分かった取消は cache の scratched、その後に分かった取消は
+            # 999.9倍 / 番兵 9999人気 で拾う。
+            _by_ab = sorted((q for q in preds if (q.get('ability_score') or 0) > 0
+                             and not q.get('scratched')
+                             and (q.get('popularity') or 0) < 999
+                             and (q.get('odds_win') or 0) < 999.9),
                             key=lambda q: -(q.get('ability_score') or 0))
             if _by_ab:
                 _ab_top = _by_ab[0]

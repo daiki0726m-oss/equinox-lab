@@ -595,6 +595,50 @@ class DbSiVariant:
         self._conn = conn_factory
         self._days = {}            # (date, venue) -> {(horse_id, race_id): V2d}
         self.legacy = DbLegacySpeedIndex(conn_factory)
+        # #169: 本番ログに V2d の使用状況を残すための集計 (usage_line で1行にする)。
+        # 旧実装は異常時の 🚨 しか出さず、正常に効いていたかは DB コピーで再計算しないと
+        # 確かめられなかった。race_id → (V2d の対象の平地走か, 日の鍵, その日に δ̂ があるか)
+        self._race_meta = {}
+        self.reset_usage()
+
+    def reset_usage(self):
+        self.usage = {"horses": 0, "horses_runs": 0, "horses_all_v2d": 0,
+                      "runs": 0, "runs_fb": 0, "runs_flat": 0, "runs_fb_flat": 0,
+                      "days_no_delta": set()}
+
+    def _count_usage(self, si_runs, comp):
+        u = self.usage
+        u["horses"] += 1
+        if comp:
+            u["horses_runs"] += 1
+            if all(used for _, used in comp):
+                u["horses_all_v2d"] += 1
+        for s, (_, used) in zip(si_runs, comp):
+            flat, day, has_delta = self._race_meta.get(s.get("race_id"), (False, None, False))
+            u["runs"] += 1
+            u["runs_flat"] += int(bool(flat))
+            if not used:
+                u["runs_fb"] += 1
+                if flat:
+                    u["runs_fb_flat"] += 1
+                    if not has_delta and day:
+                        u["days_no_delta"].add(day)
+
+    def usage_line(self, warn_share=0.05):
+        """V2d の使用状況を1行で返す (predict の完了サマリー用)。
+        平地 (= V2d の対象) で旧指数に埋めた走が warn_share を超えたら 🚨 を付ける。
+        障害・基準表の窓より前の走は設計上いつも旧指数なので、割合は平地と全体を分けて出す。"""
+        u = self.usage
+        flat_share = (u["runs_fb_flat"] / u["runs_flat"]) if u["runs_flat"] else 0.0
+        all_share = (u["runs_fb"] / u["runs"]) if u["runs"] else 0.0
+        days = sorted(u["days_no_delta"])
+        head = "🚨" if flat_share > warn_share else "🧮"
+        ex = (" 例 " + ", ".join(days[:3]) + (" …" if len(days) > 3 else "")) if days else ""
+        return (f"{head} V2d 使用状況: 過去走のある馬 {u['horses_runs']}/{u['horses']}頭中 "
+                f"全走 V2d {u['horses_all_v2d']}頭 / 旧指数で埋めた走 平地 "
+                f"{u['runs_fb_flat']}/{u['runs_flat']} ({flat_share:.1%})・全体 "
+                f"{u['runs_fb']}/{u['runs']} ({all_share:.1%}) / δ̂ が欠けた日 {len(days)}件{ex}"
+                f" (基準表 {self.table.get('table_hash', '?')})")
 
     def _day_lookup(self, race_date, venue):
         key = (race_date, venue)
@@ -630,6 +674,8 @@ class DbSiVariant:
                 out = {(h, r): float(x) for h, r, x in zip(runs["horse_id"].values[ok],
                                                            runs["race_id"].values[ok], v[ok])}
             complete = bool(rt.loc[rt["flat"], "complete"].all()) if rt["flat"].any() else True
+            for _rid, _fl, _dk in zip(rt["race_id"], rt["flat"], rt["day"]):   # #169 使用状況
+                self._race_meta[_rid] = (bool(_fl), _dk, _dk in doff)
         # 結果の取り込み途中の日 (そろっていない) は次回に作り直す (キャッシュしない)
         if complete:
             self._days[key] = out
@@ -653,7 +699,10 @@ class DbSiVariant:
         lookup = {}
         for s in si_runs:
             lookup.update(self._day_lookup(s["race_date"], s["venue"]))
-        return row_features(horse_id, si_runs, lookup, lambda s: self.legacy.si(s, race_date))
+        # #169: row_features と同じ計算 (row_components → aggregate) を、使用状況を数えるために展開
+        comp = row_components(horse_id, si_runs, lookup, lambda s: self.legacy.si(s, race_date))
+        self._count_usage(si_runs, comp)
+        return aggregate([v for v, _ in comp], sum(1 for _, u in comp if not u))
 
 
 def fallback_share(df):

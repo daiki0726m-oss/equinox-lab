@@ -343,16 +343,29 @@ class KeibaModel:
 
         # 初出走・経験不足の馬に割引を適用
         # race_experience: 0=初出走, 0.1=1走, 0.2=2走, ... 1.0=10走以上
+        # #169: 割引は log(係数) として _disc に持ち、2つのチャネルに別々に効かせる (下の softmax)。
+        _disc = np.zeros(len(df))
         if "race_experience" in df.columns:
             debut_mask = df["race_experience"] == 0       # 初出走
             few_exp_mask = df["race_experience"] <= 0.2   # 1-2走
-            # 初出走: rank_scoreを30%減
-            df.loc[debut_mask, "rank_score"] *= 0.7
+            # #169: rank_score は LambdaRank の生スコアで約8割が負の値 (再推論で 78.6〜79.3%)。
+            # 旧実装の「×0.7 / ×0.85」は負のスコアを 0 に近づけ、割り引くつもりの馬を
+            # 逆に持ち上げていた (確率の pred_top3/pred_win は正なので正しく割り引かれ、
+            # 2つのチャネルで逆向きに効いていた)。
+            # rank_score は温度1の softmax (pred_win_norm) の logit なので、log(係数) を足すと
+            # 「その馬の勝率を ×係数 してから正規化し直す」と同じになり、符号によらず必ず下がる。
+            # ※ この等価が成り立つのは温度1の意思決定チャネルだけ。表示チャネルは z-score を
+            #    取るので、生スコアに足した log(係数) は z では log(係数)/sd になり、割引の強さが
+            #    再学習ごとの rank_score の分散 (#120: sd 0.12〜0.87) で変わってしまう。
+            #    表示チャネルは下で割引前のスコアから z を取り、z の後に log(係数) を足す。
+            # 初出走: 勝率を30%減 (log 0.7)
+            # 1-2走: 勝率を15%減（初出走は除く、log 0.85）
+            few_only = few_exp_mask & ~debut_mask
+            _disc[debut_mask.to_numpy()] = np.log(0.7)
+            _disc[few_only.to_numpy()] = np.log(0.85)
+            df["rank_score"] = df["rank_score"] + _disc
             df.loc[debut_mask, "pred_top3"] *= 0.7
             df.loc[debut_mask, "pred_win"] *= 0.7
-            # 1-2走: rank_scoreを15%減（初出走は除く）
-            few_only = few_exp_mask & ~debut_mask
-            df.loc[few_only, "rank_score"] *= 0.85
             df.loc[few_only, "pred_top3"] *= 0.85
             df.loc[few_only, "pred_win"] *= 0.85
 
@@ -365,12 +378,17 @@ class KeibaModel:
         df["pred_win_norm"] = rank_exp / rank_exp.sum()
         # 表示チャネル (#120): レース内 z-score 化してから DISPLAY_SHARPNESS を掛ける。
         # モデル再学習で rank_score の分散が変わっても表示分布が動かない (上記コメント参照)。
-        _sd = float(df["rank_score"].std(ddof=0))
+        # #169: z は割引前のスコアから取り、割引 (log 係数) は z の後に足す。こうすると表示側でも
+        # 割引が正確に「勝率 ×0.7 / ×0.85 してから正規化し直す」になり、rank_score の分散に
+        # 依らない (#120 の「再学習しても表示分布が動かない」性質を経験の浅い馬についても保つ)。
+        _base = df["rank_score"] - _disc
+        _sd = float(_base.std(ddof=0))
         if _sd > 1e-9:
-            _z = (df["rank_score"] - df["rank_score"].mean()) / _sd
+            _z = (_base - _base.mean()) / _sd
         else:
-            _z = df["rank_score"] * 0.0
-        disp_exp = np.exp((_z - _z.max()) * self.DISPLAY_SHARPNESS)
+            _z = _base * 0.0
+        _disp_logit = _z * self.DISPLAY_SHARPNESS + _disc
+        disp_exp = np.exp(_disp_logit - _disp_logit.max())
         df["pred_win_display"] = disp_exp / disp_exp.sum()
         df["pred_top3_norm"] = df["pred_top3"] / df["pred_top3"].sum() * 3  # 3頭入着
 
