@@ -1182,6 +1182,28 @@ function scaleBets(bets, budget) {
   });
 }
 
+// ─── #169: レース単位の投資状態 ───
+// should_bet=0 でも trio-focus band (#95) は三連複/ワイドの主力買い目に金額が残る
+// (band が #30 等の見送り判定より優先する — docs/BETTING_SPEC.md)。券種ごとの
+// 「見送り(参考)」だけだと band レースが「見送りなのに投資額がある」と読めるので、
+// レースとしての状態を1行で示す。理由は bet_reason をそのまま出す (スマホは hover 不可)。
+function investStatusHtml(race) {
+  if (race.should_bet || race.should_bet === undefined) return '';
+  const all = race.all_bets || {};
+  const lines = Object.values(all).flat();
+  if (lines.length === 0) return '';
+  const funded = lines.some(b => (b.amount || 0) > 0);
+  const esc = s => String(s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const why = t => `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">${esc(t)}</div>`;
+  // band の理由文から「上書きした見送り判定」だけを取り出す (新旧どちらの文面でも)
+  const gate = String(race.bet_reason || '')
+    .replace(/^trio-focus band で三連複\/ワイドのみ投資 \(通常の判定なら見送り: (.*)\)$/, '$1')
+    .replace(/ \(trio-focus band: 三連複\/ワイドのみ投資\)$/, '');
+  return funded
+    ? `<div style="font-size:11px;font-weight:700;color:var(--gold);margin-bottom:8px">🎯 三連複/ワイドのみ投資 (trio-focus band)${why('通常の判定なら見送り: ' + gate)}</div>`
+    : `<div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:8px">⏭️ 投資見送り — 買い目は参考表示${why(race.bet_reason)}</div>`;
+}
+
 // ─── Check if bet hit ───
 function checkBetHit(bet, race) {
   const NO_HIT = { hit: false, payout: 0, source: 'none' };
@@ -1466,6 +1488,7 @@ function renderPredTab(race) {
   // Bets section
   html += '<div class="bets-section">';
   html += `<div class="bets-title">💰 ${bt}の推奨買い目</div>`;
+  html += investStatusHtml(race);   // #169
 
   if (bets.length === 0) {
     html += '<div class="no-bets">この券種の推奨はありません</div>';

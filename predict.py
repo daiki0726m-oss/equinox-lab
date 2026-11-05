@@ -1313,7 +1313,9 @@ def cmd_predict(args):
                     _zeroed += 1
             bets_result['total_amount'] = sum(b.get('amount', 0) for b in bets_result.get('bets', []))
             if trio_band:
-                reason = f"{reason} (trio-focus band: 三連複/ワイドのみ投資)"
+                # #169: band は #30 (1勝×◎2.5-3.9倍) や EV の見送りより優先する (BETTING_SPEC.md)。
+                # 理由欄を「投資している」が先に読める文にする (旧: 見送り理由 + 括弧書き)。
+                reason = strategy.band_override_reason(reason)
             if _zeroed:
                 print(f"  🛡️ sb=0 のため {_zeroed} 点の金額を 0 に強制 (参考表示のみ)")
 

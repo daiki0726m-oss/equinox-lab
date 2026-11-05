@@ -271,6 +271,17 @@ class BettingStrategy:
         # analyze_a_tier_loss.py の結果: 1勝×A の ◎ オッズ別 ROI:
         #   1.x-2.4倍: 28.3% (n=102) / 2.5-3.9倍: 11.5% (n=26) ← 最底
         # 「やや本命だが堅くもない」中間帯が ROI 最悪。1勝戦で 2.5-3.9倍は見送り。
+        #
+        # ⚖️ #169 (2026-11-05): **band (trio_focus_band, #95) がこの見送りより優先する**。
+        # band (◎2.0-2.9倍 × S/A/B × 平場) は should_bet=0 でも三連複/ワイドの honor に
+        # 金額を残す例外経路 (predict.py の sb=0 ゼロ化) なので、2.5-2.9倍の1勝戦は
+        # ここで見送りと判定された後に band が投資する。実効的にはこのガードは
+        # 「1勝戦×◎3.0-3.9倍の見送り」として働く (9/05〜11/01 で band が上書きしたのは
+        # 13R・30,000円 → 回収20,070円)。
+        # どちらの根拠も #141 の検出力の下限 (+5pt に約9,000R) に届かないので、
+        # 現状の実効挙動 (band 優先) を変えずに優先順位だけ明文化した → docs/BETTING_SPEC.md。
+        # 名前判定 ("1勝" in race_name) は「オキザリス賞」等の1勝クラス特別戦を拾わない
+        # (grade=１勝クラスの13.8%) — 判定を races.grade に寄せるかは #30 の再検証とセットで決める。
         race_name = (race_info or {}).get("race_name", "") if race_info else ""
         if race_name and "1勝" in race_name and axis_has_real_odds:
             if 2.5 <= top_odds < 4.0:
@@ -288,27 +299,33 @@ class BettingStrategy:
 
         return True, "OK"
 
+    @staticmethod
+    def band_override_reason(gate_reason):
+        """#169: should_bet=0 のまま band (#95) が三連複/ワイドに金額を残すレースの理由文。
+
+        旧実装は `f"{reason} (trio-focus band: 三連複/ワイドのみ投資)"` で、理由欄の先頭が
+        見送りの理由 (例: 「1勝戦×◎オッズ2.8倍は妙味中間帯 (loss layer 11.5%)」) のまま
+        2,400円が入っていた = 表示と実際の金額が逆に読める。投資している事実を先に書き、
+        上書きした見送り判定は括弧で残す (なぜ他の券種が0円なのかの説明として要る)。
+        """
+        return f"trio-focus band で三連複/ワイドのみ投資 (通常の判定なら見送り: {gate_reason})"
+
     def _honor_bets(self, sorted_preds, enabled, budget, predictions=None, line_amount=None,
                     trio_focus=False):
-        """印通り保証買い目を生成 — v3 (2026-05-27 confidence-aware)
+        """印通り保証買い目 (honor) を生成する。仕様の正本は docs/BETTING_SPEC.md (#169)。
 
-        3-5月 7000R バックテストで判明した「最強の買い方」を主力化:
-          - ◎軸三連複 5頭流し (10点) ROI 174%
-          - 馬連 ◎-○▲△× 流し (4点) ROI 207%
-          - ワイド ◎-○▲△× 流し (4点) ROI 150%
+        相手 (partners) = ☆(妙味枠) を先頭に ○▲△△注 の最大6頭 (#141/#146/#149)。
+        実オッズがあり BET_STRUCTURE_ADAPTIVE=1 なら構造を切り替える (#113/#150d):
+          - G    (◎1倍台): 三連複2頭軸(◎+☆)→4点 + ワイド6点。**金額は乗らない** (#152)
+          - D    (◎2倍台×11頭+、band不成立時): 三連単F 24点 + ワイド6点。**金額は乗らない** (#169)
+          - band (◎2倍台×S/A/B×平場、11頭+): 三連複◎軸 ☆○▲△△ 10点×2倍額 + ワイド6点
+          - A    (上記以外の実オッズ有り / band の10頭以下): 三連複◎軸×LGB複勝上位4頭 6点
+                 (band の10頭以下は 6点×2倍額) + ワイド6点。相手は印でなくモデル順 (#121)
+          - 実オッズ無し (木金の事前予測): 馬連6点+ワイド4点 で予算1,000円の上限に当たる
+        構造が決まったレースは「設計どおりの全点」を買う (#169: 予算は実際の点数から決める)。
 
-        旧 honor の問題点:
-          - ◎単勝 ROI 86% (微マイナス)、◎複勝 ROI 94% (微マイナス)
-          - ◎○ペア1点のみ → 相手当たっても外す
-        新 honor の効果: ROI 100% 以上が見込める主力買い目を必ず含める。
-
-        相手の選定:
-          predictions から mark=○▲△×注 の馬を取得して使用。
-          predictions が無い場合は sorted_preds[1:6] で代替。
-
-        v3 (2026-05-27): confidence-aware weighting
-          line_amount を指定可能 (S=150円 / A=120円 / B=100円 等)。
-          指定が無ければ MIN_BET (100円) を使用。
+        v3 (2026-05-27): line_amount を指定可能 (指定が無ければ MIN_BET=100円)。
+        #140 以降は信頼度によらず 100円 (CONFIDENCE_SIZING=1 で旧倍率)。
         """
         bets = []
         if len(sorted_preds) < 1:
@@ -317,15 +334,18 @@ class BettingStrategy:
         amt = line_amount or self.MIN_BET
         spent = 0
         signatures = set()
-
-        if trio_focus:
-            # #95 trio-focus band: 三連複◎軸 10点を2倍額で全点確保 + ワイド維持。
-            # 馬連はこの帯で ROI 83% のため生成しない (下の 馬連 節で skip)。
-            # 予算をワイド5点 + 三連複10点×2倍 = 25×amt まで拡張して途中切れを防ぐ。
-            budget = max(budget, amt * 25)
+        # #169 (2026-11-05): 「全部の点を計画してから、予算を当てて買う」の2段にする。
+        # 旧実装は add() の中で予算を見ており、構造ごとの予算を固定の式
+        # (band: amt×25 / D: amt×29 / A・G: amt×11) で先に決めていた。これは
+        # **ワイド5点前提**の式で、#146/#149 でワイドを6点に増やした時に直し忘れ、
+        # 構造ごとの最後の1点が予算切れで黙って落ちていた
+        # (A 6→5点、band 10→9点、D 24→23点。9/05〜11/01 の資金の入ったレースで
+        #  A 59R 中 57R、band 11頭以上 41R 中 40R が1点欠け)。
+        # #149 が書いた「同じ値が2箇所にある」の再発なので、点数を式で持つのをやめ、
+        # 計画した点の合計から予算を決める (相手やワイドの点数が変わっても追従する)。
+        planned = []
 
         def add(t, detail, hns, odds, prob, name, amount=None):
-            nonlocal spent
             amt_i = amount or amt
             # 三連単は着順が意味を持つので sig を順序保存 (sorted だと別順序が同一視され欠落)
             sig = _bet_sig(t, hns)
@@ -334,15 +354,12 @@ class BettingStrategy:
             if len(set(hns)) != len(hns):
                 # #95: 同一馬ペア (馬連 7-7 等) の無効買い目を構造的に遮断
                 return
-            if spent + amt_i > budget:
-                return
             # 2026-05-27 entertainment モード: honor_bets は EV 制限なしで全買い目生成
-            # 「印通り 馬連 5点流し / 三連複 10点流し」の完全提示を維持する
             # (Phase α では EV>=MIN_EV を強制していたが、夢ロマン路線では妙味少ない印買い目も提示)
+            # 予算はここでは見ない (#169) — 全点を計画した後で末尾の購入ループが当てる。
             ev_estimated = prob * odds
             signatures.add(sig)
-            spent += amt_i
-            bets.append({
+            planned.append({
                 "type": t, "detail": detail, "horse_numbers": hns,
                 "amount": amt_i, "odds": round(odds, 1),
                 "ev": round(ev_estimated, 2), "prob": round(prob, 3),
@@ -443,17 +460,23 @@ class BettingStrategy:
         if trio_focus and structure == 'D':
             print("  ↩️ trio-focus band と構造D が競合 → band (三連複) を優先 (#150d)")
             structure = None
-        if structure == 'D':
-            budget = max(budget, amt * 29)  # 三連単24点+ワイド5点の途中切れ防止
-        elif structure is not None:
-            budget = max(budget, amt * 11)
+        # #169: 旧来ここにあった構造別の予算式 (D: amt×29 / A・G: amt×11) は廃止。
+        # 予算は末尾で「計画した点の合計」から決める。
+        #
+        # ⚠️ #169: **D も G と同じく資金が乗る経路が無い**。D の条件 (◎2.0-2.9倍×11頭以上) で
+        # should_bet=1 になり得るのは S/A/B かつ平場のレースだけで、それは必ず band の条件も
+        # 満たすので上の行で structure=None (band) に差し替わる。残る D は信頼度C/D (買い目自体が
+        # 空) か未勝利・新馬・障害 (sb=0 で全ライン0円) だけ。実測 9/05〜11/01: D形43R・資金0R。
+        # したがって BET_D_NO_CHU (#139) も ON にしてから一度も金額を動かしていない。
 
         # 優先順は ROI 最大化観点で「馬連 → ワイド → 三連複」
         # データから: 馬連207% > 三連複174% > ワイド150% だが、
         # 馬連・ワイドは1人気軸で的中率が高くROIが安定 → 先に確保
+        # (いずれも #95 以前の in-sample 値。#141 の OOS 規律以降の検証ではない)
 
-        # ─── 主力1: 馬連 ◎-相手 流し (5点) ROI 207% ───
-        # trio_focus band 中は生成しない (帯内 馬連 ROI 83%、#95)
+        # ─── 主力1: 馬連 ◎-相手 流し (最大6点) ───
+        # 構造が決まらない時 (実オッズ無し) だけ生成。trio_focus band 中も生成しない
+        # (帯内 馬連 ROI 83%、#95)。予算1,000円の上限で 馬連6点+ワイド4点 になる。
         if "馬連" in enabled and not trio_focus and structure is None:
             for partner in partners[:6]:
                 nums = sorted([center, partner["horse_number"]])
@@ -464,7 +487,8 @@ class BettingStrategy:
                 names = f"{center_name}-{partner.get('horse_name','')}"
                 add("馬連", f"{nums[0]}-{nums[1]}", nums, est_odds, est_prob, names)
 
-        # ─── 主力2: ワイド ◎-相手 流し (5点) ROI 150% ───
+        # ─── 主力2: ワイド ◎-相手 流し (相手6頭 = 最大6点、全構造共通) ───
+        # #146/#149 で相手を5→6頭にしたので6点 (注も入る)。band の sb=0 例外でも金額が残る。
         if "ワイド" in enabled:
             for partner in partners[:6]:
                 nums = sorted([center, partner["horse_number"]])
@@ -476,14 +500,24 @@ class BettingStrategy:
                 names = f"{center_name}-{partner.get('horse_name','')}"
                 add("ワイド", f"{nums[0]}-{nums[1]}", nums, est_odds, est_prob, names)
 
-        # ─── 主力3: ◎軸三連複 5頭流し (5頭から2頭 = 10点) ROI 174% ───
+        # ─── 主力3: ◎軸三連複 (構造で点数が変わる: G 4点 / A 6点 / band 10点 / 構造無し 15点) ───
+        # 構造無し (実オッズ無し) の15点は予算1,000円を馬連・ワイドが使い切るので1点も買われない。
         if "三連複" in enabled and len(partners) >= 2 and structure != 'D':
             from itertools import combinations
             if structure == 'G' and len(partners) >= 2:
                 # 2頭軸 (◎+○) → 残り相手ながし (~4点)
                 pairs = [(partners[0], x) for x in partners[1:5]]
             elif structure == 'A':
+                # ⚠️ #169: band の10頭以下もこの分岐に来る (構造A が band より先に判定されるため)。
+                # その時は相手が「☆○▲△△ 10点」でなく「LGB複勝上位4頭 6点×2倍額」になる。
+                # どちらに統一するかは製品判断として未決 (docs/BETTING_SPEC.md)。
+                #
                 # #121 (2026-08-24): A の相手は「印4頭」でなく「モデル複勝率上位4頭」。
+                # ⚠️ #169: #121 の前提 (○=妙味枠で弱い) は #140 (○=実力2位・妙味は☆) と
+                # #147 (○▲△△=点数表2-5位) で既に崩れている。今の A の相手は「読者に見える
+                # 印とは別の、LGB の人気寄りの4頭」で、9/05〜11/01 の平場の A 形101R中75R (74%)
+                # に無印馬が入る。資金の入った A 54R (9/12〜11/01) で現行 (LGB) 91.3% vs
+                # 印○▲△△ 58.0% は差の95%CI [-91,+26]pt で区別できない → 相手は現行維持。
                 # #112 の A 設計値 84-86% は ○=モデル2位 時代の実測で、#110 で ○ を
                 # 妙味枠 (複勝率25%の中穴) に替えた後は相手プールが構造的に弱くなっていた。
                 # 実運用111R の反実仮想: 現行(○▲△×) ROI 49.8% vs モデル上位4頭 70.1% (+20.3pt)。
@@ -495,8 +529,8 @@ class BettingStrategy:
                 pairs = list(combinations(_a_pool, 2))
             elif trio_focus:
                 # #150d: band の設計は「◎軸 5頭流し = 10点」(#95 の実測構成)。
-                # 相手上限が 5→6 に広がった (#146/#149) 影響で 15点に膨らむと
-                # 2倍額と合わせて予算 (line_amount*25) を超えて途中で切れる。
+                # 相手上限が 5→6 に広がった (#146/#149) 影響で 15点に膨らむので5頭に切る。
+                # (#169: 旧予算式 amt×25 はワイド5点前提で、ワイド6点だと10点目が落ちていた)
                 pairs = list(combinations(partners[:5], 2))
             else:
                 pairs = list(combinations(partners[:6], 2))
@@ -515,8 +549,12 @@ class BettingStrategy:
                 add("三連複", f"{nums[0]}-{nums[1]}-{nums[2]}", nums, est_odds, est_prob, names,
                     amount=(amt * 2 if trio_focus else None))
 
-        # ─── #113 D: 三連単フォーメーション 1着{◎○}/2着{◎○▲△}/3着{印5+注} (~24点) ───
-        # OOS全体 94.2% で全18構成の最高 (#112)。◎の2-3着取りこぼしを○が拾う構造。
+        # ─── #113 D: 三連単フォーメーション 1着{◎☆}/2着{◎☆○▲}/3着{◎+相手} ───
+        # 点数 (#169 実測): 相手6頭 (☆○▲△△注) のとき BET_D_NO_CHU=1 で 2×3×4=24点、
+        # =0 で 2×3×5=30点。☆が居ない日は相手5頭で 18点 / 24点。
+        # ⚠️ #169: D は資金が乗らない (上の structure 判定のコメント参照) — 表示専用の買い目。
+        # #112 の「OOS全体 94.2% で全18構成の最高」は #141 以前の壊れた分割の値で、
+        # #139 では D < A が4つの独立再現すべてで一致している。
         if structure == 'D' and "三連単" in enabled and len(partners) >= 4:
             firsts = [p1, partners[0]]
             seconds = [p1] + partners[:3]
@@ -524,8 +562,10 @@ class BettingStrategy:
             # 注の配置別ROI: 1着 97-104% / 2着 82% / **3着 65%**。
             # matched contrast で Δ = -7.6pt (95%CI [-13.2, -1.1]、両期間で負)。
             # 注は「1着に来た時に配当が跳ねる馬」であり、3着に置くと当たっても安いのに
-            # 点数だけ増える。BET_D_NO_CHU=1 で3列目から外す (点数 24 → 約18)。
-            # 既定 OFF — posted_marks の実運用データが 4-8週 (n>=60R) 貯まってから判定 (#72→#73 の規律)。
+            # 点数だけ増える。BET_D_NO_CHU=1 で3列目から外す (相手6頭なら 30 → 24点)。
+            # 導入時は既定 OFF だったが、2026-09-01 に workflow env で本番 ON (#139)、
+            # #150 から config/prediction_flags.yml でも ON。ただし D に金額が乗る経路が
+            # 無いため、ON 以降一度も金額を動かしていない (#169) — 効果測定は成立しない。
             # #149: 「注を3列目から外す」設定が**位置**で切っていたため、
             # #143 で印構成が変わった後は注でなく2頭目の△を落としていた
             # (実測9/9レースで消えたのは△)。役割 (mark=='注') で外す。
@@ -556,6 +596,18 @@ class BettingStrategy:
                         names = f'{a.get("horse_name","")}→{b.get("horse_name","")}→{cc.get("horse_name","")}'
                         add("三連単", f"{hns[0]}-{hns[1]}-{hns[2]}", hns, est_odds, est_prob, names)
 
+        # ── #169: 計画した点に予算を当てて買う ──
+        # 構造 (A/D/G) か band が決まったレースは「設計どおりの全点」を買う = 予算を
+        # 計画した点の合計まで広げる (旧来の固定式 amt×25/29/11 の置き換え)。
+        # 構造が決まらない時 (実オッズ無し) は従来どおり渡された予算 (1,000円) が上限で、
+        # 計画順 (馬連→ワイド→三連複) に入る分だけ買う = 馬連6点+ワイド4点。
+        if structure is not None or trio_focus:
+            budget = max(budget, sum(b["amount"] for b in planned))
+        for b in planned:
+            if spent + b["amount"] > budget:
+                continue
+            spent += b["amount"]
+            bets.append(b)
         return bets, spent
 
     # v3 (2026-05-27): confidence 別 bet 額ウェイト
@@ -622,9 +674,11 @@ class BettingStrategy:
         band = self.trio_focus_band(predictions, confidence, race_info=race_info)
         if band:
             print("  🎯 trio-focus band (◎2.0-2.9倍×S/A/B): 三連複◎軸2倍額 / 馬連なし / ワイド維持")
-            # _honor_bets 内部の band 予算拡張 (25×line_amount) と整合させる。
-            # これが無いと total_amount > budget になり、後続フォールバックの
-            # min(300, budget - total_amount) が負額 bet を生む (smoke test で検出)。
+            # 旧来は _honor_bets 内部の band 予算 (25×line_amount) と揃えるための行。
+            # #169 以降 honor の全点確保は _honor_bets が実点数から決めるので、ここは
+            # **EV層の上限**としてだけ働く: band の11頭以上は honor が 26点分を使い切り EV層は0、
+            # 10頭以下 (相手がLGB上位4頭の6点×2倍 = 18点分) は残り7点分が EV層に回る
+            # (現状の挙動を維持。統一するかは製品判断 → docs/BETTING_SPEC.md)。
             budget = max(budget, line_amount * 25)
 
         # ── 0. 印通り保証買い目 (EV 関係なく必ず含める) ──
@@ -640,6 +694,10 @@ class BettingStrategy:
                                                     trio_focus=band)
         bets = list(honor_list)
         total_amount = honor_spent
+        # #169: honor の全点確保で予算を広げた分 (A: ワイド6+三連複6 = 1,200円 等) を外側の
+        # 予算にも反映する。これが無いと total_amount > budget のまま remaining が負になる
+        # (旧来も A は 1,100円 > 1,000円 で負だった)。EV層の上限は広げない = 残りは0。
+        budget = max(budget, honor_spent)
         # honor で既に bet した signature を以後の EV bets で重複させない
         honor_signatures = {_bet_sig(b["type"], b["horse_numbers"]) for b in honor_list}
 
