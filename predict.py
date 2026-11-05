@@ -158,6 +158,14 @@ def _scratched_numbers(results_rows, api_odds=None):
     消すと取り返しがつかない)。印の候補と点数表の順位・z の母集団から外すだけに使う。
     学習側 (scripts/train_scorecard.py) は finish_position>0 の行だけを使っており、
     本番だけ取消馬が母集団に入っていた食い違いをここで揃える。
+
+    api_odds は cmd_predict の _api_odds_cache[race_id]。results にオッズが 0 の馬がいる時は
+    採点の前に _prefetch_api_odds で埋めてから呼ぶ (それまでは予測行ループの中で初めて API を
+    引いており、ここに渡る時点では常に空 = API でしか分からない取消を母集団から外せなかった)。
+    残る穴: results の全馬に正のオッズが入っていると API を引かないので、取消後も古い正の
+    オッズが残った馬は分からない (refresh_odds の #149 ガードは番兵 -3.0/9999 を書かない)。
+    9/05〜11/01 の取消17頭は全頭 results が 999.9 で、この穴に当たった例は無い。最も確実なのは
+    出馬表の取消行 (tr.HorseList.Cancel) を読むこと (E 班の範囲)。
     """
     out = set()
     for r in results_rows or []:
@@ -174,6 +182,38 @@ def _scratched_numbers(results_rows, api_odds=None):
             except (TypeError, ValueError):
                 pass
     return out
+
+
+def _prefetch_api_odds(race_id, results_rows, horse_numbers):
+    """#169: 予測対象の馬に results のオッズが 0 の馬がいれば、点数表の採点より前に API を引く。
+
+    条件と書き込みは予測行ループ内の取得 (「resultsテーブルにオッズがない場合、APIから直接取得」)
+    と同じ。引く時点を採点の前に移しただけで、API が値を返せば引く回数は増えない (ここで埋まれば
+    ループ内の取得はキャッシュを見て引かない)。API が空を返した時だけ、ループ内で従来どおり
+    引き直すので1回増える。
+    """
+    if _api_odds_cache.get(race_id):
+        return
+    nums = {int(x) for x in horse_numbers}
+    if not any(int(r["horse_number"]) in nums and not ((r["odds"] or 0) > 0)
+               for r in results_rows or []):
+        return
+    try:
+        from refresh_odds import fetch_odds_from_api
+        api_odds = fetch_odds_from_api(race_id)
+        if api_odds:
+            _api_odds_cache[race_id] = api_odds
+            with get_db() as conn2:
+                for hn, od in api_odds.items():
+                    # #150: 取消・除外センチネル (-3.0倍 / 9999人気) は results に書かない (#149)
+                    if (od.get("odds_win") or 0) <= 0 or (od.get("popularity") or 0) >= 999:
+                        continue
+                    conn2.execute(
+                        "UPDATE results SET odds = ?, popularity = ? WHERE race_id = ? AND horse_number = ?",
+                        (od["odds_win"], od["popularity"], race_id, hn))
+            print(f"  📡 APIからオッズ取得: {len(api_odds)}頭 (採点前 #169)")
+    except Exception as e:
+        print(f"  ⚠️ APIオッズ取得失敗: {e}")
 
 
 def _attach_scorecard(pred_df, race_id=None, exclude=None):
@@ -593,6 +633,10 @@ def cmd_predict(args):
                     from refresh_odds import fetch_odds_from_api
                     api_odds = fetch_odds_from_api(race_id)
                     if api_odds:
+                        # #169: キャッシュにも入れる。旧実装は入れておらず、取消の判定
+                        # (_scratched_numbers) に API の値 (999.9倍 / 番兵) が届かなかった
+                        # (予測行ループで同じ API を引き直してから初めて人気に使っていた)。
+                        _api_odds_cache[race_id] = api_odds
                         # #150: 旧実装は `od.get('win_odds')` を読んでいたが
                         # refresh_odds.fetch_odds_from_api が返すキーは `odds_win`。
                         # 常に 0 になり、#52 が用意した「最後の防衛線」は
@@ -627,6 +671,17 @@ def cmd_predict(args):
                     print(f"  🚫 オッズ取得不能 (全頭0) → degenerate 予測を避けて skip (既存cache保持)")
                     _skipped_races.append((race_id, 'オッズ全頭0 (degenerate回避)'))
                     continue
+                # #169: API で書いたオッズを読み直す。results は冒頭で読んだまま (全頭0) で、
+                # 取消の判定 (999.9倍) がこの書き込みを見ていなかった。
+                with get_db() as conn:
+                    results = conn.execute("""
+                        SELECT r.*, h.horse_name, j.jockey_name
+                        FROM results r
+                        LEFT JOIN horses h ON r.horse_id = h.horse_id
+                        LEFT JOIN jockeys j ON r.jockey_id = j.jockey_id
+                        WHERE r.race_id = ?
+                        ORDER BY r.horse_number
+                    """, (race_id,)).fetchall()
 
         # 予測
         try:
@@ -649,6 +704,9 @@ def cmd_predict(args):
         pred_df = _attach_ability_score(pred_df)
         # #169: 予想時点で分かっている取消馬 (999.9倍 / API の番兵 -3.0・9999)。
         # 印の候補と点数表の順位・z の母集団から外す (行は消さない #43/#150e)。
+        # results にオッズ 0 の馬がいる時は、API を採点の前に引いておく (API でしか分からない
+        # 取消を母集団から外すため。引く条件と回数は下の予測行ループ内の取得と同じ)。
+        _prefetch_api_odds(race_id, results, pred_df["horse_number"])
         _scratched = _scratched_numbers(results, _api_odds_cache.get(race_id))
         # 説明できる点数表 (#145) を付与。◎ の選定根拠として使う
         pred_df = _attach_scorecard(pred_df, race_id, exclude=_scratched)
@@ -867,7 +925,8 @@ def cmd_predict(args):
                 # #169: 印の並べ替えは丸めない点数で行う (sc_points の小数1桁は表示用)。
                 # 旧実装は丸めた値で並べており、同点になると直前の LGB 順 (オッズ寄り) が残った。
                 "_sc_points_raw": float(row.get("_sc_points", 0) or 0),
-                # #169: 予想時点で取消と分かっている馬 (印の候補から外す。保存はしない内部キー)
+                # #169: 予想時点で取消と分かっている馬 (印の候補から外す。cache には
+                # "scratched" として保存し、投稿の 💡能力値1位 などが取消馬を名指ししないようにする)
                 "_scratched": int(row["horse_number"]) in _scratched,
             })
 
@@ -1137,10 +1196,13 @@ def cmd_predict(args):
             # #169: 予想時点で取消と分かっている馬は印 (◎○▲△△/☆/注) の候補から外す。
             # #147 で印の主軸をオッズ非依存の点数表にしたため、999.9倍の取消馬でも点数が
             # 高ければ印が付いた (10/17 東京5R ○ / 10/25 京都3R ▲ — 公開ダッシュボードで発生)。
-            # 人気 9999 (オッズ API の番兵) はオッズ取得がこのループ内で行われた時に初めて
-            # 分かることがあるので、ここでも拾う (点数表の採点より後に分かった分)。
+            # API の値 (番兵 9999人気 / 999.9倍) は通常は採点前の _prefetch_api_odds で拾うが、
+            # そこで API が空を返し予測行ループ内で初めて取れた時に備えて、ここでも拾う
+            # (点数表の採点より後に分かった分)。999.9倍はループ内 API だと人気=頭数で来るので
+            # 人気だけでなくオッズも見る。推定オッズ (0.8/勝率) は 999.9 を超えうるので実オッズのみ。
             for p in sorted_preds:
-                if (p.get('popularity') or 0) >= 999:
+                if _is_scratch_odds(p.get('odds_win') if p.get('_has_real_odds') else 0,
+                                    p.get('popularity')):
                     p['_scratched'] = True
             _cands = [p for p in sorted_preds if not p.get('_scratched')] or list(sorted_preds)
             if _sc_ok:
@@ -1292,6 +1354,9 @@ def cmd_predict(args):
             #    ここまで届かない (実際 sc_points が全頭 None で保存される事故を起こした)。
             "sc_points": p.get("sc_points", 0),
             "sc_reasons": p.get("sc_reasons", []),
+            # #169: 予想時点で取消と分かっている馬。印の候補から外した判定を下流 (投稿の
+            # 💡能力値1位・Threads の能力値ランキング) にも渡す。旧 cache には無い = False 扱い。
+            "scratched": bool(p.get("_scratched", False)),
         } for p in sorted_preds], ensure_ascii=False)
 
         with get_db() as conn:

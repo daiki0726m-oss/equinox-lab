@@ -84,7 +84,12 @@ def _race_title(race):
 
 def _ability_rank(horses):
     """オッズ非依存の能力値ランキング (上位のみ)。"""
-    scored = [h for h in horses if (h.get("ability_score") or 0) > 0]
+    # #169: 取消馬は並べない (「3連系の紐には◯◯を入れます」で取消馬を名指ししうる)。
+    # 予測時に分かった取消は scratched、その後に分かった取消は 999.9倍 / 番兵 9999人気。
+    scored = [h for h in horses if (h.get("ability_score") or 0) > 0
+              and not h.get("scratched")
+              and (h.get("popularity") or 0) < 999
+              and (h.get("odds_win") or 0) < 999.9]
     return sorted(scored, key=lambda h: -(h.get("ability_score") or 0))
 
 
