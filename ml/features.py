@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from database import get_db
 from race_utils import is_jump_race
-from analyzers.speed_index import SpeedIndexCalculator
+from analyzers.speed_index import SpeedIndexCalculator, si_track_adjust, model_si_track_mode
 from analyzers.pedigree import PedigreeAnalyzer
 from analyzers.jockey_trainer import JockeyTrainerAnalyzer
 from analyzers.track_bias import TrackBiasAnalyzer
@@ -254,7 +254,11 @@ class FeatureBuilder:
     """
 
     def __init__(self):
-        self.speed_calc = SpeedIndexCalculator()
+        # #169: si_* の馬場補正は「出荷中の LGB モデルが学習時に使った表」に合わせる
+        # (models/train_boundary.json の si_track_adj。無ければ旧表 = 現行モデルと同じ)。
+        # 推論側だけ正しいキーの表に変えると train/serve skew になるため。
+        self.si_track_mode = model_si_track_mode()
+        self.speed_calc = SpeedIndexCalculator(track_adjust=si_track_adjust(self.si_track_mode))
         self.pedigree_analyzer = PedigreeAnalyzer()
         self.jt_analyzer = JockeyTrainerAnalyzer()
         self.bias_analyzer = TrackBiasAnalyzer()

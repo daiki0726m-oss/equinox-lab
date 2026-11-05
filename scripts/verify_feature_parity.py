@@ -218,6 +218,10 @@ def build_train_side(race_ids):
     si = ft.build_speed_index_cache(results_df, races_df)
     ped = ft.build_pedigree_cross_stats(results_df, races_df)
     sv = ft.build_si_variant(races_df, results_df)     # #168 (基準表が無ければ None)
+    # #169: si_* の馬場補正表は「出荷中のモデルが学習時に使った表」で両側をそろえる
+    # (推論側 FeatureBuilder も models/train_boundary.json の si_track_adj に従う)。
+    from analyzers.speed_index import model_si_track_mode
+    si_mode = model_si_track_mode()
     grouped = {rid: g for rid, g in results_df.groupby("race_id")}
     out = {}
     for rid in race_ids:
@@ -228,7 +232,7 @@ def build_train_side(race_ids):
         rows = ft.compute_features_fast(
             race.iloc[0].to_dict(), rr.to_dict("records"), hh, js, ts, cs, si,
             sire_course=ped[0], sire_surface=ped[1], damsire_course=ped[2], damsire_surface=ped[3],
-            si_variant=sv)
+            si_variant=sv, si_track_mode=si_mode)
         for r in rows:
             out[(rid, int(r.get("horse_number", 0)))] = r
     return out
@@ -271,6 +275,12 @@ def main():
         database.DB_PATH = args.db
 
     _report_si_variant()
+    try:
+        from analyzers.speed_index import model_si_track_mode, train_si_track_mode
+        print(f"📐 si_* の馬場補正表 (#169): 出荷中モデル={model_si_track_mode()} / "
+              f"次の再学習の既定={train_si_track_mode()}")
+    except Exception as _e:
+        print(f"📐 si_* の馬場補正表: 読めない ({_e})")
     print("🔍 モデル健全性を検査...")
     problems = check_models()
     for lv, msg in problems:

@@ -24,6 +24,9 @@ from ml.features import (margin_stats, class_level, recent_form_features,  # noq
 # 推論側 (ml/features.FeatureBuilder) と **同じ関数** を呼ぶ。LGB の特徴量には入れない。
 from ml import speed_variant as _sv  # noqa: E402
 from race_utils import is_jump_race as _is_jump_race  # noqa: E402
+# #169: LGB の si_* の馬場補正表 (旧表=稍・不は補正なし / 正しいキーの表)。どちらで学習したかは
+# models/train_boundary.json の si_track_adj に残し、推論側 (ml/features) はそれに従う。
+from analyzers.speed_index import si_track_adjust, train_si_track_mode  # noqa: E402
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 
@@ -437,6 +440,10 @@ class _SpeedIndexCache(dict):
       → ③ 距離×芝ダ → ④ 距離×0.06。馬場が空なら「良」として引く。
     """
 
+    # #169: キーが「稍重/不良」で DB の「稍/不」と一致しない旧表 (稍・不は補正なし、重 -3.0 だけ効く)。
+    # 点数表の V2d の穴埋め (scorecard_extra_features) は常にこの旧表を使う
+    # (ml.speed_variant.legacy_si と同じ。点数表は旧表で当てはめ済み)。
+    # LGB の si_* だけ、si(..., track_adj=) で学習時の方式 (train_si_track_mode) の表を渡す。
     TRACK_ADJ = {"良": 0, "稍重": -1.5, "重": -3.0, "不良": -5.0}
 
     def __init__(self, top5):
@@ -486,12 +493,14 @@ class _SpeedIndexCache(dict):
         elif d < 2500: return 8.5
         else: return 7.0
 
-    def si(self, run, before):
-        """走破記録 run のスピード指数を、before より前のデータで作った基準タイムで出す。"""
+    def si(self, run, before, track_adj=None):
+        """走破記録 run のスピード指数を、before より前のデータで作った基準タイムで出す。
+        track_adj: 馬場補正表 (#169)。None は旧表 (TRACK_ADJ)。"""
         bt = self.base_time(run["venue"], run["distance"], run["surface"], run["tc"], before)
         if not bt or bt <= 0:
             return 0
-        v = 80 + (bt - run["t"]) * self._dist_factor(run["distance"]) + self.TRACK_ADJ.get(run["tc"], 0)
+        adj = self.TRACK_ADJ if track_adj is None else track_adj
+        v = 80 + (bt - run["t"]) * self._dist_factor(run["distance"]) + adj.get(run["tc"], 0)
         return round(v, 1)
 
 
@@ -563,7 +572,7 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
                           sire_course=None, sire_surface=None,
                           damsire_course=None, damsire_surface=None,
                           sire_distband=None, damsire_distband=None,
-                          sire_band_rel=None, si_variant=None):
+                          sire_band_rel=None, si_variant=None, si_track_mode=None):
     """1レース分の特徴量を高速計算
 
     v7: pedigree_cross 引数を追加(temporal-safe 血統 cross stats)。
@@ -571,8 +580,11 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
     si_variant: ml.speed_variant.TrainSiVariant (#168)。渡すと点数表専用の
         si_avg_v / si_latest_v / si_v_nfb を足す (無ければ列を作らない)。
         芝ダ替わりの sf_first_switch / sf_other_share5 は常に足す。どれも LGB には入らない。
+    si_track_mode: LGB の si_* の馬場補正の方式 (#169、"legacy"/"canonical")。None は
+        学習側の既定 (train_si_track_mode)。パリティ検査は出荷中モデルの方式を渡す。
     """
     rows = []
+    _si_adj = si_track_adjust(si_track_mode or train_si_track_mode())
     race_date = race["race_date"]
     hc = race["horse_count"] or len(race_results)
     # race-level info (cross 集計の lookup キー)
@@ -610,7 +622,7 @@ def compute_features_fast(race, race_results, horse_history, jockey_stats,
         if horse_id in si_cache:
             # #165: 基準タイムもこのレースの日付より前のデータだけで作る (推論側と同じ)
             si_runs = [s for s in si_cache[horse_id] if s["race_date"] < race_date][:5]
-            si_list = [si_cache.si(s, race_date) for s in si_runs]
+            si_list = [si_cache.si(s, race_date, _si_adj) for s in si_runs]
         # #168: 点数表専用の馬場差補正指数 V2d / 芝ダ替わり (LGB には入れない)
         f.update(scorecard_extra_features(horse_id, race, past_races, si_runs, si_cache, si_variant))
 
@@ -1146,6 +1158,9 @@ def train_models(df, feature_cols, num_boost_round=500, early_stopping_rounds=50
             "train_races": int(len(train_races)),
             "val_races": int(len(val_races)),
             "feature_count": len(feature_cols),
+            # #169: si_* の馬場補正表。推論側 (ml/features) はこの値に合わせて si_* を作る
+            # (無いモデル = 旧表扱い)。モデルと同じファイルに置くので食い違いが起きない。
+            "si_track_adj": df.attrs.get("si_track_adj") or train_si_track_mode(),
         }
         with open(os.path.join(MODEL_DIR, "train_boundary.json"), "w", encoding="utf-8") as f:
             json.dump(_meta, f, ensure_ascii=False, indent=1)
@@ -1424,6 +1439,8 @@ def build_feature_table(start_date=None):
     df["race_date"] = df["race_id"].map(lambda rid: race_info.get(rid, {}).get("race_date", ""))
     # #168: どの基準表で si_avg_v を作ったか (train_scorecard が点数表の基準表と照合する)
     df.attrs["si_variant_table_hash"] = (si_variant.table["table_hash"] if si_variant else None)
+    # #169: LGB の si_* をどちらの馬場補正表で作ったか (train_models が train_boundary.json に残す)
+    df.attrs["si_track_adj"] = train_si_track_mode()
 
     elapsed = time.time() - t0
     print(f"  ✅ 特徴量計算完了: {len(df)}行 ({elapsed:.1f}秒)")
