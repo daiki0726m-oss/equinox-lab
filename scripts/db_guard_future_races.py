@@ -20,6 +20,13 @@ commit 直前 (db_pack.sh) に origin/main の keiba.db.gz を取り出し、loc
 - results は id(AUTOINCREMENT) を除いて挿入 (local の id 連番と衝突させない)。
 - 失敗しても deploy を止めないよう、全例外を握りつぶして exit 0。
 - CI (GITHUB_ACTIONS) 以外では何もしない (db_pack.sh 側でガード)。
+
+## #169: 天候・馬場の取り込み (既存行の中身)
+上の補填は「行の有無」しか見ないので、既にある行の天候・馬場は古い DB の push で巻き戻る。
+2026-10-24〜11-01 の天候・馬場を collect_results で埋め直した後、それより前に checkout した
+workflow (-X theirs で自分の DB を優先) が push すると空に戻る (#70 型)。そこで commit 直前に
+「local が空・origin が非空」の天候・馬場だけを origin の値で埋める (fill_race_meta)。
+空 → 非空の一方向だけなので、local の非空の値は一切変えない。
 """
 import sys
 import gzip
@@ -64,6 +71,29 @@ def merge_future_races(local_path: str, origin_path: str, today_jst: str) -> lis
         conn.close()
 
 
+def fill_race_meta(local_path: str, origin_path: str) -> dict:
+    """#169: local の races で天候・馬場が空、origin では非空のものを origin の値で埋める。
+
+    戻り値: {"weather": 埋めた行数, "track_condition": 埋めた行数}。local の非空の値は変えない。"""
+    conn = sqlite3.connect(local_path, timeout=30)
+    try:
+        conn.execute(f"ATTACH '{origin_path}' AS o")
+        done = {}
+        for col in ("weather", "track_condition"):
+            cur = conn.execute(f"""
+                UPDATE races SET {col} = (SELECT ox.{col} FROM o.races ox
+                                          WHERE ox.race_id = races.race_id)
+                WHERE COALESCE({col}, '') = ''
+                  AND EXISTS (SELECT 1 FROM o.races ox
+                              WHERE ox.race_id = races.race_id AND COALESCE(ox.{col}, '') <> '')
+            """)
+            done[col] = cur.rowcount
+        conn.commit()
+        return done
+    finally:
+        conn.close()
+
+
 def main():
     today_jst = (datetime.now(timezone.utc) + timedelta(hours=9)).strftime('%Y-%m-%d')
     # origin/main の keiba.db.gz を取り出す (db_pack.sh 側で git fetch 済み前提)
@@ -86,13 +116,23 @@ def main():
         added = merge_future_races('keiba.db', ORIGIN_TMP, today_jst)
     except Exception as e:
         print(f"🛡 future-race guard: マージ失敗 ({e}) → skip (deploy は継続)")
-        return
-    if not added:
+        added = None    # #169: 下の天候・馬場の取り込みは続ける (互いに独立)
+    if added is None:
+        pass
+    elif not added:
         print("🛡 future-race guard: 欠損なし (local は origin の未来レースを完全保持)")
     else:
         print(f"🛡 future-race guard: origin から未来レース {len(added)}件を退避マージ (巻き戻し阻止):")
         for d, n in added:
             print(f"    + {d} {n}")
+    # #169: 天候・馬場の巻き戻し阻止 (空 → origin の非空の値。上の補填と独立に必ず行う)
+    try:
+        filled = fill_race_meta('keiba.db', ORIGIN_TMP)
+        if any(filled.values()):
+            print(f"🛡 race-meta guard: origin から天候 {filled['weather']}件・馬場 "
+                  f"{filled['track_condition']}件を取り込み (空で巻き戻すのを阻止, #169)")
+    except Exception as e:
+        print(f"🛡 race-meta guard: 失敗 ({e}) → skip (deploy は継続)")
 
 
 if __name__ == '__main__':

@@ -85,6 +85,7 @@ jobs:
             BODY="$(cat /tmp/raceday_gaps.md)
 
           着順の未収集は collect_results の夜間スイープが直近10日分を自動で拾い直す。ここに残るのはそれでも拾えなかったもの。
+          天候・馬場の充足率 (#169) は collect_results の夜間スイープが直近21日分を1回2日ずつ自動で取り直す。急ぐ時は collect_results を date=YYYYMMDD (カンマ区切り可) で手動実行。
           結果報告の遅れ配信は自動では行わない — 出す場合は auto_post_x を mode=results・date_override=YYYYMMDD で手動実行。
 
           _feature_parity.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_"

@@ -1014,14 +1014,17 @@ class NetkeibaScraper:
         """レースデータをDBに保存"""
         if not race_data:
             return
-        # #169: 下の INSERT OR REPLACE は空の天候・馬場で既存の正しい値を消す
-        # (10/26 の取り直しで、当日正しく取れていた 10/24・10/25 の稍36・不16 が空になった)。
-        # 新しく取れた値が空なら既存の値を引き継ぐ。天候・馬場以外の列の挙動は変えない。
-        from race_meta import keep_existing_race_meta
-        race_data = keep_existing_race_meta(race_data.get("race_id"), race_data)
 
         with get_db() as conn:
             # レース情報保存
+            # #169: 下の INSERT OR REPLACE は空の天候・馬場で既存の正しい値を消す
+            # (10/26 の取り直しで、当日正しく取れていた 10/24・10/25 の稍36・不16 が空になった)。
+            # 新しく取れた値が空なら既存の値を引き継ぐ。天候・馬場以外の列の挙動は変えない。
+            # (関数冒頭でなくここに置くのは、同じ関数の冒頭に入る E 班の日付ガードと別の位置にして
+            #  merge で衝突させないため。ガードは race_data をその場で直し、こちらはその後の値から
+            #  コピーを作るので、どちらが先でも保存される値は同じ)
+            from race_meta import keep_existing_race_meta
+            race_data = keep_existing_race_meta(race_data.get("race_id"), race_data, conn=conn)
             conn.execute("""
                 INSERT OR REPLACE INTO races
                 (race_id, race_date, venue, race_number, race_name, grade,

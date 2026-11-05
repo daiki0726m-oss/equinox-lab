@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bs4 import BeautifulSoup  # noqa: E402
 from race_meta import (parse_weather_track, normalize_track_condition,  # noqa: E402
                        normalize_weather, keep_existing_race_meta, meta_fill_rates,
-                       low_meta_fill_dates)
+                       low_meta_fill_dates, pick_meta_refetch_dates)
 
 FAILS = []
 
@@ -131,6 +131,47 @@ page = BeautifulSoup(
 info = NetkeibaScraper._parse_race_info(None, page, "202608041102")
 check("scraper 新書式", (info["weather"], info["track_condition"], info["surface"], info["race_date"]),
       ("曇", "稍", "ダート", "2026-11-01"))
+
+# ── 自己修復で取り直す開催日の選び方 (輪番、#169 レビュー) ──
+import datetime as _dt  # noqa: E402
+_jst = _dt.timezone(_dt.timedelta(hours=9))
+_low = [{"race_date": d} for d in ("2026-10-24", "2026-10-25", "2026-10-31", "2026-11-01")]
+_sat20 = pick_meta_refetch_dates(_low, now=_dt.datetime(2026, 11, 7, 20, 5, tzinfo=_jst))
+_sat22 = pick_meta_refetch_dates(_low, now=_dt.datetime(2026, 11, 7, 22, 5, tzinfo=_jst))
+check("土曜 20時と22時の2回で4日すべてを取り直す", sorted(_sat20 + _sat22),
+      ["2026-10-24", "2026-10-25", "2026-10-31", "2026-11-01"])
+check("1回は最大2日", (len(_sat20), len(_sat22)), (2, 2))
+check("着順の取り直しと重複しない", "2026-11-01" in pick_meta_refetch_dates(
+    _low, exclude=["2026-11-01"], now=_dt.datetime(2026, 11, 8, 20, 5, tzinfo=_jst)), False)
+check("2日以下ならそのまま (新しい順)", pick_meta_refetch_dates(_low[:2]), ["2026-10-25", "2026-10-24"])
+# 埋まらない日が2日あっても、残りの日が毎回後回しにはならない (旧: 新しい順の先頭2日に固定)
+_seen = set()
+for _h in range(0, 24, 2):
+    _seen.update(pick_meta_refetch_dates(_low, now=_dt.datetime(2026, 11, 9, _h, 0, tzinfo=_jst)))
+check("輪番で全日に順番が回る", sorted(_seen), ["2026-10-24", "2026-10-25", "2026-10-31", "2026-11-01"])
+
+# ── commit 直前の巻き戻し阻止: 空の天候・馬場だけを origin の値で埋める (db_pack のガード) ──
+import tempfile  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from db_guard_future_races import fill_race_meta  # noqa: E402
+with tempfile.TemporaryDirectory() as _td:
+    _lp, _op = os.path.join(_td, "local.db"), os.path.join(_td, "origin.db")
+    for _p, _rows in ((_lp, [("A", "", ""), ("B", "晴", ""), ("C", "雨", "重"), ("D", "", "")]),
+                      (_op, [("A", "曇", "稍"), ("B", "雨", "不"), ("C", "晴", "良"), ("D", "", "")])):
+        _c = sqlite3.connect(_p)
+        _c.execute("CREATE TABLE races (race_id TEXT PRIMARY KEY, weather TEXT, track_condition TEXT)")
+        _c.executemany("INSERT INTO races VALUES (?,?,?)", _rows)
+        _c.commit()
+        _c.close()
+    _n = fill_race_meta(_lp, _op)
+    _c = sqlite3.connect(_lp)
+    _got = {r[0]: (r[1], r[2]) for r in _c.execute("SELECT * FROM races")}
+    _c.close()
+    check("空は origin で埋める", _got["A"], ("曇", "稍"))
+    check("非空の local は変えない (片方だけ空)", _got["B"], ("晴", "不"))
+    check("非空の local は変えない", _got["C"], ("雨", "重"))
+    check("origin も空なら空のまま", _got["D"], ("", ""))
+    check("埋めた件数", _n, {"weather": 1, "track_condition": 2})
 
 if FAILS:
     print(f"❌ {len(FAILS)} 件失敗")

@@ -181,3 +181,25 @@ def low_meta_fill_dates(conn, date_from, date_to, threshold=0.9):
     """天候か馬場の充足率が threshold 未満の開催日 (meta_fill_rates の部分集合)。"""
     return [r for r in meta_fill_rates(conn, date_from, date_to)
             if r["weather"] < threshold or r["track"] < threshold]
+
+
+def pick_meta_refetch_dates(low, exclude=(), now=None, k=2):
+    """collect_results の自己修復で、天候・馬場を取り直す開催日を最大 k 日選ぶ (#169)。
+
+    low: low_meta_fill_dates() の結果。exclude: 着順の欠けなど別の理由で既に取り直す日。
+
+    新しい順に並べ、取り出す位置を実行ごとにずらす (状態ファイルを持たない輪番)。
+    「新しい順に先頭 k 日」だけだと、取り直しても埋まらない開催日 (ある場の結果ページに
+    天候が出ない等) が先頭にあると、その日が窓 (21日) を抜けるまで毎回選ばれ続け、
+    それより古い開催日がずっと後回しになる (#169 レビュー)。取り直して埋まった日は
+    low から消えるので、普段 (全部埋まる時) は輪番でも数回の実行で全日が埋まる。
+    位置は JST の (日付, 2時間刻み) から決める: 土日 20:00 と 22:00 の回で別の k 日になる。
+    """
+    import datetime as _dt
+    cand = sorted({r["race_date"] for r in low} - set(exclude), reverse=True)
+    if len(cand) <= k:
+        return cand
+    now = now or _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9)))
+    turn = now.date().toordinal() * 12 + now.hour // 2
+    start = (turn * k) % len(cand)
+    return [cand[(start + i) % len(cand)] for i in range(k)]

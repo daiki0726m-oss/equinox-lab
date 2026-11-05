@@ -72,9 +72,16 @@ def main():
             if rows:
                 gaps.append(f"{d}: 着順が未収集 {len(rows)}R — "
                             + "、".join(f"{v}{n}R {nm}" for v, n, nm in rows))
-            # #169: 天候・馬場の充足率。10/26 前後の netkeiba の書式変更で天候が全レース・
-            # 稍重/不良が空で保存され、10日間誰も気づかなかった (検知する仕組みが無かった)。
-            # 確定済みレースのうち天候か馬場が埋まっている割合が 90% 未満なら知らせる。
+        marks = _load(os.path.join(DATA, f"posted_marks_{d8}.json"))
+        slots = (_load(os.path.join(DATA, f"posted_slots_{d8}.json")) or {}).get("slots") or {}
+        if marks and "results" not in slots:
+            gaps.append(f"{d}: 予想は投稿済み (posted_marks あり) だが結果報告が未配信 "
+                        f"(posted_slots に results が無い)")
+        # #169: 天候・馬場の充足率。10/26 前後の netkeiba の書式変更で天候が全レース・
+        # 稍重/不良が空で保存され、10日間誰も気づかなかった (検知する仕組みが無かった)。
+        # 確定済みレースのうち天候か馬場が埋まっている割合が 90% 未満なら知らせる。
+        # (ループの末尾に置くのは、着順の検査の直後に入る E 班の検査と merge で衝突させないため)
+        if conn is not None:
             try:
                 from race_meta import meta_fill_rates
                 _next = (dt.date.fromisoformat(d) + dt.timedelta(days=1)).isoformat()
@@ -87,11 +94,6 @@ def main():
                             f"collect_results の夜間スイープが直近21日分を1回2日ずつ取り直す")
             except Exception as _e:
                 print(f"⚠️ 天候・馬場の充足率を調べられない ({d}): {_e}")
-        marks = _load(os.path.join(DATA, f"posted_marks_{d8}.json"))
-        slots = (_load(os.path.join(DATA, f"posted_slots_{d8}.json")) or {}).get("slots") or {}
-        if marks and "results" not in slots:
-            gaps.append(f"{d}: 予想は投稿済み (posted_marks あり) だが結果報告が未配信 "
-                        f"(posted_slots に results が無い)")
 
     print(f"🔎 開催日の完了検査: {', '.join(days)}")
     if not gaps:

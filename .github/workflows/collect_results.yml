@@ -110,20 +110,20 @@ jobs:
           # 10/26 前後に netkeiba の書式が変わり、天候は全レース・稍重/不良も空で保存されていた
           # (10/24・10/25 は当日正しかった値を 10/26 の取り直しが空で上書き)。パーサーを直した後、
           # 取り直せば埋まる。netkeiba への取得が過大にならないよう、この基準で足すのは
-          # 1回の実行で新しい順に最大2日 (1日 = 一覧1 + 結果ページ 24〜36)。パーサーが再び
+          # 1回の実行で最大2日 (1日 = 一覧1 + 結果ページ 24〜36 + 配当)。パーサーが再び
           # 壊れても毎回2日ずつしか増えず、日次の完了検査 (check_raceday_completeness) が Issue で知らせる。
+          # 選び方は「新しい順 + 実行ごとに位置をずらす輪番」(race_meta.pick_meta_refetch_dates)。
+          # 取り直しても埋まらない日が先頭に居座って古い日を後回しにしないため (#169 レビュー)。
           import sys
           try:
-              from race_meta import low_meta_fill_dates
+              from race_meta import low_meta_fill_dates, pick_meta_refetch_dates
               lo21 = (today - dt.timedelta(days=21)).isoformat()
               with get_db() as c:
                   low = low_meta_fill_dates(c, lo21, today.isoformat())
               for r in low:
                   print(f"🌦 {r['race_date']}: 天候 {r['weather']:.0%} / 馬場 {r['track']:.0%} "
                         f"({r['n']}R)", file=sys.stderr)
-              extra = [r["race_date"] for r in sorted(low, key=lambda r: r["race_date"], reverse=True)
-                       if r["race_date"] not in dates][:2]
-              dates += extra
+              dates += pick_meta_refetch_dates(low, exclude=dates)
           except Exception as e:
               print(f"⚠️ 天候・馬場の充足率を調べられない: {e}", file=sys.stderr)
           print(" ".join(sorted(d.replace("-", "") for d in dates)))
