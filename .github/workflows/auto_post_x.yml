@@ -349,6 +349,23 @@ jobs:
           fi
           echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE, SCHEDULE=$SCHEDULE, DATE=$TODAY_YYYYMMDD"
 
+          # #169: 日付をまたいで遅れて発火した run の対象日。
+          # 11/01 00:24 に土曜 18:30 の refresh_dashboard cron が 5h55m 遅れて発火し、DATE が
+          # 日曜に切り替わった。確定馬番がまだ origin に無い日曜分を対象に preflight の auto-fix が
+          # 仮馬番のまま予測し、6時間18分ダッシュボードに出た (出走しない馬に◎)。
+          # JST 0〜4時台に動いた「前日の夕方・夜向け」の run (results / refresh_dashboard) は
+          # 本来の対象日 = 前日を対象にする。予測の自動修復は過去日には走らない (preflight #169)。
+          LATE_NIGHT=0
+          if [ -z "$DATE_OVERRIDE" ] && [ "$((10#$HOUR))" -le 4 ]; then LATE_NIGHT=1; fi
+          shift_to_yesterday() {
+            local y
+            y=$(TZ=Asia/Tokyo date -d '1 day ago' +%Y%m%d 2>/dev/null \
+                || TZ=Asia/Tokyo date -v-1d +%Y%m%d)
+            echo "🌙 JST ${HOUR}時 (日付またぎ) の $1 → 対象日を前日 $y にする (#169)"
+            TODAY_YYYYMMDD="$y"
+            TODAY_HYPHEN="${y:0:4}-${y:4:2}-${y:6:2}"
+          }
+
           # ── 🆕 #88: fetch_weekend_races 完了トリガー → 即 predict (土日のみ) ──
           # fetch (5:00) が終わった直後に予測を回し、7:00 cron を待たずに ~6時前に反映する。
           # 平日の fetch (来週末レース登録) では予測不要 (レースは数日先) なので skip。
@@ -368,6 +385,11 @@ jobs:
 
           # ── dispatch からの直接モード指定 (watchdog/race_day_runner/手動) ──
           if [ "$MODE" != "" ] && [ "$MODE" != "auto" ]; then
+            # #169: 18:30 の dispatch (race_day_runner の safety net 等) が concurrency の待ちで
+            # 0時を越えて始まった場合も同じ (results / refresh_dashboard だけ。他は呼び出し側の意図どおり)
+            if [ "$LATE_NIGHT" = "1" ] && { [ "$MODE" = "results" ] || [ "$MODE" = "refresh_dashboard" ]; }; then
+              shift_to_yesterday "$MODE (dispatch)"
+            fi
             echo "type=$MODE" >> $GITHUB_OUTPUT
             echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
             echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
@@ -419,6 +441,33 @@ jobs:
               fi
               ;;
           esac
+
+          # #169: 日付をまたいで遅れて発火した「当日向け」の cron。
+          #   results / refresh_dashboard → 0〜4時台なら前日 (結果・配当の取りこぼしを拾う)
+          #   odds_flash / post_predict   → skip。cron は予定より早くは発火しないので、
+          #     「今の JST 時刻 < その cron の予定時刻」なら前日の分が遅れて来たもの
+          #     (例: 土 10:15 の post_predict が日 07:15 に来ると、日曜の予想を 10:15 より前に
+          #      投稿してしまう。post_x の predict には 12:00 の上限しか無く下限が無い)。
+          #     当日分は当日の cron が担う。
+          #   predict (04:00 cron など) は当日朝の正規の時間帯なので対象外。平日の
+          #   morning/weekday/evening は日付を使わず、post_x 側の時間ガードが遅延発火を止める。
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            case "$TYPE" in
+              results|refresh_dashboard)
+                if [ "$LATE_NIGHT" = "1" ]; then shift_to_yesterday "$TYPE (cron)"; fi ;;
+              odds_flash|post_predict)
+                read -r _CM _CH _CREST <<< "$SCHEDULE"
+                if [[ "$_CM" =~ ^[0-9]+$ ]] && [[ "$_CH" =~ ^[0-9]+$ ]]; then
+                  _PLANNED=$(( ((10#$_CH + 9) % 24) * 60 + 10#$_CM ))   # cron は UTC → JST の分
+                  _NOWMIN=$(( 10#$HOUR * 60 + 10#$(TZ=Asia/Tokyo date +%M) ))
+                  if [ "$_NOWMIN" -lt "$_PLANNED" ]; then
+                    printf '🌙 JST %s時に発火した %s (予定 %02d:%02d) = 前日の cron の遅延 → skip (#169)\n' \
+                      "$HOUR" "$TYPE" $((_PLANNED / 60)) $((_PLANNED % 60))
+                    TYPE="skip"
+                  fi
+                fi ;;
+            esac
+          fi
 
           echo "type=$TYPE" >> $GITHUB_OUTPUT
           echo "📬 Determined type (schedule-mapped): $TYPE"
@@ -475,6 +524,9 @@ jobs:
           # refresh_entries が確定版に同期して初めて正しい予想になる (実測: 枠順 37→455頭、
           # 所要80秒)。失敗を握り潰して predict に進むと **間違った馬番で配信する**ので、
           # 失敗したら予測せず run を落として可視化する。timeout は実測80秒に対し余裕を持たせる。
+          # #169: refresh_entries.py は旧版だと取得に失敗したレースがあっても終了コード0で、
+          # このゲートは timeout と例外でしか効いていなかった。今は「仮馬番のまま取り直せない
+          # レースがある」時に非0を返す (判定は refresh_entries.py の1か所)。
           echo "🏇 確定馬番を更新..."
           if ! timeout 420 python refresh_entries.py --date "$DATE"; then
             echo "❌ 確定馬番の更新に失敗 — 仮馬番のまま予測すると馬番と馬名がズレるため中止"
@@ -543,14 +595,23 @@ jobs:
           DATE="${{ steps.determine.outputs.date }}"
           JST_HOUR=$(TZ=Asia/Tokyo date +%H)
           # 🆕 確定馬番リフレッシュ (#44): オッズ取得前に馬番を確定版に揃える
+          # #169: 旧版は失敗しても「続行」で再予測まで進んでいた。取り直せなければ
+          # 再予測はしない (既存の予測を残す)。オッズの更新は馬番に関係なく続けてよい
+          # (オッズは確定馬番で付くので、後で取り直しが通れば正しい馬に揃う)。
           echo "🏇 確定馬番を更新..."
-          timeout 420 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 続行"
+          ENTRIES_OK=1
+          if ! timeout 420 python refresh_entries.py --date "$DATE"; then
+            ENTRIES_OK=0
+            echo "⚠️ 確定馬番を取り直せない → オッズ更新のみ行い、再予測はしない (#169)"
+          fi
           echo "📡 ${DATE} の最新オッズを取得..."
           timeout 420 python refresh_odds.py --date "$DATE"
-          
+
           # 10時以降は再予測しない（オッズ更新のみ）
           if [ "$JST_HOUR" -ge 10 ]; then
             echo "🔒 JST ${JST_HOUR}時: 10時以降のため再予測をスキップ"
+          elif [ "$ENTRIES_OK" != "1" ]; then
+            echo "🚫 確定馬番の取り直しに失敗したため再予測しない (既存の予測を残す #169)"
           else
             echo "🧠 オッズ反映後に再予測..."
             python predict.py predict --date "$DATE"
@@ -587,7 +648,7 @@ jobs:
                   r11 = [r for r in ids if r.endswith('11')]
                   print(f'  {ds}: {len(r11)}件の11R')
                   for rid in r11:
-                      data = scraper.scrape_shutuba(rid)
+                      data = scraper.scrape_shutuba(rid, race_date_hint=ds)  # #169: 日付を空で保存しない
                       if data:
                           scraper.save_race_to_db(data)
                           print(f'    ✅ {data[\"race_name\"]}')
@@ -708,6 +769,25 @@ jobs:
           # #106: predict系で export が「レースなし」等で空振りしたら fail させて見える化
           TYPE="${{ steps.determine.outputs.type }}"
           if [ "$TYPE" = "predict" ] || [ "$TYPE" = "post_predict" ] || [ "$TYPE" = "odds_flash" ]; then
+            # #169: 開催当日に馬番が未確定 (仮馬番) の予測を公開しない。判定の本体は
+            # export_predictions.py (書き込み側) にあり、レースごとに「未確定なら前の版を残す /
+            # 前の版も無ければ書かない」を全 export 経路 (runner・refresh_dashboard・results 等) で
+            # 行う。ここは念のための後段: origin の版 (HEAD) より未確定が増えた時だけ戻す。
+            # 旧版は1レースでも未確定なら JSON 全体を戻しており、HEAD の方が悪い (未確定が多い)
+            # 時にもそれを残し、他のレースの新しい予測まで止めていた。
+            P="docs/data/predictions_${DATE}.json"
+            if [ -f "$P" ] && [ "$DATE" = "$(TZ=Asia/Tokyo date +%Y%m%d)" ]; then
+              UNC=$(python3 scripts/prediction_gate.py --unconfirmed "$P" 2>/dev/null || echo 0)
+              HEAD_UNC=$(git show "HEAD:$P" 2>/dev/null | python3 scripts/prediction_gate.py --unconfirmed - 2>/dev/null || echo "")
+              if [ "${UNC:-0}" -gt 0 ]; then
+                if [ -n "$HEAD_UNC" ] && [ "$UNC" -le "$HEAD_UNC" ]; then
+                  echo "::warning::馬番未確定のレースが ${UNC}R 残る (origin の版は ${HEAD_UNC}R) → 悪化していないので公開する (#169)"
+                else
+                  echo "::error::馬番未確定のレースが ${UNC}R (origin の版は ${HEAD_UNC:-無し}) → この版は公開しない (#169)"
+                  git checkout HEAD -- "$P" 2>/dev/null || rm -f "$P"
+                fi
+              fi
+            fi
             if [ ! -f "docs/data/predictions_${DATE}.json" ]; then
               echo "❌ export後に predictions_${DATE}.json が存在しない"
               exit 1

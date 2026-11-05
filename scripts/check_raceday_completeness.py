@@ -68,6 +68,19 @@ def main():
             if rows:
                 gaps.append(f"{d}: 着順が未収集 {len(rows)}R — "
                             + "、".join(f"{v}{n}R {nm}" for v, n, nm in rows))
+        # #169: 公開した予測に馬番が未確定のレースが残ったまま終わった日 (11/01 は 00:35〜06:53 に
+        # 仮馬番の予測が出ていた)。最終版の JSON に残っていれば、その日は作り直されないまま終わっている
+        pred = _load(os.path.join(DATA, f"predictions_{d8}.json"))
+        if pred:
+            try:
+                import prediction_gate
+                s = prediction_gate.summarize(pred)
+                if s["unconfirmed"]:
+                    # withheld (馬番未確定で公開しなかったレース) も含む: どちらも作り直されずに終わった
+                    gaps.append(f"{d}: 馬番未確定のまま (仮馬番の版のまま or 非公開) 終わったレース {s['unconfirmed']}R — "
+                                + "、".join(s["unconfirmed_labels"][:8]))
+            except ImportError:
+                pass
         marks = _load(os.path.join(DATA, f"posted_marks_{d8}.json"))
         slots = (_load(os.path.join(DATA, f"posted_slots_{d8}.json")) or {}).get("slots") or {}
         if marks and "results" not in slots:

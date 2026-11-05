@@ -363,18 +363,42 @@ def main():
         _ds = today.strftime("%Y%m%d")
         _path = os.path.join(REPO_ROOT, "docs", "data", f"predictions_{_ds}.json")
         _n, _exported = 0, None
+        _unconf = []   # #169: 馬番が未確定のまま公開されているレース
         try:
             with open(_path, encoding="utf-8") as _f:
                 _j = json.load(_f)
             _n = int(_j.get("total_races") or 0)
             _exported = _j.get("exported_at") or _j.get("generated_at")
+            # #169: 11/01 は仮馬番のまま予測した JSON (24R 中 23R) を「予測あり」と判定し、
+            # 02:25・05:30 の watchdog が作り直しを起動しなかった。開催当日に馬番が
+            # 未確定のレースが1つでもあれば作り直す (predict は確定馬番の取り直しを経由する)。
+            sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+            import prediction_gate as _pg
+            _s = _pg.summarize(_j)
+            _unconf = _s["unconfirmed_labels"]
+            _n = _s["ready"] if _s["total"] else _n
         except Exception:
             pass
-        if _n < 1:
+        if _unconf and today.hour >= 10:
+            # #169: 10時以降は predict が確定済み予測を保護して作り直さないので、
+            # dispatch しても空打ちになる。記録だけ残して人に見えるようにする
+            # (fallback_mode 無しで missing_slots に入れると watchdog が mode なしで
+            #  auto_post_x を起動し、時刻フォールバックで別の投稿 type になりうる)。
+            # 全レースが未確定 (_n=0) でも同じ: cache はあるので predict は作り直さず、
+            # dispatch のたびに出馬表の取り直しと keiba.db.gz の push だけが走る。
+            # 10時以降に予測を作らせるのは「JSON が無い/空」の時だけ (下の分岐)
+            _ev = {"slot": "dashboard_predictions", "status": "stale_numbers",
+                   "expected": "開催日は常時",
+                   "actual": f"{_n}レース + 馬番未確定 {len(_unconf)}R (exported_at={_exported})",
+                   "note": f"馬番未確定のまま公開: {', '.join(_unconf[:8])} (#169)"}
+            results["summary"]["stale_numbers"] = results["summary"].get("stale_numbers", 0) + 1
+        elif _n < 1 or _unconf:
             _ev = {"slot": "dashboard_predictions", "status": "missing",
                    "expected": "開催日は常時", "deadline": "1R発走まで",
                    "fallback_mode": "predict", "workflow": "auto_post_x.yml",
-                   "note": f"docs/data/predictions_{_ds}.json が無い/空 = ダッシュボードが404"}
+                   "note": (f"馬番未確定のまま公開: {', '.join(_unconf[:8])} → 作り直す (#169)"
+                            if _unconf else
+                            f"docs/data/predictions_{_ds}.json が無い/空 = ダッシュボードが404")}
             missing_slots.append({"slot": "dashboard_predictions",
                                   "workflow": "auto_post_x.yml",
                                   "fallback_mode": "predict"})

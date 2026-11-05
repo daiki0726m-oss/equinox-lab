@@ -930,8 +930,15 @@ class NetkeibaScraper:
     # =========================================================
     # 出馬表（未来レース）の取得
     # =========================================================
-    def scrape_shutuba(self, race_id):
-        """出馬表をスクレイピング（当日レース予測用）"""
+    def scrape_shutuba(self, race_id, race_date_hint=None):
+        """出馬表をスクレイピング（当日レース予測用）
+
+        race_date_hint: そのレースを見つけた一覧の日付 (YYYYMMDD / YYYY-MM-DD)。
+        #169: ページの <title> から日付が読めなかった時の既定値。#106 (7/11) と同じ型で、
+        日付が取れないと race_date="" のまま保存され、日付で引く全クエリ
+        (refresh_entries / #159 の DB 合流 / V2d のそろい判定) から見えなくなる。
+        一覧の日付はそのレースの開催日そのものなので、読めた日付が無い時だけ使う。
+        """
         url = f"{self.BASE_URL}/race/shutuba.html?race_id={race_id}"
         resp = self._get(url, encoding="EUC-JP")
         if not resp:
@@ -940,6 +947,12 @@ class NetkeibaScraper:
         soup = BeautifulSoup(resp.text, "lxml")
         race_data = {"race_id": race_id}
         race_data.update(self._parse_race_info(soup, race_id))
+        if not race_data.get("race_date") and race_date_hint:
+            _h = str(race_date_hint).replace("-", "")
+            if len(_h) == 8 and _h.isdigit():
+                race_data["race_date"] = f"{_h[:4]}-{_h[4:6]}-{_h[6:8]}"
+                print(f"  📅 {race_id}: ページから日付が読めない → 一覧の日付 "
+                      f"{race_data['race_date']} を使用 (#169)")
 
         entries = []
         table = soup.find("table", class_="ShutubaTable") or soup.find("table", class_="RaceTable01")
@@ -1019,6 +1032,9 @@ class NetkeibaScraper:
     def save_race_to_db(self, race_data):
         """レースデータをDBに保存"""
         if not race_data:
+            return
+        # #169: race_date を空で上書きしない / 中身の無いページで既存行を潰さない
+        if self._guard_race_date_overwrite(race_data):
             return
 
         with get_db() as conn:
@@ -1166,6 +1182,46 @@ class NetkeibaScraper:
         # refresh_entries が実際には保存しているのに毎回「0頭」と表示していた。
         _n = len(race_data.get('results') or race_data.get('entries') or [])
         print(f"💾 保存完了: {race_data['race_id']} ({_n}頭, {len(race_data.get('payouts', []))}配当)")
+
+    def _guard_race_date_overwrite(self, race_data):
+        """#169: races の INSERT OR REPLACE が既存の正しい日付を空で潰すのを防ぐ。
+
+        #106 (7/11) は cmd_collect にだけ「日付を必ず埋める」修正が入り、出馬表を保存する
+        他の経路 (refresh_entries は毎朝その日の全レース・fetch_weekend_races・preflight の
+        auto-fix) には入っていなかった。ページから日付が読めない時にこれらが race_date=""
+        で保存すると、日付で引くクエリ全部からそのレースが消える (#85/#106 と同じ壊れ方)。
+
+        - race_date が空なら、DB の既存行の日付を引き継ぐ (scrape_shutuba の
+          race_date_hint で一覧の日付が入っていればそれが優先)。
+        - 出走馬も着順も無いページ (週中の一覧にリンクだけ出ている新馬など) で、
+          既に出走馬が入っている行を上書きしない (中身の無い行で race_name 等も消える)。
+
+        戻り値: True なら保存しない (呼び出し側はそのまま return する)。
+        """
+        rid = race_data.get("race_id")
+        if not rid:
+            return False
+        try:
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT race_date, (SELECT COUNT(*) FROM results WHERE race_id = ?) AS n "
+                    "FROM races WHERE race_id = ?", (rid, rid)).fetchone()
+        except Exception:
+            return False
+        if not row:
+            if not race_data.get("race_date"):
+                print(f"  ⚠️ {rid}: 日付不明のまま新規保存 (一覧の日付が渡されていない) #169")
+            return False
+        old_date = row[0] or ""
+        n_old = row[1] or 0
+        records = race_data.get("results") or race_data.get("entries") or []
+        if not records and n_old > 0:
+            print(f"  🛡 {rid}: 出走馬の無いページ → 既存の行 ({n_old}頭) を上書きしない (#169)")
+            return True
+        if not race_data.get("race_date") and old_date:
+            race_data["race_date"] = old_date
+            print(f"  🛡 {rid}: ページから日付が読めない → 既存の日付 {old_date} を維持 (#169)")
+        return False
 
     # =========================================================
     # 一括収集

@@ -100,11 +100,20 @@ def locked_slots(day8):
 
 
 def predictions_ready(day8):
-    """公開済み予測JSONのレース数。export_predictions.py は
-    {date, total_races, venues:{場名:[race,...]}, ...} を書く。"""
+    """公開済み予測JSONのうち「予測あり」と数えてよいレース数。export_predictions.py は
+    {date, total_races, venues:{場名:[race,...]}, ...} を書く。
+
+    #169: 馬番が未確定 (numbers_confirmed=False) のレースは数えない。11/01 は仮馬番の
+    予測 JSON があったせいで watchdog が「予測あり」と判定し、作り直しを起動しなかった。
+    判定は scripts/prediction_gate.py の1か所。"""
     d = _load(os.path.join(DATA, f"predictions_{day8}.json"))
     if not d:
         return 0
+    try:
+        import prediction_gate
+        return prediction_gate.ready_race_count(d)
+    except ImportError:
+        pass
     if isinstance(d, list):
         return len(d)
     n = d.get("total_races")

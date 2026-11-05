@@ -29,6 +29,8 @@ predict.py / post_x.py には再発防止を入れたが、過去レースの DB
       ・API >= 5 頭 (取得失敗・部分取得を弾く)
       ・API ⊆ DB (API にしか無い馬番があれば「出走馬欠落」別バグ → スキップ)
       ・DB 行数 > API 頭数 (余剰が証明できる時のみ。等しい/少ないなら削除しない)
+      ・DB の馬番が確定済み (枠番あり) で、削除するのは枠番の無い行だけ (#169: 仮馬番の
+        DB で発火して実在の1着馬2頭を消した 2026-11-01 の事故の再発防止)
     → 開催済レースには **一切適用しない** (取消・競走中止馬の誤削除を防ぐ)。
 
 デフォルトは dry-run (検出のみ)。実削除は --apply。
@@ -123,7 +125,7 @@ def _races_in_scope(conn, date_iso: str | None, since_iso: str | None) -> list[d
 def _race_rows(conn, race_id: str) -> list[dict]:
     rows = conn.execute(
         """SELECT re.horse_number, re.horse_id, re.finish_position, re.odds,
-                  re.popularity, h.horse_name
+                  re.popularity, re.post_position, h.horse_name
            FROM results re LEFT JOIN horses h ON re.horse_id = h.horse_id
            WHERE re.race_id = ? ORDER BY re.horse_number""",
         (race_id,),
@@ -211,8 +213,22 @@ def detect_criterion_b(rows: list[dict], api_nums: set[int] | None,
 
     rows は finish>0 が1つも無い (未開催) レースの全行であること。
     already は基準(A)で既に幽霊判定済の horse_number 集合。
+
+    🚨 #169 (2026-11-01 の事故): この基準は「DB の馬番が確定済み」を前提にしている。
+    DB が仮馬番 (五十音順 1..15) のまま API の確定馬番 (1..14) と番号の集合で突き合わせると、
+    五十音順の末尾にいた **実在の出走馬** を幽霊として消す。実害: 紅葉S ミッキーソルジャー
+    (1人気→1着)・京都1R ルージュミスティカ (2人気→1着) を削除し、紅葉S の◎が出走しない馬に。
+    ガード (#27/#150 と同じ「post_position=枠番 が入っているか」で確定を判定):
+      (1) レースの DB 行に枠番が1つも入っていない (= 全行が仮馬番) なら発火しない。
+          その状態で必要なのは削除ではなく確定馬番の取り直し (refresh_entries) で、
+          取り直しの同期削除 (#43) が余った仮馬番を正しく消す。
+      (2) 削除候補は「枠番が入っていない行」(確定版の出馬表に一度も載っていない行) だけ。
+          枠番のある行は確定版の出馬表から来た実在の馬なので、API に無くても消さない
+          (取消・除外でオッズ API から抜けた馬を守る)。
     """
     if api_nums is None or len(api_nums) < API_MIN_HORSES:
+        return []
+    if not any((r.get("post_position") or 0) > 0 for r in rows):
         return []
     db_nums = {r["horse_number"] for r in rows}
     # API にしか無い馬番がある = DB 側で出走馬欠落 (別バグ)。誤削除回避のためスキップ。
@@ -225,7 +241,8 @@ def detect_criterion_b(rows: list[dict], api_nums: set[int] | None,
     ghosts = []
     for r in rows:
         hn = r["horse_number"]
-        if hn in extras and hn not in already and _fin(r) == 0:
+        if (hn in extras and hn not in already and _fin(r) == 0
+                and not (r.get("post_position") or 0) > 0):
             ghosts.append({
                 **r,
                 "reason": f"API実出走({len(api_nums)}頭)に馬番{hn}が不在(余剰幽霊)",
@@ -366,12 +383,24 @@ def remove_ghosts(date: str | None = None, months: int | None = 6,
 
 
 def repredict_and_export(dates: list[str], verbose: bool = True) -> None:
-    """幽霊除去後の該当日を再予測 + 再 export。"""
+    """幽霊除去後の該当日を再予測 + 再 export。
+
+    #169: 再予測の前に確定馬番を取り直し、失敗した日は予測しない (既存の予測を残す)。
+    また過去日は再予測しない (発走後に印を作り直すと後出しになる #99)。
+    """
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from refresh_entries import ensure_confirmed_entries
+    today = now_jst().strftime("%Y%m%d")
     for iso in dates:
         ymd = iso.replace("-", "")
+        if ymd < today:
+            print(f"\n⏭️ {ymd} は過去日 → 再予測しない (後出しの印を作らない #99/#169)")
+            continue
         if verbose:
             print(f"\n🔄 {ymd} を再予測中...")
+        if not ensure_confirmed_entries(ymd):
+            print(f"  🚫 {ymd}: 確定馬番を取り直せない → 再予測しない (既存の予測を残す #169)")
+            continue
         try:
             r = subprocess.run(
                 ["python3", "predict.py", "predict", "--date", ymd, "--force"],
