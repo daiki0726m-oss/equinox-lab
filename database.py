@@ -149,8 +149,9 @@ def init_db(db_path=None):
                 conf_reason TEXT,                   -- 信頼度理由
                 should_bet INTEGER DEFAULT 1,
                 bet_reason TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                posted_at TIMESTAMP NULL            -- post_predict 投稿時刻(これが入ったら以降変更不可)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,  -- UTC ('YYYY-MM-DD HH:MM:SS')
+                posted_at TIMESTAMP NULL            -- post_predict 投稿時刻(これが入ったら以降変更不可)。
+                                                    -- #169: UTC の CURRENT_TIMESTAMP 形式に統一 (旧 post_x は JST ISO を書いていた)
             );
 
             -- 収支管理テーブル
@@ -402,19 +403,55 @@ def seal_predictions_for_date(date_str):
     return sealed
 
 
+def posted_race_ids(date_str):
+    """#169: その日に実際に予想投稿したレースID (投稿記録サイドカーの races)。
+
+    正本は docs/data/posted_marks_YYYYMMDD.json (git tracked テキスト、#101/#141)。
+    DB の posted_at (seal) は並行 workflow の push で丸ごと巻き戻ることがあり
+    (10/31・11/01 も 48R 全部 NULL)、それだけを見る凍結判定は効かない。
+    読み方は scripts/preflight_check.py の auto_fix_predictions と同じ (作業ツリーのファイル)。
+    """
+    import json
+    d = str(date_str or "").replace("-", "")[:8]
+    if len(d) != 8:
+        return set()
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "docs", "data", f"posted_marks_{d}.json")
+    if not os.path.exists(p):
+        return set()
+    try:
+        with open(p, encoding="utf-8") as f:
+            return set(((json.load(f) or {}).get("races") or {}).keys())
+    except Exception:
+        return set()
+
+
 def is_prediction_sealed(race_id):
     """そのレースの予測が投稿済み(seal)かを返す。
 
     #41 (2026-06-07): degenerate predictions (全頭均等 = ML flat output) は
     seal されていても sealed=False として扱う → 再 predict --force が可能になる。
     朝の bad prediction が seal で固定される事故 (6/7) の対策。
+
+    #169: DB の posted_at が NULL でも、投稿記録サイドカーに載っていれば凍結する。
+    サイドカーに載る = その版を実際に公開した、なので degenerate の逃げ道も使わない
+    (投稿したレースの予測は以後どの経路でも書き換えない)。cache 行が無い時は
+    「書き換え」ではなく欠落の補充なので止めない。
     """
+    from datetime import datetime, timezone, timedelta
     with get_db() as conn:
         row = conn.execute(
-            "SELECT posted_at, predictions_json FROM predictions_cache WHERE race_id = ?",
+            "SELECT pc.posted_at, pc.predictions_json, r.race_date "
+            "FROM predictions_cache pc LEFT JOIN races r ON r.race_id = pc.race_id "
+            "WHERE pc.race_id = ?",
             (race_id,)
         ).fetchone()
-        if row is None or row['posted_at'] is None:
+        if row is None:
+            return False
+        _rd = row['race_date'] or datetime.now(timezone(timedelta(hours=9))).strftime('%Y%m%d')
+        if race_id in posted_race_ids(_rd):
+            return True
+        if row['posted_at'] is None:
             return False
         # posted_at あり = 通常は sealed だが、degenerate なら escape hatch として上書きを許す
         if _is_degenerate_predictions(row['predictions_json']):

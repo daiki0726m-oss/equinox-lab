@@ -202,7 +202,11 @@ def refresh_odds(date_str, update_track=True):
                 (rid,)
             ).fetchone()
 
-            _sealed = bool(cache and cache['posted_at'])
+            # #169: DB の posted_at だけでは凍結が効かない (並行 push で seal が消え、
+            # 10/31・11/01 は配信レースの cache オッズが投稿時 0/139 頭一致 = 発走直前の値に
+            # なっていた)。投稿記録サイドカー (posted_marks_YYYYMMDD.json) に載っていれば凍結。
+            from database import posted_race_ids
+            _sealed = bool(cache and cache['posted_at']) or rid in posted_race_ids(date_str)
             _started = False
             try:
                 from datetime import datetime as _dt, timezone as _tz, timedelta as _td
