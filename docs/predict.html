@@ -1276,6 +1276,9 @@ function siDisp(h) {
 }
 // #169 手直し: si_avg_v は丸めない値 (点数表と同じ順位を出すため)。画面に出す時だけ小数1桁
 function siText(h) { return Math.round(siDisp(h) * 10) / 10; }
+// #169: 枠順確定前の予測 (export の numbers_confirmed=false) は馬番が仮 (五十音順) なので出さない。
+// 予想タブだけが対象 (結果タブは確定後にしか出ない)。X/Threads 側の #27/#150 ガードと同じ扱い
+function numText(h) { return h._provisional ? '–' : h.horse_number; }
 
 // ─── Prediction Tab ───
 function renderPredTab(race) {
@@ -1288,6 +1291,8 @@ function renderPredTab(race) {
     if (ma !== mb) return ma - mb;
     return (b.pred_win_pct || 0) - (a.pred_win_pct || 0);  // #150: JSON は pred_win_pct (pred_win は存在せず常に NaN 比較だった)
   });
+  const provisional = race.numbers_confirmed === false;   // #169
+  sorted.forEach(h => { h._provisional = provisional; });
 
   // Compute category rankings (S/A/B/C/D) within race
   const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
@@ -1341,7 +1346,10 @@ function renderPredTab(race) {
   html += `<div class="bets-title">💰 ${bt}の推奨買い目</div>`;
   html += investStatusHtml(race);   // #169
 
-  if (bets.length === 0) {
+  if (provisional) {
+    // #169: 仮馬番の買い目は、確定後の馬番と別の馬を指すので出さない
+    html += '<div class="no-bets">枠順確定前のため、馬番と買い目は確定後に表示します</div>';
+  } else if (bets.length === 0) {
     html += '<div class="no-bets">この券種の推奨はありません</div>';
   } else {
     let totalIn = 0, totalOut = 0;
@@ -1428,8 +1436,8 @@ function whyScatter(horses, raceId) {
     const r = marked ? 8 : 4;
     sv += `<circle cx="${px(h.odds_win)}" cy="${py(h.pred_top3_pct)}" r="${r}" fill="${col}"`
        + `${marked ? ' stroke="rgba(255,255,255,0.55)" stroke-width="1"' : ''}>`
-       + `<title>${h.mark || ''} ${h.horse_number} ${h.horse_name || ''} / ${h.odds_win}倍 / AI複勝${h.pred_top3_pct}%</title></circle>`;
-    if (marked) sv += `<text x="${px(h.odds_win)}" y="${py(h.pred_top3_pct)+3}" text-anchor="middle" font-size="8" font-weight="700" fill="#0B1220">${h.horse_number}</text>`;
+       + `<title>${h.mark || ''} ${numText(h)} ${h.horse_name || ''} / ${h.odds_win}倍 / AI複勝${h.pred_top3_pct}%</title></circle>`;
+    if (marked) sv += `<text x="${px(h.odds_win)}" y="${py(h.pred_top3_pct)+3}" text-anchor="middle" font-size="8" font-weight="700" fill="#0B1220">${numText(h)}</text>`;
   });
   sv += '</svg>';
   return sv;
@@ -1445,7 +1453,7 @@ function whyBars(h) {
     const max = Math.max(...rs.map(r => Math.abs(r.points))) || 1;
     return `<div class="why-horse">
       <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
-        <span class="why-num">${h.horse_number}</span>
+        <span class="why-num">${numText(h)}</span>
         <span class="why-name">${h.horse_name || ''}</span>
         <span class="why-pts">${h.sc_points > 0 ? '+' : ''}${h.sc_points}点</span></div>
       <div class="why-rows">${rs.map(r => {
@@ -1468,7 +1476,7 @@ function whyBars(h) {
   const top = [...gs].sort((a, b) => b.str - a.str);
   return `<div class="why-horse">
     <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
-      <span class="why-num">${h.horse_number}</span>
+      <span class="why-num">${numText(h)}</span>
       <span class="why-name">${h.horse_name || ''}</span>
       <span class="why-odds">${h.odds_win ? h.odds_win + '倍' : ''}</span></div>
     <div class="why-bars">${top.map(g => `
@@ -1514,7 +1522,7 @@ function renderHorseRow(h, showReasons) {
 
   let html = `<div class="horse-row">
     <div class="horse-mark ${markClass}">${h.mark || ''}</div>
-    <div class="horse-number">${h.horse_number}</div>
+    <div class="horse-number">${numText(h)}</div>
     <div class="horse-detail">
       <div class="horse-name-row">
         <span class="horse-name">${h.horse_name || '不明'}</span>
