@@ -114,6 +114,8 @@ jobs:
           # 🆕 #68 audit: debug 用のため意図的に docs/data/ のみ commit (DB変更は破棄される)。
           # 本番 predict は auto_post_x.yml を使うこと。
           git add docs/data/predictions_*.json docs/data/index.json 2>/dev/null || true
+          # 📸 #169: 公開した予測の予測時点スナップショット (DB と違い残す。別コマンドで add)
+          git add docs/data/snapshots/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "no JSON changes to commit"
           else

@@ -1344,6 +1344,16 @@ def cmd_predict(args):
         print(f"  💾 予測キャッシュを保存 (信頼度: {confidence}, 理由: {conf_reason})")
         _predicted_count += 1
 
+    # 📸 #169: 予測した瞬間の値 (全頭のオッズ・人気・印・確率・馬場) とモデル/点数表/基準表の
+    # 版を、1 run = 1 ファイルのテキストで残す。cache のオッズは後で上書きされ、9時台の再予測は
+    # runner の push で消えるため、ここで残さないと「予測時点」がどこにも無い。既定は CI のみ。
+    # 下の sys.exit(1) より前に置く (メインレース skip で落ちる run でも予測済み分は残す)。
+    try:
+        import prediction_snapshot
+        prediction_snapshot.record_run(race_ids, _skipped_races, args=args, scorecard=_SCORECARD)
+    except Exception as _e:     # 記録の失敗で予測の run を落とさない
+        print(f"⚠️ 予測スナップショットを記録できず: {_e}")
+
     # ─── 完了サマリー + sanity check ───
     print("\n" + "="*60)
     print(f"📊 予測完了: 成功 {_predicted_count}/{len(race_ids)} レース")
