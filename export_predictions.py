@@ -133,6 +133,17 @@ def export_predictions(date_str=None):
                             if _nums and all(_nms):
                                 _b['horse_name'] = "-".join(_nms)
 
+                # #169: 画面の SI を点数表の内訳 (平均スピード指数 N位) と同じ V2d にそろえる。
+                # 新しいキャッシュは predict が si_avg_v を書く (そのまま出る)。キーの無い
+                # 古いキャッシュだけ、内訳の区分と V2d の順位が全件一致した時に補う。
+                try:
+                    from ml.si_display import backfill_cached
+                    _bf = backfill_cached(get_db, race_id, race_date_hyphen, horses)
+                    if _bf not in ("skip", "noevidence"):
+                        print(f"  🔢 {race_id} SI(V2d) の補完: {_bf}")
+                except Exception as _e:
+                    print(f"  ⚠️ {race_id} SI(V2d) の補完に失敗 (旧指数のまま): {_e}")
+
                 # 結果データ取得
                 res_rows = conn.execute("""
                     SELECT r.horse_number, r.finish_position, r.finish_time,

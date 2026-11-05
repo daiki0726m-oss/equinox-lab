@@ -22,6 +22,7 @@ from ml.model import KeibaModel
 from ml.features import FeatureBuilder
 from strategy.betting import BettingStrategy
 from analyzers.speed_index import SpeedIndexCalculator
+from ml.si_display import display_si as _display_si   # #169: 画面・内訳と同じスピード指数
 
 
 def get_race_predictions(date_str, model, strategy):
@@ -769,7 +770,8 @@ def generate_article(date_str, featured_races, all_races, free=False):
         honmei = next((h for h in pr["horses"] if h.get("mark") == "◎"), None)
         if honmei:
             lines.append(f"### ◎{honmei['horse_name']}の推奨根拠\n")
-            lines.append(f"- スピード指数 **{honmei.get('si_avg', 0)}**")
+            # #169: 点数表の内訳・ダッシュボードと同じ指数 (V2d のレースは si_avg_v)
+            lines.append(f"- スピード指数 **{round(_display_si(honmei), 1)}**")
             lines.append(f"- AI勝率 **{honmei['pred_win']}%** — メンバー中1位")
             lines.append("")
 
@@ -829,7 +831,7 @@ def generate_article(date_str, featured_races, all_races, free=False):
                 if h.get("mark"):
                     lines.append(f"| {h['mark']} | {h['horse_number']} | "
                                  f"{h['horse_name']} | {h['pred_win']}% | "
-                                 f"{h.get('si_avg', 0)} |")
+                                 f"{round(_display_si(h), 1)} |")   # #169: 画面と同じ指数
             lines.append("")
 
             # 買い目（券種ごとにベスト1つ・馬番付き）

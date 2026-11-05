@@ -79,7 +79,8 @@ def format_marks(race, by_mark=True):
         pop = h.get('popularity', 0)
         pw = h.get('pred_win_pct', 0)
         rk = h.get('rank_score', 0)
-        si = h.get('si_avg', 0)
+        # #169: 点数表の内訳・ダッシュボードと同じ指数 (si_avg_v がある = 馬場差補正指数 V2d)
+        si = (h.get('si_avg_v') or 0) if 'si_avg_v' in h else (h.get('si_avg', 0) or 0)
         lines.append(f' {num:>2}  | {mark} | {name:<14} | {pop:>3}  |{pw:>5.1f}% | {rk:>+.2f} | {si:>5.1f}')
     return '\n'.join(lines)
 
@@ -111,6 +112,7 @@ def main():
                 'pop': h.get('popularity'),
                 'pred_win_pct': h.get('pred_win_pct'),
                 'si_avg': h.get('si_avg'),
+                'si_avg_v': h.get('si_avg_v'),   # #169: 内訳・画面と同じ指数 (無ければ None)
             }
             for h in race.get('horses', []) if h.get('mark')
         ]

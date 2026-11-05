@@ -178,6 +178,12 @@ def check_models():
             msg = check_si_variant(sm)
             if msg:
                 problems.append(("致命", f"scorecard: {msg}"))
+            # #169: 区分の表示名 (区分境界から作る) が段数と合うか。合わない区分は内訳に
+            # 出さない (内部表記は出さない) ので印・点数は無事 = 警告。v3 で4→5段に変わった
+            # 時はこの検査が無く、内部表記「5/5」が画面に出ていた
+            from ml.scorecard import check_display_bins
+            for _p in check_display_bins(sm):
+                problems.append(("警告", f"scorecard 表示名: {_p}"))
         except Exception as e:
             problems.append(("致命", f"scorecard.pkl 読込失敗: {e} "
                                      f"— MARKS_SCORECARD=1 が silent 無効化される"))

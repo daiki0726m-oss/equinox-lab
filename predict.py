@@ -116,6 +116,11 @@ def _load_scorecard():
                 print(f"  🚨 点数表: {_msg}")
                 print("  🚨 → 指数の区分は現行の si_avg/si_latest で代用して点数表を使う (要対応: "
                       "基準表 models/si_variant_table.json と点数表を揃える)")
+            # #169: 区分の表示名 (区分境界から作る) の検査。合わない区分は内訳に出さない
+            # (内部表記「5/5」は出さない) ので印・点数には影響しないが、黙らせない
+            from ml.scorecard import check_display_bins
+            for _p in check_display_bins(_SCORECARD):
+                print(f"  ⚠️ 点数表の表示名: {_p}")
         else:
             print("  ⚠️ models/scorecard.pkl が無い → 点数表は使えません")
     except Exception as e:
@@ -168,6 +173,18 @@ def _attach_scorecard(pred_df, race_id=None):
         pred_df["_sc_points"] = 0.0
         pred_df["_sc_reasons"] = [[] for _ in range(len(pred_df))]
     return pred_df
+
+
+def _si_display_fields(row):
+    """#169: 点数表が V2d (si_avg_v) で区分を作ったレースだけ、その値をキャッシュに書く。
+    画面の SI・「能」バッジ・Threads の「スピード指数」を内訳の「平均スピード指数 N位」と
+    同じ値にそろえるため (旧指数 si_avg のままだと印馬の4割強で区分と順位が食い違った)。
+    代用モード・点数表なしでは書かない (表示は si_avg = 内訳と同じ値のまま)。"""
+    try:
+        from ml.si_display import fields_from_row
+        return fields_from_row(row, _SCORECARD)
+    except Exception:
+        return {}
 
 
 def cmd_collect(args):
@@ -759,6 +776,7 @@ def cmd_predict(args):
                 "odds_place": odds_place,
                 "_has_real_odds": has_real_odds,
                 "si_avg": round(row.get("si_avg", 0), 1),
+                **_si_display_fields(row),    # #169: si_avg_v / si_latest_v (内訳と同じ指数)
                 "jockey_name": next((r["jockey_name"] for r in results if r["horse_number"] == int(row["horse_number"]) and "jockey_name" in r.keys()), ""),
                 # カテゴリスコア
                 "cat_ability": round(row.get("si_avg", 0), 1),
@@ -1118,7 +1136,10 @@ def cmd_predict(args):
         for i, p in enumerate(sorted_preds):
             pw = p["pred_win"] * 100
             pt = p["pred_top3"] * 100
-            si = p.get("si_avg", 0)
+            # #169: 理由の「SI」も画面と同じ値 (V2d のレースは si_avg_v)。Threads が
+            # 「スピード指数NN」に開いて出すので、内訳・画面と別の数字を出さない
+            from ml.si_display import display_si
+            si = round(display_si(p), 1)
             reasons = []
             if i == 0:
                 if pw >= 40: reasons.append("圧倒的な勝率で本命筆頭")
@@ -1158,6 +1179,8 @@ def cmd_predict(args):
             "odds_win": round(p.get("odds_win", 0), 1),
             "popularity": popularity_map.get(p["horse_number"], 0),
             "si_avg": p.get("si_avg", 0),
+            # #169: 点数表が V2d を読んだレースだけ (キーがある = 内訳の指数は V2d)
+            **{k: p[k] for k in ("si_avg_v", "si_latest_v") if k in p},
             "jockey_name": p.get("jockey_name", ""),
             "cat_ability": p.get("cat_ability", 0),
             "cat_pedigree": p.get("cat_pedigree", 0),

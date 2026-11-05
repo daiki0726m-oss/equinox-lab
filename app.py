@@ -21,6 +21,21 @@ app.config["SECRET_KEY"] = "keiba-prediction-2025"
 JST = timezone(timedelta(hours=9))
 
 
+def _si_display_fields(row):
+    """#169: ライブ予測の行に、点数表が読む馬場差補正指数 (V2d) を表示用に付ける
+    (predict の predictions_cache と同じキー si_avg_v / si_latest_v)。使えなければ空。"""
+    try:
+        from ml.si_display import fields_from_row, scorecard_for_display
+        return fields_from_row(row, scorecard_for_display())
+    except Exception:
+        return {}
+
+
+def _display_si(h):
+    from ml.si_display import display_si
+    return display_si(h)
+
+
 def _bg_result_fetcher():
     """バックグラウンドで5分ごとにレース結果＆オッズを取得"""
     import requests as bg_requests
@@ -330,6 +345,8 @@ def api_predict(race_id):
                 "odds_win": odds_win,
                 "odds_place": max(odds_win * 0.3, 1.1) if odds_win else 1.5,
                 "si_avg": float(row.get("si_avg", 0)),
+                # #169: 画面の SI は点数表の内訳と同じ指数 (V2d が使える時は si_avg_v)
+                **_si_display_fields(row),
             })
 
         bets_result = strategy.generate_bets(predictions)
@@ -768,6 +785,8 @@ def api_predict_date(date_str):
                         "pred_top3": round(pred_top3 * 100, 1),
                         "rank_score": round(float(row.get("rank_score", 0)), 2),
                         "si_avg": round(float(row.get("si_avg", 0)), 1),
+                        # #169: 画面の SI・「能」は点数表の内訳と同じ指数 (si_avg_v があればそれ)
+                        **_si_display_fields(row),
                         "win_rate": round(float(row.get("win_rate_10r", 0)) * 100, 1),
                         "top3_rate": round(float(row.get("top3_rate_10r", 0)) * 100, 1),
                         "odds_win": odds_win,
@@ -798,7 +817,7 @@ def api_predict_date(date_str):
                 _has_marks = any(h.get("mark") for h in horses)
                 sorted_horses = sorted(horses, key=lambda x: x["pred_win"], reverse=True)
                 for i, h in enumerate(sorted_horses):
-                    si = h["si_avg"]
+                    si = round(_display_si(h), 1)    # #169: 画面の SI と同じ値
                     pw = h["pred_win"]
                     pt = h["pred_top3"]
 

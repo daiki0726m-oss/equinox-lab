@@ -80,6 +80,17 @@ def build_spec(df_train, col_map=None):
     return spec
 
 
+def assert_display_bins(model):
+    """#169: 区分の表示名 (ml/scorecard.bin_display_names = 区分境界から作る) が段数と合わない
+    点数表は保存しない。分位で段数が変わる (v3 で「道中の位置取り」4→5段) と、名前の表が
+    追いつかず内部表記「5/5」が画面に出ていた。黙って出荷せず、ここで止める。"""
+    from ml.scorecard import check_display_bins
+    probs = check_display_bins(model)
+    if probs:
+        raise SystemExit("🚨 点数表の区分の表示名が区分境界と合わない (ml/scorecard._BIN_NAMERS を直す):\n  "
+                         + "\n  ".join(probs))
+
+
 # 区分点のロジスティック回帰の収束条件 (#168 レビュー)。sklearn の既定 tol=1e-4 は約30反復で
 # 止まり、出荷の窓1 (17,793R) で目的関数が最適より +1.38 高いまま・係数が最大 0.15 (区分点で
 # 最大約1.4点) ずれていた。tol=1e-8 なら tol=1e-10 / newton-cg と同じ解 (約400反復、窓1で約20秒)。
@@ -364,6 +375,7 @@ def main_lin(args):
         with open(args.report, "w", encoding="utf-8") as f:
             _js.dump(report, f, ensure_ascii=False, indent=1)
 
+    assert_display_bins(model)   # #169
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "wb") as f:
         _pk.dump(model, f)
@@ -573,6 +585,7 @@ def main_f2(args):
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:
             _js.dump(report, f, ensure_ascii=False, indent=1, default=float)
+    assert_display_bins(model)   # #169
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "wb") as f:
         _pk.dump(model, f)
@@ -681,6 +694,7 @@ def main():
     print(f"  上位5頭の捕捉   : {cap5.mean():.2f}頭 / 完全捕捉 {(cap5>=3).mean()*100:.1f}%")
     print(f"  AUC            : {auc:.4f}")
 
+    assert_display_bins(model)   # #169
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "wb") as f:
         pickle.dump(model, f)

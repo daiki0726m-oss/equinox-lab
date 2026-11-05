@@ -201,8 +201,11 @@ def eval_points(horse, horses, stats=None, limit=3):
     if ab_rank and ab_rank <= 3 and pop >= 4:
         pts.append(f"オッズを一切見ない能力評価でも{ab_rank}位")
 
-    si = horse.get("si_avg") or 0
-    si_rank = _rank_of(horses, horse, "si_avg")
+    # #169: 点数表の内訳「平均スピード指数 N位」・画面の SI と同じ値・同じ順位 (V2d のレースは
+    # si_avg_v、同値は同順位)。旧指数 si_avg の順位だと内訳と別の「N位」を出していた
+    from ml.si_display import display_si, si_rank as _si_rank
+    si = display_si(horse)
+    si_rank = _si_rank(horses, horse)
     if si and si_rank and si_rank <= 3:
         pts.append(f"スピード指数{si:.0f}は{n}頭中{si_rank}位")
 

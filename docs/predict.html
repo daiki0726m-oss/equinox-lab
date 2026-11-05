@@ -796,7 +796,7 @@ body {
 /* #149: 点数表の内訳 */
 .why-pts { margin-left:auto; color:var(--gold,#D4A843); font-weight:700; font-size:0.78rem; }
 .why-rows { display:grid; gap:3px; }
-.why-row { display:grid; grid-template-columns:9.5em 1fr 2.6em; gap:6px; align-items:center; }
+.why-row { display:grid; grid-template-columns:11em 1fr 2.6em; gap:6px; align-items:center; }  /* #169: 「近10走の複勝率 3着内なし(5走)」等が切れない幅 */
 .why-row-l { font-size:0.68rem; color:#94A3B8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .why-row-l i { font-style:normal; color:#5A6273; margin-left:3px; }
 .why-row-b { height:6px; background:rgba(148,163,184,.14); border-radius:3px; overflow:hidden; }
@@ -804,7 +804,7 @@ body {
 .why-row-f.minus { background:rgba(148,163,184,.5); }
 .why-row-v { font-size:0.7rem; color:#E2E8F0; text-align:right; font-variant-numeric:tabular-nums; }
 .why-row-v.minus { color:#94A3B8; }
-@media (max-width:480px){ .why-row { grid-template-columns:8em 1fr 2.4em; } }
+@media (max-width:480px){ .why-row { grid-template-columns:10.5em 1fr 2.4em; } }
 </style>
 
 </head>
@@ -1227,6 +1227,14 @@ function switchTab(btn, raceId, tab) {
   document.getElementById(`tab-${tab}-${raceId}`).style.display = 'block';
 }
 
+// #169: 画面の「SI」と「能」バッジは点数表の内訳 (平均スピード指数 N位) と同じ指数で出す。
+// 点数表が馬場差補正指数 (V2d) を読んだレースは JSON に si_avg_v がある (キーがある = V2d)。
+// 旧指数 si_avg のままだと、印馬の4割強で内訳の区分と画面の SI の順位が食い違っていた。
+function siDisp(h) {
+  if (h && Object.prototype.hasOwnProperty.call(h, 'si_avg_v')) return h.si_avg_v || 0;
+  return (h && h.si_avg) || 0;
+}
+
 // ─── Prediction Tab ───
 function renderPredTab(race) {
   const horses = race.horses || [];
@@ -1243,10 +1251,12 @@ function renderPredTab(race) {
   const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
   const CAT_LABELS = ['能','血','騎','場','績','天'];
   CAT_KEYS.forEach((key, idx) => {
-    const vals = sorted.map(h => h[key] || 0).sort((a,b) => b - a);
+    // #169: 「能」は内訳と同じ指数 (cat_ability は旧指数 si_avg)
+    const _v = h => (key === 'cat_ability' ? siDisp(h) : h[key]) || 0;
+    const vals = sorted.map(_v).sort((a,b) => b - a);
     const n = vals.length;
     sorted.forEach(h => {
-      const v = h[key] || 0;
+      const v = _v(h);
       const rank = vals.indexOf(v);
       const pct = n > 1 ? rank / (n - 1) : 0.5;
       let grade;
@@ -1394,8 +1404,11 @@ function whyBars(h) {
       <div class="why-rows">${rs.map(r => {
         const w = Math.round(Math.abs(r.points) / max * 100);
         const minus = r.points < 0;
+        // #169: 内部表記の区分 ("5/5") は出さない (#169 より前に書き出した JSON の救済)。
+        // 新しい JSON は点数表側で区分境界から名前を作るので出てこない
+        const bin = /^\d+\/\d+$/.test(r.bin || '') ? '' : (r.bin || '');
         return `<div class="why-row">
-          <span class="why-row-l">${r.label}<i>${r.bin}</i></span>
+          <span class="why-row-l" title="${r.label} ${bin}">${r.label}<i>${bin}</i></span>
           <span class="why-row-b"><span class="why-row-f${minus ? ' minus' : ''}" style="width:${w}%"></span></span>
           <span class="why-row-v${minus ? ' minus' : ''}">${r.points > 0 ? '+' : ''}${r.points}</span>
         </div>`;
@@ -1463,7 +1476,7 @@ function renderHorseRow(h, showReasons) {
       </div>
       <div class="horse-stats">
         ${(h.odds_win > 0 && h.popularity > 0 && h.popularity < 999) ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span>${h.popularity ? `<span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span>` : ''}</span>` : ((h.odds_win > 0) ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">推定${h.odds_win}倍</span></span>` : ((h.popularity >= 999 || h.odds_win < 0) ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">取消</span></span>` : ''))}
-        <span class="stat">SI <span class="stat-val">${h.si_avg || 0}</span></span>
+        <span class="stat">SI <span class="stat-val">${siDisp(h)}</span></span>
         <span class="stat">AI複勝 <span class="stat-val">${h.pred_top3 || 0}%</span></span>
         <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
         <span class="stat">過去連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>
