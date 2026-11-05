@@ -818,6 +818,8 @@ def api_predict_date(date_str):
                 sorted_horses = sorted(horses, key=lambda x: x["pred_win"], reverse=True)
                 for i, h in enumerate(sorted_horses):
                     si = round(_display_si(h), 1)    # #169: 画面の SI と同じ値
+                    from ml.si_display import si_rank as _si_rank
+                    _sir = _si_rank(horses, h)        # #169 手直し: 内訳・画面と同じ順位
                     pw = h["pred_win"]
                     pt = h["pred_top3"]
 
@@ -837,11 +839,11 @@ def api_predict_date(date_str):
                     elif wr >= 15: reasons.append(f"直近勝率{wr}%で実績あり")
                     if tr >= 50: reasons.append(f"直近複勝率{tr}%で安定感抜群")
                     elif tr >= 30: reasons.append(f"直近複勝率{tr}%で堅実")
-                    if si >= 90: reasons.append(f"SI{si}は出走馬中トップクラス")
-                    elif si >= 80: reasons.append(f"SI{si}で能力上位")
+                    # #169 手直し: 値の絶対しきい値 (90/80) でなく順位で言う (predict.py と同じ)
+                    if _sir and _sir <= 3: reasons.append(f"SI{si}は出走馬中{_sir}位")
                     if pt >= 25: reasons.append("複勝率が非常に高く堅実")
                     elif pt >= 18: reasons.append("複勝圏内の可能性大")
-                    if pw >= 20 and si >= 80: reasons.append("勝率とSIの両面で好材料")
+                    if pw >= 20 and _sir and _sir <= 3: reasons.append("勝率とSIの両面で好材料")
                     if pw == 0 and pt == 0:
                         reasons = ["出走歴なし or 特徴量不足"]
                     elif pw == 0 and pt > 0:

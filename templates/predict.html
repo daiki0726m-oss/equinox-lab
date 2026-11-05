@@ -532,6 +532,7 @@ body {
 .cat-badge.rank-b { background: rgba(59,130,246,0.2); color: #60A5FA; }
 .cat-badge.rank-c { background: rgba(100,116,139,0.2); color: #94A3B8; }
 .cat-badge.rank-d { background: rgba(239,68,68,0.15); color: #F87171; }
+.cat-badge.rank-unknown { background: rgba(100,116,139,0.1); color: #64748B; font-size: 0.6rem; }  /* #169: 能 = データなし */
 @media (max-width: 480px) {
   .cat-badges { margin-left: 0; margin-top: 3px; display: flex; }
 }
@@ -1168,6 +1169,8 @@ function siDisp(h) {
   if (h && Object.prototype.hasOwnProperty.call(h, 'si_avg_v')) return h.si_avg_v || 0;
   return (h && h.si_avg) || 0;
 }
+// #169 手直し: si_avg_v は丸めない値 (点数表と同じ順位を出すため)。画面に出す時だけ小数1桁
+function siText(h) { return Math.round(siDisp(h) * 10) / 10; }
 
 function renderPredTab(race) {
   const horses = race.horses || [];
@@ -1179,14 +1182,18 @@ function renderPredTab(race) {
   CAT_KEYS.forEach((key, idx) => {
     // #169: 「能」は内訳と同じ指数 (cat_ability は旧指数)
     const _v = h => (key === 'cat_ability' ? siDisp(h) : h[key]) || 0;
-    const vals = sorted.map(_v).sort((a,b) => b - a);
+    // #169 手直し: 「能」は点数表 (_rel_rank) と同じく 0 (データなし) を順位の母集団に入れず、
+    // 0 の馬は「-」(旧実装は 0 を負の V2d より上に数え、全頭 0 の新馬戦では全頭「能S」だった)
+    const _na = key === 'cat_ability';
+    const vals = sorted.map(_v).filter(x => !(_na && x === 0)).sort((a,b) => b - a);
     const n = vals.length;
     sorted.forEach(h => {
       const v = _v(h);
       const rank = vals.indexOf(v);
       const pct = n > 1 ? rank / (n - 1) : 0.5;
       let grade;
-      if (pct <= 0.1) grade = 'S';
+      if (_na && v === 0) grade = '-';
+      else if (pct <= 0.1) grade = 'S';
       else if (pct <= 0.25) grade = 'A';
       else if (pct <= 0.5) grade = 'B';
       else if (pct <= 0.75) grade = 'C';
@@ -1278,11 +1285,11 @@ function renderHorseRow(h, showReasons) {
       <div class="horse-name-row">
         <span class="horse-name">${h.horse_name || '不明'}</span>
         <span class="horse-jockey">${h.jockey_name || ''}</span>
-        ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
+        ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade === '-' ? 'unknown' : g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
       </div>
       <div class="horse-stats">
         ${h.odds_win && h.popularity ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span>${h.popularity ? `<span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span>` : ''}</span>` : (h.odds_win ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">推定${h.odds_win}倍</span></span>` : '')}
-        <span class="stat">SI <span class="stat-val">${siDisp(h)}</span></span>
+        <span class="stat">SI <span class="stat-val">${siText(h)}</span></span>
         <span class="stat">AI複勝 <span class="stat-val">${h.pred_top3 || 0}%</span></span>
         <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
         <span class="stat">過去連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>

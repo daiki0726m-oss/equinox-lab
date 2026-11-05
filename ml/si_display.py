@@ -10,7 +10,11 @@ model["col_map"] で si_avg → si_avg_v (馬場差を引いた V2d) に読み�
 
 ## 決まり
 - predict は点数表が V2d を読んだレースだけ、各馬に si_avg_v / si_latest_v を書く
-  (代用モード = col_map を外した時や点数表が無い時は書かない)。
+  (代用モード = col_map を外した時や点数表が無い時は書かない)。値は **丸めずに** 書き、
+  画面・投稿に出す時だけ小数1桁に丸める (丸めた値で順位を数えると、点数表では差のある2頭が
+  同値=同順位になり内訳と1つずれる。10/31・11/01 の直近スピード指数で1件 #169 手直し)。
+- 順位は点数表の _rel_rank (zero_na) と同じく **0 (データなし) の馬を母集団から外して** 数える
+  (0 の馬を負の V2d より上に数えると、負の値の馬だけ内訳と順位がずれる)。
 - 表示側はキー si_avg_v が **ある時はそれ**、無い時は si_avg を出す (display_si)。
   = 「キーがある」が「内訳の指数は V2d」の印。値が 0 / None なら「データなし」(0 を出す)。
 - 過去のキャッシュ (このキーが無い) は export 時に backfill_cached で補う。内訳の区分と
@@ -44,11 +48,18 @@ def display_si(h, latest=False):
 def si_rank(horses, horse, latest=False):
     """出走馬中の順位 (大きいほど上、同値は同順位 = 点数表の _rel_rank と同じ method=min)。
     ちょうど 0 (データなし) の馬は順位なし (None)。V2d は大敗した走で負になりうるが、
-    点数表と同じく負の値も順位に入れる (データなし扱いは 0 だけ)。"""
+    点数表と同じく負の値も順位に入れる (データなし扱いは 0 だけ)。
+    #169 手直し: 0 の馬は他馬の順位の母集団からも外す (_rel_rank は 0 を NaN にして順位を
+    付けない。旧実装は 0 を負の値より上に数え、負の V2d の馬だけ内訳と順位がずれた)。"""
     v = display_si(horse, latest)
     if v == 0:
         return None
-    return 1 + sum(1 for h in horses if display_si(h, latest) > v)
+    return 1 + sum(1 for h in horses if (x := display_si(h, latest)) != 0 and x > v)
+
+
+def fmt_si(v):
+    """画面・投稿に出すスピード指数 (小数1桁)。キャッシュは丸めない値を持つ (#169)。"""
+    return round(_f(v), 1)
 
 
 def scorecard_si_cols(model):
@@ -65,8 +76,28 @@ def fields_from_row(row, model):
         return {}
     if "si_avg_v" not in row or "si_latest_v" not in row:
         return {}
-    return {"si_avg_v": round(_f(row.get("si_avg_v")), 1),
-            "si_latest_v": round(_f(row.get("si_latest_v")), 1)}
+    # #169 手直し: 丸めない (点数表は丸めない値で順位を付ける。丸めると同値=同順位が生じて
+    # 内訳と1つずれる)。表示側で fmt_si / round(…, 1) する
+    return {"si_avg_v": _f(row.get("si_avg_v")),
+            "si_latest_v": _f(row.get("si_latest_v"))}
+
+
+def zero_scratched(predictions):
+    """点数表の順位の母集団から外した馬 (予想時点で分かっている取消馬、predict の
+    p["_scratched"]) の V2d を 0 (= データなし) にする (#169 手直し)。
+
+    取消馬を点数表の母集団から外すと、内訳の「平均スピード指数 N位」はその馬を数えない。
+    表示側 (si_rank・ダッシュボードの「能」と SI の順位) も 0 の馬を数えないので、
+    0 にすれば両者の母集団がそろう。_scratched が無い (取消を外さない) 時は何もしない。
+    戻り値: 0 にした頭数。"""
+    n = 0
+    for p in predictions or []:
+        if p.get("_scratched") and any(k in p for k in SI_V_KEYS):
+            for k in SI_V_KEYS:
+                if k in p:
+                    p[k] = 0.0
+            n += 1
+    return n
 
 
 def _bin_of(rank):
@@ -81,7 +112,7 @@ def _bin_of(rank):
 def _rank_unrounded(vals, v):
     if v == 0:                       # 点数表 (_rel_rank, zero_na) と同じく 0 だけがデータなし
         return None
-    return 1 + sum(1 for x in vals if x > v)
+    return 1 + sum(1 for x in vals if x != 0 and x > v)   # 0 の馬は母集団に入れない (_rel_rank と同じ)
 
 
 _DSV = {}
@@ -142,8 +173,8 @@ def backfill_cached(conn_factory, race_id, race_date, horses, model=None):
     tally[0] += 1
     for h in horses:
         a, l = vals.get(h.get("horse_number"), (0.0, 0.0))
-        h["si_avg_v"] = round(a, 1)
-        h["si_latest_v"] = round(l, 1)
+        h["si_avg_v"] = a            # 丸めない (fields_from_row と同じ。表示側で丸める)
+        h["si_latest_v"] = l
     return "ok"
 
 

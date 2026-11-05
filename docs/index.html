@@ -1359,6 +1359,8 @@ function siDisp(h) {
   if (h && Object.prototype.hasOwnProperty.call(h, 'si_avg_v')) return h.si_avg_v || 0;
   return (h && h.si_avg) || 0;
 }
+// #169 手直し: si_avg_v は丸めない値 (点数表と同じ順位を出すため)。画面に出す時だけ小数1桁
+function siText(h) { return Math.round(siDisp(h) * 10) / 10; }
 
 // ─── Prediction Tab ───
 function renderPredTab(race) {
@@ -1376,7 +1378,7 @@ function renderPredTab(race) {
   // Compute category grades within race
   // 相対評価カテゴリ（レース内順位で評価）
   const RELATIVE_CATS = [
-    { key: 'cat_ability', label: '能', val: siDisp },   // #169: 内訳と同じ指数 (cat_ability は旧指数)
+    { key: 'cat_ability', label: '能', val: siDisp, zeroNA: true },   // #169: 内訳と同じ指数 (cat_ability は旧指数)。0=データなしは順位に入れない
     { key: 'cat_jockey', label: '騎' },
     { key: 'cat_track', label: '場' },
   ];
@@ -1403,7 +1405,9 @@ function renderPredTab(race) {
       });
       return;
     }
-    const vals = [...rawVals].sort((a,b) => b - a);
+    // #169 手直し: 「能」は点数表 (_rel_rank) と同じく 0 (データなし) を順位の母集団に入れない
+    // (入れると負の V2d の馬だけ内訳と順位がずれる)
+    const vals = rawVals.filter(x => !(cat.zeroNA && x === 0)).sort((a,b) => b - a);
     const n = vals.length;
     sorted.forEach(h => {
       const v = _v(h);
@@ -1667,7 +1671,7 @@ function renderHorseRow(h) {
       </div>
       <div class="horse-stats">
         ${(h.odds_win > 0 && h.popularity > 0 && h.popularity < 999) ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span><span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span></span>` : ''}
-        <span class="stat">SI <span class="stat-val">${siDisp(h)}</span></span>
+        <span class="stat">SI <span class="stat-val">${siText(h)}</span></span>
         <span class="stat">AI複勝 <span class="stat-val">${predTop3}%</span></span>
         <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
         <span class="stat">過去連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>

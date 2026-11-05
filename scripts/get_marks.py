@@ -112,7 +112,8 @@ def main():
                 'pop': h.get('popularity'),
                 'pred_win_pct': h.get('pred_win_pct'),
                 'si_avg': h.get('si_avg'),
-                'si_avg_v': h.get('si_avg_v'),   # #169: 内訳・画面と同じ指数 (無ければ None)
+                # #169: 内訳・画面と同じ指数 (無ければ None)。キャッシュは丸めない値なので1桁に
+                'si_avg_v': round(h['si_avg_v'], 1) if h.get('si_avg_v') is not None else None,
             }
             for h in race.get('horses', []) if h.get('mark')
         ]

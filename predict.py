@@ -117,10 +117,15 @@ def _load_scorecard():
                 print("  🚨 → 指数の区分は現行の si_avg/si_latest で代用して点数表を使う (要対応: "
                       "基準表 models/si_variant_table.json と点数表を揃える)")
             # #169: 区分の表示名 (区分境界から作る) の検査。合わない区分は内訳に出さない
-            # (内部表記「5/5」は出さない) ので印・点数には影響しないが、黙らせない
-            from ml.scorecard import check_display_bins
-            for _p in check_display_bins(_SCORECARD):
-                print(f"  ⚠️ 点数表の表示名: {_p}")
+            # (内部表記「5/5」は出さない) ので印・点数には影響しないが、黙らせない。
+            # 表示だけの検査なので、ここで例外が出ても点数表 (= 印) を止めない (#169 手直し:
+            # 外側の except に落ちると _SCORECARD=None になり、その run の印が全レース従来ロジックに落ちる)
+            try:
+                from ml.scorecard import check_display_bins
+                for _p in check_display_bins(_SCORECARD):
+                    print(f"  ⚠️ 点数表の表示名: {_p}")
+            except Exception as _e:
+                print(f"  ⚠️ 点数表の表示名の検査に失敗 (印・点数には影響なし): {_e!r}")
         else:
             print("  ⚠️ models/scorecard.pkl が無い → 点数表は使えません")
     except Exception as e:
@@ -796,6 +801,19 @@ def cmd_predict(args):
                 "sc_reasons": list(row.get("_sc_reasons") or []),
             })
 
+        # #169 手直し: 点数表の順位の母集団から外した取消馬 (_scratched) は、表示の V2d も
+        # 0 (データなし) にして画面・投稿の順位の母集団から外す。外さないと、取消馬の V2d が
+        # 高いレースで内訳の「平均スピード指数 1位」と画面の順位が食い違う。
+        # この時点の _scratched は点数表に渡した除外馬と同じ集合 (印の段で人気9999から後で
+        # 足す分は点数表の母集団に入っているので、ここでは触らない)。
+        try:
+            from ml.si_display import zero_scratched
+            _nz = zero_scratched(predictions)
+            if _nz:
+                print(f"  🔢 取消 {_nz}頭は表示の SI(V2d) を「データなし」に (点数表の母集団と同じ) #169")
+        except Exception as _e:
+            print(f"  ⚠️ 取消馬の SI(V2d) 表示の調整に失敗 (表示だけ。印・点数には影響なし): {_e!r}")
+
         # ── 人気順 (popularity) を先に確定して各馬に付与 (#95 2026-07-02) ──
         # 旧実装では popularity_map の計算が穴予兆/jockey_trust の後にあり、
         # predictions dict に 'popularity' キーが無いまま compute_jockey_trust(pop=0) が
@@ -1138,8 +1156,9 @@ def cmd_predict(args):
             pt = p["pred_top3"] * 100
             # #169: 理由の「SI」も画面と同じ値 (V2d のレースは si_avg_v)。Threads が
             # 「スピード指数NN」に開いて出すので、内訳・画面と別の数字を出さない
-            from ml.si_display import display_si
+            from ml.si_display import display_si, si_rank
             si = round(display_si(p), 1)
+            _sir = si_rank(sorted_preds, p)     # 内訳「平均スピード指数 N位」と同じ順位
             reasons = []
             if i == 0:
                 if pw >= 40: reasons.append("圧倒的な勝率で本命筆頭")
@@ -1154,10 +1173,12 @@ def cmd_predict(args):
                 reasons.append(f"1人気だがオッズ非依存の能力評価は{_ab}位 — 過剰人気に注意")
             elif _pop and _tr3 < 99 and _pop - _tr3 >= 3:
                 reasons.append(f"AI評価{_tr3}位 vs 市場{_pop}人気の乖離あり")
-            if si >= 90: reasons.append(f"SI{si}は出走馬中トップクラス")
-            elif si >= 80: reasons.append(f"SI{si}で能力上位")
+            # #169 手直し: 「トップクラス」「能力上位」を値の絶対しきい値 (90/80) で付けると、
+            # 内訳・画面の順位と矛盾した (10/31・11/01 の SI 系の理由 215件中 135件はレース内
+            # 4位以下、◎クレーキング 95.1 は13位で「トップクラス」)。順位で言う (3位以内のみ)。
+            if _sir and _sir <= 3: reasons.append(f"SI{si}は出走馬中{_sir}位")
             if pt >= 25: reasons.append("複勝率が非常に高く堅実")
-            if pw >= 20 and si >= 80: reasons.append("勝率とSIの両面で好材料")
+            if pw >= 20 and _sir and _sir <= 3: reasons.append("勝率とSIの両面で好材料")
             if not reasons:
                 if pw > 0: reasons.append(f"AI勝率{pw:.1f}%")
                 else: reasons.append("出走歴なし or 特徴量不足")

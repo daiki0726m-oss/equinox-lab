@@ -143,6 +143,15 @@ def export_predictions(date_str=None):
                         print(f"  🔢 {race_id} SI(V2d) の補完: {_bf}")
                 except Exception as _e:
                     print(f"  ⚠️ {race_id} SI(V2d) の補完に失敗 (旧指数のまま): {_e}")
+                # #169 手直し: 古いキャッシュの内訳に残る内部表記 ("5/5") と、新馬戦の初出走馬への
+                # 「休み明け」等 (全頭同じ区分) を、今の表示規則にそろえる (新しいキャッシュは素通り)
+                try:
+                    from ml.scorecard import sanitize_cached_reasons
+                    _tr, _dr = sanitize_cached_reasons(horses, race_info.get("race_name", ""))
+                    if _tr or _dr:
+                        print(f"  🧹 {race_id} 内訳の表記をそろえた: 訳した {_tr} / 外した {_dr}")
+                except Exception as _e:
+                    print(f"  ⚠️ {race_id} 内訳の表記の整理に失敗 (キャッシュのまま): {_e}")
 
                 # 結果データ取得
                 res_rows = conn.execute("""

@@ -554,6 +554,72 @@ def _reason_bin(col, raw, names, ctx, i):
     return display_bin(col, raw, names)
 
 
+# 馬自身の過去走から作る項目 (初出走の馬は値が全頭同じ既定値 / データなしになる)。
+# 新馬戦 (全頭が初出走) では全頭同じ区分になり、新しい内訳では _race_common で出ない。
+HORSE_HISTORY_COLS = {"si_avg", "si_latest", "top3_rate_10r", "avg_finish_5r",
+                      "course_top3_rate", "same_course_top3_rate", "dist_top3_rate",
+                      "avg_last_3f", "margin_best", "horse_wet_top3_rate",
+                      "graded_exp", "race_experience"} | NO_PAST_DEFAULT_COLS
+_SANITIZE_MODEL = []
+
+
+def sanitize_cached_reasons(horses, race_name="", model=None):
+    """#169 より前に作られたキャッシュの sc_reasons を、今の表示規則にそろえる (export 用)。
+
+    #169 手直し: 新しい内訳は predict の時点で規則どおりに作られるが、古いキャッシュを
+    再 export すると内部表記の「道中の位置取り 5/5」(10/31・11/01 で17件) と、新馬戦の
+    初出走馬への「休養日数 休み明け」(同79件) が JSON にそのまま出ていた。
+      - 内部表記の区分 ("5/5") は、キャッシュの点数が **今の点数表の同じ区分の点と一致した
+        時だけ** 区分境界から作った表示名に訳す (= 同じ点数表で作られた証拠がある時だけ)。
+        合わなければ (別の版の点数表) 訳さず消す
+      - 新馬戦 (全頭が初出走) は馬の過去走から作る項目が全頭同じ = 理由にならないので消す
+        (新しい内訳の「レース内の全頭が同じ区分は出さない」と同じ結果)
+    点数・印は変えない。新しいキャッシュには何もしない (該当する項目が無い)。
+    戻り値: (訳した数, 消した数)。"""
+    import re
+    if model is None:
+        if not _SANITIZE_MODEL:
+            try:
+                _SANITIZE_MODEL.append(load_model())
+            except Exception:
+                _SANITIZE_MODEL.append(None)
+        model = _SANITIZE_MODEL[0]
+    spec = (model or {}).get("spec") or {}
+    pts = (model or {}).get("pts") or {}
+    by_label = {n: c for c, n in NAMES.items()}
+    debut_race = "新馬" in str(race_name or "")
+    hist_labels = {NAMES[c] for c in HORSE_HISTORY_COLS if c in NAMES}
+    n_tr = n_drop = 0
+    for h in horses or []:
+        rs = h.get("sc_reasons")
+        if not rs:
+            continue
+        out = []
+        for r in rs:
+            lab, b = r.get("label"), str(r.get("bin"))
+            if debut_race and lab in hist_labels:
+                n_drop += 1
+                continue
+            if re.match(RAW_BIN_RE, b):
+                col = by_label.get(lab)
+                names = bin_display_names(col, spec.get(col)) if col in spec else None
+                key = f"{col}={b}"
+                try:
+                    same = key in pts and abs(round(pts[key] * 10, 1) - float(r.get("points"))) < 0.051
+                    idx = int(b.split("/")[0]) - 1
+                except (TypeError, ValueError):
+                    same, idx = False, -1
+                nm = names[idx] if (same and names and 0 <= idx < len(names)) else None
+                if nm is None:
+                    n_drop += 1
+                    continue
+                r = dict(r, bin=nm)
+                n_tr += 1
+            out.append(r)
+        h["sc_reasons"] = out
+    return n_tr, n_drop
+
+
 def score_with_reasons(df, model, top_n=4):
     """点数と、その内訳を返す。
 
@@ -586,27 +652,38 @@ def score_with_reasons(df, model, top_n=4):
     lab = label(df, spec, skip=drop, col_map=model.get("col_map"))
     total = np.zeros(len(df))
     per = [[] for _ in range(len(df))]
-    _ctx = _reason_context(df)                                         # #169 表示用 (点は変えない)
-    _names = {c: bin_display_names(c, spec[c]) for c in spec}
+    # #169 手直し: 表示だけの処理 (_reason_context / _race_common / _reason_bin) の例外で
+    # 点数を止めない。止めると predict._attach_scorecard の except で全頭 0点 = そのレースの
+    # 印が従来ロジックに落ち、表示の不具合が印の変化に化ける。失敗したら内訳だけ空にする。
+    _disp_err = []
+    try:
+        _ctx = _reason_context(df)                                     # #169 表示用 (点は変えない)
+        _names = {c: bin_display_names(c, spec[c]) for c in spec}
+    except Exception as e:
+        _disp_err.append(e)
+        _ctx, _names = None, {}
     for col, _, _, _, _ in FEATS:
         if col in drop:
             continue
         keys = (col + "=" + lab[col].astype(str)).values
         vals = np.array([pts.get(k, 0.0) for k in keys])
         total += vals
-        if col in UNSTABLE_FOR_DISPLAY:
+        if col in UNSTABLE_FOR_DISPLAY or _disp_err:
             continue
-        _common = _race_common(keys, _ctx["rid"])
-        for i, (k, v) in enumerate(zip(keys, vals)):
-            if abs(v) < 0.02:      # 0点前後は理由にならないので出さない
-                continue
-            if _common[i]:         # #169: レース内の全頭が同じ区分 = 差のつかない項目は理由にならない
-                continue
-            _bin = _reason_bin(col, k.split("=", 1)[1], _names.get(col), _ctx, i)
-            if _bin is None:       # #169: 表示名の無い区分は内部表記で出さない
-                continue
-            per[i].append({"label": NAMES[col], "bin": _bin,
-                           "points": round(float(v) * 10, 1)})
+        try:
+            _common = _race_common(keys, _ctx["rid"])
+            for i, (k, v) in enumerate(zip(keys, vals)):
+                if abs(v) < 0.02:      # 0点前後は理由にならないので出さない
+                    continue
+                if _common[i]:         # #169: レース内の全頭が同じ区分 = 差のつかない項目は理由にならない
+                    continue
+                _bin = _reason_bin(col, k.split("=", 1)[1], _names.get(col), _ctx, i)
+                if _bin is None:       # #169: 表示名の無い区分は内部表記で出さない
+                    continue
+                per[i].append({"label": NAMES[col], "bin": _bin,
+                               "points": round(float(v) * 10, 1)})
+        except Exception as e:
+            _disp_err.append(e)
 
     lin = model.get("lin") or {}
     if lin:
@@ -652,7 +729,13 @@ def score_with_reasons(df, model, top_n=4):
             x = pd.to_numeric(df[col], errors="coerce").fillna(0.0).to_numpy(float)
             contrib = float(coef) * x
             total += contrib
-            _common = _race_common(x, _ctx["rid"])                     # #169 区分項目と同じ扱い
+            if _disp_err:
+                continue                                                # 内訳は最後に空にする
+            try:
+                _common = _race_common(x, _ctx["rid"])                 # #169 区分項目と同じ扱い
+            except Exception as e:
+                _disp_err.append(e)
+                continue
             for i, v in enumerate(contrib):
                 if abs(v) < 0.02 or x[i] == 0 or _common[i]:
                     continue
@@ -665,5 +748,9 @@ def score_with_reasons(df, model, top_n=4):
                     bin_i = f"他馬場{int(round(x[i] * 100))}%"
                 per[i].append({"label": lab_i, "bin": bin_i, "points": round(float(v) * 10, 1)})
 
+    if _disp_err:
+        # #169 手直し: 内訳の表示処理だけが失敗 → 点数 (= 印) はそのまま、内訳は出さない
+        print(f"  ⚠️ 点数表: 内訳の表示処理に失敗 ({_disp_err[0]!r}) → 内訳は出さず点数だけ使う (#169)")
+        return total * 10, [[] for _ in per]
     reasons = [sorted(p, key=lambda x: -abs(x["points"]))[:top_n] for p in per]
     return total * 10, reasons     # 点数は ×10 して読みやすく

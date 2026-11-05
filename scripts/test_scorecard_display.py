@@ -10,6 +10,9 @@
   4. 過去走の無い馬の前走由来の項目は「JRA初出走」、走って3着内0回は「3着内なし(N走)」
   5. 点数そのもの (合計) は表示の変更で変わらない
   6. 画面の SI (display_si / si_rank) は内訳の「平均スピード指数」と同じ値・同じ順位
+  7. (手直し) 順位は 0 (データなし) を母集団に入れない・丸めた値で同順位を作らない・
+     取消馬 (_scratched) は表示の V2d も 0・表示処理の失敗で点数を止めない・
+     古いキャッシュの内部表記と新馬戦の全頭共通項目を export でそろえる
 """
 import os
 import re
@@ -174,6 +177,94 @@ mdeg = sc.without_col_map(m, "テスト")
 check("代用モード (col_map なし) では si_avg_v を書かない", sd.fields_from_row(B.iloc[1], mdeg) == {})
 check("キーが無ければ旧指数を出す", sd.display_si({"si_avg": 88.0}) == 88.0)
 check("キーがあれば (0 でも) その値", sd.display_si({"si_avg": 88.0, "si_avg_v": 0}) == 0.0)
+
+# ── 7. 手直し (#169 レビュー) ──
+print("[7] 手直し")
+_drop = set(m.get("drop") or [])
+
+
+def _rel_bin(rk):
+    return "データなし" if rk is None else next(nm for lo, hi, nm in sc.REL_BINS if lo <= rk <= hi)
+
+
+# 7a. 0 (データなし) の馬を順位に入れない: 負の V2d の馬の区分が点数表と同じになる
+C = make_race("C", 8)
+C["si_avg_v"] = [95.0, 90.0, 0.0, 0.0, 0.0, 0.0, -3.0, -5.2]
+labC = sc.label(C, m["spec"], skip=_drop, col_map=m.get("col_map"))
+hC = [{"horse_number": i + 1, **sd.fields_from_row(C.iloc[i], m)} for i in range(len(C))]
+mis = [(i + 1, labC["si_avg"].iloc[i], _rel_bin(sd.si_rank(hC, hC[i]))) for i in range(len(C))
+       if labC["si_avg"].iloc[i] != _rel_bin(sd.si_rank(hC, hC[i]))]
+check("負の V2d の馬も点数表の区分と画面の順位が同じ (0 の馬を数えない)", not mis, mis)
+check("-5.2 の馬は 4位 (旧実装は 0 の4頭を上に数えて 8位)", sd.si_rank(hC, hC[7]) == 4, sd.si_rank(hC, hC[7]))
+
+# 7b. 丸めた値で同順位を作らない (88.04 と 87.96 は 1桁ではどちらも 88.0)
+D = make_race("D", 8)
+# (6位と7位の境目。丸めると両方 88.0 = 同順位6位になり、87.96 の馬が「4-6位」と出ていた)
+D["si_latest_v"] = [99.0, 97.0, 95.0, 93.0, 91.0, 88.04, 87.96, 80.0]
+labD = sc.label(D, m["spec"], skip=_drop, col_map=m.get("col_map"))
+hD = [{"horse_number": i + 1, **sd.fields_from_row(D.iloc[i], m)} for i in range(len(D))]
+check("キャッシュの V2d は丸めない", hD[6]["si_latest_v"] == 87.96 and hD[5]["si_latest_v"] == 88.04,
+      (hD[5].get("si_latest_v"), hD[6].get("si_latest_v")))
+check("1桁で同値の2頭も点数表と同じ区分 (87.96 は 7位以下)",
+      _rel_bin(sd.si_rank(hD, hD[6], latest=True)) == labD["si_latest"].iloc[6] == "7位以下",
+      (sd.si_rank(hD, hD[6], latest=True), labD["si_latest"].iloc[6]))
+_hDr = [dict(h, si_latest_v=round(h["si_latest_v"], 1)) for h in hD]
+check("(対照) 1桁に丸めると 4-6位 と出て食い違う", _rel_bin(sd.si_rank(_hDr, _hDr[6], latest=True)) == "4-6位")
+check("表示は小数1桁 (fmt_si)", sd.fmt_si(hD[6]["si_latest_v"]) == 88.0)
+
+# 7c. 取消馬 (_scratched) は表示の V2d も 0 (点数表の母集団から外した馬を画面でも数えない)
+preds = [{"horse_number": 1, "si_avg_v": 101.0, "si_latest_v": 99.0, "_scratched": True},
+         {"horse_number": 2, "si_avg_v": 95.0, "si_latest_v": 94.0, "_scratched": False},
+         {"horse_number": 3, "si_avg": 80.0}]
+n0 = sd.zero_scratched(preds)
+check("取消馬の V2d だけ 0 にする", n0 == 1 and preds[0]["si_avg_v"] == 0.0 and preds[1]["si_avg_v"] == 95.0
+      and "si_avg_v" not in preds[2], preds)
+check("取消馬を外すと 95.0 の馬が1位", sd.si_rank(preds, preds[1]) == 1)
+_noscr = [{"horse_number": 1, "si_avg_v": 101.0, "si_latest_v": 99.0}]
+check("_scratched が無ければ何もしない (取消を外さない点数表と同じ)", sd.zero_scratched(_noscr) == 0
+      and _noscr[0]["si_avg_v"] == 101.0)
+
+# 7d. 表示処理の例外で点数を止めない (止めると印が従来ロジックに落ちる)
+_orig_ctx, _orig_common = sc._reason_context, sc._race_common
+try:
+    def _boom(*a, **k):
+        raise RuntimeError("表示テスト")
+    sc._reason_context = _boom
+    p_e, r_e = sc.score_with_reasons(df, m, top_n=40)
+    check("_reason_context が落ちても点数は同じ・内訳は空", np.allclose(p_e, pts) and all(x == [] for x in r_e))
+    sc._reason_context = _orig_ctx
+    sc._race_common = _boom
+    p_e, r_e = sc.score_with_reasons(df, m, top_n=40)
+    check("_race_common が落ちても点数は同じ・内訳は空", np.allclose(p_e, pts) and all(x == [] for x in r_e))
+finally:
+    sc._reason_context, sc._race_common = _orig_ctx, _orig_common
+p_ok, _ = sc.score_with_reasons(df, m, top_n=40)
+check("元に戻すと同じ点数", np.allclose(p_ok, pts))
+
+# 7e. 古いキャッシュ (#169 以前) の内訳を export でそろえる
+_k = "avg_pos_ratio=5/5"
+_pt = round(m["pts"].get(_k, 0.0) * 10, 1)
+old_h = [{"horse_number": 1, "sc_reasons": [
+    {"label": "道中の位置取り", "bin": "5/5", "points": _pt},
+    {"label": "休養日数", "bin": "4ヶ月以上(休み明け)", "points": 1.2},
+    {"label": "騎手の複勝率", "bin": "1位", "points": 3.0}]},
+         {"horse_number": 2, "sc_reasons": [
+    {"label": "道中の位置取り", "bin": "5/5", "points": _pt + 2.0}]}]
+import copy  # noqa: E402
+h1 = copy.deepcopy(old_h)
+tr, dr = sc.sanitize_cached_reasons(h1, "3歳以上1勝クラス", m)
+check("点数が今の点数表と合う「5/5」は表示名 (後方) に訳す",
+      h1[0]["sc_reasons"][0]["bin"] == "後方" and tr == 1, h1[0]["sc_reasons"])
+check("点数が合わない「5/5」(別の版) は訳さず外す", h1[1]["sc_reasons"] == [] and dr == 1, h1[1])
+check("新馬戦でなければ休養日数は残す", any(r["label"] == "休養日数" for r in h1[0]["sc_reasons"]))
+h2 = copy.deepcopy(old_h)
+sc.sanitize_cached_reasons(h2, "2歳新馬", m)
+check("新馬戦は馬の過去走の項目 (休み明け・位置取り) を外し、騎手は残す",
+      [r["label"] for r in h2[0]["sc_reasons"]] == ["騎手の複勝率"], h2[0]["sc_reasons"])
+h3 = [{"horse_number": 1, "sc_reasons": [dict(r) for r in reasons[13]]}]
+_before = copy.deepcopy(h3)
+check("新しい内訳には何もしない", sc.sanitize_cached_reasons(h3, "3歳以上1勝クラス", m) == (0, 0)
+      and h3 == _before)
 
 if FAILS:
     print(f"❌ {len(FAILS)} 件失敗")
