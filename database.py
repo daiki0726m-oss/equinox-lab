@@ -49,7 +49,7 @@ def init_db(db_path=None):
                 surface TEXT NOT NULL,              -- 芝/ダート/障害
                 direction TEXT,                     -- 右/左
                 weather TEXT,                       -- 天候
-                track_condition TEXT,               -- 馬場状態（良/稍重/重/不良）
+                track_condition TEXT,               -- 馬場状態（良/稍/重/不 の1文字。#169 race_meta）
                 horse_count INTEGER,                -- 出走頭数
                 start_time TEXT,                    -- 発走時刻 (HH:MM)
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

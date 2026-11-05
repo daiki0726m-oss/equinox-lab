@@ -76,36 +76,40 @@ def fetch_odds_from_api(race_id, allow_provisional=False):
 
 
 def fetch_track_condition(race_id):
-    """netkeibaのレースページから馬場状態・天候を取得"""
+    """netkeibaの出馬表ページから、そのレースの馬場状態・天候を取得。
+
+    戻り値: {"track_condition", "weather", "surface"} (取れたものだけ) / 何も取れなければ None。
+    馬場はそのレースの芝ダの値 (障害は芝)。surface は scraper と同じ判定 (芝を含めば芝)。
+    """
     url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
     headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://race.netkeiba.com/"}
 
     try:
         resp = requests.get(url, headers=headers, timeout=10)
-        resp.encoding = "EUC-JP"
+        # #169: scraper._get (#85) と同じく、サーバが Content-Type で宣言した charset を最優先。
+        # 旧実装は resp.encoding="EUC-JP" を強制しており、netkeiba の UTF-8 化以降は
+        # 文字化けで一度も値を取れていなかった (runner のログは毎回「⚠️ 馬場状態はまだ未発表」)。
+        _ct = resp.headers.get("Content-Type", "")
+        _m = re.search(r"charset=([\w-]+)", _ct, re.I)
+        resp.encoding = _m.group(1) if _m else (resp.apparent_encoding or "utf-8")
         soup = BeautifulSoup(resp.text, "lxml")
 
         race_data01 = soup.find("div", class_="RaceData01") or soup.find("dl", class_="RaceData01")
         if not race_data01:
             return None
 
+        # #169: 新旧両方の書式 (旧「天候:晴 / 馬場:稍」、新 アイコン + span.Item03/Item04 の
+        # 1文字表記) を scraper と同じ関数で読み、DB の正規表記 (良/稍/重/不) に揃える。
+        from race_meta import parse_weather_track
+        weather, track = parse_weather_track(race_data01)
         text = race_data01.get_text()
         result = {}
-
-        # 天候
-        weather_match = re.search(r"天候:(\S+)", text)
-        if weather_match:
-            result["weather"] = weather_match.group(1)
-
-        # 馬場状態
-        condition_match = re.search(r"馬場:(\S+)", text)
-        if condition_match:
-            result["track_condition"] = condition_match.group(1)
-        else:
-            for cond in ["不良", "稍重", "重", "良"]:
-                if cond in text:
-                    result["track_condition"] = cond
-                    break
+        if weather:
+            result["weather"] = weather
+        if track:
+            result["track_condition"] = track
+        if result:
+            result["surface"] = ("芝" if "芝" in text else "ダート" if "ダ" in text else "")
 
         return result if result else None
     except Exception as e:
@@ -134,34 +138,50 @@ def refresh_odds(date_str, update_track=True):
 
     print(f"📡 {len(races)}レースの最新オッズを取得中...")
 
-    # 馬場状態の更新（開催場ごとに1回だけ取得）
+    # 馬場状態の更新（開催場 × 芝ダ ごとに1回だけ取得）
+    # #169: 旧実装は「場ごとに1レース取って、その場の全レースに同じ値を書く」だったため、
+    # 芝とダートで馬場が違う日 (10/31 京都 芝=良 / ダ=重 等) にもう片方を誤った値で上書きし、
+    # 確定済みレース (結果ページの値 = 正本) まで書き換える実装だった。EUC-JP 強制で一度も
+    # 値を取れていなかったので表面化しなかったが、#169 で取れるようにしたので同時に直す:
+    #   - 代表レースは 場×芝ダ ごとに「まだ着順が無い最初のレース」(障害は芝として扱う = DB と同じ)
+    #   - 書き換えるのは 同じ場・同じ芝ダの、まだ着順が無いレースだけ (確定済みは触らない)
+    #   - 天候が取れなかった時は既存の天候を残す
     if update_track:
-        venues_updated = set()
-        for race in races:
-            venue = race['venue']
-            if venue in venues_updated:
-                continue
-            rid = race['race_id']
+        with get_db() as conn:
+            _trows = conn.execute("""
+                SELECT r.race_id, r.venue, r.surface FROM races r
+                WHERE (r.race_date = ? OR r.race_date = ?)
+                  AND NOT EXISTS (SELECT 1 FROM results x
+                                  WHERE x.race_id = r.race_id AND x.finish_position > 0)
+                ORDER BY r.venue, r.race_number
+            """, (date_str, date_hyphen)).fetchall()
+        groups = {}
+        for r in _trows:
+            if r['surface'] in ('芝', 'ダート'):
+                groups.setdefault((r['venue'], r['surface']), r['race_id'])
+        groups_updated = set()
+        for (venue, surface), rid in groups.items():
             track_info = fetch_track_condition(rid)
-            if track_info:
-                tc = track_info.get('track_condition', '')
-                wt = track_info.get('weather', '')
-                if tc:
-                    with get_db() as conn:
-                        # 同じ開催場の全レースを更新
-                        conn.execute("""
-                            UPDATE races SET track_condition = ?, weather = ?
-                            WHERE (race_date = ? OR race_date = ?) AND venue = ?
-                        """, (tc, wt, date_str,
-                              f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}",
-                              venue))
-                    print(f"  🏇 {venue}: 馬場={tc} 天候={wt}")
-                    venues_updated.add(venue)
+            tc = (track_info or {}).get('track_condition', '')
+            wt = (track_info or {}).get('weather', '')
+            if tc and (track_info or {}).get('surface', surface) == surface:
+                with get_db() as conn:
+                    conn.execute("""
+                        UPDATE races SET track_condition = ?,
+                                         weather = COALESCE(NULLIF(?, ''), weather)
+                        WHERE (race_date = ? OR race_date = ?) AND venue = ? AND surface = ?
+                          AND NOT EXISTS (SELECT 1 FROM results x
+                                          WHERE x.race_id = races.race_id AND x.finish_position > 0)
+                    """, (tc, wt, date_str, date_hyphen, venue, surface))
+                print(f"  🏇 {venue}{surface}: 馬場={tc} 天候={wt or '(取得できず・既存値を維持)'}")
+                groups_updated.add((venue, surface))
             time.sleep(0.5)
-        if venues_updated:
-            print(f"  ✅ {len(venues_updated)}場の馬場状態を更新")
-        else:
+        if groups_updated:
+            print(f"  ✅ {len(groups_updated)}件 (場×芝ダ) の馬場状態を更新")
+        elif groups:
             print(f"  ⚠️ 馬場状態はまだ未発表")
+        else:
+            print(f"  ℹ️ 着順未確定のレースが無い — 馬場状態の更新は不要")
         print()
 
     updated = 0

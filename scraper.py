@@ -253,20 +253,14 @@ class NetkeibaScraper:
             elif "左" in text:
                 info["direction"] = "左"
 
-            # 天候
-            weather_match = re.search(r"天候:(\S+)", text)
-            if weather_match:
-                info["weather"] = weather_match.group(1)
-
-            # 馬場状態
-            condition_match = re.search(r"馬場:(\S+)", text)
-            if condition_match:
-                info["track_condition"] = condition_match.group(1)
-            else:
-                for cond in ["不良", "稍重", "重", "良"]:
-                    if cond in text:
-                        info["track_condition"] = cond
-                        break
+            # 天候・馬場状態
+            # #169: 2026-10-26 前後に「天候:晴 / 馬場:稍」の見出し語が消え、天候はアイコン
+            # (title 属性) だけ、馬場は span.Item03(芝)/Item04(ダ) の1文字「稍」「不」になった。
+            # 旧実装 (正規表現 + 部分一致 ["不良","稍重","重","良"]) は天候を全レース空、
+            # 稍・不を空で保存していた。新旧両方の書式を race_meta で読み、DB の正規表記
+            # (良/稍/重/不) に揃える。
+            from race_meta import parse_weather_track
+            info["weather"], info["track_condition"] = parse_weather_track(race_data01)
 
             # 発走時刻 (例: "15:40発走" or 時刻パターン "10:05")
             time_match = re.search(r"(\d{1,2}:\d{2})", text)
@@ -1020,6 +1014,11 @@ class NetkeibaScraper:
         """レースデータをDBに保存"""
         if not race_data:
             return
+        # #169: 下の INSERT OR REPLACE は空の天候・馬場で既存の正しい値を消す
+        # (10/26 の取り直しで、当日正しく取れていた 10/24・10/25 の稍36・不16 が空になった)。
+        # 新しく取れた値が空なら既存の値を引き継ぐ。天候・馬場以外の列の挙動は変えない。
+        from race_meta import keep_existing_race_meta
+        race_data = keep_existing_race_meta(race_data.get("race_id"), race_data)
 
         with get_db() as conn:
             # レース情報保存

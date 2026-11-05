@@ -2692,6 +2692,9 @@ def fetch_weekend_races():
                 for rid in r11_ids:
                     data = scraper.scrape_shutuba(rid)
                     if data:
+                        # #169: 天候・馬場が空 (発表前) なら既存の値を空で消さない
+                        from race_meta import keep_existing_race_meta
+                        data = keep_existing_race_meta(rid, data, conn=conn)
                         conn.execute("""
                             INSERT OR REPLACE INTO races
                             (race_id, race_name, race_date, venue, race_number,
