@@ -393,7 +393,8 @@ def cmd_predict(args):
             # 未来レース: 出馬表をスクレイピングして保存
             print(f"  📡 出馬表を取得中...")
             scraper = NetkeibaScraper()
-            shutuba = scraper.scrape_shutuba(race_id)
+            # #169: ページから日付が読めない時は --date を既定値に (race_date="" で保存しない)
+            shutuba = scraper.scrape_shutuba(race_id, race_date_hint=getattr(args, "date", None))
             if shutuba and shutuba.get("entries"):
                 # レース情報をDBに保存
                 with get_db() as conn:

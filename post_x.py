@@ -2690,7 +2690,8 @@ def fetch_weekend_races():
                 r11_ids = [rid for rid in race_ids if rid.endswith('11')]
 
                 for rid in r11_ids:
-                    data = scraper.scrape_shutuba(rid)
+                    # #169: 日付が読めないページでも一覧の日付で保存する (race_date="" を書かない)
+                    data = scraper.scrape_shutuba(rid, race_date_hint=date_str)
                     if data:
                         conn.execute("""
                             INSERT OR REPLACE INTO races

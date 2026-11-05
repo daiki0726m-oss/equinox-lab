@@ -12,6 +12,43 @@ from database import get_db
 JST = timezone(timedelta(hours=9))
 
 
+def numbers_state(conn, race_id, horses):
+    """予測の馬番が枠順確定後の正しいものか (#169)。戻り値 (numbers_confirmed, 理由 or None)。
+
+    2026-11-01 00:35〜06:53、仮馬番 (五十音順) のまま予測した23レースが公開され、
+    出走しない馬に◎が付き、オッズは別の馬に付いていた。成果物ゲートはレース数しか
+    見ておらず「予測あり」と判定した。ここで2点を確かめ、JSON に書いてゲートに渡す:
+      (1) DB の馬番が確定済みか (#27/#150 と同じ判定: post_position=枠番 が入っている)
+      (2) 予測 (cache) の馬番↔馬名が DB と一致しているか — 仮馬番で予測した後に DB だけ
+          確定版に直った場合や、予測後に幽霊馬が消えた場合を捕まえる
+    枠順前の日付 (土曜朝に作る日曜分など) は (1) で False になるが、それは正当な仮馬番。
+    ゲートが見るのは開催当日の JSON なので、当日に False なら作り直しが要る。
+    """
+    _FFFD = chr(65533)
+    rows = conn.execute(
+        "SELECT res.horse_number AS n, res.post_position AS pp, hh.horse_name AS nm "
+        "FROM results res LEFT JOIN horses hh ON hh.horse_id = res.horse_id "
+        "WHERE res.race_id = ?", (race_id,)).fetchall()
+    if not rows:
+        return False, "DB に出走馬が無い"
+    if not any((r["pp"] or 0) > 0 for r in rows):
+        return False, "DB の馬番が仮のまま (枠番なし = 枠順確定前)"
+    db = {r["n"]: (r["nm"] or "") for r in rows}
+    bad = []
+    for h in horses:
+        n = h.get("horse_number")
+        nm = h.get("horse_name") or ""
+        if n not in db:
+            bad.append(f"{n}番 (DBに無い)")
+            continue
+        dn = db[n]
+        if nm and dn and _FFFD not in nm and _FFFD not in dn and nm != dn:
+            bad.append(f"{n}番 {nm}≠{dn}")
+    if bad:
+        return False, f"予測の馬番が確定馬番とずれ {len(bad)}頭: " + ", ".join(bad[:3])
+    return True, None
+
+
 def export_predictions(date_str=None):
     """指定日の予測データをJSONファイルに書き出し"""
 
@@ -108,6 +145,9 @@ def export_predictions(date_str=None):
                 conf_reason = cached["conf_reason"] or ""
                 should_bet = bool(cached["should_bet"])
                 bet_reason = cached["bet_reason"] or ""
+
+                # #169: 馬番が確定済みか (化け名の上書き前の cache の馬名で照合する)
+                _numbers_ok, _numbers_issue = numbers_state(conn, race_id, horses)
 
                 # 🆕 #90: 書き出し時に馬名を horses 正本で上書きし文字化けを根絶。
                 #   cache(predictions_json/all_bets_json) には予測時(#85/#90修正前)の化け名
@@ -258,9 +298,17 @@ def export_predictions(date_str=None):
                     "payouts": race_payouts if has_results else [],
                     "prediction_locked": datetime.now(JST).hour >= 10,
                 })
+                # #169: 成果物ゲートは numbers_confirmed=False のレースを「予測あり」と数えない
+                all_races[-1]["numbers_confirmed"] = _numbers_ok
+                all_races[-1]["numbers_issue"] = _numbers_issue
 
             if skipped_no_cache:
                 print(f"  ℹ️ {ds}: メインレース以外 {skipped_no_cache}件はキャッシュなしでスキップ")
+            _unconf = [r for r in all_races if r.get("numbers_confirmed") is False]
+            if _unconf:
+                print(f"  ⚠️ {ds}: 馬番が未確定の予測 {len(_unconf)}/{len(all_races)}R "
+                      f"(例: {_unconf[0]['venue']}{_unconf[0]['race_number']}R "
+                      f"{_unconf[0].get('numbers_issue')}) — 成果物ゲートは予測なしと数える #169")
 
             if not all_races:
                 print(f"  ⏭️ {ds}: 予測データなし")
@@ -277,6 +325,9 @@ def export_predictions(date_str=None):
             output = {
                 "date": ds,
                 "total_races": len(all_races),
+                # #169: 馬番が未確定のレース数 (ゲートは scripts/prediction_gate.py で判定)
+                "numbers_unconfirmed_races": sum(
+                    1 for r in all_races if r.get("numbers_confirmed") is False),
                 "venues": venues,
                 "is_locked": datetime.now(JST).hour >= 10,
                 "exported_at": datetime.now(JST).isoformat(),

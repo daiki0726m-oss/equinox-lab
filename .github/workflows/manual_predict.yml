@@ -84,6 +84,12 @@ jobs:
         run: |
           DATE="${{ inputs.date }}"
           FORCE="${{ inputs.force }}"
+          # #169: 予測の直前に確定馬番を取り直し、失敗したら予測しない (他の予測経路と同じ判定)。
+          # collect は INSERT OR IGNORE で馬番を直さないので、ここを通らないと仮馬番のまま予測する
+          if ! timeout 420 python refresh_entries.py --date "$DATE"; then
+            echo "❌ 確定馬番を取り直せない → 予測しない (仮馬番のまま予測すると馬番と馬名がズレる)"
+            exit 1
+          fi
           echo "🧠 予測実行: $DATE (force=$FORCE)"
           if [ "$FORCE" = "true" ]; then
             python predict.py predict --date "$DATE" --force

@@ -349,6 +349,23 @@ jobs:
           fi
           echo "📊 Debug: DOW=$DOW, JST_HOUR=$HOUR, MODE=$MODE, SCHEDULE=$SCHEDULE, DATE=$TODAY_YYYYMMDD"
 
+          # #169: 日付をまたいで遅れて発火した run の対象日。
+          # 11/01 00:24 に土曜 18:30 の refresh_dashboard cron が 5h55m 遅れて発火し、DATE が
+          # 日曜に切り替わった。確定馬番がまだ origin に無い日曜分を対象に preflight の auto-fix が
+          # 仮馬番のまま予測し、6時間18分ダッシュボードに出た (出走しない馬に◎)。
+          # JST 0〜4時台に動いた「前日の夕方・夜向け」の run (results / refresh_dashboard) は
+          # 本来の対象日 = 前日を対象にする。予測の自動修復は過去日には走らない (preflight #169)。
+          LATE_NIGHT=0
+          if [ -z "$DATE_OVERRIDE" ] && [ "$((10#$HOUR))" -le 4 ]; then LATE_NIGHT=1; fi
+          shift_to_yesterday() {
+            local y
+            y=$(TZ=Asia/Tokyo date -d '1 day ago' +%Y%m%d 2>/dev/null \
+                || TZ=Asia/Tokyo date -v-1d +%Y%m%d)
+            echo "🌙 JST ${HOUR}時 (日付またぎ) の $1 → 対象日を前日 $y にする (#169)"
+            TODAY_YYYYMMDD="$y"
+            TODAY_HYPHEN="${y:0:4}-${y:4:2}-${y:6:2}"
+          }
+
           # ── 🆕 #88: fetch_weekend_races 完了トリガー → 即 predict (土日のみ) ──
           # fetch (5:00) が終わった直後に予測を回し、7:00 cron を待たずに ~6時前に反映する。
           # 平日の fetch (来週末レース登録) では予測不要 (レースは数日先) なので skip。
@@ -368,6 +385,11 @@ jobs:
 
           # ── dispatch からの直接モード指定 (watchdog/race_day_runner/手動) ──
           if [ "$MODE" != "" ] && [ "$MODE" != "auto" ]; then
+            # #169: 18:30 の dispatch (race_day_runner の safety net 等) が concurrency の待ちで
+            # 0時を越えて始まった場合も同じ (results / refresh_dashboard だけ。他は呼び出し側の意図どおり)
+            if [ "$LATE_NIGHT" = "1" ] && { [ "$MODE" = "results" ] || [ "$MODE" = "refresh_dashboard" ]; }; then
+              shift_to_yesterday "$MODE (dispatch)"
+            fi
             echo "type=$MODE" >> $GITHUB_OUTPUT
             echo "date=$TODAY_YYYYMMDD" >> $GITHUB_OUTPUT
             echo "date_hyphen=$TODAY_HYPHEN" >> $GITHUB_OUTPUT
@@ -419,6 +441,21 @@ jobs:
               fi
               ;;
           esac
+
+          # #169: 0〜4時台に遅れて発火した「当日向け」の cron。
+          #   results / refresh_dashboard → 前日 (結果・配当の取りこぼしを拾う)
+          #   odds_flash / post_predict   → skip (朝の配信用。前日分はもう終わっていて、
+          #                                 当日分には早すぎる。当日分は当日朝の cron が担う)
+          #   predict (04:00 cron など) は当日朝の正規の時間帯なので対象外。平日の
+          #   morning/weekday/evening は日付を使わず、post_x 側の時間ガードが遅延発火を止める。
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$LATE_NIGHT" = "1" ]; then
+            case "$TYPE" in
+              results|refresh_dashboard) shift_to_yesterday "$TYPE (cron)" ;;
+              odds_flash|post_predict)
+                echo "🌙 JST ${HOUR}時に遅れて発火した $TYPE → skip (#169)"
+                TYPE="skip" ;;
+            esac
+          fi
 
           echo "type=$TYPE" >> $GITHUB_OUTPUT
           echo "📬 Determined type (schedule-mapped): $TYPE"
@@ -475,6 +512,9 @@ jobs:
           # refresh_entries が確定版に同期して初めて正しい予想になる (実測: 枠順 37→455頭、
           # 所要80秒)。失敗を握り潰して predict に進むと **間違った馬番で配信する**ので、
           # 失敗したら予測せず run を落として可視化する。timeout は実測80秒に対し余裕を持たせる。
+          # #169: refresh_entries.py は旧版だと取得に失敗したレースがあっても終了コード0で、
+          # このゲートは timeout と例外でしか効いていなかった。今は「仮馬番のまま取り直せない
+          # レースがある」時に非0を返す (判定は refresh_entries.py の1か所)。
           echo "🏇 確定馬番を更新..."
           if ! timeout 420 python refresh_entries.py --date "$DATE"; then
             echo "❌ 確定馬番の更新に失敗 — 仮馬番のまま予測すると馬番と馬名がズレるため中止"
@@ -543,14 +583,23 @@ jobs:
           DATE="${{ steps.determine.outputs.date }}"
           JST_HOUR=$(TZ=Asia/Tokyo date +%H)
           # 🆕 確定馬番リフレッシュ (#44): オッズ取得前に馬番を確定版に揃える
+          # #169: 旧版は失敗しても「続行」で再予測まで進んでいた。取り直せなければ
+          # 再予測はしない (既存の予測を残す)。オッズの更新は馬番に関係なく続けてよい
+          # (オッズは確定馬番で付くので、後で取り直しが通れば正しい馬に揃う)。
           echo "🏇 確定馬番を更新..."
-          timeout 420 python refresh_entries.py --date "$DATE" || echo "⚠️ 確定馬番更新失敗 → 続行"
+          ENTRIES_OK=1
+          if ! timeout 420 python refresh_entries.py --date "$DATE"; then
+            ENTRIES_OK=0
+            echo "⚠️ 確定馬番を取り直せない → オッズ更新のみ行い、再予測はしない (#169)"
+          fi
           echo "📡 ${DATE} の最新オッズを取得..."
           timeout 420 python refresh_odds.py --date "$DATE"
-          
+
           # 10時以降は再予測しない（オッズ更新のみ）
           if [ "$JST_HOUR" -ge 10 ]; then
             echo "🔒 JST ${JST_HOUR}時: 10時以降のため再予測をスキップ"
+          elif [ "$ENTRIES_OK" != "1" ]; then
+            echo "🚫 確定馬番の取り直しに失敗したため再予測しない (既存の予測を残す #169)"
           else
             echo "🧠 オッズ反映後に再予測..."
             python predict.py predict --date "$DATE"
@@ -587,7 +636,7 @@ jobs:
                   r11 = [r for r in ids if r.endswith('11')]
                   print(f'  {ds}: {len(r11)}件の11R')
                   for rid in r11:
-                      data = scraper.scrape_shutuba(rid)
+                      data = scraper.scrape_shutuba(rid, race_date_hint=ds)  # #169: 日付を空で保存しない
                       if data:
                           scraper.save_race_to_db(data)
                           print(f'    ✅ {data[\"race_name\"]}')
@@ -708,6 +757,17 @@ jobs:
           # #106: predict系で export が「レースなし」等で空振りしたら fail させて見える化
           TYPE="${{ steps.determine.outputs.type }}"
           if [ "$TYPE" = "predict" ] || [ "$TYPE" = "post_predict" ] || [ "$TYPE" = "odds_flash" ]; then
+            # #169: 開催当日に馬番が未確定 (仮馬番) の予測を公開しない。当日は枠順が出ているので、
+            # 未確定は「確定馬番を取り直す前の予測が残っている」ことを意味する (11/01 00:35 の型)。
+            # この版は公開せず、origin の版 (前夜 prefetch 等) を残す。
+            P="docs/data/predictions_${DATE}.json"
+            if [ -f "$P" ] && [ "$DATE" = "$(TZ=Asia/Tokyo date +%Y%m%d)" ]; then
+              UNC=$(python3 -c "import sys,json; sys.path.insert(0,'scripts'); import prediction_gate as g; print(g.summarize(json.load(open('$P')))['unconfirmed'])" 2>/dev/null || echo 0)
+              if [ "${UNC:-0}" -gt 0 ]; then
+                echo "::error::開催当日なのに馬番未確定の予測が ${UNC}R → この版は公開しない (#169)"
+                git checkout HEAD -- "$P" 2>/dev/null || rm -f "$P"
+              fi
+            fi
             if [ ! -f "docs/data/predictions_${DATE}.json" ]; then
               echo "❌ export後に predictions_${DATE}.json が存在しない"
               exit 1

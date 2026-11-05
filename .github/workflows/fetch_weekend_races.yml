@@ -91,7 +91,7 @@ jobs:
                   ids = scraper.get_race_list_by_date(ds)
                   print(f'{ds}: {len(ids)}レース検出')
                   for rid in ids:
-                      data = scraper.scrape_shutuba(rid)
+                      data = scraper.scrape_shutuba(rid, race_date_hint=ds)  # #169: 一覧の日付を既定値に (空日付のスタブを作らない)
                       if data:
                           scraper.save_race_to_db(data)
                           total += 1
