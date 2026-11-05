@@ -166,6 +166,19 @@ txt = BettingStrategy.band_override_reason("1勝戦×◎オッズ2.8倍は妙味
 check("band 理由文は投資が先", txt.startswith("trio-focus band で三連複/ワイドのみ投資"), True)
 check("band 理由文に上書きした判定を残す", "通常の判定なら見送り: 1勝戦×◎オッズ2.8倍" in txt, True)
 
+# ── 9. BET_KEEP_D=0 は D だけでなく band(11頭以上) の資金の乗る買い目も変える (現状仕様を固定) ──
+# 変えるなら docs/BETTING_SPEC.md §4・§8 と同時に直すこと。
+os.environ["BET_KEEP_D"] = "0"
+res, honor, cnt = run(make_preds(12, 2.5), race_name="2歳未勝利")
+check("KEEP_D=0 D→A 点数", cnt, {"ワイド": 6, "三連複": 6})
+res, honor, cnt = run(make_preds(12, 2.5))
+check("KEEP_D=0 band11+ 判定は band のまま", res["trio_focus_band"], True)
+check("KEEP_D=0 band11+ 三連複は LGB上位4頭 6点", cnt, {"ワイド": 6, "三連複": 6})
+check("KEEP_D=0 band11+ 三連複は2倍額", unit(honor, "三連複"), [200])
+check("KEEP_D=0 band11+ honor合計", sum(b["amount"] for b in honor), 1800)
+check("KEEP_D=0 band11+ 予算の上限 2,500円 (残りが EV層へ)", res["budget"], 2500)
+os.environ.pop("BET_KEEP_D")
+
 if FAILS:
     print(f"❌ {len(FAILS)} 件失敗")
     for f in FAILS:
