@@ -64,6 +64,8 @@ BUCKETS = [
 # 信頼度の目標構成比。#147 (点数表ON) の直前、2026-08 の実分布を採用。
 # 「どの程度の割合をS/A/B/C/Dと呼ぶか」は製品の決めごとなので固定し、
 # その割合を満たす閾値だけを実分布から毎回引き直す。
+# #169: この数字は 2026-08 に **保存された** (= 後段補正の後の) 構成比そのもの
+# (同月の補正前は S17/A26/B34/C16/D7)。なので閾値も補正後の最終構成比で較正する。
 TARGET_MIX = {"S": 0.18, "A": 0.24, "B": 0.29, "C": 0.18, "D": 0.11}
 # 30 は「精度」ではなく「正しい分布に乗る」ことを優先した下限。
 # 印ロジックを変えた直後は現行ロジックの標本が数十件しか無いが、
@@ -89,13 +91,27 @@ def _group_of(race_name):
     return "maiden" if is_ml_out_of_domain(race_name or "") else "flat"
 
 
+# #169: 発走時刻より後に作り直された予測は、そのレースの結果やそれに近いオッズを
+# 見ている (look-ahead)。created_at は SQLite の datetime('now') = **UTC** で、
+# races.start_time (HH:MM) は **JST** なので +9時間してから比べる。
+# 実測: 全1,651R 中 126R が該当 (5/09 の36R は全レース確定後の 20:53 JST に作り直し、
+# 完全捕捉 77.8%)。捕捉率の物差しにも閾値の標本にも入れない。
+# 発走時刻が無いレースは判定できないので残す (現 DB では0件)。
+PRE_START_SQL = ("(g.start_time IS NULL OR g.start_time = '' OR "
+                 "datetime(pc.created_at, '+9 hours') < g.race_date || ' ' || g.start_time)")
+
+
 def build_capture(conn):
-    """印が3着内をどれだけ捕まえたかの実測 (凍結印 × 確定着順)。層別。"""
-    rows = conn.execute("""
+    """印が3着内をどれだけ捕まえたかの実測 (発走前の予測の印 × 確定着順)。層別。"""
+    n_all = conn.execute("""SELECT COUNT(*) FROM predictions_cache pc
+                            JOIN races g ON pc.race_id = g.race_id""").fetchone()[0]
+    rows = conn.execute(f"""
         SELECT pc.race_id, pc.predictions_json, g.race_name, g.race_date
         FROM predictions_cache pc JOIN races g ON pc.race_id = g.race_id
+        WHERE {PRE_START_SQL}
         ORDER BY g.race_date
     """).fetchall()
+    n_post_start = n_all - len(rows)
     acc = {g: {lab: {"n": 0, "c5": 0, "c7": 0, "got": 0} for _, _, lab in BUCKETS}
            for g in GROUPS}
     dates = []
@@ -141,8 +157,13 @@ def build_capture(conn):
             })
         groups[g] = {"buckets": out}
     period = f"{min(dates)}〜{max(dates)}" if dates else "-"
+    # #169: 旧 source 欄は「投稿時に凍結した印」と書いていたが、実際に読んでいるのは
+    # predictions_cache に残った各レースの最後の予測 (配信していないレースも含む) で、
+    # 投稿印サイドカーは 7/11 からしか無い。実態どおりに書く。
     return {"groups": groups, "period": period,
-            "source": "投稿時に凍結した印 × 確定着順 (平場 / 未勝利・新馬・障害 を分けて集計)"}
+            "excluded_post_start": n_post_start,
+            "source": ("predictions_cache に残る各レースの予測の印 (発走前に作られたものだけ。"
+                       "配信していないレースも含む) × 確定着順 (平場 / 未勝利・新馬・障害 を分けて集計)")}
 
 
 def build_payout(conn):
@@ -225,6 +246,26 @@ def current_model_deployed_at(conn=None):
             utc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
 
 
+def model_uncommitted(rel="models/model_rank.pkl"):
+    """作業ツリーの models/model_rank.pkl が HEAD と違う (= 再学習したが未 commit) か。
+
+    #169: weekly_retrain は「再学習 → 基準表 → commit」の順に動く。基準表を作る時点では
+    新モデルが origin に無いので、current_model_deployed_at() は**前のモデル**の時刻を返し、
+    前モデルの予測が30件以上あると window_matches_model=true と誤記録していた
+    (11/02・10/19・9/28 の3回。誤っていたのは記録だけで、閾値の値はフラグが正しくても同じ)。
+    git status は index に記録されたハッシュと作業ファイルを比べるだけなので、
+    shallow / 部分クローン (blob:none) でも過去の blob を取りに行かない。
+    判定できない時 (git が無い等) は False (従来どおり)。
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["git", "status", "--porcelain", "--", rel],
+                             cwd=ROOT, capture_output=True, text=True, timeout=30)
+        return out.returncode == 0 and bool(out.stdout.strip())
+    except Exception:
+        return False
+
+
 def _gate_samples(rows):
     """predictions_cache の行から、意思決定チャネル (温度1 softmax = ml/model.py の
     pred_win_norm) の ◎勝率と上位3頭合計を復元する。障害・未勝利・新馬は除く。"""
@@ -278,12 +319,19 @@ def build_bet_gate_thresholds(conn):
     # 「前モデルの分布から引いた」ことをログと JSON に明示する。
     since, since_utc = current_model_deployed_at(conn)
     fresh = bool(since_utc)
+    # #169: 再学習直後 (新モデル未 commit) は、窓の起点が前モデルの配備時刻になる。
+    # 閾値の引き方は変えない (新モデルの予測はまだ1件も無いので、どう引いても前モデルの
+    # 分布になる = #161 が認めた代用策) が、「一致」とは記録しない。
+    retrained = model_uncommitted()
+    if retrained:
+        fresh = False
     rows = []
     if since_utc:
-        rows = list(conn.execute("""
+        rows = list(conn.execute(f"""
             SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
             JOIN races g ON pc.race_id = g.race_id
-            WHERE pc.created_at >= ? ORDER BY g.race_date DESC LIMIT 400
+            WHERE pc.created_at >= ? AND {PRE_START_SQL}
+            ORDER BY g.race_date DESC LIMIT 400
         """, (since_utc,)))   # created_at は UTC (SQLite CURRENT_TIMESTAMP)
     tops, sums = _gate_samples(rows)
     # #161: 標本数は **使えるレース数** (障害・未勝利・新馬を除いた後) で判定する。
@@ -293,11 +341,14 @@ def build_bet_gate_thresholds(conn):
     # 広げる範囲は **直近120レース** (使えるのは約60)。旧版の 400 は 2〜3世代前のモデル
     # (8月は sd 0.115 と平坦) まで混ぜるので、再学習直後の閾値が 0.1001/0.2613 =
     # ほぼ素通りに戻っていた (#161 review)。直前のモデルが新モデルに最も近い手掛かり。
+    widened = False
     if len(tops) < MIN_SAMPLE_FOR_THRESHOLDS:
         fresh = False
-        rows = list(conn.execute("""
+        widened = True
+        rows = list(conn.execute(f"""
             SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
             JOIN races g ON pc.race_id = g.race_id
+            WHERE {PRE_START_SQL}
             ORDER BY g.race_date DESC, pc.created_at DESC LIMIT 120
         """))
         tops, sums = _gate_samples(rows)
@@ -307,7 +358,10 @@ def build_bet_gate_thresholds(conn):
         return {"available": False, "n": len(tops), "thresholds": FALLBACK}
 
     tops.sort(); sums.sort()
-    if not fresh:
+    if retrained:
+        print(f"   ⚠️ 再学習した新モデルが未 commit。窓の起点 {since or '不明'} は前のモデルの配備時刻で、"
+              f"閾値は前モデルの予測分布から引いています (window_matches_model=False)")
+    elif widened:
         print(f"   ⚠️ 現モデル ({since or '配備時刻不明'}) 以降の使えるレースが "
               f"{MIN_SAMPLE_FOR_THRESHOLDS} 件未満。直前のモデルを含む直近120レースから引いています "
               f"(window_matches_model=False)")
@@ -320,7 +374,72 @@ def build_bet_gate_thresholds(conn):
           f"(目標遮断率 {TARGET['top_prob']:.0%}/{TARGET['top3_sum']:.0%})")
     return {"available": True, "n": len(tops), "target_block_rate": TARGET,
             "model_deployed_at": since, "window_matches_model": fresh,
+            "model_retrained_uncommitted": retrained,   # #169
             "thresholds": th}
+
+
+_GRADES = ("S", "A", "B", "C", "D")
+
+
+def _grade_with(th, w):
+    """race_baseline.grade と同じ判定 (w >= 閾値で上の等級)。"""
+    for g in ("S", "A", "B", "C"):
+        if w >= th[g]:
+            return g
+    return "D"
+
+
+def _final_grades(samples, th):
+    """閾値判定 → 後段補正 (confidence.post_adjust) まで通した最終等級。
+    predict.py と同じ関数を使うので、補正を足し外ししても較正が自動で追従する (#169)。"""
+    from confidence import post_adjust
+    return [post_adjust(_grade_with(th, w), jt)[0] for w, jt in samples]
+
+
+def _mix(grades):
+    n = len(grades) or 1
+    return {g: round(sum(1 for x in grades if x == g) / n, 4) for g in _GRADES}
+
+
+def _calibrate_after_adjust(samples, th0):
+    """補正後の構成比が TARGET_MIX になる閾値を探す (#169)。
+
+    補正後に上位 k 等級 (S..k) に入る件数は、閾値 th_k について単調非増加
+    (th_k を上げると等級 k の馬が k+1 に落ちるか、補正で戻っても k に留まるだけ)。
+    下の等級から順に、累積の目標件数に最も近くなる th_k を候補 (標本の値) から選ぶ。
+    補正が「1段上げ」だけなら1巡で厳密に決まるが、将来「下げる」補正が入っても
+    収束するよう、変化が無くなるまで繰り返す。
+    """
+    n = len(samples)
+    cands = sorted({w for w, _ in samples} | {round(max(w for w, _ in samples) + 0.1, 1)})
+    th = dict(th0)
+    for _ in range(10):
+        prev = dict(th)
+        cum_target = 0.0
+        targets = {}
+        for g in ("S", "A", "B", "C"):
+            cum_target += TARGET_MIX[g]
+            targets[g] = cum_target * n
+        lower = None                       # 1段下の等級の閾値 (C は下限なし)
+        for g in ("C", "B", "A", "S"):
+            k = _GRADES.index(g)
+            best, best_err = th[g], None
+            for c in cands:
+                if lower is not None and c <= lower:
+                    continue
+                t = dict(th); t[g] = c
+                got = sum(1 for x in _final_grades(samples, t) if _GRADES.index(x) <= k)
+                err = abs(got - targets[g])
+                if best_err is None or err < best_err:
+                    best, best_err = c, err
+            th[g] = round(best, 1)
+            lower = th[g]
+        if th == prev:
+            break
+    for a, b in (("S", "A"), ("A", "B"), ("B", "C")):   # 単調性の保証 (標本が薄いと同値が並ぶ)
+        if th[a] <= th[b]:
+            th[a] = round(th[b] + 0.1, 1)
+    return th
 
 
 def build_confidence_thresholds(conn):
@@ -328,16 +447,24 @@ def build_confidence_thresholds(conn):
 
     固定閾値は印ロジックやモデルが変わるたびに陳腐化する (#36/#120/#147)。
     分位で決めれば、次に印の選び方を変えても構成比は保たれる。
+
+    #169: 目標構成比 (TARGET_MIX) は 2026-08 の **補正後** の分布なのに、旧版は
+    **補正前** の◎表示勝率に分位を当てていた。その後で predict.py が信頼騎手+1 /
+    過信帯-1 を足すため、保存される信頼度は目標から崩れ、平場の C/D は目標29% に対し
+    41-44% (9/12〜11/01) になっていた。補正 (confidence.post_adjust) を込みにした
+    **最終構成比** が目標になるように閾値を較正し、補正前・補正後・実際に保存された
+    構成比を JSON に残す (次に崩れた時に週次の基準表で気づけるように)。
     """
     # 現行ロジック = 点数表 (sc_points が入っている) のレースを優先
-    ws, used = [], None
+    samples, used, realized = [], None, []
     for cond, label in (("AND pc.predictions_json LIKE '%\"sc_points\"%'", "点数表 (現行)"),
                         ("", "直近全体 (点数表以前を含む)")):
-        ws = []
+        samples, realized, dates = [], [], []
         for r in conn.execute(f"""
-            SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
+            SELECT pc.predictions_json, pc.confidence, g.race_name, g.race_date
+            FROM predictions_cache pc
             JOIN races g ON pc.race_id = g.race_id
-            WHERE 1=1 {cond} ORDER BY g.race_date DESC LIMIT 400
+            WHERE {PRE_START_SQL} {cond} ORDER BY g.race_date DESC LIMIT 400
         """):
             if is_ml_out_of_domain(r["race_name"] or ""):
                 continue
@@ -353,26 +480,39 @@ def build_confidence_thresholds(conn):
             if cond and not any((p.get("sc_points") or 0) for p in preds):
                 continue
             if w:
-                ws.append(float(w))
+                # 補正の入力は ◎ の jockey_trust (予測時点の人気で計算済み。
+                # refresh_odds は odds/popularity しか書き換えないので凍結されている)
+                samples.append((float(w), ax.get("jockey_trust", 0) or 0))
+                if r["confidence"] in _GRADES:
+                    realized.append(r["confidence"])
+                dates.append(r["race_date"])
         used = label
-        if len(ws) >= MIN_SAMPLE_FOR_THRESHOLDS:
+        if len(samples) >= MIN_SAMPLE_FOR_THRESHOLDS:
             break
-    if len(ws) < MIN_SAMPLE_FOR_THRESHOLDS:
-        return {"available": False, "n": len(ws),
-                "note": f"標本 {len(ws)} 件では閾値を引けない (最低 {MIN_SAMPLE_FOR_THRESHOLDS} 件)"}
-    ws.sort()
+    if len(samples) < MIN_SAMPLE_FOR_THRESHOLDS:
+        return {"available": False, "n": len(samples),
+                "note": f"標本 {len(samples)} 件では閾値を引けない (最低 {MIN_SAMPLE_FOR_THRESHOLDS} 件)"}
+    ws = sorted(w for w, _ in samples)
     n = len(ws)
-    th, cum = {}, 0.0
+    # 補正前の分位 (旧方式) を初期値にする
+    th0, cum = {}, 0.0
     for g in ("S", "A", "B", "C"):
         cum += TARGET_MIX[g]
         idx = max(0, min(n - 1, int(round((1.0 - cum) * n))))
-        th[g] = round(ws[idx], 1)
-    # 単調性を保証 (標本が薄いと同値が並びうる)
-    for a, b in (("S", "A"), ("A", "B"), ("B", "C")):
-        if th[a] <= th[b]:
-            th[a] = round(th[b] + 0.1, 1)
+        th0[g] = round(ws[idx], 1)
+    th = _calibrate_after_adjust(samples, th0)
+    pre = _mix([_grade_with(th, w) for w, _ in samples])
+    post = _mix(_final_grades(samples, th))
+    from confidence import post_adjust
+    n_adj = sum(1 for w, jt in samples if post_adjust(_grade_with(th, w), jt)[1])
     return {"available": True, "n": n, "sample": used,
-            "target_mix": TARGET_MIX, "thresholds": th}
+            "sample_period": f"{min(dates)}〜{max(dates)}",
+            "target_mix": TARGET_MIX, "thresholds": th,
+            "calibrated_on": "補正後 (confidence.post_adjust 込み) の最終構成比",
+            "mix_before_adjust": pre, "mix_after_adjust": post,
+            "adjusted_share": round(n_adj / n, 4),
+            # 実際に保存された信頼度 (旧閾値・旧補正で付いたもの)。目標から崩れていないかの監視用
+            "realized_mix": _mix(realized), "realized_n": len(realized)}
 
 
 def _bet_gate_or_keep(conn):
@@ -426,6 +566,11 @@ def main():
     if cf.get("available"):
         print(f"\n🎚 信頼度の閾値 ({cf['sample']}, n={cf['n']}): "
               + " / ".join(f"{k}≥{v}" for k, v in cf["thresholds"].items()))
+        # #169: 補正前・補正後 (=目標を当てる側)・実際に保存された構成比を並べて出す
+        _fmt = lambda m: "/".join(f"{g}{100 * m.get(g, 0):.0f}" for g in "SABCD")
+        print(f"   構成比 目標 {_fmt(cf['target_mix'])} | 補正前 {_fmt(cf['mix_before_adjust'])}"
+              f" → 補正後 {_fmt(cf['mix_after_adjust'])} (補正が掛かった割合 {100 * cf['adjusted_share']:.0f}%)")
+        print(f"   直近に実際に保存された構成比 {_fmt(cf['realized_mix'])} (n={cf['realized_n']}, 旧閾値・旧補正)")
     else:
         print(f"\n⚠️ 信頼度の閾値: {cf.get('note')} → 従来の固定値を使う")
 

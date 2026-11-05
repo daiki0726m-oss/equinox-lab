@@ -1194,6 +1194,7 @@ def cmd_predict(args):
         # v13 (2026-05-26): confidence を bet 判定の前に確定 (旧 path は confidence 知らずに
         # should_bet 判定 → C/D も bet=1 のまま、というバグの根本修正)
         from confidence import evaluate as eval_confidence
+        from confidence import post_adjust as post_adjust_confidence   # #169
         n_horses = len(sorted_preds) if sorted_preds else 1
         # #142: 信頼度は【実際に◎を付けた馬】から計算する。
         # 旧実装は sorted_preds[0] (ML勝率1位) を入力にしていたが、◎ は v5 で
@@ -1255,28 +1256,16 @@ def cmd_predict(args):
             if factors:
                 conf_reason = f"{conf_reason} / 波乱要因({factors})※should_bet判定に反映"
 
-        # ── jockey_trust 補正: ◎が信頼/不信騎手の上位人気のとき微調整 ──
-        top_jt = top1.get("jockey_trust", 0) if top1 else 0
-        if top_jt >= 2 and confidence in ("A", "B", "C"):
-            grades = ["S", "A", "B", "C", "D"]
-            confidence = grades[max(0, grades.index(confidence) - 1)]
-            conf_reason = f"{conf_reason} / 信頼騎手{top_jt:+d}"
-        elif top_jt <= -2 and confidence in ("S", "A"):
-            grades = ["S", "A", "B", "C", "D"]
-            confidence = grades[min(len(grades) - 1, grades.index(confidence) + 1)]
-            conf_reason = f"{conf_reason} / 不信騎手{top_jt:+d}"
-
-        # ── ◎オッズ過信帯の降格 (#95 2026-07-02 ROI監査) ──
-        # 5/10-6/28 実測: ◎5.0-9.9倍 = 4着以下62.8%・単勝ROI 44.9% (n=43)。
-        # 「市場と大きく乖離した◎」はモデルの過信ゾーン。8.0倍以上は
-        # should_bet_race 側で遮断 (上限 30→8)、5.0-7.9倍は 1段降格に留める (n<100)。
-        _mk_axis = next((p for p in sorted_preds if p.get('mark') == '◎'), None)
-        _axis_odds = (_mk_axis.get('odds_win') or 0) if _mk_axis else 0
-        if _mk_axis and _mk_axis.get('_has_real_odds') and 5.0 <= _axis_odds < 8.0 \
-                and confidence in ("S", "A", "B", "C"):
-            grades = ["S", "A", "B", "C", "D"]
-            confidence = grades[min(len(grades) - 1, grades.index(confidence) + 1)]
-            conf_reason = f"{conf_reason} / ◎オッズ{_axis_odds:.1f}倍は過信帯-1"
+        # ── 閾値判定の後の補正 (#169: confidence.post_adjust に一本化) ──
+        # 旧実装はここで「信頼騎手+1 / 不信騎手-1 / ◎オッズ5.0-7.9倍は過信帯-1」を
+        # 直書きしていた。基準表の閾値は補正前の分布から引くのに目標構成比は補正後の
+        # 分布 (2026-08) だったため、平場の C/D が目標29%に対し 41-44% に膨らんでいた。
+        # 点数表の◎で再検証した結果、過信帯と不信騎手は狙いを示せず撤去 (詳細は
+        # confidence.post_adjust)。残った補正は基準表が込みで閾値を較正する。
+        confidence, _adj = post_adjust_confidence(
+            confidence, top1.get("jockey_trust", 0) if top1 else 0)
+        if _adj:
+            conf_reason = f"{conf_reason} / {_adj}"
 
         # 🆕 v13 (2026-05-26): confidence-aware should_bet 判定 (旧 v12 の二重評価を一本化)
         # confidence が確定した時点で 1 回だけ should_bet 判定する。
