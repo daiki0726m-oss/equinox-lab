@@ -211,6 +211,9 @@ check("1桁で同値の2頭も点数表と同じ区分 (87.96 は 7位以下)",
 _hDr = [dict(h, si_latest_v=round(h["si_latest_v"], 1)) for h in hD]
 check("(対照) 1桁に丸めると 4-6位 と出て食い違う", _rel_bin(sd.si_rank(_hDr, _hDr[6], latest=True)) == "4-6位")
 check("表示は小数1桁 (fmt_si)", sd.fmt_si(hD[6]["si_latest_v"]) == 88.0)
+check("投稿の整数は画面の1桁を四捨五入 (83.48→画面83.5→84 / 80.5→81)",
+      sd.si_int(83.477) == 84 and sd.si_int(80.5) == 81 and sd.si_int(80.539) == 81 and sd.si_int(-5.2) == -5,
+      (sd.si_int(83.477), sd.si_int(80.5), sd.si_int(80.539), sd.si_int(-5.2)))
 
 # 7c. 取消馬 (_scratched) は表示の V2d も 0 (点数表の母集団から外した馬を画面でも数えない)
 preds = [{"horse_number": 1, "si_avg_v": 101.0, "si_latest_v": 99.0, "_scratched": True},

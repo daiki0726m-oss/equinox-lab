@@ -203,11 +203,12 @@ def eval_points(horse, horses, stats=None, limit=3):
 
     # #169: 点数表の内訳「平均スピード指数 N位」・画面の SI と同じ値・同じ順位 (V2d のレースは
     # si_avg_v、同値は同順位)。旧指数 si_avg の順位だと内訳と別の「N位」を出していた
-    from ml.si_display import display_si, si_rank as _si_rank
+    from ml.si_display import display_si, si_int, si_rank as _si_rank
     si = display_si(horse)
     si_rank = _si_rank(horses, horse)
     if si and si_rank and si_rank <= 3:
-        pts.append(f"スピード指数{si:.0f}は{n}頭中{si_rank}位")
+        # #169 手直し: 値は画面の小数1桁を四捨五入 (キャッシュは丸めない値)
+        pts.append(f"スピード指数{si_int(si)}は{n}頭中{si_rank}位")
 
     # 当コースの実績は着度数 [1着-2着-3着-着外] で示す (#55: 率だけだと母数が伝わらない)
     st = (stats or {}).get(horse.get("horse_number")) or {}

@@ -62,6 +62,13 @@ def fmt_si(v):
     return round(_f(v), 1)
 
 
+def si_int(v):
+    """投稿で整数に丸めて出す時の値。画面の小数1桁 (fmt_si) を四捨五入する (#169 手直し)。
+    丸めない値を直接 :.0f にすると、画面 83.5 (= 83.48) が「83」になり画面と読み合わない
+    (Python の :.0f は偶数丸めでもあり、画面 80.5 が「80」になっていた)。"""
+    return int(math.floor(fmt_si(v) + 0.5))
+
+
 def scorecard_si_cols(model):
     """点数表が平均・直近スピード指数の区分に読む列 (V2d なら si_avg_v / si_latest_v)。"""
     cm = (model or {}).get("col_map") or {}

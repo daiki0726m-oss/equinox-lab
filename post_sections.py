@@ -2018,7 +2018,8 @@ def sec_attention_top(
                     second_fact = f"父{sire_short}産駒{pct:.0f}%"
 
         if not second_fact and si > 0:
-            second_fact = f"SI{si:.0f}"
+            from ml.si_display import si_int
+            second_fact = f"SI{si_int(si)}"     # #169 手直し: 画面の小数1桁を四捨五入
         # #117 (2026-07-20): 「直近複勝率」フォールバックは廃止 — 出馬表を見れば
         # 誰でも分かる情報で浅い (ユーザー指摘)。SI (自前指数) までで止める。
 
