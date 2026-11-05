@@ -897,7 +897,8 @@ def cmd_predict(args):
         all_races = conn.execute("""
             SELECT ra.race_id, ra.race_name, ra.venue, ra.distance, ra.surface,
                    ra.track_condition, ra.grade, ra.race_number, ra.start_time,
-                   pc.predictions_json, pc.all_bets_json, pc.confidence, pc.should_bet
+                   pc.predictions_json, pc.all_bets_json, pc.confidence, pc.should_bet,
+                   pc.created_at AS pc_created_at
             FROM races ra
             JOIN predictions_cache pc ON ra.race_id = pc.race_id
             WHERE (ra.race_date = ? OR ra.race_date = ?)
@@ -1263,8 +1264,14 @@ def cmd_predict(args):
                         for r in target_races if r.get('race_id')}
             _sc_path = os.path.join("docs", "data", f"posted_marks_{date_str}.json")
             os.makedirs(os.path.dirname(_sc_path), exist_ok=True)
+            # #169: 投稿した版の予測キャッシュ時刻 (UTC)。予測時点スナップショット
+            # (prediction_snapshot.at_posting) が「印の集合が同じでも信頼度・買い目・オッズの
+            # 違う版」の中から配信した版を特定する鍵。Pages JSON 経由の投稿には無い
+            _pca = {r.get('race_id'): r.get('pc_created_at') for r in target_races
+                    if r.get('race_id') and r.get('pc_created_at')}
             with open(_sc_path, "w", encoding="utf-8") as _f:
-                json.dump({"date": date_str, "posted_at": _ts, "races": _sidecar},
+                json.dump({"date": date_str, "posted_at": _ts, "races": _sidecar,
+                           "pred_created_at": _pca},
                           _f, ensure_ascii=False, indent=1)
             print(f"📌 サイドカー保存: {_sc_path} (clobber耐性の正本)")
             # #114: 投稿本文の全文も記録 — 「⚡/穴注意が実際に配信されたか」を後から
