@@ -8,9 +8,14 @@
   - 既定はローカルで書かない / CI (GITHUB_ACTIONS=true) で書く / PREDICTION_SNAPSHOT=0 で止まる
   - skip したレースと過去日のレースは書かない
   - 予測時オッズ・人気・印・取消 (999.9倍) が cache / results のとおりに入る。実オッズが無い馬は null
+  - 取消の判定が predict._is_scratch_odds と同じ (cache の人気 9999・"_scratched" キーも取消。
+    実オッズの無い馬の推定オッズ 1000倍超は取消にしない)
+  - horse_id と numbers_confirmed (全頭 post_position>0) が入る
+  - 予測時点で発走済みのレースは書かない (ALLOW_PAST の時だけ post_start=1 で書き、既定で読まない)
   - 中身が直前の版と同じなら書かない (重複除去)、変われば変わったレースだけ書く
   - cache の created_at が run の時刻でない時は書き込み時刻で代用し time_src を付ける
-  - 読み出し: latest_before (指定時刻より前の最終版) / at_posting (投稿印との一致)
+  - 読み出し: latest_before (指定時刻より前の最終版) / at_posting (pred_created_at での完全一致・
+    重複除去で書かれなかった版の引き継ぎ・印の集合での照合と ambiguous)
   - run 単位の版 (sha256 先頭12桁)・フラグ・GITHUB_* が入る
 """
 import json
@@ -45,23 +50,29 @@ def _env(**kw):
             os.environ[k] = v
 
 
-def _seed(conn, race_id, race_date, horses, created_at="now"):
-    """horses: [(馬番, 馬名, results.odds, 印, cache の odds_win, 人気)]"""
+def _seed(conn, race_id, race_date, horses, created_at="now", start_time="15:40", drawn=True,
+          extra=None):
+    """horses: [(馬番, 馬名, results.odds, 印, cache の odds_win, 人気)]
+    drawn: 枠番 (post_position) を入れる = 枠順確定後 / extra: {馬番: cache に足すキー}"""
     conn.execute(
         "INSERT OR REPLACE INTO races (race_id, race_date, venue, race_number, distance, surface,"
-        " track_condition, weather) VALUES (?,?,?,?,?,?,?,?)",
-        (race_id, race_date, "東京", int(race_id[-2:]), 1600, "芝", "稍", "曇"))
+        " track_condition, weather, start_time) VALUES (?,?,?,?,?,?,?,?,?)",
+        (race_id, race_date, "東京", int(race_id[-2:]), 1600, "芝", "稍", "曇", start_time))
     conn.execute("DELETE FROM results WHERE race_id=?", (race_id,))
     for hn, name, ro, _mk, _ow, _pop in horses:
         conn.execute("INSERT OR IGNORE INTO horses (horse_id, horse_name) VALUES (?,?)",
                      (f"h{race_id}{hn}", name))
+        # results の人気は API の番兵 (9999) を書かない (#149/#150) — cache にだけ入る形を再現
         conn.execute("INSERT INTO results (race_id, horse_id, horse_number, odds, popularity,"
-                     " finish_position) VALUES (?,?,?,?,?,0)",
-                     (race_id, f"h{race_id}{hn}", hn, ro, _pop))
-    preds = [{"horse_number": hn, "horse_name": name, "mark": mk, "odds_win": ow,
-              "popularity": pop, "pred_win_pct": 10.0 + hn, "pred_win_display_pct": 12.5 + hn,
-              "pred_top3_pct": 20.0 + hn, "pred_top3_abs_pct": 40.0 + hn, "rank_score": -0.1234 * hn,
-              "ability_score": 0.12345 * hn, "sc_points": 3.14159 * hn}
+                     " post_position, finish_position) VALUES (?,?,?,?,?,?,0)",
+                     (race_id, f"h{race_id}{hn}", hn, ro, 0 if _pop >= 999 else _pop,
+                      (hn + 1) // 2 if drawn else 0))
+    preds = [dict({"horse_number": hn, "horse_name": name, "mark": mk, "odds_win": ow,
+                   "popularity": pop, "pred_win_pct": 10.0 + hn,
+                   "pred_win_display_pct": 12.5 + hn, "pred_top3_pct": 20.0 + hn,
+                   "pred_top3_abs_pct": 40.0 + hn, "rank_score": -0.1234 * hn,
+                   "ability_score": 0.12345 * hn, "sc_points": 3.14159 * hn},
+                  **((extra or {}).get(hn) or {}))
              for hn, name, _ro, mk, ow, pop in horses]
     bets = {"ワイド": [{"type": "ワイド", "detail": "1-2", "amount": 100},
                     {"type": "ワイド", "detail": "1-3", "amount": 0}]}
@@ -88,13 +99,26 @@ def main():
     fut = (today + timedelta(days=2)).strftime("%Y-%m-%d")
     fut_ymd = fut.replace("-", "")
     past = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+    today_s = today.strftime("%Y-%m-%d")
     R1, R2, R3, RP = "209905050101", "209905050102", "209905050103", "209905050199"
+    RS, RT = "209905050104", "209905050105"
     with database.get_db() as c:
+        # R1: 2番 = 999.9倍 (refresh_odds の取消) / 3番 = 実オッズ無し (推定)
+        #     4番 = API の番兵 (cache の人気 9999・results は 0倍) / 5番 = predict の "_scratched"
+        #     6番 = 実オッズ無しで推定オッズが 1000倍超 (勝率が低いだけ。取消ではない)
         _seed(c, R1, fut, [(1, "アルファ", 3.2, "◎", 3.2, 1), (2, "ベータ", 999.9, "", 999.9, 3),
-                           (3, "ガンマ", 0.0, "○", 12.0, 0)])
-        _seed(c, R2, fut, [(1, "デルタ", 5.0, "◎", 5.0, 1), (2, "イプシロン", 8.0, "☆", 8.0, 2)])
+                           (3, "ガンマ", 0.0, "○", 12.0, 0), (4, "シータ", 0.0, "", 22.6, 9999),
+                           (5, "イオタ", 0.0, "", 30.0, 0), (6, "カッパ", 0.0, "", 1600.0, 0)],
+              extra={5: {"_scratched": True}})
+        # R2 は枠順確定前 (post_position=0) の馬番
+        _seed(c, R2, fut, [(1, "デルタ", 5.0, "◎", 5.0, 1), (2, "イプシロン", 8.0, "☆", 8.0, 2)],
+              drawn=False)
         _seed(c, R3, fut, [(1, "ゼータ", 2.0, "◎", 2.0, 1)])
         _seed(c, RP, past, [(1, "オメガ", 4.0, "◎", 4.0, 1)])
+        # RS: 今日の 00:00 発走 = 予測した時点で発走済み (発走後の --force 再予測の形)
+        _seed(c, RS, today_s, [(1, "シグマ", 3.0, "◎", 3.0, 1)], start_time="00:00")
+        # RT: 今日のレースだが発走時刻が不明 → 判定できないので書く
+        _seed(c, RT, today_s, [(1, "タウ", 3.0, "◎", 3.0, 1)], start_time="")
 
     class A:      # argparse の代わり
         date = fut_ymd
@@ -115,6 +139,13 @@ def main():
              MARKS_TEST_FLAG="7")
         w = ps.record_run([R1, R2, R3, RP], [(R3, "オッズ全頭0 (degenerate回避)")], args=A)
         check("ci-written-one-file", len(w) == 1, str(w))
+        # 今日のレース: 発走済み (RS) は書かず、発走時刻不明 (RT) は書く
+        _env(GITHUB_RUN_ID="110")
+        wt = ps.record_run([RS, RT], [], args=A)
+        dt = ps.load_snapshot(wt[0]) if wt else {}
+        check("post-start-excluded", [r["race_id"] for r in dt.get("races", [])] == [RT],
+              str([r["race_id"] for r in dt.get("races", [])]))
+        _env(GITHUB_RUN_ID="111")
         doc = ps.load_snapshot(w[0]) if w else {}
         check("path-layout", w and w[0].startswith(os.path.join(snap, fut_ymd) + os.sep)
               and w[0].endswith("_111.json"), str(w))
@@ -139,6 +170,18 @@ def main():
         check("odds-real", hs[1]["odds"] == 3.2 and hs[1]["popularity"] == 1, str(hs[1]))
         check("odds-estimated-null", hs[3]["odds"] is None and hs[3]["popularity"] == 0, str(hs[3]))
         check("scratched-999", hs[2]["scratched"] == 1 and hs[1]["scratched"] == 0)
+        check("scratched-cache-pop-9999", hs[4]["scratched"] == 1, str(hs[4]))
+        check("scratched-predict-key", hs[5]["scratched"] == 1, str(hs[5]))
+        check("not-scratched-estimated-1600x", hs[6]["scratched"] == 0 and hs[3]["scratched"] == 0,
+              str(hs[6]))
+        check("horse_id", hs[1]["horse_id"] == f"h{R1}1" and hs[6]["horse_id"] == f"h{R1}6",
+              str(hs[1]))
+        r2 = ps._expand(doc["races"][1], doc, w[0])
+        check("numbers_confirmed", r1["numbers_confirmed"] == 1 and r2["numbers_confirmed"] == 0,
+              f"{r1['numbers_confirmed']} {r2['numbers_confirmed']}")
+        check("start_time", r1["start_time"] == "15:40" and "post_start" not in r1, str(r1)[:120])
+        check("cache_created_at-raw", r1["cache_created_at"] and "+" not in r1["cache_created_at"],
+              str(r1.get("cache_created_at")))
         check("marks", hs[1]["mark"] == "◎" and hs[3]["mark"] == "○" and hs[2]["mark"] == "")
         check("rounding", hs[3]["sc_points"] == 9.425 and hs[3]["ability_score"] == 0.3704
               and hs[3]["rank_score"] == -0.37, str(hs[3]))
@@ -188,6 +231,13 @@ def main():
         lb_early = ps.latest_before(fut_ymd, "2000-01-01 00:00")
         check("latest-before-none", lb_early == {}, str(lb_early))
         check("latest-attached-meta", lb_all[R1]["versions"] and lb_all[R1]["run"]["run_id"] == "111")
+        # R2 の1版目は枠順確定前 (post_position=0)、2版目は確定後。確定後だけを読むと
+        # 1版目しか無い時点では R2 は出てこない
+        lb_conf_mid = ps.latest_before(fut_ymd, t_before_r2b + timedelta(seconds=1), confirmed_only=True)
+        check("latest-confirmed-only", R2 not in lb_conf_mid and R1 in lb_conf_mid
+              and R2 in lb_mid, str(set(lb_conf_mid)))
+        check("latest-confirmed-only-later",
+              ps.latest_before(fut_ymd, confirmed_only=True).get(R2, {}).get("numbers_confirmed") == 1)
 
         # at_posting: R2 は最初の版の印 (☆2 付き) で投稿した (= 後の再予測が配信に届かなかった形)
         pm = os.path.join(tmp, f"posted_marks_{fut_ymd}.json")
@@ -196,15 +246,58 @@ def main():
                              R2: [{"mark": "◎", "horse_number": 1}, {"mark": "☆", "horse_number": 2}]}},
                   open(pm, "w"), ensure_ascii=False)
         ap = ps.at_posting(fut_ymd, marks_path=pm)
-        check("at_posting-latest", ap.get(R1, {}).get("posting_match") == "latest", str(ap.get(R1, {}).get("posting_match")))
+        check("at_posting-latest", ap.get(R1, {}).get("posting_match") == "latest"
+              and ap[R1]["n_match"] == 1, str(ap.get(R1, {}).get("posting_match")))
         check("at_posting-earlier", ap.get(R2, {}).get("posting_match") == "earlier"
               and ap[R2]["horses"][0]["odds"] == 5.0, str(ap.get(R2, {}).get("posting_match")))
         check("at_posting-only-posted", set(ap) == {R1, R2}, str(set(ap)))
 
-        # ── 7. ALLOW_PAST で過去日も書ける ──
+        # 投稿した版の cache 時刻 (post_x の pred_created_at) があれば、印でなく時刻で特定する
+        v_r2 = [v for v in ps.iter_race_versions(fut_ymd) if v["race_id"] == R2]
+        v_r1 = [v for v in ps.iter_race_versions(fut_ymd) if v["race_id"] == R1]
+        r1_later = (datetime.fromisoformat(v_r1[0]["created_at"]).astimezone(timezone.utc)
+                    + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+        pm2 = os.path.join(tmp, "posted_marks_exact.json")
+        json.dump({"date": fut_ymd, "posted_at": (datetime.now(JST) + timedelta(minutes=1)).isoformat(),
+                   "races": {R1: [{"mark": "◎", "horse_number": 1}, {"mark": "○", "horse_number": 3}],
+                             R2: [{"mark": "◎", "horse_number": 1}]},
+                   # R2 = 2版目そのもの / R1 = 重複除去で書かれなかった run (112) を配信した形
+                   "pred_created_at": {R2: v_r2[-1]["cache_created_at"], R1: r1_later}},
+                  open(pm2, "w"), ensure_ascii=False)
+        ap2 = ps.at_posting(fut_ymd, marks_path=pm2)
+        check("at_posting-exact", ap2.get(R2, {}).get("posting_match") == "exact"
+              and ap2[R2]["horses"][0]["odds"] == 4.4, str(ap2.get(R2, {}).get("posting_match")))
+        check("at_posting-carried", ap2.get(R1, {}).get("posting_match") == "carried",
+              str(ap2.get(R1, {}).get("posting_match")))
+
+        # 同じ印のまま信頼度・オッズだけ違う版が2つ → 印では特定できない (ambiguous)
+        time.sleep(1.1)
+        with database.get_db() as c:
+            _seed(c, R1, fut, [(1, "アルファ", 3.6, "◎", 3.6, 1), (2, "ベータ", 999.9, "", 999.9, 3),
+                               (3, "ガンマ", 0.0, "○", 12.0, 0), (4, "シータ", 0.0, "", 22.6, 9999),
+                               (5, "イオタ", 0.0, "", 30.0, 0), (6, "カッパ", 0.0, "", 1600.0, 0)],
+                  extra={5: {"_scratched": True}})
+        _env(GITHUB_RUN_ID="116")
+        check("r1-second-version", len(ps.record_run([R1], [], args=A)) == 1)
+        ap3 = ps.at_posting(fut_ymd, marks_path=pm)
+        check("at_posting-ambiguous", ap3.get(R1, {}).get("posting_match") == "ambiguous"
+              and ap3[R1]["n_match"] == 2 and ap3[R1]["horses"][0]["odds"] == 3.6,
+              str({k: ap3.get(R1, {}).get(k) for k in ("posting_match", "n_match")}))
+
+        # ── 7. ALLOW_PAST で過去日も書ける。発走済みのレースは post_start=1 で書き、既定で読まない ──
         _env(PREDICTION_SNAPSHOT_ALLOW_PAST="1", GITHUB_RUN_ID="115")
         wp = ps.record_run([RP], [], args=A)
         check("allow-past", len(wp) == 1 and os.sep + past.replace("-", "") + os.sep in wp[0], str(wp))
+        with database.get_db() as c:
+            _seed(c, RS, today_s, [(1, "シグマ", 3.3, "◎", 3.3, 1)], start_time="00:00")
+        ws = ps.record_run([RS], [], args=A)
+        ds = ps.load_snapshot(ws[0]) if ws else {}
+        check("allow-past-post_start-flag", [r.get("post_start") for r in ds.get("races", [])] == [1],
+              str(ds.get("races", [{}])[:1])[:160])
+        tymd = today_s.replace("-", "")
+        check("reader-skips-post_start", RS not in ps.latest_before(tymd)
+              and RT in ps.latest_before(tymd), str(set(ps.latest_before(tymd))))
+        check("reader-include-post_start", RS in ps.latest_before(tymd, include_post_start=True))
     finally:
         _env(**saved)
         shutil.rmtree(tmp, ignore_errors=True)

@@ -27,8 +27,9 @@
   rebase は必ずクリーンに通る。
 - 改行なしの compact JSON。馬は列名を1回だけ書いた配列 (horse_cols + 行) にする。
   リポジトリ容量の制約 (#153) があるので、1開催日あたり 1MB を超えない設計。
-  実測 (DB コピーの cache から作成): 1 run = 24R 37KB / 36R 54KB (zlib 後 12KB / 16KB)。
-  1開催日の予測は 7〜9回 (10/31・11/01 の run ログ) なので 1日 ~0.5MB・git 上 ~0.15MB。
+  実測 (DB コピーの cache から作成、horse_id 等を足した後): 1 run = 24R 44KB / 36R 64KB
+  (zlib 後 14KB / 20KB)。1開催日の予測は 7〜9回 (10/31・11/01 の run ログ) なので
+  1日 ~0.6MB・git 上 ~0.2MB。
   直前の版と中身が同じレースは書かない (重複除去)。1日 1MB を超えたら警告を出す。
 - 書くのは既定で CI (GITHUB_ACTIONS=true) のときだけ。ローカルの手作業・過去日の
   再予測・バックテストで git tracked な場所を汚さないため。
@@ -36,6 +37,12 @@
     PREDICTION_SNAPSHOT_DIR … 出力先を変える (テスト用)
     PREDICTION_SNAPSHOT_ALLOW_PAST=1 … 過去日 (JST の今日より前) のレースも書く
 - 予測を skip したレース (オッズ充足ゲート・seal 等) は書かない。
+- 予測した時点で発走済みのレース (当日の発走後の --force 再予測 = 幽霊馬除去の
+  --repredict、preflight の auto-fix、9時台に遅れて動いた朝の予測の R1 等) も書かない。
+  発売締切後のオッズで作り直した版は「予測時点」ではなく、レースごとに最新版を取ると
+  確定に近いオッズが混ざる (#99 と同じ look-ahead)。過去日を書かないのと同じ扱い。
+  PREDICTION_SNAPSHOT_ALLOW_PAST=1 の時だけ post_start=1 を付けて書き、読み出し側は
+  既定でそれを読まない。
 - 予測本体を止めないため、ここでの失敗は警告だけ出して握る。
 
 値の出どころ
@@ -49,7 +56,14 @@ time_src="written_at" を付ける (未来の版を「より前」に混ぜな�
 
 記録されるのは「predict が計算して cache に書いた版」であって、配信された版とは限らない。
 9時台の再予測が runner に巻き戻された日 (#169 の反省1) や、push に失敗した run の版も残る。
-配信した版を引くときは at_posting を使う (投稿印 posted_marks と印が一致する版を返す)。
+配信した版を引くときは at_posting を使う。投稿印サイドカー (posted_marks) に投稿した版の
+cache 時刻 (pred_created_at) があればそれと一致する版を返す。無い日 (導入前・Pages JSON
+経由の投稿) は「印の集合が投稿印と一致する最後の版」で、一致する版が複数あれば
+posting_match="ambiguous" (どれを配信したかは特定できない) と明示する。
+
+馬の同定は horse_id で行う。馬番は予測した時点の値で、枠順確定前・仮馬番 (五十音順) の
+まま予測が走った版 (#169 の反省2: 11/01 未明) では確定馬番と別の馬を指す。
+レースごとの numbers_confirmed (全頭 post_position>0 = 枠順確定後) も残す。
 
 読み出し
 --------
@@ -57,7 +71,9 @@ time_src="written_at" を付ける (未来の版を「より前」に混ぜな�
     ps.list_snapshots("20261101")                 # その日の run 一覧 (時刻順)
     ps.latest_before("20261101", "2026-11-01 10:25")   # race_id → 10:25 より前の最終版
     ps.iter_race_versions("20261101")             # 全版 (重複除去済み)
-    ps.at_posting("20261101")                     # 投稿時刻より前の版 + 投稿印との一致
+    ps.at_posting("20261101")                     # 配信した版 (posting_match で確度を示す)
+    結果と突き合わせる時は horse_id で結合する (馬番は仮馬番の版で別の馬を指す)。
+    ps.latest_before(d, at, confirmed_only=True)  # 枠順確定後 (numbers_confirmed=1) の版だけ
 CLI: python3 prediction_snapshot.py list 20261101
      python3 prediction_snapshot.py latest 20261101 --before "2026-11-01 10:25"
      python3 prediction_snapshot.py posted 20261101
@@ -87,6 +103,9 @@ HORSE_COLS = [
     "rank_score",           # model_rank の生スコア
     "ability_score",        # 能力モデル (オッズ非依存 #72)
     "scratched",            # 予測時点で取消と分かっていたか (1/0)
+    # #169: 馬の識別子。馬番は予測時点の値で、仮馬番 (五十音順) のまま予測した版では
+    # 確定馬番と別の馬を指す。結果と突き合わせる時は馬番でなくこれで結合する
+    "horse_id",
 ]
 
 # 版を記録するファイル (ROOT からの相対パス)。models/*.pkl は動的に足す。
@@ -107,10 +126,13 @@ _EXTRA_FLAGS = [
 #  無関係な env が多いので接頭辞にせず、上の明示リストだけにする)
 _FLAG_PREFIXES = ("MARKS_", "BET_", "CONFIDENCE_")
 
-# 取消をあらわす値 (refresh_odds が書く 999.9倍。API の番兵は -3.0倍/9999人気 #149)
-_SCRATCH_ODDS = 999.0
-# P班など他の処理が予測 JSON に取消フラグを足した時の候補キー
-_SCRATCH_KEYS = ("scratched", "is_scratched", "cancelled", "torikeshi", "excluded")
+# 取消をあらわす値 (refresh_odds が書く 999.9倍。API の番兵は -3.0倍/9999人気 #149)。
+# 閾値は predict._is_scratch_odds (#169 P班: odds<0 / odds>=999.9 / 人気>=999) と揃える
+_SCRATCH_ODDS = 999.9
+_SCRATCH_POP = 999
+# 予測 JSON (cache) に取消フラグが入っている時の候補キー。predict は印の選定に
+# "_scratched" を使う (P班 #169)。cache に保存されれば (列挙リストに足されれば) そのまま拾う
+_SCRATCH_KEYS = ("scratched", "_scratched", "is_scratched", "cancelled", "torikeshi", "excluded")
 
 
 # ───────────────────────── 書き込み ─────────────────────────
@@ -249,22 +271,48 @@ def _run_meta(args=None, scorecard=None):
     return {k: v for k, v in meta.items() if v not in (None, "")}, sc
 
 
+def _scratch_value(odds, popularity):
+    """predict._is_scratch_odds (P班 #169) と同じ述語: 負のオッズ / 999.9倍以上 / 人気999以上。"""
+    try:
+        o = float(odds or 0)
+    except (TypeError, ValueError):
+        o = 0.0
+    try:
+        pop = int(popularity or 0)
+    except (TypeError, ValueError):
+        pop = 0
+    return o < 0 or o >= _SCRATCH_ODDS or pop >= _SCRATCH_POP
+
+
 def _is_scratched(h, res_odds, res_pop=None):
-    """予測時点で取消と分かっていたか。999.9倍 (refresh_odds) と
-    API の番兵 (負のオッズ / 9999人気 #149) のどれかに当たれば取消とみなす。"""
+    """予測時点で取消と分かっていたか (1/0)。predict が印の候補から外すのと同じ判定にする。
+
+    - results の値 (refresh_odds が書く 999.9倍 = 9/05 以降の取消馬)
+    - cache の人気 (オッズ API の番兵 9999。#149/#150 のガードで results には書かれず、
+      predict がループ内で API を引いた時だけ cache の popularity に入る — DB コピーでは
+      cache の人気 9999 が61頭、全頭 finish_position=0)
+    - cache のオッズ (負の値 = 古い版の番兵 -3.0/-2.0。実オッズの馬だけ 999.9倍も見る。
+      実オッズの無い馬の odds_win は 0.8/勝率 の推定値で、勝率が低いと 1000 倍を超えうるので
+      取消の判定に使わない)
+    - 予測 JSON の取消フラグ (_SCRATCH_KEYS)
+    """
     if any(h.get(k) for k in _SCRATCH_KEYS):
         return 1
-    for od in (h.get("odds_win"), res_odds):
-        try:
-            if od is not None and (float(od) >= _SCRATCH_ODDS or float(od) < 0):
-                return 1
-        except (TypeError, ValueError):
-            pass
+    if _scratch_value(res_odds, res_pop):
+        return 1
     try:
-        if res_pop is not None and int(res_pop) >= 999:
-            return 1
+        cache_pop = int(h.get("popularity") or 0)
     except (TypeError, ValueError):
-        pass
+        cache_pop = 0
+    if cache_pop >= _SCRATCH_POP:
+        return 1
+    try:
+        ow = float(h.get("odds_win") or 0)
+        real = float(res_odds or 0) > 0
+    except (TypeError, ValueError):
+        ow, real = 0.0, False
+    if ow < 0 or (real and ow >= _SCRATCH_ODDS):
+        return 1
     return 0
 
 
@@ -302,6 +350,19 @@ def _pred_time(cache_created_at, now):
     return now.isoformat(timespec="seconds"), "written_at"
 
 
+def _race_start(race_date, start_time):
+    """発走時刻 (JST の datetime)。日付か発走時刻が読めなければ None。"""
+    ymd = _ymd(race_date)
+    st = (start_time or "").strip()
+    if not ymd or ":" not in st:
+        return None
+    try:
+        hh, mm = (int(x) for x in st.split(":")[:2])
+        return datetime.strptime(ymd, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=JST)
+    except ValueError:
+        return None
+
+
 def build_records(race_ids, conn, now=None):
     """race_ids の cache 行を読んで、レース日ごとのレース記録に組み立てる。"""
     if not race_ids:
@@ -312,14 +373,17 @@ def build_records(race_ids, conn, now=None):
         f"SELECT race_id, predictions_json, all_bets_json, confidence, conf_reason,"
         f" should_bet, bet_reason, created_at FROM predictions_cache WHERE race_id IN ({ph})",
         race_ids)}
+    # #169: start_time は「予測した時点で発走済みだったか」の判定と、読み出し側が DB 無しで
+    # 「発走前の最終版」を引くために残す
     races = {r["race_id"]: r for r in conn.execute(
-        f"SELECT race_id, race_date, track_condition, weather FROM races WHERE race_id IN ({ph})",
-        race_ids)}
+        f"SELECT race_id, race_date, start_time, track_condition, weather FROM races"
+        f" WHERE race_id IN ({ph})", race_ids)}
     res = {}
     for r in conn.execute(
-            f"SELECT race_id, horse_number, odds, popularity FROM results WHERE race_id IN ({ph})",
-            race_ids):
-        res[(r["race_id"], r["horse_number"])] = (r["odds"], r["popularity"])
+            f"SELECT race_id, horse_number, horse_id, post_position, odds, popularity"
+            f" FROM results WHERE race_id IN ({ph})", race_ids):
+        res[(r["race_id"], r["horse_number"])] = (r["odds"], r["popularity"], r["horse_id"],
+                                                  r["post_position"])
 
     by_date = {}
     for rid in race_ids:
@@ -332,9 +396,12 @@ def build_records(race_ids, conn, now=None):
             continue
         rc = races.get(rid)
         rows = []
+        n_pp = 0        # 枠番 (post_position>0) が入っている頭数 = 枠順確定の判定 (#27 と同じ信号)
         for h in sorted(horses, key=lambda x: x.get("horse_number") or 0):
             hn = h.get("horse_number")
-            ro, rp = res.get((rid, hn), (None, None))
+            ro, rp, hid, pp = res.get((rid, hn), (None, None, None, None))
+            if (pp or 0) > 0:
+                n_pp += 1
             # 実オッズで予測したか: predict は results.odds>0 の馬だけ実オッズを使い、
             # それ以外は 0.8/勝率 の推定オッズで計算する (cache の odds_win には区別が無い)
             real = ro is not None and ro > 0
@@ -351,11 +418,20 @@ def build_records(race_ids, conn, now=None):
                 _r(h.get("rank_score"), 3),
                 _r(h.get("ability_score"), 4),
                 _is_scratched(h, ro, rp),
+                hid,
             ])
         pt, src = _pred_time(c["created_at"], now)
+        st = (rc["start_time"] if rc else None) or ""
+        start = _race_start(rc["race_date"] if rc else "", st)
         rec = {
             "race_id": rid,
             "created_at": pt,
+            # 投稿した版の特定用 (post_x が posted_marks の pred_created_at に同じ値を残す)。
+            # 予測時刻を書き込み時刻で代用した行 (time_src) でも cache の値のまま残す
+            "cache_created_at": c["created_at"],
+            "start_time": st,
+            # 全頭に枠番が入っている = 枠順確定後の馬番。0 の版の馬番は仮番の可能性がある
+            "numbers_confirmed": int(bool(rows) and n_pp == len(rows)),
             "track_condition": (rc["track_condition"] if rc else None) or "",
             "weather": (rc["weather"] if rc else None) or "",
             "confidence": c["confidence"],
@@ -367,13 +443,20 @@ def build_records(race_ids, conn, now=None):
         }
         if src != "cache":
             rec["time_src"] = src      # created_at は書き込み時刻での代用 (上の _pred_time)
+        # 予測した時点で発走済み (refresh_odds の _started と同じ考え方: 予測時刻 >= 発走時刻)。
+        # 発走時刻が分からないレースは判定できないので付けない
+        if start is not None and datetime.fromisoformat(pt) >= start:
+            rec["post_start"] = 1
         by_date.setdefault(_ymd(rc["race_date"] if rc else ""), []).append(rec)
     return by_date
 
 
+_TIME_KEYS = ("created_at", "time_src", "cache_created_at")
+
+
 def _content_key(rec):
     """予測時刻以外が同じなら同じ版とみなすためのキー。"""
-    return json.dumps({k: v for k, v in rec.items() if k not in ("created_at", "time_src")},
+    return json.dumps({k: v for k, v in rec.items() if k not in _TIME_KEYS},
                       ensure_ascii=False, sort_keys=True)
 
 
@@ -456,6 +539,16 @@ def record_run(race_ids, skipped_races=(), args=None, scorecard=None):
                 # 過去日の再予測 (発走後の作り直し・バックテスト) は「予測時点」の記録ではない
                 print(f"  📸 予測スナップショット: {ymd} は過去日なので記録しない ({len(recs)}R)")
                 continue
+            # 同じ日でも、予測した時点で発走済みのレースは過去日と同じく記録しない (#169)。
+            # 発走後の --force 再予測 (幽霊馬除去の --repredict・preflight の auto-fix・
+            # 9時台に遅れた朝の予測の R1) は発売締切後のオッズで計算されており、
+            # 「レースごとの最新版」に混ざると #99 と同じ後出しになる
+            n_ps = sum(1 for r in recs if r.get("post_start"))
+            if n_ps and not allow_past:
+                recs = [r for r in recs if not r.get("post_start")]
+                print(f"  📸 予測スナップショット: {ymd} の {n_ps}R は予測時点で発走済みなので記録しない")
+                if not recs:
+                    continue
             # 直前の版と予測時刻以外が同じレースは書かない (オッズが動かない時間帯の
             # 繰り返し再予測 = preflight の auto-fix 等で同じ中身が積み上がるのを防ぐ #153)
             last = _last_contents(ymd)
@@ -553,17 +646,26 @@ def _expand(rec, doc, path):
     return r
 
 
-def iter_race_versions(date, base_dir=None):
+def iter_race_versions(date, base_dir=None, include_post_start=False, confirmed_only=False):
     """指定日の全レース・全版を (created_at, written_at) 順に返す。同じ版の重複は1つに。
 
-    各要素は {race_id, created_at, track_condition, weather, confidence, should_bet, ...,
-             horses: [{horse_number, odds, ...}], run, versions, flags, path}
+    各要素は {race_id, created_at, start_time, numbers_confirmed, track_condition, weather,
+             confidence, should_bet, ..., horses: [{horse_number, horse_id, odds, ...}],
+             run, versions, flags, path}
+    include_post_start: 予測時点で発走済みだった版 (post_start=1。ALLOW_PAST の時だけ書かれる)
+                        も返す。既定は返さない (#99 の後出しを読み出し側でも防ぐ)
+    confirmed_only: 枠順確定後 (numbers_confirmed=1) の版だけ返す。馬番で結果と結合する
+                    読み手向け (horse_id で結合するなら不要)
     """
     seen = set()
     out = []
     for s in list_snapshots(date, base_dir):
         doc = load_snapshot(s["path"])
         for rec in doc.get("races") or []:
+            if rec.get("post_start") and not include_post_start:
+                continue
+            if confirmed_only and not rec.get("numbers_confirmed"):
+                continue
             key = (rec.get("race_id"), rec.get("created_at"))
             if key in seen:
                 continue
@@ -574,17 +676,20 @@ def iter_race_versions(date, base_dir=None):
     return out
 
 
-def latest_before(date, at=None, race_ids=None, base_dir=None):
+def latest_before(date, at=None, race_ids=None, base_dir=None,
+                  include_post_start=False, confirmed_only=False):
     """race_id ごとに「予測時刻 (cache の created_at) が at より前」の最後の版を返す。
 
-    at=None なら最新版。時差の無い at は JST とみなす。
+    at=None なら最新版 = 発走前の最終版 (予測時点で発走済みの版は記録しない・既定で読まない)。
+    時差の無い at は JST とみなす。
     例: 投稿印と同じ時点の予測を引く → latest_before(d, "2026-11-01 10:25")
-        発走前の最終版を引く → レースごとに start_time を at に渡す
+    結果と突き合わせる時は horses の horse_id で結合する (馬番は仮馬番の版で別の馬を指す)。
     """
     t = _parse_at(at)
     want = set(race_ids) if race_ids else None
     best = {}
-    for r in iter_race_versions(date, base_dir):
+    for r in iter_race_versions(date, base_dir, include_post_start=include_post_start,
+                                confirmed_only=confirmed_only):
         rid = r.get("race_id")
         if want is not None and rid not in want:
             continue
@@ -599,17 +704,32 @@ def _mark_set(horses):
     return {(h.get("mark"), h.get("horse_number")) for h in horses or [] if h.get("mark")}
 
 
-def at_posting(date, base_dir=None, marks_path=None):
-    """投稿した各レースについて「投稿時刻より前の最後の版」を返す。
+def _cache_time(s):
+    """cache の created_at (UTC、時差表記なし) を tz 付き datetime に。読めなければ None。"""
+    try:
+        return _parse_at(_utc_to_jst_iso(s)) if s else None
+    except ValueError:
+        return None
 
-    投稿印は posted_marks_YYYYMMDD.json (テキストの凍結記録 #101/#141) を正とし、
-    その posted_at より前の版を引いたうえで、印 (記号×馬番) が投稿印と一致するかを
-    posting_match に付ける:
-      "latest"  … 投稿時刻より前の最後の版の印が投稿印と一致 (正常)
-      "earlier" … 最後の版とは違い、それより前の版が投稿印と一致した
-                  (9時台の再予測が runner に巻き戻された #169 の痕跡)。返すのは一致した方の版
-      "none"    … 一致する版が無い (スナップショット導入前・記録漏れ)。最後の版を返す
-    戻り値: {race_id: 版 (latest_before と同じ形 + posting_match)}。投稿記録が無ければ {}
+
+def at_posting(date, base_dir=None, marks_path=None):
+    """投稿した各レースについて、配信した版 (と、その確度) を返す。
+
+    投稿印は posted_marks_YYYYMMDD.json (テキストの凍結記録 #101/#141) を正とする。
+    posting_match:
+      "exact"     … サイドカーの pred_created_at (投稿した版の cache 時刻、post_x が #169 で記録)
+                    と cache_created_at が一致する版。配信した版そのもの
+      "carried"   … pred_created_at はあるが一致する版が無く、それ以前の最後の版の印が投稿印と
+                    一致した (直前の版と同じ中身なので重複除去で書かれなかった run を配信した形)
+      以下は pred_created_at が無い日 (導入前・Pages JSON 経由の投稿) の「印の集合」での照合。
+      印 (記号×馬番) しか見ないので、同じ印のまま信頼度・買い目・オッズが違う版は区別できない:
+      "latest"    … 投稿時刻より前で印が投稿印と一致する版が1つだけで、それが最後の版
+      "earlier"   … 一致する版が1つだけで、最後の版ではない
+                    (9時台の再予測が runner に巻き戻された #169 の痕跡)。返すのは一致した方
+      "ambiguous" … 一致する版が複数あり、どれを配信したかは特定できない。返すのは一致した最後の版
+      "none"      … 一致する版が無い (スナップショット導入前・記録漏れ)。最後の版を返す
+    n_match に「印の集合が投稿印と一致する版の数」(投稿時刻より前) を付ける。
+    戻り値: {race_id: 版 (latest_before と同じ形 + posting_match, n_match)}。投稿記録が無ければ {}
     """
     ymd = _ymd(str(date))
     mp = marks_path or os.path.join(ROOT, "docs", "data", f"posted_marks_{ymd}.json")
@@ -622,26 +742,48 @@ def at_posting(date, base_dir=None, marks_path=None):
     posted = pm.get("races") or {}
     if not isinstance(posted, dict):
         return {}
-    vers =[v for v in iter_race_versions(ymd, base_dir) if v.get("race_id") in posted]
+    pca = pm.get("pred_created_at")
+    pca = pca if isinstance(pca, dict) else {}
+    vers = [v for v in iter_race_versions(ymd, base_dir) if v.get("race_id") in posted]
     out = {}
     for rid, pmarks in posted.items():
         want = _mark_set(pmarks)
-        cand = [v for v in vers if v["race_id"] == rid
-                and (t is None or ((_parse_at(v.get("created_at")) or t) < t))]
+        allv = [v for v in vers if v["race_id"] == rid]
+        cand = [v for v in allv
+                if t is None or ((_parse_at(v.get("created_at")) or t) < t)]
+        matches = [v for v in cand if _mark_set(v["horses"]) == want]
+        n_match = len(matches)
+
+        def _ret(v, how):
+            r = dict(v)
+            r["posting_match"] = how
+            r["n_match"] = n_match
+            out[rid] = r
+
+        # 1) 投稿した版の cache 時刻が分かる → その版を特定する
+        kt = _cache_time(pca.get(rid))
+        if kt is not None:
+            exact = [v for v in allv if _cache_time(v.get("cache_created_at")) == kt]
+            if exact:
+                _ret(exact[-1], "exact")
+                continue
+            prev = [v for v in allv
+                    if (_cache_time(v.get("cache_created_at")) or kt) < kt]
+            prev.sort(key=lambda v: _cache_time(v.get("cache_created_at")))
+            if prev and _mark_set(prev[-1]["horses"]) == want:
+                _ret(prev[-1], "carried")
+                continue
+        # 2) 印の集合で照合 (配信した版を一意に決められるとは限らない)
         if not cand:
             continue
-        last = dict(cand[-1])
-        if _mark_set(last["horses"]) == want:
-            last["posting_match"] = "latest"
-            out[rid] = last
-            continue
-        hit = next((dict(v) for v in reversed(cand[:-1]) if _mark_set(v["horses"]) == want), None)
-        if hit:
-            hit["posting_match"] = "earlier"
-            out[rid] = hit
+        if n_match == 0:
+            _ret(cand[-1], "none")
+        elif n_match >= 2:
+            _ret(matches[-1], "ambiguous")
+        elif matches[0] is cand[-1]:
+            _ret(cand[-1], "latest")
         else:
-            last["posting_match"] = "none"
-            out[rid] = last
+            _ret(matches[0], "earlier")
     return out
 
 
@@ -668,12 +810,14 @@ def _main(argv):
     elif ns.cmd == "posted":
         for rid, r in sorted(at_posting(ns.date).items()):
             marks = " ".join(f"{h['mark']}{h['horse_number']}" for h in r["horses"] if h.get("mark"))
-            print(f"{rid}  予測 {r['created_at']}  一致={r['posting_match']}  {marks}")
+            print(f"{rid}  予測 {r['created_at']}  一致={r['posting_match']} "
+                  f"(印一致の版 {r.get('n_match', 0)})  {marks}")
     else:
         for rid, r in sorted(latest_before(ns.date, ns.before).items()):
             marks = " ".join(f"{h['mark']}{h['horse_number']}" for h in r["horses"] if h.get("mark"))
             print(f"{rid}  予測 {r['created_at']}  {r['confidence']} sb={r['should_bet']}  "
-                  f"馬場={r['track_condition'] or '-'}  {marks}")
+                  f"馬場={r['track_condition'] or '-'}  "
+                  f"{'' if r.get('numbers_confirmed') else '[枠順未確定] '}{marks}")
 
 
 if __name__ == "__main__":
