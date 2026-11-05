@@ -52,7 +52,20 @@ A の設計値 84-86% (#112/#113) を測った窓は学習データに食い込�
 単日支配・一撃依存 (CLAUDE.md #26 の必須チェック) を出す。区別できないなら
 「区別できない」と言う。
 
-実行: python3 scripts/weekly_scorecard.py [--days YYYYMMDD YYYYMMDD] [--legacy]
+#169 で足したもの (末尾の2セクション)
+------------------------------------
+- 予測時点の市場との比較 (scripts/weekly_market_compare.py): (a) 印5頭 vs 予測時の人気上位5頭の
+  捕捉、(b) LGB vs 同時刻市場のレース内AUC、(c) 初ダート/初芝替わり馬の実際 vs 見込み、
+  (e) 週末の投資ゲート遮断率 (目標 30%/25%)。予測時オッズは S 班のスナップショットがあればそれ、
+  無い過去分は git 履歴の予測 JSON から取り、どちらを使ったかを出す。
+  確定オッズで測った val AUC やバックテスト162% はモデルの価値の根拠として出さない。
+- v3 と v2 の対応比較 (scripts/scorecard_v2_paired.py): 同じレースで v2 の印を作り直し、
+  docs/data/scorecard_v2_paired.json に貯めて累積で見る。対象日の未計算分は既定で計算する
+  (1レース約70秒。--no-v2 で省くと、未計算の数を出したうえで貯めた分だけ集計する)。
+- 毎週月曜に .github/workflows/weekly_report.yml が GitHub 側でこのスクリプトを実行し、
+  出力を docs/data/weekly_reports/ に commit する (月曜の定例は無人実行で止まるため #169)。
+
+実行: python3 scripts/weekly_scorecard.py [--days YYYYMMDD YYYYMMDD] [--legacy] [--no-v2] [--no-market]
 """
 import argparse, glob, json, math, os, random, sqlite3, statistics, sys
 from itertools import combinations
@@ -342,6 +355,17 @@ def main():
     ap.add_argument('--days', nargs='*', help='対象日 YYYYMMDD (省略時は自動判定)')
     ap.add_argument('--legacy', action='store_true',
                     help='旧基準 (全投稿レース一律100円の仮想ポートフォリオ) も併記する')
+    # #169: 予測時点の市場との比較 (印 vs 人気・LGB vs 同時刻市場・初替わり・投資ゲート) と
+    # v3 と v2 の対応比較。前者は git 履歴の予測 JSON を読むので数十秒かかる。
+    ap.add_argument('--no-market', action='store_true', help='予測時点の市場との比較 (#169) を省く')
+    # #169 (レビュー指摘): 旧版は --v2 を付けた時だけ計算し、付け忘れると「今週」の行が黙って
+    # 消えて累計だけが出た。既定で対象日の未計算分を計算する (--no-v2 で省く)。
+    ap.add_argument('--v2', dest='v2', action='store_true', default=True,
+                    help='v3 と v2 の対応比較を、まだ貯めていないレースについて計算する (既定)')
+    ap.add_argument('--no-v2', dest='v2', action='store_false',
+                    help='対応比較の計算を省く (特徴量の作り直しで1レース約70秒かかるため)。'
+                         '未計算の数は出す')
+    ap.add_argument('--v2-workers', type=int, default=4)
     args = ap.parse_args()
     c = db()
     all_days = sorted(os.path.basename(p)[13:21]
@@ -547,6 +571,27 @@ def main():
             print(f"    {k}: {cnt}R ROI {100*ret/max(sp,1):.1f}%")
         print(f"    総合: {lsp:,}円→{lrt:,}円 ROI {100*lrt/max(lsp,1):.1f}%")
         print("    ※ 本番が1円も賭けていないレースを含むため、実際のお金の話ではない")
+
+    # ── #169: 予測時点の市場との比較 / v3 と v2 の対応比較 ──
+    # 11/05 の反省で「LGB は確定オッズで学習・評価されているが、本番は朝の薄いオッズで動き、
+    # 同時刻の市場とほぼ同じ」「印5頭は予測時の人気上位5頭より捕捉が少ない (#147 の代償)」
+    # が分かったが、どちらも週次の監視に無かった。v3 の評価も1週末の勝ち負けでなく、
+    # 同じレースの対応比較を貯めて累積で見る。
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    if not args.no_market:
+        try:
+            import weekly_market_compare as wmc
+            wmc.report(target, conn=c)
+        except Exception as e:
+            print(f"\n⚠️ 予測時点の市場との比較 (#169) に失敗: {type(e).__name__}: {e}")
+    try:
+        import scorecard_v2_paired as v2p
+        print("\n=== 点数表 v3 (本番) と v2 の対応比較 (#169) ===")
+        if args.v2:
+            v2p.compute(target, c, workers=args.v2_workers)
+        v2p.report(target, conn=c)
+    except Exception as e:
+        print(f"\n⚠️ v3/v2 の対応比較 (#169) に失敗: {type(e).__name__}: {e}")
 
 
 if __name__ == '__main__':
