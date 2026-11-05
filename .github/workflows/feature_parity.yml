@@ -65,20 +65,65 @@ jobs:
             done
           fi
 
+      # ── #169: 予測 JSON の公開履歴を取る (巻き戻し・仮馬番の点検用) ──
+      # この job の checkout は shallow (depth 1) で履歴が無い。かといって job 本体の作業ツリーを
+      # 深くすると、後段の rebase/push が shallow graft の上で動く (#107: 古代 commit を replay して
+      # main を巻き戻した前科)。そこで読み取り専用の部分クローンを別に作る:
+      #   --filter=blob:none … commit と tree だけ。blob は点検が読む docs/data の予測 JSON だけを
+      #                        後から取る (keiba.db.gz の過去版は一切取らない — #119 で .git が
+      #                        数十GBに膨れてディスクが溢れた前科)
+      #   --shallow-since    … 直近16日 (点検する週末 + その朝の race_baseline.json)
+      - name: 📜 予測 JSON の履歴を取得 (#169)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SINCE=$(date -u -d '16 days ago' +%Y-%m-%d)
+          git clone --quiet --filter=blob:none --no-checkout --single-branch --branch main \
+            --shallow-since="$SINCE" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" /tmp/hist
+          echo "履歴: $(git -C /tmp/hist rev-list --count HEAD) commits (since $SINCE)"
+
       # ── #161: 前日までの開催が「最後まで終わったか」を毎朝確かめる ──
       # 9/21 は着順3R の取りこぼしと結果報告の未配信が、5日間誰にも知られなかった。
       # 各層は自分の担当時刻しか見ておらず、「その日が完了したか」を見る者がいなかった。
-      - name: 🔎 開催日の完了検査 (#161)
+      # #169: 同じ検査で、直近2日の開催日の予測そのもの (a) 9時台の再予測の巻き戻しと投稿印の一致
+      # (b) 確定版と馬番がずれた予測 JSON の公開時間 (c) 投資ゲートの遮断率 も見る。
+      # 「週末明けに確かめる」と約束して仕組みを作らなかった反省 (11/05) の再発防止。
+      - name: 🔎 開催日の完了検査 (#161・#169)
         if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMPLETENESS_REPORT: /tmp/raceday_gaps.md
+          QUALITY_REPORT: /tmp/raceday_quality.md
+          RACEDAY_HISTORY_REPO: /tmp/hist
+          PRED_HISTORY_PREFETCH: '1'
         run: |
           set +e
-          python3 scripts/check_raceday_completeness.py --days 7
+          python3 scripts/check_raceday_completeness.py --days 7 --quality-days 2
           CODE=$?
           set -e
+          if [ -s /tmp/raceday_quality.md ]; then
+            QTITLE="🔎 週末の予測の点検で異常 (巻き戻し・仮馬番・投資ゲート)"
+            QOPEN=$(gh issue list --state open --search "\"$QTITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            QBODY="$(cat /tmp/raceday_quality.md)
+
+          見方 (#169):
+          - 予測の巻き戻し: 新しい予測 (9時台のオッズ反映など) が出た後に、公開 JSON が古い予測内容へ戻った。race_day_runner が起動時の DB を書き戻す #70 型の上書きが疑わしい。
+          - 投稿印の一致: 投稿した印が「投稿前に作られた最新の予測」と違えば、古い予測で投稿している。
+          - 馬番のずれ: 確定した出走表と馬番↔馬名が合わない予測 JSON が公開されていた時間 (11/01 は 00:35〜06:53)。
+          - 投資ゲート: 平場の遮断率が目標 (top_prob 30% / top3_sum 25%) から統計的に外れた (#156)。
+          材料は公開した予測 JSON の git 履歴 (scripts/pred_history.py)。手元での再点検: python3 scripts/check_raceday_completeness.py --dates YYYY-MM-DD
+
+          _feature_parity.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_"
+            if [ -z "$QOPEN" ]; then
+              gh issue create --title "$QTITLE" --body "$QBODY" || echo "⚠️ Issue 作成失敗"
+            else
+              gh issue comment "$QOPEN" --body "$QBODY" || true
+            fi
+          fi
           if [ "$CODE" = "1" ] && [ -s /tmp/raceday_gaps.md ]; then
             TITLE="🏇 開催日のやり残し (着順の未収集・結果報告の未配信)"
             OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
