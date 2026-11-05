@@ -202,6 +202,9 @@ def cmd_collect(args):
                 # 未来のレース: 出馬表から取得
                 shutuba = scraper.scrape_shutuba(rid)
                 if shutuba and shutuba.get("entries"):
+                    # #169: 出馬表に天候・馬場がまだ無い (発表前) 時に既存の値を空で消さない
+                    from race_meta import keep_existing_race_meta
+                    shutuba = keep_existing_race_meta(rid, shutuba)
                     with get_db() as conn:
                         conn.execute("""
                             INSERT OR REPLACE INTO races
@@ -333,31 +336,46 @@ def cmd_predict(args):
                 return
 
     # UI-3 fix: 予測前に馬場状態が空のレースがあれば取得
+    # #169: 取得は 場×芝ダ ごと、埋めるのも同じ場・同じ芝ダの空のレースだけにする
+    # (旧実装は場単位で、芝の馬場をダートの空欄にも書いていた。EUC-JP 強制で
+    #  一度も取れていなかったため表面化しなかったが、#169 で取れるようにしたので同時に直す)。
+    # #169 レビュー: refresh_odds と同じく「着順が確定したレースは書き換えない」。確定レースの
+    # 馬場は結果ページの値 (= 学習が使う正本) なので、発走後に予測が走った時に予測時点の
+    # 発表値で埋めると、空でなくなるぶん充足率の検査でも見つからない。代表レースも
+    # 着順未確定のものから選び、取得の間は 1 秒あける (旧実装はループの後に 0.5 秒が1回だけ)。
     if race_ids:
         try:
+            import time as _t
             from refresh_odds import fetch_track_condition
-            venues_checked = set()
+            groups = {}
             with get_db() as conn:
                 for rid in race_ids:
-                    r = conn.execute(
-                        "SELECT venue, track_condition, race_date FROM races WHERE race_id = ?",
-                        (rid,)
-                    ).fetchone()
-                    if r and not r["track_condition"] and r["venue"] not in venues_checked:
-                        venues_checked.add(r["venue"])
-                        track_info = fetch_track_condition(rid)
-                        if track_info and track_info.get("track_condition"):
-                            tc = track_info["track_condition"]
-                            wt = track_info.get("weather", "")
-                            conn.execute("""
-                                UPDATE races SET track_condition = ?, weather = ?
-                                WHERE venue = ? AND (race_date = ? OR race_date = ?)
-                                  AND (track_condition IS NULL OR track_condition = '')
-                            """, (tc, wt, r["venue"], r["race_date"],
-                                  r["race_date"].replace("-", "")))
-                            print(f"  🏇 {r['venue']}: 馬場={tc} 天候={wt}")
-            if venues_checked:
-                import time as _t; _t.sleep(0.5)
+                    r = conn.execute("""
+                        SELECT venue, surface, track_condition, race_date FROM races g
+                        WHERE race_id = ?
+                          AND NOT EXISTS (SELECT 1 FROM results x
+                                          WHERE x.race_id = g.race_id AND x.finish_position > 0)
+                    """, (rid,)).fetchone()
+                    if r and not r["track_condition"]:
+                        groups.setdefault((r["venue"], r["surface"]), (rid, r["race_date"]))
+            for i, ((venue, surface), (rid, race_date)) in enumerate(groups.items()):
+                if i:
+                    _t.sleep(1.0)
+                track_info = fetch_track_condition(rid)
+                if track_info and track_info.get("track_condition"):
+                    tc = track_info["track_condition"]
+                    wt = track_info.get("weather", "")
+                    with get_db() as conn:
+                        conn.execute("""
+                            UPDATE races SET track_condition = ?,
+                                             weather = COALESCE(NULLIF(?, ''), weather)
+                            WHERE venue = ? AND surface = ? AND (race_date = ? OR race_date = ?)
+                              AND (track_condition IS NULL OR track_condition = '')
+                              AND NOT EXISTS (SELECT 1 FROM results x
+                                              WHERE x.race_id = races.race_id
+                                                AND x.finish_position > 0)
+                        """, (tc, wt, venue, surface, race_date, race_date.replace("-", "")))
+                    print(f"  🏇 {venue}{surface}: 馬場={tc} 天候={wt}")
         except Exception as e:
             print(f"  ⚠️ 馬場状態の取得をスキップ: {e}")
 

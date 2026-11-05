@@ -11,6 +11,7 @@
 ここでは直近の開催日 (race_calendar.json、今日より前) ごとに:
   1. 出走馬がいるのに1着が記録されていないレース (= 着順の取りこぼし)
   2. 予想を投稿した (posted_marks がある) のに results の lock が無い (= 結果報告の未配信)
+  3. 確定レースの天候・馬場の充足率が 90% 未満 (= netkeiba の書式変更などで読めていない、#169)
 を調べ、見つかれば exit 1 (feature_parity.yml が Issue を立てる)。
 
 着順の取りこぼしは collect_results の夜間スイープ (#161) が直近10日分を自動で拾い直すので、
@@ -26,6 +27,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "docs", "data")
 JST = dt.timezone(dt.timedelta(hours=9))
+# #169: 開催日ごとの天候・馬場の充足率 (確定レース中) の下限
+META_FILL_MIN = 0.9
+sys.path.insert(0, ROOT)   # race_meta を import するため
 
 
 def _load(path):
@@ -86,6 +90,23 @@ def main():
         if marks and "results" not in slots:
             gaps.append(f"{d}: 予想は投稿済み (posted_marks あり) だが結果報告が未配信 "
                         f"(posted_slots に results が無い)")
+        # #169: 天候・馬場の充足率。10/26 前後の netkeiba の書式変更で天候が全レース・
+        # 稍重/不良が空で保存され、10日間誰も気づかなかった (検知する仕組みが無かった)。
+        # 確定済みレースのうち天候か馬場が埋まっている割合が 90% 未満なら知らせる。
+        # (ループの末尾に置くのは、着順の検査の直後に入る E 班の検査と merge で衝突させないため)
+        if conn is not None:
+            try:
+                from race_meta import meta_fill_rates
+                _next = (dt.date.fromisoformat(d) + dt.timedelta(days=1)).isoformat()
+                for _r in meta_fill_rates(conn, d, _next):
+                    if _r["weather"] < META_FILL_MIN or _r["track"] < META_FILL_MIN:
+                        gaps.append(
+                            f"{d}: 天候・馬場の充足率が低い — 天候 {_r['weather']:.0%} / "
+                            f"馬場 {_r['track']:.0%} (確定 {_r['n']}R、基準 {META_FILL_MIN:.0%})。"
+                            f"netkeiba の書式変更でパーサーが読めていない疑い (#169)。"
+                            f"collect_results の夜間スイープが直近21日分を1回2日ずつ取り直す")
+            except Exception as _e:
+                print(f"⚠️ 天候・馬場の充足率を調べられない ({d}): {_e}")
 
     print(f"🔎 開催日の完了検査: {', '.join(days)}")
     if not gaps:
