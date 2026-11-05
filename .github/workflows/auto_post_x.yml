@@ -442,18 +442,30 @@ jobs:
               ;;
           esac
 
-          # #169: 0〜4時台に遅れて発火した「当日向け」の cron。
-          #   results / refresh_dashboard → 前日 (結果・配当の取りこぼしを拾う)
-          #   odds_flash / post_predict   → skip (朝の配信用。前日分はもう終わっていて、
-          #                                 当日分には早すぎる。当日分は当日朝の cron が担う)
+          # #169: 日付をまたいで遅れて発火した「当日向け」の cron。
+          #   results / refresh_dashboard → 0〜4時台なら前日 (結果・配当の取りこぼしを拾う)
+          #   odds_flash / post_predict   → skip。cron は予定より早くは発火しないので、
+          #     「今の JST 時刻 < その cron の予定時刻」なら前日の分が遅れて来たもの
+          #     (例: 土 10:15 の post_predict が日 07:15 に来ると、日曜の予想を 10:15 より前に
+          #      投稿してしまう。post_x の predict には 12:00 の上限しか無く下限が無い)。
+          #     当日分は当日の cron が担う。
           #   predict (04:00 cron など) は当日朝の正規の時間帯なので対象外。平日の
           #   morning/weekday/evening は日付を使わず、post_x 側の時間ガードが遅延発火を止める。
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "$LATE_NIGHT" = "1" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ]; then
             case "$TYPE" in
-              results|refresh_dashboard) shift_to_yesterday "$TYPE (cron)" ;;
+              results|refresh_dashboard)
+                if [ "$LATE_NIGHT" = "1" ]; then shift_to_yesterday "$TYPE (cron)"; fi ;;
               odds_flash|post_predict)
-                echo "🌙 JST ${HOUR}時に遅れて発火した $TYPE → skip (#169)"
-                TYPE="skip" ;;
+                read -r _CM _CH _CREST <<< "$SCHEDULE"
+                if [[ "$_CM" =~ ^[0-9]+$ ]] && [[ "$_CH" =~ ^[0-9]+$ ]]; then
+                  _PLANNED=$(( ((10#$_CH + 9) % 24) * 60 + 10#$_CM ))   # cron は UTC → JST の分
+                  _NOWMIN=$(( 10#$HOUR * 60 + 10#$(TZ=Asia/Tokyo date +%M) ))
+                  if [ "$_NOWMIN" -lt "$_PLANNED" ]; then
+                    printf '🌙 JST %s時に発火した %s (予定 %02d:%02d) = 前日の cron の遅延 → skip (#169)\n' \
+                      "$HOUR" "$TYPE" $((_PLANNED / 60)) $((_PLANNED % 60))
+                    TYPE="skip"
+                  fi
+                fi ;;
             esac
           fi
 
@@ -757,15 +769,23 @@ jobs:
           # #106: predict系で export が「レースなし」等で空振りしたら fail させて見える化
           TYPE="${{ steps.determine.outputs.type }}"
           if [ "$TYPE" = "predict" ] || [ "$TYPE" = "post_predict" ] || [ "$TYPE" = "odds_flash" ]; then
-            # #169: 開催当日に馬番が未確定 (仮馬番) の予測を公開しない。当日は枠順が出ているので、
-            # 未確定は「確定馬番を取り直す前の予測が残っている」ことを意味する (11/01 00:35 の型)。
-            # この版は公開せず、origin の版 (前夜 prefetch 等) を残す。
+            # #169: 開催当日に馬番が未確定 (仮馬番) の予測を公開しない。判定の本体は
+            # export_predictions.py (書き込み側) にあり、レースごとに「未確定なら前の版を残す /
+            # 前の版も無ければ書かない」を全 export 経路 (runner・refresh_dashboard・results 等) で
+            # 行う。ここは念のための後段: origin の版 (HEAD) より未確定が増えた時だけ戻す。
+            # 旧版は1レースでも未確定なら JSON 全体を戻しており、HEAD の方が悪い (未確定が多い)
+            # 時にもそれを残し、他のレースの新しい予測まで止めていた。
             P="docs/data/predictions_${DATE}.json"
             if [ -f "$P" ] && [ "$DATE" = "$(TZ=Asia/Tokyo date +%Y%m%d)" ]; then
-              UNC=$(python3 -c "import sys,json; sys.path.insert(0,'scripts'); import prediction_gate as g; print(g.summarize(json.load(open('$P')))['unconfirmed'])" 2>/dev/null || echo 0)
+              UNC=$(python3 scripts/prediction_gate.py --unconfirmed "$P" 2>/dev/null || echo 0)
+              HEAD_UNC=$(git show "HEAD:$P" 2>/dev/null | python3 scripts/prediction_gate.py --unconfirmed - 2>/dev/null || echo "")
               if [ "${UNC:-0}" -gt 0 ]; then
-                echo "::error::開催当日なのに馬番未確定の予測が ${UNC}R → この版は公開しない (#169)"
-                git checkout HEAD -- "$P" 2>/dev/null || rm -f "$P"
+                if [ -n "$HEAD_UNC" ] && [ "$UNC" -le "$HEAD_UNC" ]; then
+                  echo "::warning::馬番未確定のレースが ${UNC}R 残る (origin の版は ${HEAD_UNC}R) → 悪化していないので公開する (#169)"
+                else
+                  echo "::error::馬番未確定のレースが ${UNC}R (origin の版は ${HEAD_UNC:-無し}) → この版は公開しない (#169)"
+                  git checkout HEAD -- "$P" 2>/dev/null || rm -f "$P"
+                fi
               fi
             fi
             if [ ! -f "docs/data/predictions_${DATE}.json" ]; then

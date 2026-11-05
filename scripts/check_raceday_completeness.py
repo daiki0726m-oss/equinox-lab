@@ -76,7 +76,8 @@ def main():
                 import prediction_gate
                 s = prediction_gate.summarize(pred)
                 if s["unconfirmed"]:
-                    gaps.append(f"{d}: 公開予測に馬番未確定のレースが残ったまま {s['unconfirmed']}R — "
+                    # withheld (馬番未確定で公開しなかったレース) も含む: どちらも作り直されずに終わった
+                    gaps.append(f"{d}: 馬番未確定のまま (仮馬番の版のまま or 非公開) 終わったレース {s['unconfirmed']}R — "
                                 + "、".join(s["unconfirmed_labels"][:8]))
             except ImportError:
                 pass

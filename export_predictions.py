@@ -49,6 +49,55 @@ def numbers_state(conn, race_id, horses):
     return True, None
 
 
+def _hold_back_unconfirmed(output_dir, ds, all_races):
+    """開催当日 (以前) の書き出しで、馬番が未確定のレースを公開しない (#169)。戻り値 (races, withheld)。
+
+    書き出しは auto_post_x だけでなく race_day_runner (10分ごと)・refresh_dashboard・results・
+    collect_results からも走る。workflow 側のゲートは一部の type にしか無く、しかも JSON 全体を
+    戻すので、1レースが未確定なだけで他のレースの更新まで止めていた。判定をここ (書き込み側) に
+    置き、レースごとに決める:
+      - 新しい版の馬番が確定済み (または判定材料なし) → 新しい版を書く
+      - 未確定で、既存の JSON にそのレースがある → 既存の版を残す (前夜 prefetch の版など。
+        未確定の cache を確定済みの DB と突き合わせると、オッズや着順が別の馬に付くので、
+        同じ未確定でも新しい版の方が悪い)
+      - 未確定で、既存の版も無い → 書かずに withheld に記録する (仮馬番を当日に初めて出さない)
+    枠順前の未来日 (木金の事前予測・土曜に作る日曜分) は仮馬番が正当なので対象外。
+    """
+    if ds > datetime.now(JST).strftime("%Y%m%d"):
+        return all_races, []
+    if not any(r.get("numbers_confirmed") is False for r in all_races):
+        return all_races, []
+    prev = {}
+    out_path = os.path.join(output_dir, f"predictions_{ds}.json")
+    try:
+        with open(out_path, encoding="utf-8") as f:
+            for rs in (json.load(f).get("venues") or {}).values():
+                for r in rs or []:
+                    if isinstance(r, dict) and r.get("race_id"):
+                        prev[r["race_id"]] = r
+    except Exception:
+        prev = {}
+    kept, withheld, out = [], [], []
+    for r in all_races:
+        if r.get("numbers_confirmed") is not False:
+            out.append(r)
+        elif r["race_id"] in prev:
+            out.append(prev[r["race_id"]])
+            kept.append(r)
+        else:
+            withheld.append({"race_id": r["race_id"], "venue": r.get("venue", ""),
+                             "race_number": r.get("race_number", 0),
+                             "numbers_issue": r.get("numbers_issue")})
+    def _labels(rs):
+        return ", ".join("%s%sR" % (x.get("venue", ""), x.get("race_number", "")) for x in rs[:6])
+    if kept:
+        print(f"  🛡 {ds}: 馬番未確定の {len(kept)}R は既存の版を残す ({_labels(kept)}) #169")
+    if withheld:
+        print(f"  🚫 {ds}: 馬番未確定で既存の版も無い {len(withheld)}R は公開しない "
+              f"({_labels(withheld)}) #169")
+    return out, withheld
+
+
 def export_predictions(date_str=None):
     """指定日の予測データをJSONファイルに書き出し"""
 
@@ -309,6 +358,7 @@ def export_predictions(date_str=None):
                 print(f"  ⚠️ {ds}: 馬番が未確定の予測 {len(_unconf)}/{len(all_races)}R "
                       f"(例: {_unconf[0]['venue']}{_unconf[0]['race_number']}R "
                       f"{_unconf[0].get('numbers_issue')}) — 成果物ゲートは予測なしと数える #169")
+            all_races, _withheld = _hold_back_unconfirmed(output_dir, ds, all_races)
 
             if not all_races:
                 print(f"  ⏭️ {ds}: 予測データなし")
@@ -328,6 +378,9 @@ def export_predictions(date_str=None):
                 # #169: 馬番が未確定のレース数 (ゲートは scripts/prediction_gate.py で判定)
                 "numbers_unconfirmed_races": sum(
                     1 for r in all_races if r.get("numbers_confirmed") is False),
+                # #169: 開催当日 (以前) に馬番が未確定で、前の版も無いので公開しなかったレース。
+                # ゲート (prediction_gate) はこれも「馬番未確定」と数え、作り直しを起動する
+                "numbers_withheld": _withheld,
                 "venues": venues,
                 "is_locked": datetime.now(JST).hour >= 10,
                 "exported_at": datetime.now(JST).isoformat(),

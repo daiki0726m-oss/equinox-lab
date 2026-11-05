@@ -68,6 +68,14 @@ def summarize(d):
         if nc is None:
             out["unknown"] += 1
         out["ready"] += 1
+    # export_predictions が「馬番未確定で前の版も無い」ため公開しなかったレース (#169)。
+    # JSON に載っていないので数え漏らすと、ゲートが作り直しを起動しない
+    for w in (d.get("numbers_withheld") or []) if isinstance(d, dict) else []:
+        if isinstance(w, dict):
+            out["total"] += 1
+            out["unconfirmed"] += 1
+            out["unconfirmed_labels"].append(
+                f"{w.get('venue', '')}{w.get('race_number', '')}R")
     return out
 
 
@@ -76,8 +84,24 @@ def ready_race_count(d):
     return summarize(d)["ready"]
 
 
+def published_unconfirmed(d):
+    """JSON に載っている (= 公開される) 馬番未確定のレース数。withheld は公開されないので含めない。
+
+    auto_post_x の export 後チェックが origin の版と比べる時に使う (#169)。
+    """
+    return sum(1 for r in iter_races(d) if r.get("numbers_confirmed") is False)
+
+
 if __name__ == "__main__":
     import sys
+    if len(sys.argv) == 3 and sys.argv[1] == "--unconfirmed":
+        # 使い方: prediction_gate.py --unconfirmed <path | ->  → 公開される未確定レース数を出力
+        _src = sys.argv[2]
+        _d = json.load(sys.stdin) if _src == "-" else load(_src)
+        if _d is None:
+            sys.exit(1)
+        print(published_unconfirmed(_d))
+        sys.exit(0)
     for p in sys.argv[1:]:
         s = summarize(load(p))
         print(f"{os.path.basename(p)}: {s['ready']}/{s['total']}R 予測あり "

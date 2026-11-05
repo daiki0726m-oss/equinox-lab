@@ -379,11 +379,14 @@ def main():
             _n = _s["ready"] if _s["total"] else _n
         except Exception:
             pass
-        if _unconf and _n >= 1 and today.hour >= 10:
+        if _unconf and today.hour >= 10:
             # #169: 10時以降は predict が確定済み予測を保護して作り直さないので、
             # dispatch しても空打ちになる。記録だけ残して人に見えるようにする
             # (fallback_mode 無しで missing_slots に入れると watchdog が mode なしで
-            #  auto_post_x を起動し、時刻フォールバックで別の投稿 type になりうる)
+            #  auto_post_x を起動し、時刻フォールバックで別の投稿 type になりうる)。
+            # 全レースが未確定 (_n=0) でも同じ: cache はあるので predict は作り直さず、
+            # dispatch のたびに出馬表の取り直しと keiba.db.gz の push だけが走る。
+            # 10時以降に予測を作らせるのは「JSON が無い/空」の時だけ (下の分岐)
             _ev = {"slot": "dashboard_predictions", "status": "stale_numbers",
                    "expected": "開催日は常時",
                    "actual": f"{_n}レース + 馬番未確定 {len(_unconf)}R (exported_at={_exported})",

@@ -55,6 +55,14 @@ def _numbers_confirmed_in_db(conn, race_id):
     return bool(row and row[0] and int(row[0]) > 0)
 
 
+def _db_runner_count(conn, race_id):
+    """DB に入っている出走馬の行数 (#169)。0 のレースは予測の対象にならない。"""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM results WHERE race_id = ?", (race_id,)
+    ).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
 def _refresh_one(scraper, rid, date_str):
     """1レースを取り直す。成功なら (True, shutuba)、失敗なら (False, 理由)。"""
     try:
@@ -65,6 +73,18 @@ def _refresh_one(scraper, rid, date_str):
         return False, "ページを取得できない"
     if not shutuba.get("entries"):
         return False, "出馬表に出走馬が無い"
+    # #169: 枠番の無いページ (仮馬番) を、確定済みの DB に上書きしない。
+    # save_race_to_db の UPSERT は post_position=0 なら既存の枠番を残したまま horse_id を
+    # 入れ替えるので、「枠番は確定済みのまま、馬番の下の馬だけ仮の並び (五十音順)」になる。
+    # 確定の判定 (枠番が入っているか) は通ってしまい、オッズが別の馬に付く 11/01 の型を
+    # ゲートが見逃す。枠順後に netkeiba が枠番の無いページを返した時は、DB を残して
+    # 「取り直せなかった (DB は確定済み)」として扱う。
+    ents = shutuba["entries"]
+    if (any(e.get("_provisional_number") for e in ents)
+            or all(not (e.get("post_position") or 0) for e in ents)):
+        with get_db() as conn:
+            if _numbers_confirmed_in_db(conn, rid):
+                return False, "枠番の無いページ (DB は確定馬番 → 上書きしない)"
     scraper.save_race_to_db(shutuba)
     return True, shutuba
 
@@ -140,6 +160,7 @@ def refresh_entries(date_str, retry_wait=2.0):
     if failed_first:
         print(f"  🔁 取り直せなかった {len(failed_first)}レースを再試行...")
         time.sleep(retry_wait)
+    no_runner_labels = set()   # #169: DB に出走馬が1頭も無いレース (予測の対象外)
     for race, why in failed_first:
         ok, why2 = _attempt(race)
         if ok:
@@ -147,16 +168,23 @@ def refresh_entries(date_str, retry_wait=2.0):
             continue
         with get_db() as conn:
             confirmed = _numbers_confirmed_in_db(conn, race["race_id"])
+            if _db_runner_count(conn, race["race_id"]) == 0:
+                no_runner_labels.add(_label(race))
         out["failed"].append((_label(race), why2 or why, confirmed))
         time.sleep(0.3)
+    out["no_runners"] = sorted(no_runner_labels)
 
     with get_db() as conn:
         for race in races:
             if not _numbers_confirmed_in_db(conn, race["race_id"]):
                 out["provisional"].append(_label(race))
 
-    # 取り直せなかったレースのうち、DB の馬番がまだ仮のものがあれば予測させない
-    blocking = [f for f in out["failed"] if not f[2]]
+    # 取り直せなかったレースのうち、DB の馬番がまだ仮のものがあれば予測させない。
+    # #169: ただし DB に出走馬が1頭も無いレース (週中の取得が作る空のスタブ・中止など) は除く。
+    # 予測は出走馬の無いレースを skip するので、そのレースから仮馬番の予想が出ることはない。
+    # 止めると、取れない1レースのために同じ日の他のレースまで予測できなくなる
+    # (#169 の日付補完でスタブにも日付が入るので、開催日の一覧にこの種のレースが現れうる)。
+    blocking = [f for f in out["failed"] if not f[2] and f[0] not in no_runner_labels]
     # 開催当日 (以降) は枠順が必ず出ている。取り直しが通っても枠番が無いのは
     # ページの読み違い等で、そのまま予測すると仮馬番で公開する (11/01 の型) ので止める
     failed_labels = {f[0] for f in out["failed"]}
@@ -168,7 +196,12 @@ def refresh_entries(date_str, retry_wait=2.0):
 
     print(f"\n✅ {out['updated']}/{len(races)}レース更新完了 (馬番変更: {out['changed']}レース)")
     for lab, why, confirmed in out["failed"]:
-        state = "DB は確定馬番 → 予測に支障なし" if confirmed else "DB は仮馬番のまま"
+        if lab in no_runner_labels:
+            state = "DB に出走馬が無い → 予測の対象外 (他のレースは予測する)"
+        elif confirmed:
+            state = "DB は確定馬番 → 予測に支障なし"
+        else:
+            state = "DB は仮馬番のまま"
         print(f"  ❌ {lab}: 取り直せず ({why}) — {state}")
     if out["provisional"]:
         print(f"  ℹ️ 馬番が未確定 (枠順前) のレース {len(out['provisional'])}件: "
@@ -180,18 +213,67 @@ def refresh_entries(date_str, retry_wait=2.0):
     return out
 
 
+# #169: 取り直しに失敗した直後は、しばらく同じ日の取り直しを繰り返さない。
+# race_day_runner は 10分ごとに preflight の auto-fix を回すので、取り直せない状態
+# (netkeiba の障害・ページ構造の変化) が続くと、1回 36レース+再試行の取得を1日数十回
+# 繰り返して数千リクエストになり、IP 制限で結果収集まで止まりうる。失敗は予測しない側に
+# 倒れているので、待っても誤配信にはならない。成功は覚えない (予測の直前に必ず取り直す)。
+ENSURE_FAIL_TTL_SEC = 45 * 60
+
+
+def _fail_memo_path(date_str):
+    import tempfile
+    return os.path.join(tempfile.gettempdir(),
+                        f"keiba_ensure_entries_fail_{date_str.replace('-', '')}")
+
+
+def _recent_failure(date_str):
+    """直近 ENSURE_FAIL_TTL_SEC 以内に取り直しが失敗していれば、その経過秒数。"""
+    if os.environ.get("ENSURE_ENTRIES_NO_MEMO") == "1":
+        return None
+    try:
+        age = time.time() - os.path.getmtime(_fail_memo_path(date_str))
+    except OSError:
+        return None
+    return age if 0 <= age < ENSURE_FAIL_TTL_SEC else None
+
+
+def _remember_failure(date_str, ok):
+    p = _fail_memo_path(date_str)
+    try:
+        if ok:
+            if os.path.exists(p):
+                os.remove(p)
+        else:
+            with open(p, "w") as f:
+                f.write(now_jst().isoformat())
+    except OSError:
+        pass
+
+
 def ensure_confirmed_entries(date_str):
     """予測の直前に呼ぶ共通ゲート (#169)。True なら予測してよい。
 
     preflight の auto-fix・幽霊馬除去後の再予測など、Python から予測を起動する経路は
     すべてこれを通す (workflow から呼ぶ時は refresh_entries.py の終了コードで同じ判定)。
+    直前 (45分以内) に失敗していれば取り直さずに False を返す (ENSURE_ENTRIES_NO_MEMO=1 で無効)。
     """
+    age = _recent_failure(date_str)
+    if age is not None:
+        print(f"🚫 {date_str}: {int(age // 60)}分前に確定馬番を取り直せなかった → 今回は取り直さず予測しない "
+              f"(再試行は {int((ENSURE_FAIL_TTL_SEC - age) // 60) + 1}分後 #169)")
+        return False
     try:
         res = refresh_entries(date_str)
     except Exception as e:
         print(f"🚫 確定馬番の取り直しで例外 ({e}) → 予測しない (#169)")
+        _remember_failure(date_str, False)
         return False
-    return bool(res.get("ok"))
+    ok = bool(res.get("ok"))
+    # レースが DB に無い (no_races) のは取得の失敗ではないので覚えない
+    if not res.get("no_races"):
+        _remember_failure(date_str, ok)
+    return ok
 
 
 def main():

@@ -395,10 +395,14 @@ def check_ghost_horses(conn, date_iso: str, use_api: bool = False) -> tuple[int,
     return 0, issues, False
 
 
+def _jst_now():
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=9)))
+
+
 def _is_today_or_future(date_yyyymmdd: str) -> bool:
     """対象日が JST の今日以降か。"""
-    from datetime import datetime, timedelta, timezone
-    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+    today = _jst_now().strftime("%Y%m%d")
     return date_yyyymmdd >= today
 
 
@@ -483,7 +487,66 @@ print(f'✅ {{len(ids)}}レース処理')
         return False
 
 
-def auto_fix_predictions(date_yyyymmdd: str) -> bool:
+def _races_needing_prediction(date_yyyymmdd: str) -> list[str]:
+    """出走馬が入っているのに予測キャッシュが無いレース (#169)。
+
+    出走馬の無いレースは predict が skip するので数えない (数えると、中止などで
+    出走馬の入らないレースが1つあるだけで「予測が要る」と判定され続ける)。
+    """
+    date_iso = f"{date_yyyymmdd[:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}"
+    with get_db() as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT ra.race_id FROM races ra "
+            "WHERE (ra.race_date = ? OR ra.race_date = ?) "
+            "  AND EXISTS (SELECT 1 FROM results re WHERE re.race_id = ra.race_id) "
+            "  AND NOT EXISTS (SELECT 1 FROM predictions_cache pc WHERE pc.race_id = ra.race_id) "
+            "ORDER BY ra.race_id", (date_iso, date_yyyymmdd))]
+
+
+def _drop_started(date_yyyymmdd: str, race_ids: list[str]) -> list[str]:
+    """発走済み (着順が入っている / 発走時刻を過ぎた) レースを除く (#169)。
+
+    レース単位の予測は10時ロックに掛からないので、発走後のレースを渡すと確定オッズで
+    印を作る後出しになる (#99)。欠番の取得は発走済みなら結果ページから取るので、
+    取ったレースがそのまま予測に回ると必ずこれに当たる。
+    """
+    if not race_ids:
+        return []
+    now = _jst_now()
+    today = now.strftime("%Y%m%d")
+    q = ",".join("?" * len(race_ids))
+    with get_db() as conn:
+        rows = {r[0]: (r[1] or "", r[2] or 0) for r in conn.execute(
+            f"SELECT ra.race_id, ra.start_time, "
+            f"  (SELECT COUNT(*) FROM results re WHERE re.race_id = ra.race_id AND re.finish_position > 0) "
+            f"FROM races ra WHERE ra.race_id IN ({q})", race_ids)}
+    keep, dropped = [], []
+    for rid in race_ids:
+        st, n_fin = rows.get(rid, ("", 0))
+        started = n_fin > 0 or (date_yyyymmdd == today and len(st) == 5
+                                and st <= now.strftime("%H:%M"))
+        (dropped if started else keep).append(rid)
+    if dropped:
+        print(f"⏭️ 発走済みの {len(dropped)}レースは予測しない (後出しの印を作らない #99/#169): "
+              f"{', '.join(dropped[:6])}")
+    return keep
+
+
+def _run_predict(cmd: list[str]) -> bool:
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=900
+        )
+        if result.returncode != 0:
+            print(f"❌ 予測失敗: {result.stderr[-200:]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"❌ 予測例外: {e}")
+        return False
+
+
+def auto_fix_predictions(date_yyyymmdd: str, race_ids: list[str] | None = None) -> bool:
     """予測キャッシュ不足を自動修復。
 
     #150c: **既に印を投稿した日は --force を付けない**。
@@ -493,6 +556,10 @@ def auto_fix_predictions(date_yyyymmdd: str) -> bool:
     書き換えることになり、公開済みの予想と結果報告の印が食い違う。
     投稿記録 (posted_marks サイドカー = clobber を生き延びるテキスト正本) が
     あれば、欠落レースの追加生成だけに留める。
+
+    #169: race_ids を渡すと、そのレースだけを予測する (--race-id、--force なし)。
+    predict の10時ロックは「対象の先頭レースに cache があるか」で決まるので、
+    cache の無いレースだけを渡せば10時以降でも作り直しは起きず、欠けた分だけ埋まる。
     """
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # #169: 過去日は予測しない。日付をまたいで遅れて発火した run (11/01 00:24 の
@@ -501,30 +568,45 @@ def auto_fix_predictions(date_yyyymmdd: str) -> bool:
     if not _is_today_or_future(date_yyyymmdd):
         print(f"⏭️ {date_yyyymmdd} は過去日 → 予測の自動修復はしない (後出しの印を作らない #99/#169)")
         return False
+    jst_hour = _jst_now().hour
+    posted = os.path.join(repo, "docs", "data", f"posted_marks_{date_yyyymmdd}.json")
+    if race_ids is None and jst_hour >= 10 and os.path.exists(posted):
+        # #169: 10時以降・印を投稿済みなら predict は --force なしで動き、10時ロックで
+        # 何も作り直さない。予測が要るのは「出走馬があって cache が無い」レースだけなので、
+        # それだけを渡す。1つも無ければ確定馬番の取り直し (約36ページ) も predict も省く
+        # (race_day_runner は10分ごとに来るので、ここで毎回取り直すと無駄打ちになる)。
+        race_ids = _races_needing_prediction(date_yyyymmdd)
+    if race_ids is not None:
+        race_ids = _drop_started(date_yyyymmdd, race_ids)
+        if not race_ids:
+            print(f"🔒 {date_yyyymmdd}: 予測の要る未発走レースが無い → 取り直しも予測も省く "
+                  f"(既存の予測はそのまま #150c/#169)")
+            return True
     # #169: 予測の直前に確定馬番を取り直し、失敗したら予測しない (既存の予測を残す)。
     # 11/01 00:35 はここを通らずに仮馬番のまま23レースを予測・公開した。
     if not _ensure_entries(date_yyyymmdd):
         print(f"🚫 {date_yyyymmdd}: 確定馬番を取り直せない → 予測しない (既存の予測を残す)")
         return False
-    posted = os.path.join(repo, "docs", "data", f"posted_marks_{date_yyyymmdd}.json")
+    if race_ids is not None:
+        print(f"🔧 自動修復: {len(race_ids)}レースだけ予測 ({', '.join(race_ids[:6])}) — "
+              f"他のレースの予測は作り直さない #169")
+        ok_all = True
+        for rid in race_ids:
+            ok_all = _run_predict(["python3", "predict.py", "predict",
+                                   "--race-id", rid, "--date", date_yyyymmdd]) and ok_all
+        if ok_all:
+            print("✅ 予測完了")
+        return ok_all
     cmd = ["python3", "predict.py", "predict", "--date", date_yyyymmdd]
     if os.path.exists(posted):
         print(f"🔒 {date_yyyymmdd} は印を投稿済み → --force を外して欠落分のみ生成")
     else:
         cmd.append("--force")
     print(f"🔧 自動修復: 予測実行中 ({date_yyyymmdd})...")
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=900
-        )
-        if result.returncode != 0:
-            print(f"❌ 予測失敗: {result.stderr[-200:]}")
-            return False
+    if _run_predict(cmd):
         print("✅ 予測完了")
         return True
-    except Exception as e:
-        print(f"❌ 予測例外: {e}")
-        return False
+    return False
 
 
 def auto_fix_ghosts(date_yyyymmdd: str) -> bool:
@@ -605,11 +687,17 @@ def main():
         all_issues.extend(issues)
 
         # 5. V2d の前提 (#169): 表示のみ。10分ごとの runner (--quiet) では毎回同じ内容に
-        #    なるので省き、予測・投稿の回 (--quiet なし) で出す
-        v2d_notes = [] if args.quiet else check_v2d_premise(conn, date_iso)
+        #    なるので省き、予測・投稿の回 (--quiet なし) で出す。
+        #    表示専用の検査なので、例外で preflight 全体を落として下の auto-fix (欠番の取得・
+        #    予測の修復・幽霊馬の除去) を巻き添えにしない (#150「preflight が3か月死んでいた」の型)
+        try:
+            v2d_notes = [] if args.quiet else check_v2d_premise(conn, date_iso)
+        except Exception as e:
+            v2d_notes = [f"ℹ️ V2d の前提検査で例外 ({type(e).__name__}: {e}) — この検査だけ省略"]
 
     # Auto-fix
     races_fixed = False
+    fetched_race_ids: list[str] = []
     if args.auto_fix and overall_severity == 2:
         print(f"\n🛠 Auto-fix mode: 致命的問題を修復します...\n")
         if races_critical and missing_race_ids:
@@ -618,7 +706,8 @@ def main():
             auto_fix_missing_races(args.date, missing_race_ids)
             with get_db() as conn:
                 sev_r, _issues_r, still = check_races(conn, date_iso)
-            races_fixed = len(still) < len(missing_race_ids)
+            fetched_race_ids = [r for r in missing_race_ids if r not in set(still)]
+            races_fixed = bool(fetched_race_ids)
             if sev_r == 2 and still:
                 print(f"⚠️ 取り直しても {len(still)}件が欠けたまま (中止の可能性) → 警告扱い")
                 all_issues.append(f"⚠️ 取り直しても欠けたまま (中止の可能性): {', '.join(still)}")
@@ -640,7 +729,12 @@ def main():
             # 出走馬入ったら予測も再実行。ML flat output も再 predict で修復試行
             if ml_critical:
                 print("🔄 ML flat output → predict --force で再予測")
-            if auto_fix_predictions(args.date):
+            # #169: 欠番を取っただけ (他に致命的な問題が無い) なら、取ったレースだけを予測する。
+            # 日付ごとの predict は posted_marks が無いと --force で全レースを作り直すので、
+            # 10:15 の post_predict の preflight (投稿前で posted_marks がまだ無い) で欠番が
+            # 見つかると、10時ロック後に全レースの予測が作り直されてしまう。
+            only_new = races_fixed and not (pred_critical or runners_critical or ml_critical)
+            if auto_fix_predictions(args.date, race_ids=fetched_race_ids if only_new else None):
                 print("✅ 予測の自動修復成功")
                 overall_severity = 0
             else:
