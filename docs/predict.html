@@ -1028,7 +1028,8 @@ function renderSummary(data) {
   allRaces.forEach(race => {
     const bets = (race.all_bets || {})[bt] || [];
     const scaledBets = scaleBets(bets, state.budget);
-    totalBets += scaledBets.length;
+    // #169: 「推奨数」は金額の乗った買い目だけ (0円 = 見送り(参考) は数えない)
+    totalBets += scaledBets.filter(b => b.amount > 0).length;
     scaledBets.forEach(b => {
       totalAmount += b.amount;
       if (race.has_results) {
@@ -1057,14 +1058,49 @@ function renderSummary(data) {
 // ─── Scale bets to budget ───
 function scaleBets(bets, budget) {
   if (!bets || bets.length === 0) return [];
-  const originalTotal = bets.reduce((s, b) => s + (b.amount || 100), 0);
-  if (originalTotal === 0) return bets;
+  // #169: amount=0 は sb=0 ゼロ化ガード (#95) の結果 (参考表示)。旧実装は
+  // `b.amount || 100` で 0 を100円に復活させ、見送りレースに投資額を表示していた
+  // (index.html は #95 追補で直っていたがこちらに残っていた)。
+  const base = (b) => (typeof b.amount === 'number' ? b.amount : 100);
+  const originalTotal = bets.reduce((s, b) => s + base(b), 0);
+  if (originalTotal === 0) return bets.map(b => ({ ...b, amount: 0 }));
 
   const ratio = budget / originalTotal;
-  return bets.map(b => ({
-    ...b,
-    amount: Math.max(100, Math.round((b.amount || 100) * ratio / 100) * 100),
-  }));
+  return bets.map(b => {
+    const a = base(b);
+    if (a === 0) return { ...b, amount: 0 };
+    return { ...b, amount: Math.max(100, Math.round(a * ratio / 100) * 100) };
+  });
+}
+
+// ─── #169: レース単位の投資状態 (index.html と同じ) ───
+// should_bet=0 でも trio-focus band (#95) は三連複/ワイドの主力買い目に金額が残る。
+function investStatusHtml(race) {
+  if (race.should_bet || race.should_bet === undefined) return '';
+  const all = race.all_bets || {};
+  const lines = Object.values(all).flat();
+  if (lines.length === 0) return '';
+  const funded = lines.some(b => (b.amount || 0) > 0);
+  const reason = String(race.bet_reason || '');
+  // band かどうかは「金額がある」でなく理由文で判定する (新旧どちらの文面も "trio-focus band" を含む)。
+  // #95 の sb=0 ゼロ化 (2026-07-02) より前の日は、見送り判定でも金額が残っていたので
+  // 「金額がある = band」とすると旧データの非 band レース (未勝利等) に🎯が付く。
+  const isBand = /trio-focus band/.test(reason);
+  const esc = s => String(s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const why = t => t ? `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">${esc(t)}</div>` : '';
+  const head = (color, t) => `<div style="font-size:11px;font-weight:700;color:${color};margin-bottom:8px">${t}`;
+  if (funded && isBand) {
+    // band の理由文から「上書きした見送り判定」だけを取り出す (新旧どちらの文面でも)
+    const gate = reason
+      .replace(/^trio-focus band で三連複\/ワイドのみ投資 \(通常の判定なら見送り: (.*)\)$/, '$1')
+      .replace(/ \(trio-focus band: 三連複\/ワイドのみ投資\)$/, '');
+    return head('var(--gold)', '🎯 三連複/ワイドのみ投資 (trio-focus band)') + why('通常の判定なら見送り: ' + gate) + '</div>';
+  }
+  if (funded) {
+    // #95 以前の旧仕様の日: 見送り判定でも金額が残っていた (実際にそう記録された買い目)
+    return head('var(--text-muted)', 'ℹ️ 見送り判定 — この日は旧仕様 (2026-07 以前) で金額が残っています') + why(reason) + '</div>';
+  }
+  return head('var(--text-muted)', '⏭️ 投資見送り — 買い目は参考表示') + why(reason) + '</div>';
 }
 
 // ─── Check if bet hit ───
@@ -1078,7 +1114,9 @@ function checkBetHit(bet, race) {
 
   // --- 1. payouts がある場合: 配当テーブルから正確な払戻金を取得 ---
   // ※ payouts テーブルは¥100あたりの配当。賭け金に応じて倍率計算
-  const betMultiplier = (bet.amount || 100) / 100;
+  // #169: amount=0 (sb=0 ゼロ化の参考表示) は払戻も0 (index.html と同じ)。旧 `bet.amount || 100`
+  // は scaleBets を直した後も0円の買い目を100円として払戻に数え、ROI を水増ししていた。
+  const betMultiplier = (typeof bet.amount === 'number' ? bet.amount : 100) / 100;
   if (race.payouts && race.payouts.length > 0) {
     for (const p of race.payouts) {
       if (p.bet_type === bt) {
@@ -1161,7 +1199,8 @@ function renderRaceCards() {
     const bt = state.activeBetType;
     races = races.filter(race => {
       const bets = (race.all_bets || {})[bt] || [];
-      return bets.length > 0;
+      // #169: 推奨数と同じ基準 (0円の参考買い目だけのレースは「推奨あり」にしない)
+      return bets.some(b => typeof b.amount !== 'number' || b.amount > 0);
     });
   }
 
@@ -1300,6 +1339,7 @@ function renderPredTab(race) {
   // Bets section
   html += '<div class="bets-section">';
   html += `<div class="bets-title">💰 ${bt}の推奨買い目</div>`;
+  html += investStatusHtml(race);   // #169
 
   if (bets.length === 0) {
     html += '<div class="no-bets">この券種の推奨はありません</div>';
@@ -1314,7 +1354,7 @@ function renderPredTab(race) {
       totalIn += b.amount;
       if (isHit) totalOut += hitPayout;
 
-      const payoutLabel = isHit
+      const payoutLabel = (isHit && hitPayout > 0)   // #169: 0円の参考買い目は払戻を出さない
         ? (isEstimate ? `→ 約¥${hitPayout.toLocaleString()} (概算)` : `→ ¥${hitPayout.toLocaleString()}`)
         : '';
       const hitLabel = isHit ? '✅ 的中' : '❌ 不的中';
@@ -1326,7 +1366,7 @@ function renderPredTab(race) {
           ${b.horse_name ? `<span style="font-size:10px;color:var(--text-muted)">${b.horse_name}</span>` : ''}
         </div>
         <div style="text-align:right;">
-          <div class="bet-amount">¥${b.amount.toLocaleString()}</div>
+          <div class="bet-amount">${b.amount > 0 ? '¥' + b.amount.toLocaleString() : '<span style="font-size:10px;color:var(--text-muted)">見送り(参考)</span>'}</div>
           ${race.has_results ? `<span class="bet-hit-label ${isHit?'hit':'miss'}">${hitLabel}</span>` : ''}
           ${payoutLabel ? `<div class="bet-payout">${payoutLabel}</div>` : ''}
         </div>
