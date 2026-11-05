@@ -124,11 +124,68 @@ def _load_scorecard():
     return _SCORECARD
 
 
-def _attach_scorecard(pred_df, race_id=None):
+def _is_scratch_odds(odds, popularity):
+    """#169: 予想時点で見えている「出走取消」の値か。
+
+    実データで実際に出る値 (2026-11 時点の確認):
+      - odds = 999.9 (人気=頭数=最下位): 9/05 以降の取消馬は results にこの値で入っている
+        (9/05〜11/01 で17頭、全頭 finish_position=0 = 走っていない)。予測 JSON でも
+        取消が分かった版から 999.9 に変わる (10/31 東京6R 13番は最初の版から、11/01 東京6R
+        13番は 07:32 の版から)。refresh_odds の #149 ガード (odds<=0 or 人気>=999) は通り抜ける。
+      - odds = -3.0 / 人気 = 9999: オッズ API の番兵 (11/05 に確定後の 202605041106 13番で実測)。
+        #149 で results には書かないが、古い行 (8/30 以前) と API キャッシュ経由の保険。
+      ※ 出馬表ページの取消表示 (tr.HorseList.Cancel) は scrape_shutuba が読んでいないので
+        ここでは使えない (読めるようになれば最も確実な信号)。
+    ※ 999.9倍は JRA の表示上限でもあり、実際に走った大穴も 2021〜2024 に5頭いる
+      (全頭12着以下)。予想時点では取消と区別できないが、その5頭はどれも印に値しない
+      馬なので、取消側に倒す (印の候補から外れるだけで、行も LGB の確率も残る)。
+    """
+    try:
+        o = float(odds or 0)
+    except (TypeError, ValueError):
+        o = 0.0
+    try:
+        pop = int(popularity or 0)
+    except (TypeError, ValueError):
+        pop = 0
+    return o < 0 or o >= 999.9 or pop >= 999
+
+
+def _scratched_numbers(results_rows, api_odds=None):
+    """#169: 予想時点で取消と分かっている馬番の集合 (results の行 + オッズ API のキャッシュ)。
+
+    行は消さない (#43/#150e: finish_position=0 は取消だけでなく競走中止も含むので、
+    消すと取り返しがつかない)。印の候補と点数表の順位・z の母集団から外すだけに使う。
+    学習側 (scripts/train_scorecard.py) は finish_position>0 の行だけを使っており、
+    本番だけ取消馬が母集団に入っていた食い違いをここで揃える。
+    """
+    out = set()
+    for r in results_rows or []:
+        try:
+            hn = int(r["horse_number"])
+        except (TypeError, ValueError, KeyError, IndexError):
+            continue
+        if _is_scratch_odds(r["odds"], r["popularity"]):
+            out.add(hn)
+    for hn, od in (api_odds or {}).items():
+        if isinstance(od, dict) and _is_scratch_odds(od.get("odds_win"), od.get("popularity")):
+            try:
+                out.add(int(hn))
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def _attach_scorecard(pred_df, race_id=None, exclude=None):
     """pred_df に _sc_points (合計点) と _sc_reasons (内訳) を付与。
 
     #145: ◎ を「説明できる点数表」から選ぶための土台。
     失敗しても純加算なので既存挙動は壊れない (点数0 = 従来ロジックにフォールバック)。
+
+    #169: exclude (予想時点で分かっている取消馬の馬番) は、レース内順位と z の母集団から
+    外して採点する。旧実装は取消馬も母集団に入れていたため、10/31 東京6R では取消の13番が
+    順位の枠を1つ使い ◎10番/○12番の順が入れ替わっていた (外すと12番が◎)。
+    取消馬自身は採点しない (点数0・内訳なし) — 学習側も取消馬は採点していない。
     """
     global _SCORECARD
     m = _load_scorecard()
@@ -160,7 +217,24 @@ def _attach_scorecard(pred_df, race_id=None):
         d = pred_df.copy()
         if "race_id" not in d.columns:
             d["race_id"] = race_id or "x"
-        pts, reasons = score_with_reasons(d, m)
+        _keep = None
+        if exclude:
+            import numpy as np
+            import pandas as pd
+            _keep = ~pd.to_numeric(d["horse_number"], errors="coerce").isin(list(exclude)).to_numpy()
+            if not _keep.any() or _keep.all():
+                _keep = None       # 全頭取消 (あり得ない) / 該当なし → 従来どおり全頭で採点
+        if _keep is None:
+            pts, reasons = score_with_reasons(d, m)
+        else:
+            _pk, _rk = score_with_reasons(d[_keep], m)
+            pts = np.zeros(len(d))
+            pts[_keep] = _pk
+            reasons = [[] for _ in range(len(d))]
+            for _j, _i in enumerate(np.flatnonzero(_keep)):
+                reasons[_i] = _rk[_j]
+            print(f"  ✂️ 取消 {int((~_keep).sum())}頭を点数表の母集団から除外 (馬番 "
+                  f"{sorted(int(x) for x in exclude)}) #169")
         pred_df["_sc_points"] = pts
         pred_df["_sc_reasons"] = reasons
     except Exception as e:
@@ -573,8 +647,11 @@ def cmd_predict(args):
 
         # 能力スコア (オッズ非依存) を付与 (#72、純加算で既存挙動に影響なし)
         pred_df = _attach_ability_score(pred_df)
+        # #169: 予想時点で分かっている取消馬 (999.9倍 / API の番兵 -3.0・9999)。
+        # 印の候補と点数表の順位・z の母集団から外す (行は消さない #43/#150e)。
+        _scratched = _scratched_numbers(results, _api_odds_cache.get(race_id))
         # 説明できる点数表 (#145) を付与。◎ の選定根拠として使う
-        pred_df = _attach_scorecard(pred_df, race_id)
+        pred_df = _attach_scorecard(pred_df, race_id, exclude=_scratched)
 
         # ── 追い切り (workout) 補正 — ML 統合できない過去データ不足を補う ──
         # workouts は 2026年シーズン分のみ (513件) で、ML 学習データに統合できない。
@@ -591,7 +668,18 @@ def cmd_predict(args):
             workout_map = {}
 
         if workout_map:
-            WORKOUT_BOOST = {'A': 1.10, 'B': 1.00, 'C': 0.93}
+            # #169: D を追加 (D ≤ C)。旧表に D が無く、D 評価の馬は B と同じ補正なし (×1.0) で
+            # ×0.93 の C より上に来ていた (#70 で補正を入れた時から。#167 まで D は NULL 保存)。
+            # 値の根拠 (2026-07-04〜11-01 の 1,177R・15,405頭、発走前の予測だけ、
+            # 補正前の LGB 複勝確率 pred_top3_abs に対する実際の3着内の比、B=1 とした比、
+            # レース単位ブートストラップ 95%):
+            #   A 1.13 [0.99,1.26] / C 0.80 [0.75,0.86] / D 0.59 [0.43,0.77] / D÷C 0.73 [0.53,0.96]
+            # 既存の C (0.93) は実測の割引 (−20%) の約1/3しか効かせていない控えめな値なので、
+            # D も同じ縮め方で 1 − 0.07 × (0.41 / 0.20) ≈ 0.85 とする。D 単体では実測区間の
+            # 上端 (0.77) より弱い控えめな値で、D÷C = 0.91 は実測区間 (0.53〜0.96) の内側
+            # (= D < C はデータが支持する)。補正そのものの要否 (学習外での比較) は別途
+            # (#169 では D が C より有利という順序の矛盾だけを直す)。
+            WORKOUT_BOOST = {'A': 1.10, 'B': 1.00, 'C': 0.93, 'D': 0.85}
             for idx in pred_df.index:
                 hn = int(pred_df.at[idx, 'horse_number'])
                 grade = workout_map.get(hn)
@@ -606,7 +694,7 @@ def cmd_predict(args):
             total_disp = pred_df['pred_win_display'].sum()
             if total_disp > 0:
                 pred_df['pred_win_display'] = pred_df['pred_win_display'] / total_disp
-            print(f"  💪 追い切り補正: {len(workout_map)}頭分 (A:+10% / C:-7%)")
+            print(f"  💪 追い切り補正: {len(workout_map)}頭分 (A:+10% / C:-7% / D:-15%)")
 
         # ── 馬体重変化補正: 廃止 (#95 2026-07-02 ROI監査) ──
         # 旧 Phase α (#31) は「weight_change は ML model に入っていない」前提で
@@ -776,6 +864,11 @@ def cmd_predict(args):
                 # 「なぜこの馬が◎か」を足し算で言えるようにするための唯一の材料。
                 "sc_points": round(float(row.get("_sc_points", 0) or 0), 1),
                 "sc_reasons": list(row.get("_sc_reasons") or []),
+                # #169: 印の並べ替えは丸めない点数で行う (sc_points の小数1桁は表示用)。
+                # 旧実装は丸めた値で並べており、同点になると直前の LGB 順 (オッズ寄り) が残った。
+                "_sc_points_raw": float(row.get("_sc_points", 0) or 0),
+                # #169: 予想時点で取消と分かっている馬 (印の候補から外す。保存はしない内部キー)
+                "_scratched": int(row["horse_number"]) in _scratched,
             })
 
         # ── 人気順 (popularity) を先に確定して各馬に付与 (#95 2026-07-02) ──
@@ -1041,13 +1134,28 @@ def cmd_predict(args):
             # 「説明できることに捕捉5ptを払う」という製品判断として明示的にONにする。
             _use_sc = flags.is_on('MARKS_SCORECARD')
             _sc_ok = _use_sc and any((p.get('sc_points') or 0) != 0 for p in sorted_preds)
+            # #169: 予想時点で取消と分かっている馬は印 (◎○▲△△/☆/注) の候補から外す。
+            # #147 で印の主軸をオッズ非依存の点数表にしたため、999.9倍の取消馬でも点数が
+            # 高ければ印が付いた (10/17 東京5R ○ / 10/25 京都3R ▲ — 公開ダッシュボードで発生)。
+            # 人気 9999 (オッズ API の番兵) はオッズ取得がこのループ内で行われた時に初めて
+            # 分かることがあるので、ここでも拾う (点数表の採点より後に分かった分)。
+            for p in sorted_preds:
+                if (p.get('popularity') or 0) >= 999:
+                    p['_scratched'] = True
+            _cands = [p for p in sorted_preds if not p.get('_scratched')] or list(sorted_preds)
             if _sc_ok:
-                by_top3 = sorted(sorted_preds,
-                                 key=lambda p: (p.get('sc_points') or 0), reverse=True)
+                # #169: 丸めない点数で並べ、同点は馬番の小さい方 (オッズを使わない第2キー)。
+                # 点数表を評価したコード (scripts/train_scorecard.py:per_race) と同じ決め方。
+                # 旧実装は小数1桁に丸めた sc_points の安定 sort で、同点だと直前の LGB 順
+                # (pred_win・rank_score・Contrarian = オッズ寄り) が残っていた。
+                by_top3 = sorted(_cands,
+                                 key=lambda p: (-float(p.get('_sc_points_raw',
+                                                             p.get('sc_points')) or 0),
+                                                p['horse_number']))
             else:
                 if _use_sc:
                     print("  ⚠️ 点数表が使えないため印は従来ロジック (pred_top3) で選定")
-                by_top3 = sorted(sorted_preds, key=_mark_rank_key, reverse=True)
+                by_top3 = sorted(_cands, key=_mark_rank_key, reverse=True)
             capture5 = by_top3[:5]
             # ── #110 (2026-07-13): ○を妙味枠に (MARKS_VALUE_TAIKO=1) ──
             # ユーザー「本命や対抗が人気馬すぎて面白くない」(8度目)。○ を
@@ -1082,6 +1190,7 @@ def cmd_predict(args):
                     return (t3 / mkt) if mkt > 0 else 0
                 _vpool = [p for p in sorted_preds
                           if not p.get('mark') and p.get('_has_real_odds')
+                          and not p.get('_scratched')      # #169
                           and 5.0 <= (p.get('odds_win') or 0) < 20.0]
                 if _vpool:
                     _vp = max(_vpool, key=_vt)
@@ -1094,7 +1203,9 @@ def cmd_predict(args):
                 mkt = (1.0 / od) if od > 0 else 0          # 市場の暗黙率
                 t3 = p.get('pred_top3', 0) or 0            # モデルの複勝率
                 return (t3 / mkt) if mkt > 0 else 0
-            rest = [p for p in sorted_preds if not p.get('mark')]
+            # #169: 取消馬は注の候補にも入れない。7-30倍の帯に候補が無い時の後段
+            # (7倍以上 → 全頭) では 999.9倍の取消馬が「妙味最大」になり得た。
+            rest = [p for p in sorted_preds if not p.get('mark') and not p.get('_scratched')]
             # #114 (2026-07-14): 注に上限30倍を導入。OOS実測 (2025-03+): 上限なしは
             # 複勝率7.4%/単勝ROI72円 (深い大穴に吸われる #58 FLバイアス)、7-30倍×value は
             # 複勝率19.7%/単勝ROI91円/複勝ROI87円で全候補最良。実運用4週の
@@ -1350,6 +1461,17 @@ def cmd_predict(args):
     if _SCORECARD and _SCORECARD.get("_degraded"):
         # #168: 点数表を代用モードで使った (印は点数表のまま、指数の区分だけ現行の si_avg/si_latest)
         print(f"🚨 点数表は代用モード: {_SCORECARD['_degraded']}")
+    # #169: V2d の使用状況を毎回1行残す (旧実装は異常時の 🚨 しか出さず、本番で V2d が
+    # どれだけ効いたかは DB コピーで再計算しないと分からなかった)。平地で旧指数に埋めた走が
+    # 5% を超えたら 🚨 (#168 の設計では平地の埋めは 0.2〜0.7% が平常)。
+    try:
+        _sv = getattr(getattr(model, "feature_builder", None), "_sv", None)
+        if _sv is not None and hasattr(_sv, "usage_line"):
+            print(_sv.usage_line())
+        elif _predicted_count and _SCORECARD and _SCORECARD.get("si_variant"):
+            print("🚨 V2d 使用状況: 基準表が読めず V2d を1走も計算していない")
+    except Exception as _e:
+        print(f"  ⚠️ V2d 使用状況の集計に失敗: {_e}")
     if _skipped_races:
         print(f"⚠️  スキップ {len(_skipped_races)} レース:")
         for rid, reason in _skipped_races:

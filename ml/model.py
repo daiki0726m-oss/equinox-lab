@@ -346,13 +346,19 @@ class KeibaModel:
         if "race_experience" in df.columns:
             debut_mask = df["race_experience"] == 0       # 初出走
             few_exp_mask = df["race_experience"] <= 0.2   # 1-2走
-            # 初出走: rank_scoreを30%減
-            df.loc[debut_mask, "rank_score"] *= 0.7
+            # #169: rank_score は LambdaRank の生スコアで約8割が負の値 (再推論で 78.6〜79.3%)。
+            # 旧実装の「×0.7 / ×0.85」は負のスコアを 0 に近づけ、割り引くつもりの馬を
+            # 逆に持ち上げていた (確率の pred_top3/pred_win は正なので正しく割り引かれ、
+            # 2つのチャネルで逆向きに効いていた)。
+            # rank_score は下の softmax の logit なので、log(係数) を足すと
+            # 「その馬の勝率を ×係数 してから正規化し直す」と同じになり、符号によらず必ず下がる。
+            # 初出走: 勝率を30%減 (rank_score に log 0.7 を足す)
+            df.loc[debut_mask, "rank_score"] += np.log(0.7)
             df.loc[debut_mask, "pred_top3"] *= 0.7
             df.loc[debut_mask, "pred_win"] *= 0.7
-            # 1-2走: rank_scoreを15%減（初出走は除く）
+            # 1-2走: 勝率を15%減（初出走は除く）
             few_only = few_exp_mask & ~debut_mask
-            df.loc[few_only, "rank_score"] *= 0.85
+            df.loc[few_only, "rank_score"] += np.log(0.85)
             df.loc[few_only, "pred_top3"] *= 0.85
             df.loc[few_only, "pred_win"] *= 0.85
 
