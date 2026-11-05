@@ -112,6 +112,8 @@ def window_race_count(start, db_path=None):
 def get_oos_start(strict=True, scorecard_path=None, include_scorecard=True,
                   warn_empty=True, db_path=None):
     """OOS 評価窓の開始日 (YYYY-MM-DD)。この日以降のレースだけが真の out-of-sample。
+    ただし #169: rank 系の窓は検証区間そのもので、early stopping (木の本数) と top3/win の
+    校正器の当てはめに使っている。校正後の確率の水準を採点するなら、その分は in-sample。
 
     strict=True (既定): rank 系の学習側の最大日付の翌日 = 混入ゼロを保証する保守的な窓。
     strict=False: rank 系は val 側の最小日付 (分割が正しければ同じ、壊れていれば楽観的)。
@@ -159,6 +161,11 @@ def describe(scorecard_path=None, db_path=None):
         f" — 学習 {meta['train_races']}レース / 検証 {meta['val_races']}レース"
         f" / 特徴量 {meta.get('feature_count', '?')}列",
         f"    分割キー: {meta.get('split_key', 'race_date (正常)')}",
+        # #169: rank 系の「学習外」の窓は検証区間そのもので、3モデルの木の本数 (early stopping) の
+        # 決定と top3/win の校正器の当てはめに使っている。順位しか使わない採点 (A構造の相手・
+        # pred_win_norm の EV) は early stopping 分だけ、校正後の水準を使う採点 (☆・注 の
+        # pred_top3÷市場率、複勝/ワイド/馬連の EV) は校正の分も in-sample になる。
+        "    ⚠️ rank系の窓 (検証区間) は early stopping と校正器の当てはめに使用済み — 厳密な学習外ではない",
     ]
     if sc:
         p = scorecard_path or _SCORECARD

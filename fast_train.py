@@ -1195,107 +1195,123 @@ def train_models(df, feature_cols, num_boost_round=500, early_stopping_rounds=50
     return model_rank, model_top3, model_win, auc_t3, auc_w
 
 
-def run_backtest(df, models, feature_cols, year=2025):
-    """バックテスト"""
-    model_rank, model_top3, model_win = models
-    test = df[(df["finish_position"] > 0) &
-              (df["race_date"].str.startswith(str(year)))].copy()
+def _backtest_window_start():
+    """バックテストの評価窓の開始日 = rank 系の学習境界の翌日 (#141 の単一情報源 oos_window)。
+    train_models が直前に保存した models/train_boundary.json を読む。取れなければ None。"""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+        from oos_window import get_oos_start
+        # 点数表は使わない (rank の softmax と未校正の model_top3 だけで買う) ので rank 系の境界だけ
+        return get_oos_start(include_scorecard=False, warn_empty=False)
+    except Exception as e:
+        print(f"  ⚠️ 学習境界が読めない ({e})")
+        return None
 
+
+def run_backtest(df, models, feature_cols, year=None):
+    """再学習ログに出す簡易バックテスト (単勝 EV>=1.2 / 複勝 EV>=1.1 の旧ルールを 100円ずつ)。
+
+    #169 (2026-11-05): 旧版は「2025年」を固定で採点し、再学習のたびに「回収率 138〜175%
+    🎉 プラス収支達成!」と出していた (11/02 は 162.4%)。この数字は次の3点で水増しされていた。
+      (1) 2025-01〜06-22 は**学習データ** (学習区間だけで 221.8%、検証区間は 115.8%)
+      (2) 複勝の払戻が実払戻でなく**作り値** max(確定単勝オッズ×0.3, 1.1)
+          (実払戻に置き換えると 162.4%→112.4%、検証区間だけでは 78.1% [68.6, 88.2])
+      (3) 買い目を**確定オッズ**で選んでいる (本番は発走の数時間前の薄いオッズ)
+    → 評価窓を「rank 系の学習境界の翌日以降」(oos_window) に限り、払戻は payouts の実払戻にする。
+      ただしこの窓は early stopping (木の本数の決定) に使った検証区間なので、厳密な学習外ではない
+      (現行モデルを学習外で採点できる確定レースは無い)。ログにもそう明記し、「プラス収支達成」の
+      祝辞は出さない。判断材料は凍結印×確定着順×実払戻の mark_tracker (#142) / weekly_scorecard。
+    year は旧呼び出しとの互換のためだけに残す (使わない)。
+    """
+    model_rank, model_top3, model_win = models
+    start = _backtest_window_start()
+    if not start:
+        print("\n📊 バックテスト: 学習境界が分からないので実行しない (学習期間を採点すると水増しになる)")
+        return
+    test = df[(df["finish_position"] > 0) & (df["race_date"] >= start)].copy()
     if test.empty:
-        print(f"❌ {year}年のデータがありません")
+        print(f"\n📊 バックテスト: 学習境界 ({start}) 以降の確定レースが無い → 実行しない")
         return
 
-    print(f"\n📊 バックテスト ({year}年): {test['race_id'].nunique()}レース, {len(test)}出走")
+    # 実払戻 (単勝・複勝)。払戻データの無いレースは採点から外す (0円扱いにすると回収率を不当に下げる)
+    rids = list(test["race_id"].unique())
+    pay = {"単勝": {}, "複勝": {}}
+    with get_db() as conn:
+        for i in range(0, len(rids), 500):
+            chunk = rids[i:i + 500]
+            q = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                    f"SELECT race_id, bet_type, combination, payout_amount FROM payouts "
+                    f"WHERE bet_type IN ('単勝','複勝') AND race_id IN ({q})", chunk):
+                pay[r["bet_type"]][(r["race_id"], str(r["combination"]).strip())] = r["payout_amount"]
+    has_pay = {k[0] for k in pay["単勝"]} & {k[0] for k in pay["複勝"]}
+    n_nopay = len(set(rids) - has_pay)
+    test = test[test["race_id"].isin(has_pay)].copy()
+    if test.empty:
+        print(f"\n📊 バックテスト: {start} 以降に払戻データのあるレースが無い → 実行しない")
+        return
 
     X_test = test[feature_cols].fillna(0)
     test["rank_score"] = model_rank.predict(X_test)
-    test["pred_win"] = model_win.predict(X_test)
     test["pred_top3"] = model_top3.predict(X_test)
+    # 本番の pred_win_norm と同じ「レース内 softmax (温度1)」(旧版と同じ計算)
+    mx = test.groupby("race_id")["rank_score"].transform("max")
+    ex = np.exp(test["rank_score"] - mx)
+    test["win_prob"] = ex / ex.groupby(test["race_id"]).transform("sum")
 
-    total_bet = 0
-    total_payout = 0
-    bet_count = 0
-    hit_count = 0
-    details = {"単勝": {"bet": 0, "payout": 0, "count": 0, "hit": 0},
-               "複勝": {"bet": 0, "payout": 0, "count": 0, "hit": 0}}
+    valid = test["odds"] > 0
+    place_odds = np.maximum(test["odds"] * 0.3, 1.1)   # 複勝の「見込み」(買うかどうかの判定だけに使う)
+    sel = {
+        "単勝": valid & (test["win_prob"] * test["odds"] >= 1.2) & (test["win_prob"] >= 0.08),
+        "複勝": valid & (test["pred_top3"] * place_odds >= 1.1) & (test["pred_top3"] >= 0.20),
+    }
+    hn = test["horse_number"].fillna(0).astype(int).astype(str)
+    bets = []
+    n_missing = 0
+    for bt, mask in sel.items():
+        sub = test[mask]
+        for rid, h, fp in zip(sub["race_id"], hn[mask], sub["finish_position"]):
+            # 的中 = 払戻行があること。旧版は複勝を「3着以内」で数えていたが、7頭立て以下の
+            # 3着は複勝の対象外 (払戻は2着まで) なので、それも作り値で的中にしていた。
+            ret = pay[bt].get((rid, h))
+            if ret is None:
+                ret = 0
+                if (bt == "単勝" and fp == 1) or (bt == "複勝" and fp <= 2):
+                    n_missing += 1       # 必ず払戻がある着順なのに行が無い = データ欠損
+            bets.append((rid, bt, 100, ret, ret > 0))
+    if not bets:
+        print(f"\n📊 バックテスト ({start}〜): 買い目0点")
+        return
+    b = pd.DataFrame(bets, columns=["race_id", "bt", "bet", "ret", "hit"])
 
-    for race_id, group in test.groupby("race_id"):
-        group = group.sort_values("rank_score", ascending=False)
+    def _roi_ci(x):
+        per = x.groupby("race_id")[["bet", "ret"]].sum()
+        roi = per["ret"].sum() / per["bet"].sum() * 100
+        rng = np.random.default_rng(0)
+        idx = rng.integers(0, len(per), size=(1000, len(per)))
+        bs = per["ret"].values[idx].sum(axis=1) / per["bet"].values[idx].sum(axis=1) * 100
+        return roi, np.percentile(bs, 2.5), np.percentile(bs, 97.5), len(per)
 
-        # ランキングスコアを正規化
-        rank_exp = np.exp(group["rank_score"] - group["rank_score"].max())
-        group = group.copy()
-        group["win_prob"] = rank_exp / rank_exp.sum()
-
-        hc = len(group)
-
-        for _, row in group.iterrows():
-            wp = row["win_prob"]
-            odds = row["odds"]
-
-            if odds <= 0:
-                continue
-
-            # 単勝: 期待値 > 1.2 && 予測勝率 > 8%
-            ev_win = wp * odds
-            if ev_win >= 1.2 and wp >= 0.08:
-                amount = 100
-                total_bet += amount
-                bet_count += 1
-                details["単勝"]["bet"] += amount
-                details["単勝"]["count"] += 1
-
-                if row["finish_position"] == 1:
-                    payout = amount * odds
-                    total_payout += payout
-                    hit_count += 1
-                    details["単勝"]["payout"] += payout
-                    details["単勝"]["hit"] += 1
-
-            # 複勝: 期待値 > 1.1 && 予測top3確率 > 20%
-            t3_prob = row["pred_top3"]
-            place_odds = max(odds * 0.3, 1.1)
-            ev_place = t3_prob * place_odds
-            if ev_place >= 1.1 and t3_prob >= 0.20:
-                amount = 100
-                total_bet += amount
-                bet_count += 1
-                details["複勝"]["bet"] += amount
-                details["複勝"]["count"] += 1
-
-                if row["finish_position"] <= 3:
-                    payout = amount * place_odds
-                    total_payout += payout
-                    hit_count += 1
-                    details["複勝"]["payout"] += payout
-                    details["複勝"]["hit"] += 1
-
-    roi = (total_payout / total_bet * 100) if total_bet > 0 else 0
-    profit = total_payout - total_bet
-
+    roi, lo, hi, n_r = _roi_ci(b)
+    end = test["race_date"].max()
     print(f"\n{'='*50}")
-    print(f"📊 バックテスト結果 ({year}年)")
+    print(f"📊 簡易バックテスト ({start}〜{end}): {test['race_id'].nunique()}レース")
     print(f"{'='*50}")
-    print(f"  購入点数:  {bet_count}")
-    print(f"  的中数:    {hit_count}")
-    print(f"  的中率:    {hit_count/bet_count*100:.1f}%" if bet_count else "  的中率:    -")
-    print(f"  総賭け金:  ¥{total_bet:,}")
-    print(f"  総払戻金:  ¥{total_payout:,.0f}")
-    print(f"  損益:      ¥{profit:,.0f}")
-    print(f"  回収率:    {roi:.1f}%")
+    print("  ⚠️ 学習外の成績ではない: この区間は木の本数の決定 (early stopping) に使った検証区間")
+    print("  ⚠️ 買い目は確定オッズで選んでいる (本番は朝の薄いオッズ)。払戻は payouts の実払戻")
+    print(f"  購入点数:  {len(b)} ({n_r}レース)  的中 {int(b['hit'].sum())} ({b['hit'].mean()*100:.1f}%)")
+    print(f"  総賭け金:  ¥{int(b['bet'].sum()):,}  総払戻金: ¥{int(b['ret'].sum()):,}")
+    print(f"  回収率:    {roi:.1f}% [レース単位ブートストラップ95%区間 {lo:.1f}, {hi:.1f}]")
+    for bt in ("単勝", "複勝"):
+        x = b[b["bt"] == bt]
+        if len(x):
+            r_, l_, h_, _ = _roi_ci(x)
+            print(f"  [{bt}] {len(x)}点 / 的中{int(x['hit'].sum())}({x['hit'].mean()*100:.1f}%) / "
+                  f"回収率 {r_:.1f}% [{l_:.1f}, {h_:.1f}]")
+    if n_nopay or n_missing:
+        print(f"  (払戻データの無い {n_nopay}レースは除外 / 的中したのに払戻行が無い {n_missing}点は0円で計上)")
     print(f"{'='*50}")
-
-    for bt, d in details.items():
-        if d["count"] > 0:
-            bt_roi = d["payout"] / d["bet"] * 100 if d["bet"] > 0 else 0
-            bt_hr = d["hit"] / d["count"] * 100
-            print(f"  [{bt}] {d['count']}点 / 的中{d['hit']}({bt_hr:.1f}%) / "
-                  f"ROI {bt_roi:.1f}%")
-
-    if roi >= 100:
-        print(f"\n  🎉 プラス収支達成!")
-    else:
-        print(f"\n  📉 マイナス収支")
+    print("  判断材料には使わない — 投稿時点の凍結印×確定着順×実払戻の mark_tracker (#142) を正とする")
 
 
 def build_si_variant(races_df, results_df, table_path=None):
@@ -1442,8 +1458,12 @@ def main():
     models = train_models(df, feature_cols)
     model_rank, model_top3, model_win, auc_t3, auc_w = models
 
-    # Step 5: バックテスト
-    run_backtest(df, (model_rank, model_top3, model_win), feature_cols, year=2025)
+    # Step 5: バックテスト (#169: 学習境界の翌日以降・実払戻。モデルは保存済みなので、
+    # ここで落ちても再学習の成果 (models/*.pkl) を道連れにしない)
+    try:
+        run_backtest(df, (model_rank, model_top3, model_win), feature_cols)
+    except Exception as e:
+        print(f"⚠️ バックテストに失敗 (モデルは保存済み): {e}")
 
     total_elapsed = time.time() - t_start
     print(f"\n⏱️ 総実行時間: {total_elapsed:.0f}秒 ({total_elapsed/60:.1f}分)")
