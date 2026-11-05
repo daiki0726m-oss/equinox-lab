@@ -315,6 +315,68 @@ def evaluate(
     }
 
 
+# ─── 閾値判定の「後」に掛ける補正 (#169: ここに一本化) ───
+# predict.py / evaluate_from_horses / scripts/build_race_baseline.py (閾値の較正) が
+# すべてこの関数を通す。補正を足す・外す時はここだけを直せば、
+# 「閾値は補正前の分布で引くのに、目標構成比は補正後の分布」という #169 の食い違いが
+# 二度と起きない (基準表が補正込みの最終構成比で閾値を引き直すため)。
+#
+# #169 (2026-11-05) 点数表で◎を選ぶようになった後 (9/05〜11/01 の平場 301R) で再検証。
+# 比較は「閾値だけで決めた等級 (conf_reason の自信度◯◯) が同じレース」同士、
+# レース単位 bootstrap の 95%CI。オッズは予測時点の値 (確定オッズは使わない #99)。
+#   ・信頼騎手 +1 (◎が1-3人気で jockey_trust>=2 のとき1段上げ): **A→S / B→A だけ残す**
+#       ◎3着内率 +14.1pt [+0.8, +27.6] (n=52)、◎の人気 (1 / 2-3) でも揃えると
+#       +13.6pt [+0.7, +26.9] (層内並べ替え p=0.036 — **片側** 検定)。95%CI はゼロを
+#       わずかに外すだけで、97.5%区間 [-1.5, +28.9] はゼロをまたぐ。
+#       差を作っているのは閾値等級A (95.7% vs 68.3%) と B (62.5% vs 46.8%)。
+#       **等級C では逆向き**: ◎3着内率 -14.5pt [-45.1, +16.6]・単勝回収 -77.1pt
+#       [-166.8, +18.1]・複勝回収 -12.0pt (n=13、人気で層別)。ところが投資に効くのは
+#       C→B (C/D 遮断を外す) だけで、閾値を補正後の構成比で較正するとこの段が B/C 境界を
+#       押し上げ、信頼騎手の乗らない◎を B から C (見送り) へ押し出す (較正標本 229R で
+#       C→B 9R / 押し出し 7R)。投資を動かす唯一の段が逆向きの証拠に乗るので、#169 review で
+#       C→B をやめた。残る A→S / B→A は投稿の選定順・絵文字だけで投資には効かず
+#       (#140 で賭け金はフラット)、B/C 境界は補正の影響を受けない純粋な分位になる。
+#       (A/B だけの効果 +23.0pt [+7.5, +37.3] は「C を見てから外した」後付けの部分集合なので
+#        根拠には使わない。根拠は事前に決めた全体の +14.1pt)
+#   ・不信騎手 -1 (jockey_trust<=-2、S/A のとき1段下げ): **撤去**
+#       発動条件を満たしたレースが 1R (しかも閾値等級B で発動せず)。狙いを示せない。
+#   ・◎オッズ過信帯 -1 (◎の実オッズ 5.0〜7.9倍で1段下げ、#95): **撤去**
+#       ◎3着内率 -11.2pt [-27.4, +5.1] (n=80、帯外すべてと比較・並べ替え p=0.108 片側)、
+#       ◎実オッズ<5倍と比べると -18.8pt [-37.7, +1.5] (並べ替え p=0.037 片側)。
+#       **後者は信頼騎手 (p=0.036 片側) と同じ強さ** で、残す/外すを分けたのは 95%CI の端が
+#       ゼロをまたぐかの 1pt 未満の差 = 判断は #169 の規則 (95%CI) の境界で決まった。
+#       #95 の根拠だった単勝回収は +27.9pt [-24.5, +82.2] と逆向き。投資ゲートとしても、
+#       補正で止めた 20R の回収 82.5% vs 止めなかった投資レース 92.7%
+#       (差 -10.2pt [-71.1, +63.3]) で区別できない。#140「検証で否定された仕組みを
+#       残さない」により外す。8.0倍以上の見送り (should_bet_race) は投資ゲートの規則で、
+#       この補正とは別物なので残る。「◎の信頼度は変えずに投資だけ止める」なら
+#       should_bet_race 側の規則として戻すのが筋 (信頼度に混ぜると構成比の較正とも絡む)。
+#       (撤去の代償の記録: 撤去+閾値の較正し直しで 9/05〜11/01 の平場に新たに投資が乗る
+#        34R の再現回収は 88.2% (両方で投資する 95R は 92.7%、差 -4.5pt [-54.3, +48.2])。
+#        区間はゼロをまたぐ。撤去後の帯の実額は scripts/build_race_baseline.py の
+#        build_adjust_watch が毎回の基準表で測り、race_baseline.json の
+#        confidence_adjust_watch に残す (帯 n≥30 で 95%CI 上端<0 なら要レビュー))
+_GRADES = ["S", "A", "B", "C", "D"]
+
+
+def post_adjust(rating: str, jockey_trust=0) -> Tuple[str, str]:
+    """閾値で決めた等級に、後段の補正を掛ける。返り値は (補正後の等級, 理由欄への追記)。
+
+    jockey_trust は ◎ (実際に印を付けた馬) の値を渡すこと (#142)。
+    """
+    try:
+        jt = int(jockey_trust or 0)
+    except (TypeError, ValueError):
+        jt = 0
+    if rating not in _GRADES:
+        return rating, ""
+    # #169 review: C→B (C/D 遮断を外して投資に乗せる唯一の段) はやめ、A→S / B→A だけにする
+    # (根拠は上の注記)。投資ゲートの境界 (B/C) を、逆向きの証拠で動かさないため。
+    if jt >= 2 and rating in ("A", "B"):
+        return _GRADES[_GRADES.index(rating) - 1], f"信頼騎手{jt:+d}"
+    return rating, ""
+
+
 def evaluate_from_horses(
     horses: Iterable[dict],
     grade: Optional[str] = None,
@@ -350,8 +412,13 @@ def evaluate_from_horses(
         return float(h.get(display_key) or h.get(win_key, 0) or 0)
 
     sorted_h = sorted(horses_list, key=_win, reverse=True)
-    top1 = sorted_h[0]
-    top2 = sorted_h[1] if len(sorted_h) >= 2 else top1
+    # #169: predict.py (#142) と同じく【実際に◎を付けた馬】で評価する。
+    # 閾値は基準表が ◎の表示勝率の分布から引いているので、勝率1位の馬を入れると
+    # ペアの分布がずれる (9/05〜11/01 の 552R で ◎が表示勝率1位なのは 47.3%)。
+    axis = next((h for h in horses_list if h.get("mark") == "◎"), None)
+    top1 = axis or sorted_h[0]
+    _rest = [h for h in sorted_h if h is not top1]
+    top2 = _rest[0] if _rest else top1
 
     top1_win = _win(top1)
     top2_win = _win(top2)
@@ -377,34 +444,12 @@ def evaluate_from_horses(
         top_odds=top1_odds,
     )
 
-    # ── #95: predict.py 側の予測後補正と整合させる (再評価サイトの乖離防止) ──
-    # (1) jockey_trust: |jt|>=2 で ±1 (cache に jockey_trust があれば適用)
-    # (2) ◎オッズ過信帯: 5.0-7.9倍 (実オッズ = popularity>0 が代理シグナル) で -1
-    grades = ["S", "A", "B", "C", "D"]
-    conf = result["confidence"]
-    reason = result["reason"]
-    top_jt = 0
-    try:
-        top_jt = int(top1.get("jockey_trust", 0) or 0)
-    except (TypeError, ValueError):
-        top_jt = 0
-    if top_jt >= 2 and conf in ("A", "B", "C"):
-        conf = grades[max(0, grades.index(conf) - 1)]
-        reason = f"{reason} / 信頼騎手{top_jt:+d}"
-    elif top_jt <= -2 and conf in ("S", "A"):
-        conf = grades[min(len(grades) - 1, grades.index(conf) + 1)]
-        reason = f"{reason} / 不信騎手{top_jt:+d}"
-
-    axis = next((h for h in horses_list if h.get("mark") == "◎"), None)
-    if axis is not None:
-        axis_odds = float(axis.get(odds_key, 0) or 0)
-        axis_pop = axis.get(pop_key, 0) or 0
-        if axis_pop and 5.0 <= axis_odds < 8.0 and conf in ("S", "A", "B", "C"):
-            conf = grades[min(len(grades) - 1, grades.index(conf) + 1)]
-            reason = f"{reason} / ◎オッズ{axis_odds:.1f}倍は過信帯-1"
-
+    # ── #95/#169: predict.py 側の予測後補正と同じ関数を通す (再評価サイトの乖離防止) ──
+    # 補正の中身 (どれを残しどれを外したか) は post_adjust の注記を参照。
+    conf, adj = post_adjust(result["confidence"], top1.get("jockey_trust", 0))
     result["confidence"] = conf
-    result["reason"] = reason
+    if adj:
+        result["reason"] = f"{result['reason']} / {adj}"
     return result
 
 
