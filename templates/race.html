@@ -381,6 +381,7 @@
                 // 予測順位
                 html += '<table><thead><tr><th>順位</th><th>馬番</th><th>馬名</th><th>勝率</th><th>複勝率</th><th>SI</th></tr></thead><tbody>';
                 data.predictions.sort((a, b) => b.pred_win - a.pred_win);
+                // #169: SI 列は点数表の内訳と同じ指数 (si_avg_v がある = 馬場差補正指数 V2d)
                 data.predictions.forEach((p, i) => {
                     html += `<tr>
                         <td><strong>${i+1}</strong></td>
@@ -388,7 +389,7 @@
                         <td>${p.horse_name}</td>
                         <td>${(((p.pred_win_display ?? p.pred_win) || 0) * 100).toFixed(1)}%</td>
                         <td>${(p.pred_top3 * 100).toFixed(1)}%</td>
-                        <td>${p.si_avg.toFixed(1)}</td>
+                        <td>${(('si_avg_v' in p) ? (p.si_avg_v || 0) : (p.si_avg || 0)).toFixed(1)}</td>
                     </tr>`;
                 });
                 html += '</tbody></table>';

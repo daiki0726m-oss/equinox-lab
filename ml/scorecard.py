@@ -145,38 +145,259 @@ UNSTABLE_FOR_DISPLAY = {
 # #150: 絶対値項目のビン名を人間語にする。
 # 旧実装は 5分位を "1/5".."5/5" とだけ出しており、読者向けの理由として
 # 「休養日数 3/5 +1.2点」のような内部表記がそのまま画面に出ていた (#125 の再発)。
-# ビン数は学習時の分位で決まるので、**ビン数が一致するときだけ**日本語名を使い、
-# 一致しなければ従来表記に落とす (再学習で分位が変わっても壊れない)。
-DISPLAY_BINS = {
-    "rest_days":       ["中2週以内", "中3〜4週", "1〜2ヶ月", "2〜4ヶ月", "4ヶ月以上(休み明け)"],
-    "distance_diff":   ["距離短縮", "ほぼ同距離", "距離延長", "大幅な距離延長"],
-    "jockey_change":   ["継続騎乗", "乗り替わり", "乗り替わり"],
-    "impost_diff":     ["斤量減・据え置き", "斤量+1kg以内", "斤量+1kg超"],
-    "graded_exp":      ["重賞経験なし", "重賞経験あり"],
-    "race_experience": ["キャリア3戦以内", "キャリア4〜9戦", "キャリア10〜18戦", "キャリア19〜30戦", "キャリア30戦超"],
-    "front_rate":      ["逃げ先行なし", "先行率2割以下", "先行率2割超"],
-    "avg_pos_ratio":   ["前めで運ぶ", "やや前", "中団", "後方から"],
-    "post_position_ratio": ["最内寄り", "内", "中", "外", "大外寄り"],
+#
+# #169: 表示名は **区分境界 (model["spec"]) から作る**。#150 の固定の名前表は
+# v3 の当て直しで「道中の位置取り」が4→5区分になった時に段数が合わず、内部表記の
+# 「5/5」が JSON と画面に戻っていた。しかも段数が合っていても中身がずれていた:
+# キャリア戦数は #166 で「近10走の数 /10」に変わったのに名前は「/30」の時代のまま
+# (1戦以下を「キャリア3戦以内」、4〜6戦を「キャリア10〜18戦」と表示していた)。
+# 境界の値から名前を作れば、当て直しで分位が変わっても名前が実際の区切りを指す。
+# 名前を作れない区分は「内部表記で出す」のではなく **内訳に出さない** (点は合計に入る)。
+# 段数・重複・内部表記の検査は check_display_bins (train_scorecard / feature_parity / predict)。
+_INF = float("inf")
+RAW_BIN_RE = r"^\d+/\d+$"          # 内部キーの区分名 ("5/5")。表示に出てはいけない
+
+
+def _num(x):
+    """1.0 → "1", 0.5 → "0.5" (表示用)。"""
+    r = round(float(x), 1)
+    return str(int(r)) if r == int(r) else str(r)
+
+
+def _intervals(edges):
+    return list(zip(edges[:-1], edges[1:]))
+
+
+def _names_rest_days(edges):
+    # 値 = 前走からの日数 / 365 (上限365日)。表示名の「休養日数」に合わせて日数で示す。
+    out = []
+    for lo, hi in _intervals(edges):
+        dlo = None if lo == -_INF else int(round(lo * 365))
+        dhi = None if hi == _INF else int(round(hi * 365))
+        if dlo is None:
+            out.append(f"{dhi}日以内")
+        elif dhi is None:
+            out.append(f"{int(round(dlo / 30.4))}ヶ月超(休み明け)" if dlo >= 90 else f"{dlo + 1}日以上")
+        else:
+            out.append(f"{dlo + 1}〜{dhi}日")
+    return out
+
+
+def _names_distance_diff(edges):
+    # 値 = (今回の距離 − 前走の距離) / 400
+    out = []
+    for lo, hi in _intervals(edges):
+        mlo = None if lo == -_INF else int(round(lo * 400))
+        mhi = None if hi == _INF else int(round(hi * 400))
+        if mlo is None:
+            out.append(f"短縮{-mhi}m以上" if mhi < 0 else f"延長{mhi}m以下")
+        elif mhi is None:
+            out.append(f"延長{mlo}m超" if mlo >= 0 else f"短縮{-mlo}m未満〜延長")
+        elif mlo >= -100 and mhi <= 100 and mlo < 0 <= mhi:
+            out.append("ほぼ同距離")
+        elif mlo >= 0:
+            out.append(f"延長{mhi}m以内" if mlo == 0 else f"延長{mlo}超〜{mhi}m")
+        else:
+            out.append(f"短縮{-mhi}〜{-mlo}m" if mhi < 0 else f"{mlo:+d}〜{mhi:+d}m")
+    return out
+
+
+def _names_jockey_change(edges):
+    # 値 = 0 (前走と同じ騎手) / 1 (乗り替わり)。どちらも含まない区分は到達しない (None)
+    out = []
+    for lo, hi in _intervals(edges):
+        if lo < 0 <= hi:
+            out.append("継続騎乗")
+        elif lo < 1 <= hi:
+            out.append("乗り替わり")
+        else:
+            out.append(None)
+    return out
+
+
+def _names_impost_diff(edges):
+    # 値 = 今回の斤量 − 前走の斤量 (kg)
+    out = []
+    for lo, hi in _intervals(edges):
+        if lo == -_INF:
+            out.append("斤量減・据え置き" if hi == 0 else
+                       (f"斤量{_num(-hi)}kg以上減" if hi < 0 else f"斤量+{_num(hi)}kg以下"))
+        elif hi == _INF:
+            out.append(f"斤量+{_num(lo)}kg超" if lo >= 0 else f"斤量{_num(-lo)}kg減未満〜増")
+        elif lo >= 0:
+            out.append(f"斤量+{_num(hi)}kg以内" if lo == 0 else f"斤量+{_num(lo)}超〜{_num(hi)}kg")
+        else:
+            out.append(f"斤量{_num(-hi)}〜{_num(-lo)}kg減" if hi <= 0 else f"斤量{_num(lo)}〜+{_num(hi)}kg")
+    return out
+
+
+def _count_names(edges, cap, unit, zero):
+    """値 = min(回数, cap) / cap の項目 (重賞経験・キャリア戦数)。回数で名前を付ける。"""
+    out = []
+    for lo, hi in _intervals(edges):
+        clo = None if lo == -_INF else int(round(lo * cap))
+        chi = None if hi == _INF else int(round(hi * cap))
+        if clo is not None and clo >= cap:
+            out.append(None)                       # 上限 (cap) を超える値は無い = 到達しない
+        elif clo is None:
+            out.append(zero if chi <= 0 else f"{chi}{unit}以下")
+        elif chi is None or chi >= cap:
+            out.append(f"{clo + 1}{unit}以上")
+        elif clo + 1 == chi:
+            out.append(f"{chi}{unit}")
+        else:
+            out.append(f"{clo + 1}〜{chi}{unit}")
+    return out
+
+
+def _names_graded_exp(edges):
+    names = _count_names(edges, 10, "戦", "なし")
+    # 2区分 (なし / 1戦以上) は「重賞経験なし / あり」の方が読みやすい
+    return ["重賞経験" + ("なし" if n == "なし" else ("あり" if n == "1戦以上" else n)) if n else None
+            for n in names]
+
+
+def _names_race_experience(edges):
+    # #166 以降の値は「DB の確定走 (近10走まで) の数 / 10」。表示名「キャリア戦数」に戦数で続ける
+    return _count_names(edges, 10, "戦", "なし")
+
+
+def _names_front_rate(edges):
+    # 値 = 近5走のうち1コーナーを前35%以内で回った走の割合
+    out = []
+    for lo, hi in _intervals(edges):
+        wlo = None if lo == -_INF else int(round(lo * 10))
+        whi = None if hi == _INF else int(round(hi * 10))
+        if wlo is None:
+            out.append("なし" if whi <= 0 else f"{whi}割以下")
+        elif whi is None:
+            out.append(f"{wlo}割超")
+        elif wlo <= 0:
+            out.append(f"{whi}割以下")
+        else:
+            out.append(f"{wlo}〜{whi}割")
+    return out
+
+
+def _position_names(edges, words):
+    """0〜1 の位置 (0=前・内) の項目。区分の代表位置 (区間の中点) に言葉を当て、
+    言葉が重なったら境界の % で名前を付ける (どちらも境界から作る)。"""
+    iv = _intervals(edges)
+    out = []
+    for lo, hi in iv:
+        rep = (max(lo, 0.0) + min(hi, 1.0)) / 2
+        out.append(next(w for th, w in words if rep <= th))
+    if len(set(out)) == len(out):
+        return out
+    out = []
+    for lo, hi in iv:
+        plo = None if lo == -_INF else int(round(lo * 100))
+        phi = None if hi == _INF else int(round(hi * 100))
+        out.append(f"前{phi}%以内" if plo is None else (f"前{plo}%より後ろ" if phi is None
+                                                        else f"前{plo}〜{phi}%"))
+    return out
+
+
+def _names_avg_pos_ratio(edges):
+    # 値 = 近5走の1コーナー通過順 / 頭数 の平均 (0=先頭)
+    return _position_names(edges, ((0.25, "先行"), (0.42, "好位"), (0.55, "中団"),
+                                   (0.70, "中団後ろ"), (_INF, "後方")))
+
+
+def _names_post_position_ratio(edges):
+    # 値 = 馬番 / 頭数
+    return _position_names(edges, ((0.2, "最内寄り"), (0.4, "内"), (0.6, "中"),
+                                   (0.8, "外"), (_INF, "大外寄り")))
+
+
+_BIN_NAMERS = {
+    "rest_days": _names_rest_days,
+    "distance_diff": _names_distance_diff,
+    "jockey_change": _names_jockey_change,
+    "impost_diff": _names_impost_diff,
+    "graded_exp": _names_graded_exp,
+    "race_experience": _names_race_experience,
+    "front_rate": _names_front_rate,
+    "avg_pos_ratio": _names_avg_pos_ratio,
+    "post_position_ratio": _names_post_position_ratio,
 }
 
 
-def display_bin(col, raw_bin, n_bins=None):
+def bin_display_names(col, edges):
+    """区分境界 edges (model["spec"][col]) から各区分の表示名を作る (#169)。
+    戻り値は区分と同じ数のリスト (到達しない区分は None)。作れない項目は None。"""
+    f = _BIN_NAMERS.get(col)
+    if f is None or edges is None or len(edges) < 2:
+        return None
+    try:
+        return f([float(e) for e in edges])
+    except Exception:
+        return None
+
+
+def check_display_bins(model):
+    """区分の表示名が区分境界と合っているか (#169)。問題の文のリスト (空なら OK)。
+
+    - 表示名を作れない項目がある / 名前の数が区分数と違う
+    - 点の付いた (= 内訳に出うる) 区分に名前が無い
+    - 名前が重なる (別の区分が同じ名前に見える) / 内部表記 ("5/5") になっている
+    """
+    import re
+    probs = []
+    spec = (model or {}).get("spec") or {}
+    pts = (model or {}).get("pts") or {}
+    drop = set((model or {}).get("drop") or [])
+    for col, name, _, _, is_rel in FEATS:
+        if is_rel or col in drop or col not in spec:
+            continue
+        edges = spec[col]
+        nb = len(edges) - 1
+        names = bin_display_names(col, edges)
+        if names is None:
+            probs.append(f"{name} ({col}): 区分 {nb} 段の表示名を作れない (ml/scorecard._BIN_NAMERS に無い)")
+            continue
+        if len(names) != nb:
+            probs.append(f"{name} ({col}): 区分 {nb} 段に対し表示名 {len(names)} 個")
+            continue
+        for i, nm in enumerate(names):
+            k = f"{col}={i + 1}/5"
+            if nm is None and abs(pts.get(k, 0.0)) >= 0.02:
+                probs.append(f"{name} ({col}): 点の付いた区分 {i + 1}/{nb} に表示名が無い")
+        real = [n for n in names if n is not None]
+        if len(set(real)) != len(real):
+            probs.append(f"{name} ({col}): 表示名が重なる {real}")
+        bad = [n for n in real if re.match(RAW_BIN_RE, n)]
+        if bad:
+            probs.append(f"{name} ({col}): 表示名が内部表記 {bad}")
+    return probs
+
+
+_DISPLAY_WARNED = set()
+
+
+def display_bin(col, raw_bin, names=None):
     """内部ビン名 ("3/5") を読者向けの日本語に翻訳する。
 
     **内部キーは変えない** — model['pts'] は学習時に作った "rest_days=3/5" で
     引かれるので、label() 側を日本語にすると点数の参照が全滅して
     絶対値項目の寄与が静かにゼロになる。翻訳は表示の瞬間だけ行う。
+
+    #169: names は bin_display_names(col, 区分境界) の結果。名前が無い区分は
+    内部表記を返さず None (= 内訳に出さない) にし、1回だけ警告する。
+    順位の区分 ("1位" 等) や「データなし」はそのまま返す。
     """
-    names = DISPLAY_BINS.get(col)
-    if not names or not isinstance(raw_bin, str) or "/" not in raw_bin:
+    if not isinstance(raw_bin, str) or "/" not in raw_bin:
         return raw_bin
     try:
         idx = int(raw_bin.split("/")[0]) - 1
     except ValueError:
-        return raw_bin
-    if n_bins is not None and len(names) != n_bins:
-        return raw_bin     # 再学習で分位が変わった → 従来表記に落とす (誤訳を防ぐ)
-    return names[idx] if 0 <= idx < len(names) else raw_bin
+        idx = -1
+    nm = names[idx] if names and 0 <= idx < len(names) else None
+    if nm is None and (col, raw_bin) not in _DISPLAY_WARNED:
+        _DISPLAY_WARNED.add((col, raw_bin))
+        print(f"  ⚠️ 点数表: {NAMES.get(col, col)} の区分 {raw_bin} に表示名が無い "
+              f"→ 内訳に出さない (#169、点は合計に入る)")
+    return nm
 
 
 def _src(col, col_map=None):
@@ -284,6 +505,121 @@ def race_z(values, race_ids, direction="hi"):
     return z.fillna(0.0).to_numpy(float)
 
 
+# ── 内訳の表示 (#169) ─────────────────────────────────────────────────
+# 点は一切変えず、内訳に「何と書くか」「出すか」だけを決める。
+# 過去走が無い馬 (has_past_runs == 0) では、前走・近走から作る項目の値は「既定値」で
+# 実測ではない (休養日数は 0.5 = 約182日が入り「4ヶ月超(休み明け)」と表示されていた、
+# 距離差・乗り替わりは 0 で「ほぼ同距離」「継続騎乗」になる)。事実どおり JRA初出走 と書く。
+NO_PAST_DEFAULT_COLS = {"rest_days", "distance_diff", "jockey_change", "impost_diff",
+                        "avg_pos_ratio", "front_rate"}
+
+
+def _reason_context(df):
+    """内訳の表示に使う補助の値 (点数には使わない)。列が無ければ従来どおりの表示になる。"""
+    n = len(df)
+    rid = df["race_id"].to_numpy() if "race_id" in df.columns else np.zeros(n)
+    if DEBUT_COL in df.columns:
+        has_past = pd.to_numeric(df[DEBUT_COL], errors="coerce").fillna(1).to_numpy(float) != 0
+    else:
+        has_past = np.ones(n, bool)
+    # 近10走の確定走の数 (= race_experience × 10、#166 の定義)。top3_rate_10r の分母
+    n10 = (np.rint(pd.to_numeric(df["race_experience"], errors="coerce").fillna(0)
+                   .to_numpy(float) * 10).astype(int)
+           if "race_experience" in df.columns else np.zeros(n, int))
+    # この距離の実績: 0/1 = 同距離帯 (±200m、無ければ ±400m) に走がある、2 = 無い
+    dscope = (pd.to_numeric(df["dist_scope"], errors="coerce").fillna(2).to_numpy(float)
+              if "dist_scope" in df.columns else np.full(n, 2.0))
+    return {"rid": rid, "has_past": has_past, "n10": n10, "dscope": dscope}
+
+
+def _race_common(values, rid):
+    """各行について「同じレースの全頭が同じ値 (区分)」か。1頭だけのレースは False。"""
+    s = pd.Series(np.asarray(values))
+    g = s.groupby(np.asarray(rid))
+    return ((g.transform("nunique") == 1) & (g.transform("size") > 1)).to_numpy()
+
+
+def _reason_bin(col, raw, names, ctx, i):
+    """内訳に出す区分の文字。None なら出さない。"""
+    if not ctx["has_past"][i] and col in NO_PAST_DEFAULT_COLS:
+        return DEBUT_LABEL
+    if raw == NODATA:
+        # 0 を「データ無し」と同じ点で扱う項目 (zero_na)。点はそのままに、実際に走っていて
+        # 3着内が0回の馬は「データなし」でなく実態を書く (今週53頭、うち印5頭に14頭)。
+        if col == "top3_rate_10r" and ctx["has_past"][i] and ctx["n10"][i] > 0:
+            return f"3着内なし({ctx['n10'][i]}走)"
+        if col == "dist_top3_rate" and ctx["dscope"][i] in (0, 1):
+            return "3着内なし"
+        return raw
+    return display_bin(col, raw, names)
+
+
+# 馬自身の過去走から作る項目 (初出走の馬は値が全頭同じ既定値 / データなしになる)。
+# 新馬戦 (全頭が初出走) では全頭同じ区分になり、新しい内訳では _race_common で出ない。
+HORSE_HISTORY_COLS = {"si_avg", "si_latest", "top3_rate_10r", "avg_finish_5r",
+                      "course_top3_rate", "same_course_top3_rate", "dist_top3_rate",
+                      "avg_last_3f", "margin_best", "horse_wet_top3_rate",
+                      "graded_exp", "race_experience"} | NO_PAST_DEFAULT_COLS
+_SANITIZE_MODEL = []
+
+
+def sanitize_cached_reasons(horses, race_name="", model=None):
+    """#169 より前に作られたキャッシュの sc_reasons を、今の表示規則にそろえる (export 用)。
+
+    #169 手直し: 新しい内訳は predict の時点で規則どおりに作られるが、古いキャッシュを
+    再 export すると内部表記の「道中の位置取り 5/5」(10/31・11/01 で17件) と、新馬戦の
+    初出走馬への「休養日数 休み明け」(同79件) が JSON にそのまま出ていた。
+      - 内部表記の区分 ("5/5") は、キャッシュの点数が **今の点数表の同じ区分の点と一致した
+        時だけ** 区分境界から作った表示名に訳す (= 同じ点数表で作られた証拠がある時だけ)。
+        合わなければ (別の版の点数表) 訳さず消す
+      - 新馬戦 (全頭が初出走) は馬の過去走から作る項目が全頭同じ = 理由にならないので消す
+        (新しい内訳の「レース内の全頭が同じ区分は出さない」と同じ結果)
+    点数・印は変えない。新しいキャッシュには何もしない (該当する項目が無い)。
+    戻り値: (訳した数, 消した数)。"""
+    import re
+    if model is None:
+        if not _SANITIZE_MODEL:
+            try:
+                _SANITIZE_MODEL.append(load_model())
+            except Exception:
+                _SANITIZE_MODEL.append(None)
+        model = _SANITIZE_MODEL[0]
+    spec = (model or {}).get("spec") or {}
+    pts = (model or {}).get("pts") or {}
+    by_label = {n: c for c, n in NAMES.items()}
+    debut_race = "新馬" in str(race_name or "")
+    hist_labels = {NAMES[c] for c in HORSE_HISTORY_COLS if c in NAMES}
+    n_tr = n_drop = 0
+    for h in horses or []:
+        rs = h.get("sc_reasons")
+        if not rs:
+            continue
+        out = []
+        for r in rs:
+            lab, b = r.get("label"), str(r.get("bin"))
+            if debut_race and lab in hist_labels:
+                n_drop += 1
+                continue
+            if re.match(RAW_BIN_RE, b):
+                col = by_label.get(lab)
+                names = bin_display_names(col, spec.get(col)) if col in spec else None
+                key = f"{col}={b}"
+                try:
+                    same = key in pts and abs(round(pts[key] * 10, 1) - float(r.get("points"))) < 0.051
+                    idx = int(b.split("/")[0]) - 1
+                except (TypeError, ValueError):
+                    same, idx = False, -1
+                nm = names[idx] if (same and names and 0 <= idx < len(names)) else None
+                if nm is None:
+                    n_drop += 1
+                    continue
+                r = dict(r, bin=nm)
+                n_tr += 1
+            out.append(r)
+        h["sc_reasons"] = out
+    return n_tr, n_drop
+
+
 def score_with_reasons(df, model, top_n=4):
     """点数と、その内訳を返す。
 
@@ -304,27 +640,50 @@ def score_with_reasons(df, model, top_n=4):
         点数のキー ("si_avg=1位") と表示名は元の項目名のまま
       - model["flags"] の項目は「係数 × 生の値」を足す (芝ダ替わり)
     col_map / flags が無い pkl は従来と完全に同じ計算になる。
+
+    #169 (表示だけ。点数は従来と完全に同じ):
+      - 区分の表示名は区分境界から作る (bin_display_names)。名前の無い区分は内訳に出さない
+      - レース内の全頭が同じ区分の項目 (新馬戦の「データなし」「休み明け」等) は内訳に出さない
+      - 過去走の無い馬の前走・近走由来の項目は「JRA初出走」、走っていて3着内0回は
+        「3着内なし(N走)」と書く (「休み明け」「データなし」と書かない)
     """
     pts, spec = model["pts"], model["spec"]
     drop = set(model.get("drop") or [])
     lab = label(df, spec, skip=drop, col_map=model.get("col_map"))
     total = np.zeros(len(df))
     per = [[] for _ in range(len(df))]
+    # #169 手直し: 表示だけの処理 (_reason_context / _race_common / _reason_bin) の例外で
+    # 点数を止めない。止めると predict._attach_scorecard の except で全頭 0点 = そのレースの
+    # 印が従来ロジックに落ち、表示の不具合が印の変化に化ける。失敗したら内訳だけ空にする。
+    _disp_err = []
+    try:
+        _ctx = _reason_context(df)                                     # #169 表示用 (点は変えない)
+        _names = {c: bin_display_names(c, spec[c]) for c in spec}
+    except Exception as e:
+        _disp_err.append(e)
+        _ctx, _names = None, {}
     for col, _, _, _, _ in FEATS:
         if col in drop:
             continue
         keys = (col + "=" + lab[col].astype(str)).values
         vals = np.array([pts.get(k, 0.0) for k in keys])
         total += vals
-        if col in UNSTABLE_FOR_DISPLAY:
+        if col in UNSTABLE_FOR_DISPLAY or _disp_err:
             continue
-        for i, (k, v) in enumerate(zip(keys, vals)):
-            if abs(v) < 0.02:      # 0点前後は理由にならないので出さない
-                continue
-            _raw = k.split("=", 1)[1]
-            _nb = (len(spec[col]) - 1) if col in spec else None
-            per[i].append({"label": NAMES[col], "bin": display_bin(col, _raw, _nb),
-                           "points": round(float(v) * 10, 1)})
+        try:
+            _common = _race_common(keys, _ctx["rid"])
+            for i, (k, v) in enumerate(zip(keys, vals)):
+                if abs(v) < 0.02:      # 0点前後は理由にならないので出さない
+                    continue
+                if _common[i]:         # #169: レース内の全頭が同じ区分 = 差のつかない項目は理由にならない
+                    continue
+                _bin = _reason_bin(col, k.split("=", 1)[1], _names.get(col), _ctx, i)
+                if _bin is None:       # #169: 表示名の無い区分は内部表記で出さない
+                    continue
+                per[i].append({"label": NAMES[col], "bin": _bin,
+                               "points": round(float(v) * 10, 1)})
+        except Exception as e:
+            _disp_err.append(e)
 
     lin = model.get("lin") or {}
     if lin:
@@ -370,8 +729,15 @@ def score_with_reasons(df, model, top_n=4):
             x = pd.to_numeric(df[col], errors="coerce").fillna(0.0).to_numpy(float)
             contrib = float(coef) * x
             total += contrib
+            if _disp_err:
+                continue                                                # 内訳は最後に空にする
+            try:
+                _common = _race_common(x, _ctx["rid"])                 # #169 区分項目と同じ扱い
+            except Exception as e:
+                _disp_err.append(e)
+                continue
             for i, v in enumerate(contrib):
-                if abs(v) < 0.02 or x[i] == 0:
+                if abs(v) < 0.02 or x[i] == 0 or _common[i]:
                     continue
                 if FLAG_KIND[col] == "first":
                     lab_i = ("初ダート" if turf[i] == 0 else "初芝") if np.isfinite(turf[i]) \
@@ -382,5 +748,9 @@ def score_with_reasons(df, model, top_n=4):
                     bin_i = f"他馬場{int(round(x[i] * 100))}%"
                 per[i].append({"label": lab_i, "bin": bin_i, "points": round(float(v) * 10, 1)})
 
+    if _disp_err:
+        # #169 手直し: 内訳の表示処理だけが失敗 → 点数 (= 印) はそのまま、内訳は出さない
+        print(f"  ⚠️ 点数表: 内訳の表示処理に失敗 ({_disp_err[0]!r}) → 内訳は出さず点数だけ使う (#169)")
+        return total * 10, [[] for _ in per]
     reasons = [sorted(p, key=lambda x: -abs(x["points"]))[:top_n] for p in per]
     return total * 10, reasons     # 点数は ×10 して読みやすく

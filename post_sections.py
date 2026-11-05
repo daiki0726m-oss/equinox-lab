@@ -1974,7 +1974,9 @@ def sec_attention_top(
         hn = h.get("horse_number") or 0
         # #36: 表示は温度×3 のシャープ化勝率を優先 (エンタメ用、意思決定には不使用)
         pred_win = h.get("pred_win_display_pct") or h.get("pred_win_pct", 0) or 0
-        si = h.get("si_avg", 0) or 0
+        # #169: 画面・点数表の内訳と同じ指数 (V2d のレースは si_avg_v)
+        from ml.si_display import display_si
+        si = display_si(h)
         top3_rate = h.get("top3_rate", 0) or 0  # 直近10R 複勝率
         mark = legacy_marks[i] if include_marks else rank_marks[i]
 
@@ -2016,7 +2018,8 @@ def sec_attention_top(
                     second_fact = f"父{sire_short}産駒{pct:.0f}%"
 
         if not second_fact and si > 0:
-            second_fact = f"SI{si:.0f}"
+            from ml.si_display import si_int
+            second_fact = f"SI{si_int(si)}"     # #169 手直し: 画面の小数1桁を四捨五入
         # #117 (2026-07-20): 「直近複勝率」フォールバックは廃止 — 出馬表を見れば
         # 誰でも分かる情報で浅い (ユーザー指摘)。SI (自前指数) までで止める。
 
@@ -2026,7 +2029,8 @@ def sec_attention_top(
         lines.append({"mark": mark, "hn": hn, "name": name, "facts": facts})
 
     # 文字列化 (出典は行頭に置いて trim されにくくする)
-    str_lines = ["※AI勝率=LightGBM予測 / SI=過去レース勝率指数"]
+    # #169: SI は勝率でなくスピード指数 (走破時計の指数)。説明を事実に合わせる
+    str_lines = ["※AI勝率=LightGBM予測 / SI=スピード指数"]
     for l in lines:
         label = f"{l['hn']}番 {l['name']}" if l['hn'] else l['name']
         facts_str = " / ".join(l['facts'])

@@ -822,6 +822,9 @@ def _fetch_predictions_from_pages(date_str):
                         'odds_win': h.get('odds_win', 0),
                         'popularity': h.get('popularity', 0),
                         'si_avg': h.get('si_avg', 0),
+                        # #169: 点数表の内訳と同じ指数 (V2d) を Threads の「スピード指数」に渡す。
+                        # キーがある時だけ渡す (無い = 内訳も旧指数 → si_avg を使う)
+                        **{k: h[k] for k in ('si_avg_v', 'si_latest_v') if k in h},
                         'jockey_name': h.get('jockey_name', ''),
                     })
 
