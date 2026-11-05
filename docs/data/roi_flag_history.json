@@ -1,0 +1,6 @@
+{
+ "note": "#169: ROI 監視の要降格フラグの連続記録。weekly_retrain が scripts/roi_flag_alert.py で更新する。ISO週 (JST) ごとに1件。導入時点から数え始める (それ以前のフラグは母集団が誤っていたため)。",
+ "min_streak": 2,
+ "alerting": [],
+ "weeks": {}
+}

@@ -477,8 +477,10 @@ def api_performance():
             "total_races": total_races,
             "total_results": total_results,
             "total_horses": total_horses,
-            "model_roi": 189.2,
-            "backtest_hit_rate": 20.9,
+            # #169: 旧 "model_roi": 189.2 / "backtest_hit_rate": 20.9 は再学習ログの
+            # 「バックテスト回収率 162.4%」と同じ種類の数字 (学習期間を含むバックテスト) を
+            # 手で書き写した固定値で、どのモデルの値かも追えず根拠にならないので返さない。
+            # この API の summary を読む画面は無い (templates/ と docs/*.html で確認済み)。
         }
     })
 
