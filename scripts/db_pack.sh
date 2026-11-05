@@ -14,6 +14,20 @@ set -e
 if [ -n "$GITHUB_ACTIONS" ]; then
   git fetch origin main --depth 1 >/dev/null 2>&1 || true
   python3 scripts/db_guard_future_races.py || true
+  # 🛡 #169: 予測キャッシュも同じ場所で取り込む。未来レースのガード (#84) は races/results の
+  #   「行の有無」しか見ないため、既にある行の中身 (= 再予測した新しい版・post_predict の seal) は
+  #   古い DB の push でそのまま巻き戻っていた (10/31・11/01: 09:4x の odds_flash 再予測と
+  #   10:25 の seal が runner の push で毎回消えた)。origin の新しい予測行と seal を local に
+  #   取り込んでから固めるので、どの workflow の DB push でも predictions_cache が巻き戻らない。
+  #   終了コード 3 (= local を変えた) は正常系なので握る。
+  #   race_day_runner (env DB_MERGE_STATE あり) からの呼び出しでは取り込まない (#169 レビュー)。
+  #   ここで取り込むと JSON を書き出し直さないまま「取り込み済み」を記録してしまい、pull --rebase
+  #   後の確認 (remerge_if_origin_moved) が skip → 古い JSON を -X theirs で push していた。
+  #   runner は commit 直前と pull の後に自分で取り込み + JSON の書き出し直しをするので、
+  #   この窓 (commit 直前の確認 〜 pull) も pull 後の確認が覆う。
+  if [ -z "$DB_MERGE_STATE" ]; then
+    python3 scripts/db_merge_predictions.py --ref origin/main || true
+  fi
 fi
 
 sqlite3 keiba.db "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true

@@ -1277,10 +1277,13 @@ def cmd_predict(args):
                     rid = r.get('race_id')
                     if rid:
                         # #97: 実際に投稿した印のスナップショットも保存
+                        # #169: posted_at は UTC の CURRENT_TIMESTAMP 形式に統一。旧版は JST の
+                        # ISO 文字列 (_ts) を書き、seal_predictions_for_date の UTC と同じ列に
+                        # 混在していた (読む側は NULL 判定のみ。サイドカーの posted_at は JST のまま)。
                         conn.execute(
-                            "UPDATE predictions_cache SET posted_at = ?, posted_marks_json = ? "
-                            "WHERE race_id = ?",
-                            (_ts, json.dumps(_posted_marks.get(rid, []), ensure_ascii=False), rid))
+                            "UPDATE predictions_cache SET posted_at = CURRENT_TIMESTAMP, "
+                            "posted_marks_json = ? WHERE race_id = ?",
+                            (json.dumps(_posted_marks.get(rid, []), ensure_ascii=False), rid))
             print(f"📌 投稿済みレース+印を記録: {len(target_races)}件 (結果投稿はこの印のみ採点)")
         except Exception as _e:
             print(f"⚠️ posted_at の DB 記録に失敗(非致命、サイドカーが正本): {_e}")
@@ -1290,7 +1293,9 @@ def cmd_predict(args):
     if not args.dry_run:
         try:
             from database import seal_predictions_for_date
-            seal_predictions_for_date(date_str)
+            # #169: seal は実際に投稿したレースだけ (旧実装は当日の全レース)。
+            # 上の DB 記録が例外で途中終了した時の後追い (投稿したレースの正本はサイドカー)。
+            seal_predictions_for_date(date_str, [r.get('race_id') for r in target_races])
         except Exception as e:
             print(f"⚠️ seal失敗(非致命): {e}")
 
@@ -1493,10 +1498,13 @@ def _build_results_from_json(date_str):
     # 🆕 結果投稿の対象 = 実際に予想投稿したレース (posted_at IS NOT NULL) のみ (#46)。
     # DB から「投稿済み race_id」を取得し、JSON 側でそれだけをフィルタする。
     # (発走済み除外で予想を絞った場合でも、予想していないレースの結果は報告しない)
-    posted_ids = set()
+    # #169: 第一正本はサイドカー (builder 1/2 と同じ)。seal_predictions_for_date は当日の
+    # **全レース**に posted_at を付けるため、#169 で seal が push で消えなくなると、
+    # posted_at 第一のままでは予想していないレースまで報告する (#46/#150 の再発)。
+    posted_ids = set(_sidecar_race_ids(date_str))
     try:
         with get_db() as conn:
-            posted_ids = {
+            posted_ids = posted_ids or {
                 row[0] for row in conn.execute(
                     "SELECT pc.race_id FROM predictions_cache pc JOIN races ra ON pc.race_id = ra.race_id "
                     "WHERE (ra.race_date = ? OR ra.race_date = ?) AND pc.posted_at IS NOT NULL",
@@ -1504,7 +1512,7 @@ def _build_results_from_json(date_str):
                 ).fetchall()
             }
     except Exception:
-        posted_ids = set()
+        pass   # #169: サイドカー由来の posted_ids は捨てない
 
     flat_races = []
     for venue_name, races in venues.items():
