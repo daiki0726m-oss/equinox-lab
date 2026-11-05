@@ -1260,8 +1260,9 @@ def cmd_predict(args):
         # 旧実装はここで「信頼騎手+1 / 不信騎手-1 / ◎オッズ5.0-7.9倍は過信帯-1」を
         # 直書きしていた。基準表の閾値は補正前の分布から引くのに目標構成比は補正後の
         # 分布 (2026-08) だったため、平場の C/D が目標29%に対し 41-44% に膨らんでいた。
-        # 点数表の◎で再検証した結果、過信帯と不信騎手は狙いを示せず撤去 (詳細は
-        # confidence.post_adjust)。残った補正は基準表が込みで閾値を較正する。
+        # 点数表の◎で再検証した結果、過信帯と不信騎手は狙いを示せず撤去、信頼騎手は
+        # A→S / B→A だけ残す (C→B は等級C で逆向き。詳細は confidence.post_adjust)。
+        # 残った補正は基準表が込みで閾値を較正する。
         confidence, _adj = post_adjust_confidence(
             confidence, top1.get("jockey_trust", 0) if top1 else 0)
         if _adj:
