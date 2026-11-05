@@ -17,12 +17,18 @@
   フラグは、上書き後のオッズと仮の買い方で選んだ別のレースを測っていた
   (本番の band と 30/92R しか重ならない、#169 で M 班が母集団を修正) ので、
   git の過去版から連続を復元すると、修正前の誤ったフラグで初回から通知してしまう。
-- roi_weekly.json に母集団の版 (population / schema_version) が書かれていれば、
+- roi_weekly.json に母集団の版 (schema_version / population の定義文) が書かれていれば、
   版が変わった所で連続を切る (母集団の違う週を同じ連続として数えない)。
+  population の **件数** (days の日付一覧・races_with_results 等) は窓が1週ずれるたびに
+  変わるので版に含めない (含めると連続が毎週切れて通知が一度も出ない。population_key 参照)。
+- ユーザーが Issue を閉じたら、その時点で続いている連続は「判断済み」として以後通知しない
+  (band は降格しない判断もあり得る枠なので、閉じた後に週1本ずつ Issue が増えないように)。
+  新しい区分の連続や、一度外れて再び立った連続は新しく通知する。workflow が
+  --issue-closed-at に「同じタイトルの閉じた Issue の closedAt」を渡す (開いている Issue が無い時だけ)。
 - 観測が抜けた週 (run 失敗等) は連続を切らない。抜けは「回復した証拠」ではないため。
 
 終了コード (workflow が分岐に使う):
-  0 = 通知なし (連続なし / 今週は通知済み)
+  0 = 通知なし (連続なし / 今週は通知済み / 閉じた Issue で判断済みの連続だけ)
   1 = 通知する (--report に Issue 本文を書く)
   3 = 前回通知した区分のフラグが外れた (--report に「解消」コメントを書く)
   2 = 判定不能 (roi_weekly.json が無い・古い・壊れている。履歴は更新しない)
@@ -83,6 +89,28 @@ def load_json(path, default=None):
         return None
 
 
+def population_key(roi):
+    """連続を切る「母集団の版」を roi_weekly.json から取り出す。
+
+    #169 レビュー: M 班の roi_weekly_monitor は population に母集団の **定義文**
+    (bets / band / chu_odds_band の文字列) と、その週の **件数** (days の日付一覧・
+    races_with_results・races_funded・band_overlap 等) を一緒に入れる。件数は12週の窓が
+    1週ずれるたびに必ず変わるので、population を丸ごと比べると毎週「版が変わった」と判定され、
+    連続が必ず1週で切れて通知が一度も出なかった (M 形式の3週で実測)。
+    → schema_version があればそれ、population が dict なら文字列の値 (定義文) だけを版とする。
+       件数を履歴に溜めないため、保存するのもこの版だけ。"""
+    v = roi.get("schema_version")
+    if v not in (None, ""):
+        return str(v)
+    p = roi.get("population")
+    if isinstance(p, dict):
+        defs = {k: p[k] for k in sorted(p) if isinstance(p[k], str)}
+        return json.dumps(defs, ensure_ascii=False, sort_keys=True) if defs else None
+    if isinstance(p, str) and p:
+        return p
+    return None
+
+
 def streaks(weeks):
     """weeks: {週: entry}。最新の週から遡って、各区分が何週続けて要降格かを返す。
     {区分: (連続数, 連続の始まりの週)}"""
@@ -110,7 +138,7 @@ def fmt_yen(v):
         return "-"
 
 
-def build_alert(streaking, entry, this_week, resolved):
+def build_alert(streaking, entry, this_week, resolved, dismissed=()):
     lines = [f"## 🔻 要降格フラグが連続しています ({this_week} 時点)", "",
              "| 区分 | 連続 | 対象レース | 投資 | 回収 | 回収率 | 判定 |",
              "|---|---|---|---|---|---|---|"]
@@ -124,6 +152,9 @@ def build_alert(streaking, entry, this_week, resolved):
             lines.append(f"- `{seg}`: {SEGMENT_DESC[seg]}")
     if resolved:
         lines += ["", f"前回通知した区分のうち、今週フラグが外れたもの: {', '.join(sorted(resolved))}"]
+    if dismissed:
+        lines += ["", f"閉じた Issue で通知済みの連続 (続いているが、判断済みとして再通知の対象にしていない): "
+                      f"{', '.join(sorted(dismissed))}"]
     lines += [
         "",
         "- **降格するかどうかはユーザーが判断する** (自動では降格しない)。本番の買い目 "
@@ -131,6 +162,8 @@ def build_alert(streaking, entry, this_week, resolved):
         "- 数字は scripts/roi_weekly_monitor.py の直近12週の集計 (重なる窓なので、連続は独立な証拠ではない)。"
         "判定前に区分の母集団と単日支配 (#26) を確認すること。",
         f"- 連続の記録: docs/data/roi_flag_history.json (導入した #169 から数え始めている)",
+        "- この Issue を閉じると、その時点で続いている連続は「判断済み」として以後通知しない。"
+        "新しい区分の連続や、一度外れて再び立った連続は新しい Issue で知らせる。",
     ]
     return "\n".join(lines)
 
@@ -154,6 +187,9 @@ def main():
                          "ファイルが残っている時に、先週の値を今週として数えない)")
     ap.add_argument("--report", default="", help="Issue 本文 / コメントの書き出し先")
     ap.add_argument("--now", default="", help="判定時刻 (ISO8601, テスト用)")
+    ap.add_argument("--issue-closed-at", default="",
+                    help="同じタイトルの閉じた Issue の closedAt (開いている Issue が無い時だけ workflow が渡す)。"
+                         "これより前に通知した連続は、ユーザーが判断済みとして通知しない")
     args = ap.parse_args()
 
     now = parse_time(args.now) if args.now else datetime.now(timezone.utc)
@@ -179,7 +215,7 @@ def main():
     entry = {
         "recorded_at": now.astimezone(JST).isoformat(timespec="seconds"),
         "roi_generated_at": roi.get("generated_at"),
-        "population": roi.get("population") or roi.get("schema_version"),
+        "population": population_key(roi),
         "flagged": flagged,
     }
     weeks[this_week] = entry
@@ -202,14 +238,35 @@ def main():
     if not st:
         print(f"要降格フラグなし ({latest_week})")
 
+    # #169 レビュー: 重複防止を「開いている Issue にコメントする」だけで行うと、ユーザーが
+    # 「降格しない」と判断して Issue を閉じても、フラグが残る限り毎週新しい Issue が作られる。
+    # 区分ごとに「今続いている連続を最初に通知した時刻」を覚えておき、閉じた Issue の closedAt
+    # より前に通知済みの連続は判断済みとして黙る。連続が途切れたら記録は消える (再び立てば新規)。
+    notified = {seg: v for seg, v in (hist.get("notified_streaks") or {}).items()
+                if seg in streaking and isinstance(v, dict) and v.get("start") == streaking[seg][1]}
+    closed_at = parse_time(args.issue_closed_at) if args.issue_closed_at else None
+    dismissed = set()
+    if closed_at is not None:
+        for seg, v in notified.items():
+            at = parse_time(v.get("at"))
+            if at is not None and at <= closed_at:
+                dismissed.add(seg)
+    active = {seg: v for seg, v in streaking.items() if seg not in dismissed}
+
     code, body = 0, ""
     if streaking:
         same = set(streaking) == prev_alerting and hist.get("notified_week") == this_week
         if same:
             print(f"ℹ️ {this_week} は通知済み (同じ週の再実行) → 通知しない")
+        elif not active:
+            print(f"ℹ️ 続いている連続 ({', '.join(sorted(dismissed))}) はすべて、閉じた Issue "
+                  f"(closedAt={args.issue_closed_at}) より前に通知済み → 判断済みとして通知しない")
         else:
-            code, body = 1, build_alert(streaking, latest, latest_week, resolved)
+            code, body = 1, build_alert(streaking, latest, latest_week, resolved, dismissed)
             hist["notified_week"] = this_week
+            for seg, (n, start) in active.items():
+                notified.setdefault(seg, {"start": start,
+                                          "at": now.astimezone(JST).isoformat(timespec="seconds")})
     elif resolved:
         code, body = 3, build_resolved(resolved, this_week)
 
@@ -218,6 +275,7 @@ def main():
                 "ISO週 (JST) ごとに1件。導入時点から数え始める (それ以前のフラグは母集団が誤っていたため)。",
         "min_streak": args.min_streak,
         "alerting": sorted(streaking),
+        "notified_streaks": notified,
         "weeks": weeks,
     })
     os.makedirs(os.path.dirname(os.path.abspath(args.history)), exist_ok=True)

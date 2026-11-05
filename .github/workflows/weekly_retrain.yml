@@ -4,6 +4,12 @@ on:
   # 毎週月曜 3:00 UTC (= JST 12:00) に自動実行
   schedule:
     - cron: '0 3 * * 1'
+    # #169 レビュー: 火・水の予備 (JST 12:00)。月曜が開催日 (祝日・順延) で延期した週と、
+    # 月曜の cron が GitHub 側で飛ばされた週 (#36/#62) だけ再学習と週次レポートをやる。
+    # 普通の週は「今週は再学習済み」で何もしない (scripts/retrain_decision.py の run=false、commit もしない)。
+    # 水曜は 2026-09-21(月)・22(火) のように月火とも開催の週の取りこぼし防止 (火曜だけだと、その週は再学習なし)。
+    - cron: '0 3 * * 2'
+    - cron: '0 3 * * 3'
   # 手動実行も可能
   workflow_dispatch:
 
@@ -52,15 +58,21 @@ jobs:
           # 約27分後に入る分だけ翌週は 6.9日→6日 になり、7/20 以降の定期実行16回のうち再学習は
           # 8回だけ (= 隔週) だった。ISO 週 (JST) で「今週まだ再学習していないか」を判定する
           # (詳細と境界ケースは scripts/retrain_decision.py)。最終再学習の時刻は #95 のとおり API。
+          # #169 レビュー: 定期実行で JST の今日が開催日なら run=false (延期)。開催日の判定は展開済みの keiba.db
           if python3 scripts/retrain_decision.py --last-commit "$LAST_ISO" \
-              --event "$GITHUB_EVENT_NAME" > /tmp/retrain_decision.txt; then
+              --event "$GITHUB_EVENT_NAME" --db keiba.db > /tmp/retrain_decision.txt; then
             cat /tmp/retrain_decision.txt >> "$GITHUB_OUTPUT"
           else
             # 判定スクリプト自体が壊れた時は再学習する側に倒す (#95: 沈黙停止の方が害が大きい)
             echo "⚠️ 判定スクリプトが失敗 → 安全側で再学習"
-            printf 'retrain=true\nage=999\nage_hours=\napi_ok=false\nreason=判定スクリプトの失敗\n' >> "$GITHUB_OUTPUT"
+            printf 'run=true\nretrain=true\nage=999\nage_hours=\napi_ok=false\nreason=判定スクリプトの失敗\n' >> "$GITHUB_OUTPUT"
           fi
           cat /tmp/retrain_decision.txt || true
+
+      # #169 レビュー: 後続 step (基準表・ROI 監視・要降格通知・commit・停滞通知) の実行条件は
+      # 旧来の「判定が成立した (age != '')」から「この run で何かする (run == 'true')」に変えた。
+      # run=false は (a) 開催日で延期した日 と (b) 今週は済んでいる火・水の予備 cron。
+      # どちらも commit しないので、keiba.db.gz を余計に push しない (#153)。
 
       # #95: 旧 `collect --months 3` は predict.py collect に存在しない引数で常に
       # エラー終了し `|| echo` で握り潰されていた。そもそも学習データ (keiba.db) は
@@ -84,7 +96,7 @@ jobs:
       # 固定閾値は印ロジックやモデルが変わるたびに陳腐化する (#36/#120/#147 で三度再発)
       # ので、週末が終わるたびに実分布から引き直す。
       - name: Rebuild race baseline (#151)
-        if: always() && steps.check.outputs.age != ''
+        if: always() && steps.check.outputs.run == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # #161: モデルの本当の配備時刻を API で引く
         run: |
@@ -92,7 +104,7 @@ jobs:
 
       - name: ROI weekly monitor
         id: roimon
-        if: always() && steps.check.outputs.age != ''
+        if: always() && steps.check.outputs.run == 'true'
         run: |
           python3 scripts/roi_weekly_monitor.py --weeks 12 --output docs/data/roi_weekly.json > /tmp/roi_report.md || true
           tail -30 /tmp/roi_report.md || true
@@ -121,20 +133,31 @@ jobs:
       # docs/data/roi_flag_history.json (この step の導入時点から数え始める)。
       # 降格するかどうかはユーザーが判断する (自動では降格しない)。
       - name: 🔻 要降格フラグの連続を通知 (#169)
-        if: always() && steps.check.outputs.age != ''
+        if: always() && steps.check.outputs.run == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          TITLE="🔻 ROI監視: 要降格フラグが連続しています"
+          # 検索は部分一致なので、タイトルの完全一致で絞る (別の Issue にコメントしないため)
+          OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty" 2>/dev/null || true)
+          # #169 レビュー: 開いている Issue が無い時は、ユーザーが「降格しない」と判断して閉じた
+          # 可能性がある。閉じた時刻を渡し、それより前に通知済みの連続は判断済みとして黙らせる
+          # (渡さないと、フラグが残る限り毎週新しい Issue が作られる)。
+          CLOSED_AT=""
+          if [ -z "$OPEN" ]; then
+            CLOSED_AT=$(gh issue list --state closed --search "\"$TITLE\" in:title" --json title,closedAt \
+              --jq "map(select(.title == \"$TITLE\") | .closedAt) | max // empty" 2>/dev/null || true)
+          fi
           set +e
           python3 scripts/roi_flag_alert.py --roi docs/data/roi_weekly.json \
-            --history docs/data/roi_flag_history.json --min-streak 2 --report /tmp/roi_demote.md
+            --history docs/data/roi_flag_history.json --min-streak 2 --report /tmp/roi_demote.md \
+            ${CLOSED_AT:+--issue-closed-at "$CLOSED_AT"}
           CODE=$?
           set -e
           echo "要降格フラグ検知の終了コード: $CODE (0=通知なし 1=通知 3=解消 2=判定不能)"
           if { [ "$CODE" = "1" ] || [ "$CODE" = "3" ]; } && [ -s /tmp/roi_demote.md ]; then
-            TITLE="🔻 ROI監視: 要降格フラグが連続しています"
-            OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
             BODY="$(cat /tmp/roi_demote.md)
 
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -166,7 +189,7 @@ jobs:
         # commit が走ってしまい **ゲートがゲートになっていなかった**
         # (#134 の「木3本モデルを出荷して買い目が停止」を止められない)。
         # ゲートが落ちた時だけ commit を止める (ゲートが skip された週は従来どおり通す)。
-        if: always() && steps.check.outputs.age != '' && steps.gate.outcome != 'failure'
+        if: always() && steps.check.outputs.run == 'true' && steps.gate.outcome != 'failure'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -220,8 +243,9 @@ jobs:
       #   再学習を実行する回 = 通知は構造的に毎回誤報だった (#116 はモデル配備の5秒後に作成)。
       #   「今回モデルを届けなかった (model_changed != true) かつ 最終再学習から14日以上」に限る。
       #   停滞は週をまたいで続く状態なので、日付を入れない1本の Issue に集約し、続く間はコメントで更新する。
+      #   開催日で延期した run (run=false) では出さない (翌日の予備 cron が再学習する)。
       - name: 🔔 Notify on failure / cancelled / stale
-        if: failure() || cancelled() || (github.event_name == 'schedule' && steps.check.outputs.api_ok == 'true' && steps.check.outputs.age >= 14 && steps.commit.outputs.model_changed != 'true')
+        if: failure() || cancelled() || (github.event_name == 'schedule' && steps.check.outputs.run == 'true' && steps.check.outputs.api_ok == 'true' && steps.check.outputs.age >= 14 && steps.commit.outputs.model_changed != 'true')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
