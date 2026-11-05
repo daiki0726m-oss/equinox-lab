@@ -29,6 +29,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from datetime import timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (ROOT, os.path.join(ROOT, "scripts")):
@@ -107,8 +108,11 @@ def _snapshot_records(d8, post_at, posted):
     return out
 
 
-def collect(days, conn, hist=None):
+def collect(days, conn, hist=None, hist_from=None):
     """開催日ごとに、レース単位の行を作る。
+
+    hist_from (YYYYMMDD): これより前の日は git 履歴を使わない (shallow clone の境界より前は
+    「予測が最初に現れた版」を取り違えるため、予測時オッズ不明として扱う)。
 
     返り値: (races, meta)
       races = [{d8, rid, name, surface, ood, posted, src, marks:{hn:印}, horses:[{hn, y, win,
@@ -121,7 +125,10 @@ def collect(days, conn, hist=None):
         posted = pm.get("races") or {}
         post_at = ph.parse_jst(pm.get("posted_at")) or ph.parse_jst(f"{d8[:4]}-{d8[4:6]}-{d8[6:]} 10:30")
         snap = _snapshot_records(d8, post_at, posted)
-        git = ph.predtime_from_git(hist, d8, post_at) if hist is not None else {}
+        use_git = hist is not None and (hist_from is None or d8 >= hist_from)
+        git = ph.predtime_from_git(hist, d8, post_at) if use_git else {}
+        if hist is not None:
+            hist.forget(d8)      # #169: 累計で読んだ版を全部抱えない (メモリが週ごとに線形に増える)
         _cp = os.path.join(DATA, f"predictions_{d8}.json")
         cur = ph.races_of(json.load(open(_cp, encoding="utf-8")) if os.path.exists(_cp) else {})
         counts = {}
@@ -147,7 +154,11 @@ def collect(days, conn, hist=None):
                 src = "現在のJSON (予測時オッズ不明)"
                 hs_pt, lgb = {}, {int(h["horse_number"]): h for h in (pre.get("horses") or [])}
             counts[src] = counts.get(src, 0) + 1
-            post_odds = {int(h["horse_number"]): h for h in (pre.get("horses") or [])} if pre else {}
+            # 投稿時のオッズは git 履歴の「投稿直前の公開版」からだけ取る。履歴が無く現在の JSON で
+            # 代用した時は、refresh_odds が発走直前まで上書きした確定寄りのオッズなので「投稿時」と
+            # 呼ばない (空にして (a) の投稿時の比較から外す)。
+            post_odds = ({int(h["horse_number"]): h for h in (g["pre"].get("horses") or [])}
+                         if g.get("pre") is not None else {})
             if rid in posted:
                 marks = {e.get("horse_number"): e.get("mark") for e in posted[rid] if e.get("mark")}
             else:
@@ -279,7 +290,9 @@ def gate_rates(days, hist):
         if hist is not None:
             vs = hist.versions(d8, until=cut)
             if vs:
+                hist.maybe_prefetch(d8, vs[-1:])
                 doc, src = hist.load(d8, vs[-1]["sha"]), f"{vs[-1]['at']:%m/%d %H:%M} の公開版"
+                hist.forget(d8)
         if doc is None:
             p = os.path.join(DATA, f"predictions_{d8}.json")
             doc = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
@@ -308,12 +321,24 @@ def report(target_days, conn=None, hist=None, since=SCORECARD_ERA, all_days=None
     import pickle
     conn = conn or sqlite3.connect(os.path.join(ROOT, "keiba.db"))
     if hist is None:
-        h = ph.History(ROOT, cache_dir=os.environ.get("PRED_HISTORY_CACHE") or DEFAULT_CACHE)
+        # CI の checkout は shallow なので、履歴は feature_parity / weekly_report が作る
+        # 部分クローン (RACEDAY_HISTORY_REPO) から読む。無ければこのリポジトリ。
+        h = ph.History(os.environ.get("RACEDAY_HISTORY_REPO") or ROOT,
+                       cache_dir=os.environ.get("PRED_HISTORY_CACHE") or DEFAULT_CACHE)
         hist = h if h.available() else None
     all_days = all_days or sorted(os.path.basename(p)[13:21]
                                   for p in glob.glob(os.path.join(DATA, "posted_marks_2*.json")))
     cum_days = [d for d in all_days if d >= since]
-    races, meta = collect(sorted(set(cum_days) | set(target_days)), conn, hist)
+    # #169: shallow な履歴の境界より前 (と境界の翌日まで) は、予測が最初に現れた版を
+    # 取り違えるので git を使わない。黙って確定寄りのオッズを「予測時」と呼ばないための線引き。
+    hist_from, hist_note = None, ""
+    if hist is not None:
+        b = hist.shallow_boundary()
+        if b is not None:
+            hist_from = (b + timedelta(days=2)).strftime("%Y%m%d")
+            hist_note = (f"  ⚠️ 予測 JSON の履歴は {b:%m/%d %H:%M} 以降しか無い (shallow) → "
+                         f"{hist_from} より前の日は予測時オッズ不明として扱う")
+    races, meta = collect(sorted(set(cum_days) | set(target_days)), conn, hist, hist_from=hist_from)
     wk = [r for r in races if r["d8"] in target_days]
     cum = [r for r in races if r["d8"] in cum_days]
     srcs = {}
@@ -323,6 +348,10 @@ def report(target_days, conn=None, hist=None, since=SCORECARD_ERA, all_days=None
                 srcs[k] = srcs.get(k, 0) + v
     out("\n=== 予測時点の市場との比較 (#169) ===")
     out(f"  予測時オッズの出どころ (今週): " + (" / ".join(f"{k} {v}R" for k, v in srcs.items()) or "なし"))
+    if hist is None:
+        out("  ⚠️ 予測 JSON の履歴が読めない → 予測時オッズは不明 ((a) 予測時・(b) は出ない)")
+    elif hist_note:
+        out(hist_note)
     out("  ※ 確定オッズで測った val AUC・バックテスト回収率162% はモデルの価値の根拠に使わない "
         "(本番は朝の薄いオッズで予測している)")
 

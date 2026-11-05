@@ -73,9 +73,12 @@ jobs:
       #                        後から取る (keiba.db.gz の過去版は一切取らない — #119 で .git が
       #                        数十GBに膨れてディスクが溢れた前科)
       #   --shallow-since    … 直近16日 (点検する週末 + その朝の race_baseline.json)
+      # 時間制限: ネットワーク待ちで止まると、continue-on-error では救えず (止まった処理は失敗に
+      # ならない) job の timeout まで後続の起動層の生存確認 (#155/#161) が走らなくなる。
       - name: 📜 予測 JSON の履歴を取得 (#169)
         if: always()
         continue-on-error: true
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -88,12 +91,15 @@ jobs:
       # ── #161: 前日までの開催が「最後まで終わったか」を毎朝確かめる ──
       # 9/21 は着順3R の取りこぼしと結果報告の未配信が、5日間誰にも知られなかった。
       # 各層は自分の担当時刻しか見ておらず、「その日が完了したか」を見る者がいなかった。
-      # #169: 同じ検査で、直近2日の開催日の予測そのもの (a) 9時台の再予測の巻き戻しと投稿印の一致
+      # #169: 同じ検査で、直近3日の開催日の予測そのもの (a) 9時台の再予測の巻き戻しと投稿印の一致
       # (b) 確定版と馬番がずれた予測 JSON の公開時間 (c) 投資ゲートの遮断率 も見る。
       # 「週末明けに確かめる」と約束して仕組みを作らなかった反省 (11/05) の再発防止。
+      # 3日 = 土曜の開催を日・月・火の朝に見る (schedule が2回続けて飛んでも点検が抜けない)。
+      # 同じ内容を毎朝 Issue に書き込まないよう、本文のハッシュが既に Issue にあれば書かない。
       - name: 🔎 開催日の完了検査 (#161・#169)
         if: always()
         continue-on-error: true
+        timeout-minutes: 10
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMPLETENESS_REPORT: /tmp/raceday_gaps.md
@@ -102,12 +108,18 @@ jobs:
           PRED_HISTORY_PREFETCH: '1'
         run: |
           set +e
-          python3 scripts/check_raceday_completeness.py --days 7 --quality-days 2
+          python3 scripts/check_raceday_completeness.py --days 7 --quality-days 3
           CODE=$?
           set -e
           if [ -s /tmp/raceday_quality.md ]; then
             QTITLE="🔎 週末の予測の点検で異常 (巻き戻し・仮馬番・投資ゲート)"
             QOPEN=$(gh issue list --state open --search "\"$QTITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            QHASH=$(sha1sum /tmp/raceday_quality.md | cut -c1-12)
+            if [ -n "$QOPEN" ] && gh issue view "$QOPEN" --json body,comments \
+                 --jq '[.body] + [.comments[].body] | join("\n")' 2>/dev/null | grep -q "quality:$QHASH"; then
+              echo "ℹ️ 同じ点検結果 (quality:$QHASH) は Issue #$QOPEN に記載済み → 書き込まない"
+              QOPEN_SKIP=1
+            fi
             QBODY="$(cat /tmp/raceday_quality.md)
 
           見方 (#169):
@@ -115,10 +127,13 @@ jobs:
           - 投稿印の一致: 投稿した印が「投稿前に作られた最新の予測」と違えば、古い予測で投稿している。
           - 馬番のずれ: 確定した出走表と馬番↔馬名が合わない予測 JSON が公開されていた時間 (11/01 は 00:35〜06:53)。
           - 投資ゲート: 平場の遮断率が目標 (top_prob 30% / top3_sum 25%) から統計的に外れた (#156)。
-          材料は公開した予測 JSON の git 履歴 (scripts/pred_history.py)。手元での再点検: python3 scripts/check_raceday_completeness.py --dates YYYY-MM-DD
+          - 投資ゲートは異常でなくても数字を CI のログに出している。1週末の標本で検出できる差は約±23pt。
+          材料は公開した予測 JSON の git 履歴 (scripts/pred_history.py)。手元での再点検: PRED_HISTORY_PREFETCH=1 python3 scripts/check_raceday_completeness.py --dates YYYY-MM-DD (部分クローンでは blob を自動で一括取得する。PRED_HISTORY_PREFETCH=1 で常に一括取得)
 
-          _feature_parity.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_"
-            if [ -z "$QOPEN" ]; then
+          _feature_parity.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_ <!-- quality:$QHASH -->"
+            if [ -n "${QOPEN_SKIP:-}" ]; then
+              :
+            elif [ -z "$QOPEN" ]; then
               gh issue create --title "$QTITLE" --body "$QBODY" || echo "⚠️ Issue 作成失敗"
             else
               gh issue comment "$QOPEN" --body "$QBODY" || true

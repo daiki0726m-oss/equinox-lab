@@ -33,6 +33,11 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
+# #169: 母集団の版。roi_flag_alert.py (T 班) はこの版が同じ週だけを「要降格の連続」として数える。
+# 母集団 (買い目の正本・band の判定・オッズの時点) を変えたら上げる。
+POPULATION_VERSION = "169-funded-bets-v1"
+
+
 def get_week_start(date_str):
     """日付 (YYYY-MM-DD) → 月曜始まりの週 ID (YYYY-MM-DD)"""
     d = datetime.strptime(date_str, "%Y-%m-%d")
@@ -271,6 +276,9 @@ def compute_rolling_average(weekly, window=4):
     return rolling
 
 
+ANOMALY_MIN_RACES = 10
+
+
 def detect_anomalies(weekly):
     """異常週検出: ROI > 200% or < 30% (S/A 集約) なら flag"""
     anomalies = []
@@ -281,11 +289,17 @@ def detect_anomalies(weekly):
         # S+A 集約の三連複 ROI を見る
         sa_spend = 0
         sa_return = 0
+        sa_races = 0
         for tier in ("S", "A"):
             if tier in wk["by_tier"] and "三連複" in wk["by_tier"][tier]:
                 sa_spend += wk["by_tier"][tier]["三連複"]["spend"]
                 sa_return += wk["by_tier"][tier]["三連複"]["return"]
-        if sa_spend < 1000:  # 10R 未満は無視
+                sa_races += wk["by_tier"][tier]["三連複"].get("races", 0)
+        # #169: 旧版は「spend < 1000円 = 10R 未満」で足切りしていたが、それは模擬の買い目
+        # (1レース1点100円×約10点) の前提だった。実額 (1レース 1,200〜2,500円) に変えた後は
+        # 1レースで1000円を超え、S+A が1〜3レースしか無い週にも 🚀/🔻 が付いた
+        # (2026-08-17 週 S 1R で 281.6%、08-31 週 3R で 20.6%)。足切りはレース数で行う。
+        if sa_races < ANOMALY_MIN_RACES:
             continue
         roi = 100 * sa_return / sa_spend
         if roi > 200:
@@ -303,7 +317,7 @@ def format_markdown(report):
     lines.append(f"# ROI 週次モニタ — 期間: {report['period']['from']} 〜 {report['period']['to']}")
     lines.append("")
     lines.append(f"対象週数: {len(report['weekly'])} 週 / 異常週: {len(report['anomalies'])} 週")
-    pop = report.get('population') or {}
+    pop = report.get('population_counts') or {}
     if pop:
         lines.append(f"母集団 (#169): 本番が金額を乗せた買い目 — 確定 {pop.get('races_with_results', 0)}R 中 "
                      f"投資 {pop.get('races_funded', 0)}R / band は本番が2倍額で張った "
@@ -423,12 +437,21 @@ def main():
         "segments": segments,
         # #169: 何を母集団にしたかを JSON に残す (旧版は cache の上書き後オッズ×模擬買い目で、
         # 本番の band と 30/92R しか重ならない別のレースを測っていた)。
+        # population は「母集団の版」= 週をまたいで変わらない値だけにする。
+        # scripts/roi_flag_alert.py (T 班) は前週と population が完全に一致する間だけ
+        # 要降格の連続を数え、版が変わった所で連続を切る。ここに週ごとに変わる件数を
+        # 入れると毎週「版が変わった」扱いになり、連続が1週で切れて Issue が一度も出ない
+        # (fix169 のレビューで実測: --today 10-26 と 11-02 で races_with_results 792→768 等が違い、
+        # 2週連続の要降格が「1週連続」と数えられた)。週ごとの件数は population_counts へ。
+        # 母集団の定義を変えたら POPULATION_VERSION を上げる (= 連続を数え直す)。
+        "schema_version": POPULATION_VERSION,
         "population": {
+            "version": POPULATION_VERSION,
             "bets": "docs/data/predictions_YYYYMMDD.json の all_bets (amount>0 = 本番が金額を乗せたライン)",
             "band": "本番が三連複を2倍額で張ったレース (金額署名 = weekly_scorecard.classify_structure)",
             "chu_odds_band": "posted_marks の注と odds_win_at_post (投稿時点のオッズ)",
-            **population,
         },
+        "population_counts": population,
     }
 
     # JSON 書き込み

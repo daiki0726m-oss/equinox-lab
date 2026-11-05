@@ -23,6 +23,7 @@
       投稿された印・買い目は runner 起動前 (07:56/08:00) の予測だった (#68 以降・毎開催日)
   (b) 11/01 未明、仮馬番 (五十音順) の予想 JSON が 6時間18分公開されていた
   (c) 投資ゲートの遮断率が、再学習のたびに目標 (30%/25%) から外れる (#156 の再発監視)
+直近3日 (--quality-days) の開催日を毎朝見るので、土曜の開催は日・月・火の朝に3回点検される。
 オーケストレーター自身の反省「確かめると約束しながら仕組みを作らなかった」の再発防止として、
 人の記憶でなく、この毎朝の検査で見る。材料は公開した予測 JSON の git 履歴
 (scripts/pred_history.py)。DB は並行 workflow に上書きされるので使わない。
@@ -110,13 +111,20 @@ def check_predictions(d, hist, conn, now):
     posted = pm.get("races") or {}
     post_at = ph.parse_jst(pm.get("posted_at"))
     vs = hist.versions(d8, until=end) if hist is not None else []
-    if vs and os.environ.get("PRED_HISTORY_PREFETCH") == "1":
-        hist.prefetch(d8, vs)
+    if vs:
+        # 部分クローンなら blob を1回の fetch でまとめて取る (CI は PRED_HISTORY_PREFETCH=1、
+        # 手元は remote.origin.partialclonefilter があれば自動。1版ずつの遅延取得は1 blob=1 pack)
+        hist.maybe_prefetch(d8, vs)
     docs = [(v, hist.load(d8, v["sha"])) for v in vs]
     docs = [(v, doc) for v, doc in docs if doc]
     pre_doc, pre_src = None, None
     if not docs:
-        if hist is not None:
+        if hist is not None and vs:
+            # #169 (レビュー指摘): 版は履歴にあるのに中身を1つも読めなかった (blob の取得失敗)。
+            # 404 の疑いと取り違えて、誤った原因を Issue に載せない。
+            gaps.append(f"{d}: 予測 JSON の版 {len(vs)}個が履歴にあるのに読めなかった (blob の取得に失敗。"
+                        f"/tmp/hist の fetch・トークンを確認) — (a)(b) は判定不能")
+        elif hist is not None:
             # 履歴は読めるのにその日の版が1つも無い = 予測 JSON が一度も公開されていない
             gaps.append(f"{d}: 予測 JSON の公開版が履歴に1つも無い (ダッシュボードが404だった疑い)")
         else:
@@ -239,8 +247,11 @@ def main():
     ap.add_argument("--out", default=os.environ.get("COMPLETENESS_REPORT", "/tmp/raceday_gaps.md"))
     # #169: 予測の点検 (巻き戻し・仮馬番・投資ゲート)
     ap.add_argument("--quality-out", default=os.environ.get("QUALITY_REPORT", "/tmp/raceday_quality.md"))
-    ap.add_argument("--quality-days", type=int, default=2,
-                    help="予測の点検をする開催日 (今日から N 日前まで。翌朝と翌々朝に見る)")
+    # #169 (レビュー指摘): 2日だと土曜の開催は日・月の2回しか点検されず、GitHub の schedule が
+    # 2回続けて飛ぶと一度も点検されない (#36/#62/#67 で連続の不発を実測)。3日にして火曜朝も拾う。
+    # 同じ異常を毎朝 Issue に書き込まないよう、feature_parity.yml は本文のハッシュで重複を省く。
+    ap.add_argument("--quality-days", type=int, default=3,
+                    help="予測の点検をする開催日 (今日から N 日前まで。翌朝〜3日後の朝に見る)")
     ap.add_argument("--history-repo", default=os.environ.get("RACEDAY_HISTORY_REPO"),
                     help="予測 JSON の git 履歴を持つ clone (既定: このリポジトリ)")
     ap.add_argument("--history-cache", default=os.environ.get("PRED_HISTORY_CACHE"),
@@ -327,6 +338,8 @@ def main():
             qgaps += gg
             if gate and gate.get("n"):
                 gates.append(gate)
+            if hist is not None:
+                hist.forget(d.replace("-", ""))   # 読んだ版 (1日80〜90版) を次の日まで抱えない
         if gates:
             msg, off = ph.gate_verdict(gates)
             if msg:

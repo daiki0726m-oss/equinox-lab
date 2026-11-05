@@ -1,0 +1,110 @@
+name: 📊 Weekly Report (#169)
+
+# #169 (2026-11-05): 週次レポート (scripts/weekly_scorecard.py) の「予測時点の市場との比較」
+# (印5頭 vs 人気上位5頭・LGB vs 同時刻市場・初ダート/初芝・投資ゲート遮断率) と
+# 点数表 v3/v2 の対応比較は、weekly_scorecard.py からしか呼ばれず、weekly_scorecard を呼ぶ
+# workflow が1つも無かった。動かしていたのは月曜の定例 (scheduled task) だけで、無人実行では
+# 最初の Bash 許可待ちで止まる (#140/#161 の raceday-health-guard と同じ)。
+# 「確かめる」と約束して仕組みを作らなかった反省 (11/05) の再発防止として、GitHub 側で毎週実行し、
+# 出力を docs/data/weekly_reports/report_<対象週末の最終日>.md に commit する。
+# - v3/v2 の対応比較は docs/data/scorecard_v2_paired.json に貯め、計算済みのレースは再計算しない
+#   (火曜の保険の run は、月曜が成功していれば数十秒で終わり、出力が同じなら commit しない)。
+# - 予測時点のオッズは公開した予測 JSON の git 履歴から取る。この job の checkout は shallow なので
+#   feature_parity.yml と同じ読み取り専用の部分クローン (/tmp/hist) を作る。累計の起点
+#   (点数表で印を選び始めた 09/05) より前から取る。keiba.db.gz の過去版は一切取らない (#119)。
+on:
+  schedule:
+    - cron: '0 21 * * 0'      # 毎週月曜 6:00 JST (日曜の結果スイープ 20:00/22:00 の後)
+    - cron: '0 21 * * 1'      # 火曜 6:00 JST (月曜の schedule が飛んだ時の保険)
+  workflow_dispatch:
+    inputs:
+      days:
+        description: '対象日 YYYYMMDD (空白区切り。空なら直近の確定した2日)'
+        required: false
+        default: ''
+
+concurrency:
+  group: weekly-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack DB
+        run: bash scripts/db_unpack.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
+
+      - name: 📜 予測 JSON の履歴を取得
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone --quiet --filter=blob:none --no-checkout --single-branch --branch main \
+            --shallow-since=2026-09-01 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" /tmp/hist
+          echo "履歴: $(git -C /tmp/hist rev-list --count HEAD) commits (since 2026-09-01)"
+
+      - name: 📊 週次レポート (weekly_scorecard.py)
+        id: report
+        continue-on-error: true
+        timeout-minutes: 70
+        env:
+          RACEDAY_HISTORY_REPO: /tmp/hist
+          PRED_HISTORY_PREFETCH: '1'
+          PRED_HISTORY_CACHE: /tmp/pred_history_cache
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          set +e
+          set -o pipefail
+          ARGS=""
+          [ -n "$DAYS" ] && ARGS="--days $DAYS"
+          # v3/v2 の対応比較は既定で対象日の未計算分を計算する (1レース約30〜70秒)
+          python3 scripts/weekly_scorecard.py $ARGS --v2-workers 2 | tee /tmp/weekly_report.md
+          CODE=${PIPESTATUS[0]}
+          echo "週次レポートの終了コード: $CODE"
+          exit $CODE
+
+      # レポートが途中で落ちても、出せた分は残す (黙って何も無い週を作らない)
+      - name: 📝 レポートを commit
+        if: always()
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -s /tmp/weekly_report.md ]; then
+            LAST=$(grep -m1 '対象週末' /tmp/weekly_report.md | grep -oE '[0-9]{8}' | tail -1)
+            [ -z "$LAST" ] && LAST=$(TZ=Asia/Tokyo date +%Y%m%d)
+            mkdir -p docs/data/weekly_reports
+            {
+              echo "<!-- .github/workflows/weekly_report.yml が scripts/weekly_scorecard.py の出力を保存 (#169)。"
+              echo "     レポート step の結果: ${{ steps.report.outcome }} -->"
+              cat /tmp/weekly_report.md
+            } > "docs/data/weekly_reports/report_${LAST}.md"
+            git add "docs/data/weekly_reports/report_${LAST}.md"
+          else
+            echo "⚠️ 週次レポートの出力が空"
+          fi
+          git add docs/data/scorecard_v2_paired.json 2>/dev/null || true
+          if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
+          git commit -m "📊 週次レポート $(TZ=Asia/Tokyo date '+%m/%d') (#169)"
+          for i in 1 2 3; do
+            git pull --rebase --autostash -X theirs origin main || git rebase --abort || true
+            git push origin HEAD:main && break || sleep 5
+          done
+
+      - name: ❌ レポートの失敗を run に残す
+        if: steps.report.outcome == 'failure'
+        run: |
+          echo "::error::週次レポート (weekly_scorecard.py) が失敗した。出力の末尾:"
+          tail -30 /tmp/weekly_report.md 2>/dev/null || true
+          exit 1

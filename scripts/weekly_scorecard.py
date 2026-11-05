@@ -60,9 +60,12 @@ A の設計値 84-86% (#112/#113) を測った窓は学習データに食い込�
   無い過去分は git 履歴の予測 JSON から取り、どちらを使ったかを出す。
   確定オッズで測った val AUC やバックテスト162% はモデルの価値の根拠として出さない。
 - v3 と v2 の対応比較 (scripts/scorecard_v2_paired.py): 同じレースで v2 の印を作り直し、
-  docs/data/scorecard_v2_paired.json に貯めて累積で見る (--v2 で未計算分を計算)。
+  docs/data/scorecard_v2_paired.json に貯めて累積で見る。対象日の未計算分は既定で計算する
+  (1レース約70秒。--no-v2 で省くと、未計算の数を出したうえで貯めた分だけ集計する)。
+- 毎週月曜に .github/workflows/weekly_report.yml が GitHub 側でこのスクリプトを実行し、
+  出力を docs/data/weekly_reports/ に commit する (月曜の定例は無人実行で止まるため #169)。
 
-実行: python3 scripts/weekly_scorecard.py [--days YYYYMMDD YYYYMMDD] [--legacy] [--v2] [--no-market]
+実行: python3 scripts/weekly_scorecard.py [--days YYYYMMDD YYYYMMDD] [--legacy] [--no-v2] [--no-market]
 """
 import argparse, glob, json, math, os, random, sqlite3, statistics, sys
 from itertools import combinations
@@ -355,9 +358,13 @@ def main():
     # #169: 予測時点の市場との比較 (印 vs 人気・LGB vs 同時刻市場・初替わり・投資ゲート) と
     # v3 と v2 の対応比較。前者は git 履歴の予測 JSON を読むので数十秒かかる。
     ap.add_argument('--no-market', action='store_true', help='予測時点の市場との比較 (#169) を省く')
-    ap.add_argument('--v2', action='store_true',
-                    help='v3 と v2 の対応比較を、まだ貯めていないレースについて計算する '
-                         '(特徴量の作り直しで1レース約70秒。省くと貯めた分の集計だけ出す)')
+    # #169 (レビュー指摘): 旧版は --v2 を付けた時だけ計算し、付け忘れると「今週」の行が黙って
+    # 消えて累計だけが出た。既定で対象日の未計算分を計算する (--no-v2 で省く)。
+    ap.add_argument('--v2', dest='v2', action='store_true', default=True,
+                    help='v3 と v2 の対応比較を、まだ貯めていないレースについて計算する (既定)')
+    ap.add_argument('--no-v2', dest='v2', action='store_false',
+                    help='対応比較の計算を省く (特徴量の作り直しで1レース約70秒かかるため)。'
+                         '未計算の数は出す')
     ap.add_argument('--v2-workers', type=int, default=4)
     args = ap.parse_args()
     c = db()
@@ -582,7 +589,7 @@ def main():
         print("\n=== 点数表 v3 (本番) と v2 の対応比較 (#169) ===")
         if args.v2:
             v2p.compute(target, c, workers=args.v2_workers)
-        v2p.report(target)
+        v2p.report(target, conn=c)
     except Exception as e:
         print(f"\n⚠️ v3/v2 の対応比較 (#169) に失敗: {type(e).__name__}: {e}")
 

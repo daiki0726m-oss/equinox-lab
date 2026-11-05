@@ -19,6 +19,10 @@ v2 で印を作り直しても印5頭の捕捉は 2.125 対 2.125 (差 0.000 [�
 - 結果は docs/data/scorecard_v2_paired.json にレース単位で貯める (1レース1回だけ計算する)。
   特徴量の作り直しは1レース約70秒かかるので、計算済みのレースは飛ばす。
 - 同点は丸めない点数 → 馬番で決める (本番の同点を LGB の順で決める欠陥 #169-9 は P 班が直す)。
+- 予測の時点で取消と分かっていた馬 (999.9倍・人気9999 等) は、本番 (#169 P 班、11/07 から) と同じく
+  v2 にも現行にも「点数表の母集団から外して」採点する。外さないと v2 側だけ取消馬を印5頭に入れて
+  外れと数えられ、v3 が有利な方向に偏る。11/06 以前は本番も外していないので、外さずに再現する
+  (再現度 = 現行の点数表で作り直した印が本番と同じ割合、を保つため)。
 
 注意: 特徴量はいまの DB から作り直すので、予測時点の後に補完されたデータ (血統の backfill 等) が
 わずかに入る。現行の点数表での作り直しが本番の印とどれだけ一致するかを毎回出し、再現度を確かめる
@@ -46,6 +50,72 @@ V2_PKL = os.path.join(ROOT, "models", "scorecard_v2_ref.pkl")
 CAPTURE_MARKS = ["◎", "○", "▲", "△", "△"]
 JST = timezone(timedelta(hours=9))
 MDE_NOTE = "#168 の見込み差 +0.022頭/R を80%検出力で見るには約2,900〜4,800R が要る"
+# #169: 本番 (predict.py の _scratched_numbers / _attach_scorecard) が予測時点の取消馬を
+# 点数表の母集団から外し始めた最初の開催日。これより前は本番も外していない。
+# (P 班の修正の配備が遅れたら、再現度 (印5頭が本番と同じ割合) の低下として表に出る)
+SCRATCH_RULE_FROM = "20261107"
+
+
+def _is_scratch(odds, popularity):
+    """予測時点で取消と分かる値か。predict.py の _is_scratch_odds (P 班 #169) と同じ基準:
+    odds<0 (API の番兵 -3.0) / odds>=999.9 (取消馬の表示値) / 人気>=999 (番兵 9999)。"""
+    try:
+        o = float(odds or 0)
+    except (TypeError, ValueError):
+        o = 0.0
+    try:
+        pop = int(popularity or 0)
+    except (TypeError, ValueError):
+        pop = 0
+    return o < 0 or o >= 999.9 or pop >= 999
+
+
+def _history():
+    """予測 JSON の git 履歴 (CI は RACEDAY_HISTORY_REPO の部分クローン、手元はこのリポジトリ)"""
+    import pred_history as ph
+    h = ph.History(os.environ.get("RACEDAY_HISTORY_REPO") or ROOT,
+                   cache_dir=os.environ.get("PRED_HISTORY_CACHE"))
+    return h if h.available() else None
+
+
+def predtime_scratched(d8, race_ids, hist=None):
+    """{race_id: (取消と分かっていた馬番の集合, 出どころ)}。予測した時点の値で判定する。
+
+    1. S 班のスナップショット (scratched 列、無ければオッズ・人気)
+    2. git 履歴の予測 JSON: 投稿したレースは投稿直前の公開版、それ以外はその日の最後の版について、
+       その予測 (LGB 出力) が最初に現れた版 (= 予測した run の書き出し) のオッズ・人気
+    どちらも無いレースは (空集合, "不明") — 外さずに採点し、出力に件数を出す。
+    """
+    import pred_history as ph
+    want = {str(r) for r in race_ids}
+    out = {}
+    pm = ph.load_posted_marks(d8, DATA) or {}
+    posted = set((pm.get("races") or {}).keys())
+    post_at = ph.parse_jst(pm.get("posted_at"))
+    for rid, rec in ph.predtime_from_snapshot(d8, post_at).items():
+        if rid in want:
+            out[rid] = ({hn for hn, h in rec["horses"].items()
+                         if h.get("scratched") or _is_scratch(h.get("odds"), h.get("popularity"))},
+                        "スナップショット")
+    rest = want - set(out)
+    if rest and hist is not None:
+        day0 = ph.parse_jst(f"{d8[:4]}-{d8[4:6]}-{d8[6:]} 00:00")
+        eod = day0 + timedelta(days=1, hours=6)
+        cuts = [(post_at, rest & posted)] if post_at else []
+        cuts.append((eod, rest - posted if post_at else rest))
+        for cut, rids in cuts:
+            if not rids:
+                continue
+            for rid, g in ph.predtime_from_git(hist, d8, cut).items():
+                if rid in rids and g.get("same") is not None:
+                    out[rid] = ({int(h["horse_number"]) for h in g["same"].get("horses") or []
+                                 if h.get("horse_number") is not None
+                                 and _is_scratch(h.get("odds_win"), h.get("popularity"))},
+                                "git:予測を書き出した版")
+        hist.forget(d8)
+    for rid in want - set(out):
+        out[rid] = (set(), "不明")
+    return out
 
 
 def _load_cache(path=CACHE):
@@ -100,7 +170,23 @@ def _features_worker(race_ids):
     return out
 
 
-def compute(days, conn, features_pkls=None, workers=1, cache_path=CACHE):
+def candidates(days, conn):
+    """{race_id: (d8, 本番の印5頭)} — 確定 (1着あり) かつ本番の印が5頭そろうレース。
+    compute が計算する対象であり、report が「未計算」を数える母数でもある。"""
+    out = {}
+    for d8 in days:
+        pm = _prod_marks(d8)
+        d = f"{d8[:4]}-{d8[4:6]}-{d8[6:]}"
+        for (rid,) in conn.execute("SELECT race_id FROM races WHERE race_date=? ORDER BY race_id", (d,)):
+            if rid not in pm:
+                continue
+            if not conn.execute("SELECT 1 FROM results WHERE race_id=? AND finish_position=1", (rid,)).fetchone():
+                continue
+            out[rid] = (d8, pm[rid])
+    return out
+
+
+def compute(days, conn, features_pkls=None, workers=1, cache_path=CACHE, hist=None):
     """days の確定済みレースのうち、まだ貯めていないものを計算して cache に足す。"""
     import pandas as pd
     from ml import scorecard as sc
@@ -112,21 +198,22 @@ def compute(days, conn, features_pkls=None, workers=1, cache_path=CACHE):
     if warn:
         print(f"  ⚠️ 現行の点数表: {warn} → 区分の差し替えを外して代用 (本番の predict と同じ扱い)")
         m3 = sc.without_col_map(m3, warn)
-    todo = []
-    marks = {}
-    for d8 in days:
-        pm = _prod_marks(d8)
-        d = f"{d8[:4]}-{d8[4:6]}-{d8[6:]}"
-        for (rid,) in conn.execute("SELECT race_id FROM races WHERE race_date=? ORDER BY race_id", (d,)):
-            if rid in have or rid not in pm:
-                continue
-            if not conn.execute("SELECT 1 FROM results WHERE race_id=? AND finish_position=1", (rid,)).fetchone():
-                continue
-            todo.append(rid)
-            marks[rid] = (d8, pm[rid])
+    marks = {rid: v for rid, v in candidates(days, conn).items() if rid not in have}
+    todo = sorted(marks)
     if not todo:
         print("  v2 対応比較: 新しく計算するレースなし")
         return cache
+    # #169: 予測時点の取消馬 (本番が点数表の母集団から外し始めた日以降だけ)
+    scratched = {}
+    rule_days = sorted({marks[r][0] for r in todo if marks[r][0] >= SCRATCH_RULE_FROM})
+    if rule_days:
+        hist = hist if hist is not None else _history()
+        for d8 in rule_days:
+            scratched.update(predtime_scratched(d8, [r for r in todo if marks[r][0] == d8], hist))
+        unk = sum(1 for v in scratched.values() if v[1] == "不明")
+        nsc = sum(len(v[0]) for v in scratched.values())
+        print(f"  v2 対応比較: 予測時点の取消 {nsc}頭を v2・現行とも母集団から外す"
+              + (f" (予測時点の版が見つからない {unk}R は外さずに採点)" if unk else ""))
     feats = []
     if features_pkls:
         for p in features_pkls:
@@ -154,6 +241,14 @@ def compute(days, conn, features_pkls=None, workers=1, cache_path=CACHE):
         print(f"  ⚠️ v2 対応比較: 必要な列が無い v2={miss2} v3={miss3} — 計算しない")
         return cache
     feat = feat.sort_values(["race_id", "horse_number"]).reset_index(drop=True)
+    if scratched:
+        # 本番と同じく、取消馬はレース内順位・z の母集団から外す (行ごと落として採点する)
+        _rid = feat["race_id"].astype(str)
+        _hn = pd.to_numeric(feat["horse_number"], errors="coerce")
+        drop = np.array([int(h) in scratched.get(r, (set(), ""))[0] if h == h else False
+                         for r, h in zip(_rid, _hn)])
+        if drop.any():
+            feat = feat[~drop].reset_index(drop=True)
     p2, _ = sc.score_with_reasons(feat, m2)
     p3, _ = sc.score_with_reasons(feat, m3)
     feat["_p2"], feat["_p3"] = p2, p3
@@ -166,9 +261,11 @@ def compute(days, conn, features_pkls=None, workers=1, cache_path=CACHE):
             "SELECT horse_number, finish_position FROM results WHERE race_id=?", (rid,))}
         top3 = sorted(hn for hn, fp in fin.items() if fp and 0 < fp <= 3)
         win = next((hn for hn, fp in fin.items() if fp == 1), None)
+        sc_set, sc_src = scratched.get(rid, (set(), "規則の適用前" if d8 < SCRATCH_RULE_FROM else "不明"))
         have[rid] = {"date": d8, "prod": prod, "v2": _top5(g, g["_p2"]), "cur": _top5(g, g["_p3"]),
                      "top3": top3, "win": win, "v2_version": m2.get("version"),
-                     "cur_version": m3.get("version"), "computed_at": now}
+                     "cur_version": m3.get("version"), "computed_at": now,
+                     "scratched": sorted(sc_set), "scratch_src": sc_src}
     cache["v2_model"] = {"path": "models/scorecard_v2_ref.pkl", "source": "git show 4213ced4^:models/scorecard.pkl",
                          "version": m2.get("version")}
     cache["updated_at"] = now
@@ -185,9 +282,20 @@ def _metrics(e, key):
     return got, int(got == 3), int(hs[0] == e["win"]), int(hs[0] in t3)
 
 
-def report(days, cache=None, out=print):
+def report(days, cache=None, out=print, conn=None):
     cache = cache or _load_cache()
     races = cache.get("races") or {}
+    # #169 (レビュー指摘): 今週分が未計算のまま出力すると「今週」の行が黙って消え、累計だけが
+    # 出て今週の比較に見えた。対象日の確定レースのうち未計算の数を必ず出す。
+    if conn is not None:
+        cand = candidates(days, conn)
+        pend = sorted(r for r in cand if r not in races)
+        if not cand:
+            out(f"  (d) [今週] 対象日 ({', '.join(days)}) に確定済みで本番の印が5頭そろうレースなし")
+        elif pend:
+            out(f"  (d) [今週] 未計算 {len(pend)}/{len(cand)}R — 今週の比較はまだ出ていない "
+                f"(python3 scripts/scorecard_v2_paired.py --days {' '.join(days)} --workers 4 で計算、"
+                f"1レース約70秒)")
     if not races:
         out("  (d) v3 と v2 の対応比較: 貯めたレースなし (python3 scripts/scorecard_v2_paired.py で計算)")
         return
@@ -213,8 +321,12 @@ def report(days, cache=None, out=print):
         wins = int(((P[:, 0] - V[:, 0]) > 0).sum()); loss = int(((P[:, 0] - V[:, 0]) < 0).sum())
         out(f"  (d) [{lab}] 本番 (v3) vs v2 作り直し ({len(sel)}R、同じレースで対応): " + " / ".join(parts)
             + f" / 本番が良い {wins}R・悪い {loss}R")
+        n_sc = sum(1 for e in sel if e.get("scratched"))
+        n_unk = sum(1 for e in sel if e.get("scratch_src") == "不明")
         out(f"      再現度: 現行の点数表で作り直した印5頭が本番と同じ {same5:.0%}・◎同じ {sameh:.0%}"
-            f" (作り直しの捕捉 {C[:,0].mean():.3f})")
+            f" (作り直しの捕捉 {C[:,0].mean():.3f})"
+            + (f" / 予測時点の取消を外したレース {n_sc}R" if n_sc else "")
+            + (f" / 予測時点の版が無く取消を判定できなかった {n_unk}R" if n_unk else ""))
     out(f"      ※ {MDE_NOTE}。累計が届くまで v3 の良し悪しは結論しない")
 
 
@@ -232,7 +344,7 @@ def main():
         for g in a.features_pkl or []:
             pk += sorted(glob.glob(g))
         compute(a.days, conn, features_pkls=pk or None, workers=a.workers)
-    report(a.days)
+    report(a.days, conn=conn)
 
 
 if __name__ == "__main__":

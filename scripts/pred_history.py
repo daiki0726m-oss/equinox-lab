@@ -27,6 +27,11 @@ DB (keiba.db.gz) の predictions_cache は並行 workflow の push で丸ごと�
 - 部分クローン (blob:none) では git show のたびに blob を1つずつ取りに行く。CI では
   prefetch() で一括取得してから読む (keiba.db.gz の過去版は決して取らない — #119 で
   .git が数十GBに膨れディスクが溢れた前科がある。ここが触るのは docs/data の JSON だけ)。
+  手元の作業ツリーも blob:none の部分クローン (gc.auto=0) なので、1版ごとの遅延取得だと
+  1 blob = 1 pack (約0.5秒) ずつ増える。remote.origin.partialclonefilter が設定されていれば
+  既定で prefetch する (PRED_HISTORY_PREFETCH=0 で止める / =1 で常に行う)。
+- git の呼び出しには時間制限を付ける (既定120秒)。ネットワーク待ちで止まると feature_parity の
+  後続の監視 (起動層の生存確認 #155/#161) まで走らなくなるため。
 """
 import datetime as dt
 import glob
@@ -38,6 +43,7 @@ import subprocess
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JST = dt.timezone(dt.timedelta(hours=9))
 RUNNER_SUBJECT = "Race day runner"
+GIT_TIMEOUT = int(os.environ.get("PRED_HISTORY_GIT_TIMEOUT") or 120)
 
 
 def pred_path(d8):
@@ -77,12 +83,52 @@ class History:
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
         self._mem = {}
+        self._auto_prefetch = None
 
-    def _git(self, *args, check=True, binary=False):
-        r = subprocess.run(["git", "-C", self.repo, *args], capture_output=True)
+    def _git(self, *args, check=True, binary=False, timeout=None):
+        try:
+            r = subprocess.run(["git", "-C", self.repo, *args], capture_output=True,
+                               timeout=timeout or GIT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            # #169: 時間切れは失敗として握る (check=False の呼び出しは「読めなかった」扱いになる)
+            if check:
+                raise RuntimeError(f"git {' '.join(args[:2])} が {timeout or GIT_TIMEOUT}秒で終わらない")
+            return b"" if binary else ""
         if check and r.returncode != 0:
             raise RuntimeError(f"git {' '.join(args[:2])} 失敗: {r.stderr.decode(errors='replace')[:300]}")
         return r.stdout if binary else r.stdout.decode("utf-8", errors="replace")
+
+    def auto_prefetch(self):
+        """版を読む前に blob を一括取得するか。PRED_HISTORY_PREFETCH=1/0 が優先、
+        無ければ部分クローン (remote.origin.partialclonefilter あり) なら行う。"""
+        env = os.environ.get("PRED_HISTORY_PREFETCH")
+        if env in ("0", "1"):
+            return env == "1"
+        if self._auto_prefetch is None:
+            self._auto_prefetch = bool(self._git("config", "--get", "remote.origin.partialclonefilter",
+                                                 check=False).strip())
+        return self._auto_prefetch
+
+    def maybe_prefetch(self, d8, versions):
+        if versions and self.auto_prefetch():
+            try:
+                self.prefetch(d8, versions)
+            except (RuntimeError, OSError):
+                pass        # 取れなければ1版ずつの遅延取得に任せる
+
+    def shallow_boundary(self):
+        """shallow clone なら、残っている最古の commit の時刻 (JST)。shallow でなければ None。
+        それより前の版は履歴に無いので、境界の直後の日は「最初に現れた版」を取り違える。"""
+        if self._git("rev-parse", "--is-shallow-repository", check=False).strip() != "true":
+            return None
+        out = self._git("log", "--format=%ct", self.ref, check=False).split()
+        return to_jst(out[-1]) if out else None
+
+    def forget(self, d8):
+        """その日の版をメモリから捨てる (cache_dir があればディスクには残る)。
+        累計の集計で読んだ版を全部抱えると、週を追うごとにメモリが線形に増えるため。"""
+        for k in [k for k in self._mem if k[0] == d8]:
+            del self._mem[k]
 
     def available(self):
         """履歴が読めるか (git でない・shallow で1版しか無い等を呼び出し側が判断する材料)"""
@@ -278,6 +324,7 @@ def predtime_from_git(hist, d8, cutoff, versions=None):
     vs = [v for v in vs if v["at"] < cutoff]
     if not vs:
         return {}
+    hist.maybe_prefetch(d8, vs)
     last = hist.load(d8, vs[-1]["sha"])
     pre = races_of(last)
     out = {rid: {"pre": r, "pre_at": vs[-1]["at"], "same": None, "same_at": None}
@@ -332,16 +379,26 @@ def gate_verdict(gates):
         return None, False
     rt = sum(g["top_prob"] * g["n"] for g in gates) / n
     rs = sum(g["top3_sum"] * g["n"] for g in gates) / n
-    msg = (f"投資ゲート遮断率 ({'・'.join(g['date'] for g in gates)} 平場{n}R): "
-           f"top_prob {rt:.0%} (目標{GATE_TARGET['top_prob']:.0%}) / "
-           f"top3_sum {rs:.0%} (目標{GATE_TARGET['top3_sum']:.0%})")
 
-    def _off(rate, tgt):
-        z = (rate - tgt) / ((tgt * (1 - tgt) / n) ** 0.5)
-        return abs(rate - tgt) >= GATE_MIN_DIFF and abs(z) >= GATE_Z
-    if _off(rt, GATE_TARGET["top_prob"]) or _off(rs, GATE_TARGET["top3_sum"]):
+    def _stat(rate, tgt):
+        se = (tgt * (1 - tgt) / n) ** 0.5
+        z = (rate - tgt) / se
+        # この標本で「外れ」と判定できる最小の差 (10pt と |z|≥2.58 の大きい方)
+        mde = max(GATE_MIN_DIFF, GATE_Z * se)
+        return z, mde, abs(rate - tgt) >= GATE_MIN_DIFF and abs(z) >= GATE_Z
+    zt, mt, ot = _stat(rt, GATE_TARGET["top_prob"])
+    zs, ms, os_ = _stat(rs, GATE_TARGET["top3_sum"])
+    # #169 (レビュー指摘): 旧文言は判定に届かない時「目標の範囲内 (標本誤差の内)」と言い切っていた。
+    # 1週末の平場 n≈26 では約23pt ずれないと検出できず、10/31・11/01 の top_prob 46% (目標30%、
+    # +16pt) も「範囲内」と出た。差・z・検出できる差の大きさをそのまま出す。
+    msg = (f"投資ゲート遮断率 ({'・'.join(g['date'] for g in gates)} 平場{n}R): "
+           f"top_prob {rt:.0%} (目標{GATE_TARGET['top_prob']:.0%}、差 {100*(rt-GATE_TARGET['top_prob']):+.0f}pt"
+           f"・z={zt:+.2f}) / top3_sum {rs:.0%} (目標{GATE_TARGET['top3_sum']:.0%}、"
+           f"差 {100*(rs-GATE_TARGET['top3_sum']):+.0f}pt・z={zs:+.2f})")
+    if ot or os_:
         return msg + " — 目標から統計的に外れている (#156 の再発疑い。閾値と分布がペアになっていない)", True
-    return msg + " — 目標の範囲内 (標本誤差の内)", False
+    return (msg + f" — この標本では目標と区別できない (検出できる差は top_prob 約±{100*mt:.0f}pt・"
+            f"top3_sum 約±{100*ms:.0f}pt。目標どおりという意味ではない)"), False
 
 
 def gate_block_rates(races, thresholds, is_ood):
