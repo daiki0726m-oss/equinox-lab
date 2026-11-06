@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-06T19:07:49.082556+09:00",
+ "generated_at": "2026-11-06T20:01:48.425915+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -212,66 +212,66 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 37.0,
+   "S": 34.1,
    "A": 24.8,
-   "B": 12.9,
-   "C": 8.0
+   "B": 13.4,
+   "C": 8.9
   },
   "calibrated_on": "補正後 (confidence.post_adjust 込み) の最終構成比",
   "mix_before_adjust": {
-   "S": 0.0921,
-   "A": 0.2281,
-   "B": 0.3904,
+   "S": 0.1096,
+   "A": 0.2061,
+   "B": 0.3947,
    "C": 0.1798,
    "D": 0.1096
   },
   "mix_after_adjust": {
    "S": 0.1798,
-   "A": 0.2368,
-   "B": 0.2939,
+   "A": 0.2412,
+   "B": 0.2895,
    "C": 0.1798,
    "D": 0.1096
   },
-  "adjusted_share": 0.1842,
+  "adjusted_share": 0.1754,
   "realized_mix": {
-   "S": 0.2588,
-   "A": 0.193,
-   "B": 0.1184,
-   "C": 0.1886,
-   "D": 0.2412
+   "S": 0.2456,
+   "A": 0.2149,
+   "B": 0.1316,
+   "C": 0.193,
+   "D": 0.2149
   },
   "realized_n": 228,
   "realized_note": "各予測の時点の閾値・補正で付いた信頼度 (predictions_cache.confidence)",
   "realized_new_logic_since": "2026-11-07",
   "realized_new_logic_mix": {
-   "S": 0.2105,
-   "A": 0.0,
-   "B": 0.1579,
-   "C": 0.0526,
-   "D": 0.5789
+   "S": 0.0526,
+   "A": 0.2632,
+   "B": 0.3158,
+   "C": 0.1053,
+   "D": 0.2632
   },
   "realized_new_logic_n": 19
  },
  "bet_gate": {
   "available": true,
-  "n": 19,
+  "n": 66,
   "target_block_rate": {
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
   "model_deployed_at": "2026-11-02 19:52:02",
-  "window_matches_model": true,
+  "window_matches_model": false,
   "model_retrained_uncommitted": false,
   "thresholds": {
-   "top_prob": 0.2595,
-   "top3_sum": 0.5216
+   "top_prob": 0.1702,
+   "top3_sum": 0.4157
   },
-  "window_rule": "current_model_dispersion_shift",
+  "window_rule": "since_prev_model",
   "n_current": 19,
   "n_older": 47,
-  "sd_median_current": 1.1687,
+  "sd_median_current": 0.8321,
   "sd_median_older": 0.7447,
-  "dispersion_ratio": 1.569,
+  "dispersion_ratio": 1.117,
   "dispersion_ratio_limit": 1.4,
   "prev_model_deployed_at": "2026-10-20 09:30:46"
  },
