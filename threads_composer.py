@@ -45,9 +45,15 @@ def _mark_map(horses):
     return {h.get("mark"): h for h in horses if h.get("mark")}
 
 
+def _mkt_pop(h):
+    """表示・比較に使う人気。build_threads_predict_post が付ける _field_pop (出走馬の中での人気、
+    #170) があればそれ、無ければ popularity。取消馬が中位人気でない限り両者は同じ。"""
+    return h.get("_field_pop", h.get("popularity")) or 0
+
+
 def _pop(h):
     """想定人気の表記 (朝時点なので確定ではない)。"""
-    p = h.get("popularity") or 0
+    p = _mkt_pop(h)    # #170 手直し: eval_points の「想定N番人気」と同じ数字
     return f"想定{p}番人気" if p else ""
 
 
@@ -86,10 +92,9 @@ def _ability_rank(horses):
     """オッズ非依存の能力値ランキング (上位のみ)。"""
     # #169: 取消馬は並べない (「3連系の紐には◯◯を入れます」で取消馬を名指ししうる)。
     # 予測時に分かった取消は scratched、その後に分かった取消は 999.9倍 / 番兵 9999人気。
-    scored = [h for h in horses if (h.get("ability_score") or 0) > 0
-              and not h.get("scratched")
-              and (h.get("popularity") or 0) < 999
-              and (h.get("odds_win") or 0) < 999.9]
+    # #170: 判定は race_utils.is_scratched_horse に一本化 (eval_points・💡 と同じ)
+    from race_utils import running_horses
+    scored = [h for h in running_horses(horses) if (h.get("ability_score") or 0) > 0]
     return sorted(scored, key=lambda h: -(h.get("ability_score") or 0))
 
 
@@ -194,15 +199,24 @@ def eval_points(horse, horses, stats=None, limit=3):
     (#94 の再発) なので使わない。順位・実測率など、その馬固有の数字だけを出す。
     stats は post_sections._score_entries_by_course の結果を horse_number で引ける dict。
     """
-    n = len(horses)
-    pop = horse.get("popularity") or 0
+    # #170: 母数「M頭中」と順位の母集団は出走馬 (取消と分かっている馬を除く)。旧実装は
+    # 取消馬を数え、11/01 東京7R は「15頭中」(出走14頭)・能力順位が全馬1つずつ下がっていた。
+    # 順位・母数は _ability_rank (能力値ランキング)・predict の推奨理由と同じ判定でそろえる。
+    from race_utils import is_scratched_horse, running_horses, field_popularities
+    if is_scratched_horse(horse):
+        return []
+    field = running_horses(horses)
+    n = len(field)
+    # #170 手直し: 比べる市場の人気も出走馬の中で数える (AI の順位だけ出走馬で数えると、取消馬が
+    # 中位人気の番兵時代のレースで存在しない乖離が出て、「13頭中」の隣に「想定12番人気」が並んだ)
+    pop = field_popularities(horses).get(horse.get("horse_number"), horse.get("popularity") or 0)
     pts = []
 
-    t3_rank = _rank_of(horses, horse, "pred_top3_pct")
+    t3_rank = _rank_of(field, horse, "pred_top3_pct")
     if t3_rank and pop and t3_rank + 2 <= pop:
         pts.append(f"AIの複勝評価は{n}頭中{t3_rank}位（市場は想定{pop}番人気）")
 
-    ab_rank = _rank_of(horses, horse, "ability_score")
+    ab_rank = _rank_of(field, horse, "ability_score")
     if ab_rank and ab_rank <= 3 and pop >= 4:
         pts.append(f"オッズを一切見ない能力評価でも{ab_rank}位")
 
@@ -210,7 +224,7 @@ def eval_points(horse, horses, stats=None, limit=3):
     # si_avg_v、同値は同順位)。旧指数 si_avg の順位だと内訳と別の「N位」を出していた
     from ml.si_display import display_si, si_int, si_rank as _si_rank
     si = display_si(horse)
-    si_rank = _si_rank(horses, horse)
+    si_rank = _si_rank(field, horse)
     if si and si_rank and si_rank <= 3:
         # #169 手直し: 値は画面の小数1桁を四捨五入 (キャッシュは丸めない値)
         pts.append(f"スピード指数{si_int(si)}は{n}頭中{si_rank}位")
@@ -259,7 +273,7 @@ def _p_ability_gap(race, horses, n_other, stats=None):
     if len(rank) < 3:
         return None
     top = rank[0]
-    if (top.get("popularity") or 0) < 4:
+    if _mkt_pop(top) < 4:                # #170 手直し: 能力順位と同じく出走馬の中の人気で比べる
         return None                      # 市場と一致 = 語る価値がない
     mk = _mark_map(horses)
     honmei = mk.get("◎")
@@ -405,6 +419,18 @@ def build_threads_predict_post(race, n_other_races=0, force_pattern=None, record
     horses = race.get("horses") or []
     if not horses:
         return None, None
+    # #170 手直し: 馬名の横の「想定N番人気」(_label) も eval_points と同じ出走馬の中の人気にする
+    # (同じ投稿で eval_points の「市場は想定N番人気」と馬名横の「（想定N+2番人気）」が食い違わないように)。
+    # 人気が変わる馬だけ写しに _field_pop を付ける — 取消が無い・取消馬が最下位なら元のまま。
+    from race_utils import field_popularities
+    _fp = field_popularities(horses)
+    _hs = []
+    for h in horses:
+        hn = h.get("horse_number")
+        if hn in _fp and _fp[hn] != (h.get("popularity") or 0):
+            h = dict(h, _field_pop=_fp[hn])
+        _hs.append(h)
+    horses = _hs
     candidates = []
     for name, fn in PATTERNS:
         if force_pattern and name != force_pattern:

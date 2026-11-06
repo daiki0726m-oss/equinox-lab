@@ -73,6 +73,31 @@ TARGET_MIX = {"S": 0.18, "A": 0.24, "B": 0.29, "C": 0.18, "D": 0.11}
 # 標本が薄い間は分位が粗いだけで、中心は正しい方に寄る。週次で引き直されるので収束する。
 MIN_SAMPLE_FOR_THRESHOLDS = 30
 
+# 投資ゲートの目標遮断率 = 2026-05 (0.12/0.30 が設計された時期) の実測 (#156)
+_GATE_TARGET = {"top_prob": 0.30, "top3_sum": 0.25}
+
+# #170: 投資ゲートの窓を広げる時の「分散のずれ」安全弁。
+# 毎週再学習 (#169) では、金曜〜土曜未明の時点で現モデルの使えるレースは土曜分 (10〜22件) しか
+# 無く、毎週「新モデル約3割＋前モデル約7割」の拡張窓から閾値を引く。分散が安定している間は
+# 拡張窓の方がノイズが小さいが、再学習でレース内 rank_score の sd が大きく動いた週は #156 の
+# 暴れがそのまま起きる。そこで現モデルの行と、窓の中のそれより前の行の「レース内 sd の中央値」の
+# 比 (大きい方/小さい方) を見て、限度を超えたら前モデルの行を混ぜない。
+#
+# 1.4 の根拠 (2026-05〜10 の各土曜を毎週配備で再生、本番DBコピー 11/05):
+#   同じモデルのまま週末が替わるだけの揺れ: 最大 1.28 (6/27)、安定期 9/19〜10/31 は 1.01〜1.22
+#   遮断率が実害の出るほどずれた分散変化: 最小 1.56〜1.65 (7/04・7/25: 目標 30/25% から
+#                                         12〜21pt)、8/08 は 4.3 (遮断 約8割)、9/05 は 8.6 (遮断0%)
+#   両者の間 (1.28 と 1.56 の幾何平均 ≈1.41)。見逃しの害 (偏り 12pt 以上) の方が誤検知の害
+#   (現モデルだけの窓 n=10〜22 の標本誤差 ±10〜14pt) より大きいので、真ん中よりやや下に置く。
+DISPERSION_RATIO_LIMIT = 1.4
+# 安全弁が働いた時に、現モデルの行だけで分位を取る下限。2場開催の土曜は使えるレースが
+# 10件前後 (9/12=10, 6/06=10)。n=10 の30%分位は遮断率の標準誤差が約±14pt で、分散が
+# 動いた週の偏り (目標から 7/25 約-20pt、8/08 約+50pt、9/05 約-30pt) より小さい。これ未満では
+# 引かず、拡張窓のまま「ずれを検知したが直せていない」と記録する (JSON の note)。
+DISPERSION_MIN_CURRENT = 10
+# sd の中央値を比べるのに要る最小レース数 (これ未満は比を出さない = 安全弁も働かない)
+DISPERSION_MIN_RACES = 5
+
 
 def _bucket_of(n):
     for lo, hi, lab in BUCKETS:
@@ -241,35 +266,68 @@ def current_model_deployed_at(conn=None):
     → (1) GitHub API でモデルファイルの本当の最終コミットを引く、(2) shallow な git log は
     信用しない、(3) 比較は UTC で行う。
     """
+    times = _model_commit_times(1)
+    if not times:
+        return None, None     # 不明 → 呼び出し側は全期間を使い「窓が合っていない」と明示する
+    return _deploy_pair(times[0])
+
+
+def previous_model_deployed_at(conn=None):
+    """現モデルの**1つ前**のモデルが配備された時刻を (JST表示用, UTC比較用) で返す (#170)。
+
+    current_model_deployed_at と同じ取り方 (GitHub API → shallow でない時だけ git log) で
+    直近2件を引き、2件目を返す。取れない時は (None, None) = 呼び出し側は従来の挙動。
+    投資ゲートの窓を広げる範囲を「直前のモデルの配備以降」に限り、2世代以上前のモデルの
+    予測を混ぜないために使う。
+    """
+    times = _model_commit_times(2)
+    if len(times) < 2:
+        return None, None
+    return _deploy_pair(times[1])
+
+
+def _deploy_pair(utc):
+    jst = utc.astimezone(timezone(timedelta(hours=9)))
+    return (jst.strftime("%Y-%m-%d %H:%M:%S"),
+            utc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+
+
+def _model_commit_times(limit):
+    """models/model_rank.pkl を変えたコミットの時刻を新しい順に最大 limit 件 (aware datetime)。
+
+    #161 の取り方そのまま: GitHub API が取れればそれ、駄目なら shallow でない時だけ git log。
+    #170: current_model_deployed_at (1件) と previous_model_deployed_at (2件) で共有する。
+    """
     import subprocess, urllib.request
     rel = "models/model_rank.pkl"
-    utc = None
+    times = []
     repo = os.environ.get("GITHUB_REPOSITORY", "daiki0726m-oss/equinox-lab")
     try:
         req = urllib.request.Request(
-            f"https://api.github.com/repos/{repo}/commits?path={rel}&per_page=1",
+            f"https://api.github.com/repos/{repo}/commits?path={rel}&per_page={limit}",
             headers={"Accept": "application/vnd.github+json",
                      **({"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"}
                         if os.environ.get("GITHUB_TOKEN") else {})})
         with urllib.request.urlopen(req, timeout=20) as r:
-            ts = json.load(r)[0]["commit"]["committer"]["date"]
-        utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            commits = json.load(r)[:limit]
+        times = [datetime.fromisoformat(c["commit"]["committer"]["date"].replace("Z", "+00:00"))
+                 for c in commits]
+        if not times:
+            raise ValueError("empty")
     except Exception:
+        times = []
         try:
             shallow = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=ROOT,
                                      capture_output=True, text=True, timeout=30).stdout.strip()
             if shallow == "false":
-                out = subprocess.run(["git", "log", "-1", "--format=%cI", "--", rel],
+                out = subprocess.run(["git", "log", f"-{limit}", "--format=%cI", "--", rel],
                                      cwd=ROOT, capture_output=True, text=True, timeout=30)
                 if out.returncode == 0 and out.stdout.strip():
-                    utc = datetime.fromisoformat(out.stdout.strip())
+                    times = [datetime.fromisoformat(x.strip())
+                             for x in out.stdout.strip().splitlines() if x.strip()]
         except Exception:
-            pass
-    if utc is None:
-        return None, None     # 不明 → 呼び出し側は全期間を使い「窓が合っていない」と明示する
-    jst = utc.astimezone(timezone(timedelta(hours=9)))
-    return (jst.strftime("%Y-%m-%d %H:%M:%S"),
-            utc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+            times = []
+    return times
 
 
 def model_uncommitted(rel="models/model_rank.pkl"):
@@ -336,6 +394,50 @@ def _gate_samples(rows):
     return tops, sums
 
 
+def _rank_sd_median(rows):
+    """レース内 rank_score の標準偏差 (母標準偏差) の中央値と、数えたレース数 (#170)。
+    対象は _gate_samples と同じ (障害・未勝利・新馬を除き、rank_score が3頭以上)。"""
+    sds = []
+    for r in rows:
+        if is_ml_out_of_domain(r["race_name"] or ""):
+            continue
+        try:
+            preds = json.loads(r["predictions_json"] or "[]")
+        except (ValueError, TypeError):
+            continue
+        rs = [p.get("rank_score") for p in preds if p.get("rank_score") is not None]
+        if len(rs) < 3:
+            continue
+        m = sum(rs) / len(rs)
+        sds.append(math.sqrt(sum((x - m) ** 2 for x in rs) / len(rs)))
+    if not sds:
+        return None, 0
+    sds.sort()
+    k = len(sds)
+    med = sds[k // 2] if k % 2 else (sds[k // 2 - 1] + sds[k // 2]) / 2
+    return med, k
+
+
+def _quantile_thresholds(tops, sums):
+    """目標遮断率 (_GATE_TARGET) を弾く分位点 (#156)。"""
+    t, s = sorted(tops), sorted(sums)
+    return {
+        "top_prob": round(t[int(len(t) * _GATE_TARGET["top_prob"])], 4),
+        "top3_sum": round(s[int(len(s) * _GATE_TARGET["top3_sum"])], 4),
+    }
+
+
+def _block_rates(tops, sums, th):
+    """閾値 th で弾かれる割合 (should_bet_race と同じく `<` で判定) (#170)。"""
+    n = len(tops)
+    if not n:
+        return {"top_prob": None, "top3_sum": None, "either": None}
+    bt = [x < th["top_prob"] for x in tops]
+    bs = [y < th["top3_sum"] for y in sums]
+    return {"top_prob": round(sum(bt) / n, 4), "top3_sum": round(sum(bs) / n, 4),
+            "either": round(sum(a or b for a, b in zip(bt, bs)) / n, 4)}
+
+
 def build_bet_gate_thresholds(conn):
     """投資ゲートの「混戦すぎるレースを弾く」閾値を、現行モデルの分布から引く (#156)。
 
@@ -358,9 +460,22 @@ def build_bet_gate_thresholds(conn):
     ここでは 2026-05 (0.12/0.30 が設計された時期) の遮断率を目標として、
     現行モデルの分布から同じ割合を弾く分位点を引く。ROI を上げるための変更ではない
     — 週ごとに投資額が7倍動くのを止めるための変更 (#140 の「分散の削減」)。
+
+    #170: 30件未満で窓を広げる時の2つの安全策
+    ------------------------------------------
+    毎週再学習 (#169) では、金曜〜土曜未明の時点で現モデルの使えるレースは土曜分しか無く、
+    毎週この拡張窓に落ちる。安定期 (レース内 sd の中央値 0.73〜0.82) は拡張窓の方がノイズが
+    小さいが、再学習で分散が動いた週は #156 の暴れがそのまま起きる (8/08 sd 0.53→0.12 で
+    遮断77%、9/05 0.11→0.91 で遮断0%)。そこで
+      (1) 広げる範囲を「直前のモデルの配備以降」に限る (2世代以上前を混ぜない。毎週再学習の
+          2場開催の週末は直近120行が2週末前まで届き、9/12 は8月の平坦なモデルまで混ざって遮断9%)
+      (2) 現モデルの行とそれより前の行で「レース内 sd の中央値」を比べ、比が
+          DISPERSION_RATIO_LIMIT を超えたら前モデルの行を混ぜず現モデルの行だけで分位を取る。
+          超えなければ拡張窓のまま (安定期の挙動は変えない)。
+    窓の内訳は JSON の window_rule / n_current / n_older / sd_median_* / dispersion_ratio に残す。
     """
     # 2026-05 の実測遮断率 = 閾値が意図した水準
-    TARGET = {"top_prob": 0.30, "top3_sum": 0.25}
+    TARGET = _GATE_TARGET
     FALLBACK = {"top_prob": 0.12, "top3_sum": 0.30}
     # #156: 現モデルが出した予測だけを窓にする。足りなければ全期間に広げ、
     # 「前モデルの分布から引いた」ことをログと JSON に明示する。
@@ -375,12 +490,24 @@ def build_bet_gate_thresholds(conn):
     rows = []
     if since_utc:
         rows = list(conn.execute(f"""
-            SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
+            SELECT pc.predictions_json, g.race_name, pc.created_at FROM predictions_cache pc
             JOIN races g ON pc.race_id = g.race_id
             WHERE pc.created_at >= ? AND {PRE_START_SQL}
             ORDER BY g.race_date DESC LIMIT 400
         """, (since_utc,)))   # created_at は UTC (SQLite CURRENT_TIMESTAMP)
+    cur_rows = rows   # #170: 現モデル (配備時刻以降) の行。分散のずれの比較に使う
     tops, sums = _gate_samples(rows)
+    # #170: 窓の診断 (既存のキーは変えず足すだけ)。window_rule:
+    #   current_model                  … 現モデルだけで30件以上 (従来どおり)
+    #   since_prev_model               … 30件未満 → 直前のモデルの配備以降 (最大120行) に広げた
+    #   recent120                      … 30件未満 → 直近120行に広げた (従来の挙動。直前の配備時刻が
+    #                                     取れない / その窓も30件未満 / 配備時刻自体が不明)
+    #   current_model_dispersion_shift … 広げた窓と現モデルで分散がずれた → 現モデルの行だけ
+    diag = {"window_rule": "current_model" if since_utc else "recent120",
+            "n_current": len(tops) if since_utc else None, "n_older": None,
+            "sd_median_current": None, "sd_median_older": None,
+            "dispersion_ratio": None, "dispersion_ratio_limit": DISPERSION_RATIO_LIMIT,
+            "prev_model_deployed_at": None}
     # #161: 標本数は **使えるレース数** (障害・未勝利・新馬を除いた後) で判定する。
     # 旧版は除外前の行数で判定したため、30〜55行の窓 (= 再学習直後の週末1日分) では
     # 除外後に30を割って固定値 0.12/0.30 に落ちていた。足りなければ全期間に広げ、
@@ -389,40 +516,97 @@ def build_bet_gate_thresholds(conn):
     # (8月は sd 0.115 と平坦) まで混ぜるので、再学習直後の閾値が 0.1001/0.2613 =
     # ほぼ素通りに戻っていた (#161 review)。直前のモデルが新モデルに最も近い手掛かり。
     widened = False
+    shift = False
     if len(tops) < MIN_SAMPLE_FOR_THRESHOLDS:
         fresh = False
         widened = True
-        rows = list(conn.execute(f"""
-            SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
-            JOIN races g ON pc.race_id = g.race_id
-            WHERE {PRE_START_SQL}
-            ORDER BY g.race_date DESC, pc.created_at DESC LIMIT 120
-        """))
+        rows = []
+        # #170 (1): 直前のモデルの配備時刻が取れれば、その時刻以降 (最大120行) に限る。
+        # 毎週再学習では「先週末 (前モデル) + 土曜 (現モデル)」= 3場で約60、2場で約45 の使えるレース。
+        # それでも30件未満 (配備が続いて前モデルの予測がほぼ無い等) なら従来の直近120行に戻す。
+        if since_utc:
+            prev, prev_utc = previous_model_deployed_at(conn)
+            if prev_utc and prev_utc < since_utc:
+                diag["prev_model_deployed_at"] = prev
+                rows = list(conn.execute(f"""
+                    SELECT pc.predictions_json, g.race_name, pc.created_at FROM predictions_cache pc
+                    JOIN races g ON pc.race_id = g.race_id
+                    WHERE pc.created_at >= ? AND {PRE_START_SQL}
+                    ORDER BY g.race_date DESC, pc.created_at DESC LIMIT 120
+                """, (prev_utc,)))
+                if len(_gate_samples(rows)[0]) >= MIN_SAMPLE_FOR_THRESHOLDS:
+                    diag["window_rule"] = "since_prev_model"
+                else:
+                    rows = []
+        if not rows:
+            diag["window_rule"] = "recent120"
+            rows = list(conn.execute(f"""
+                SELECT pc.predictions_json, g.race_name, pc.created_at FROM predictions_cache pc
+                JOIN races g ON pc.race_id = g.race_id
+                WHERE {PRE_START_SQL}
+                ORDER BY g.race_date DESC, pc.created_at DESC LIMIT 120
+            """))
         tops, sums = _gate_samples(rows)
+        # #170 (2): 分散のずれの安全弁。現モデルの行と、広げた窓のうち配備時刻より前の行で
+        # レース内 sd の中央値を比べる (配備時刻が不明なら分けられないので見ない)。
+        if since_utc:
+            older = [r for r in rows if (r["created_at"] or "") < since_utc]
+            sd_cur, k_cur = _rank_sd_median(cur_rows)
+            sd_old, k_old = _rank_sd_median(older)
+            diag["n_older"] = k_old
+            diag["sd_median_current"] = round(sd_cur, 4) if sd_cur is not None else None
+            diag["sd_median_older"] = round(sd_old, 4) if sd_old is not None else None
+            if k_cur >= DISPERSION_MIN_RACES and k_old >= DISPERSION_MIN_RACES:
+                ratio = max(sd_cur, sd_old) / max(min(sd_cur, sd_old), 1e-9)
+                diag["dispersion_ratio"] = round(ratio, 3)
+                if ratio > DISPERSION_RATIO_LIMIT:
+                    shift = True
+                    if diag["n_current"] >= DISPERSION_MIN_CURRENT:
+                        tops, sums = _gate_samples(cur_rows)
+                        diag["window_rule"] = "current_model_dispersion_shift"
+                        widened = False
+                        fresh = not retrained
+                    else:
+                        diag["note"] = (f"分散のずれ (比 {ratio:.2f} > {DISPERSION_RATIO_LIMIT}) を検知したが、"
+                                        f"現モデルの使えるレースが {diag['n_current']} 件 "
+                                        f"(< {DISPERSION_MIN_CURRENT}) で現モデルだけでは引けない → 拡張窓のまま")
 
-    if len(tops) < MIN_SAMPLE_FOR_THRESHOLDS:
+    if len(tops) < MIN_SAMPLE_FOR_THRESHOLDS and diag["window_rule"] != "current_model_dispersion_shift":
         print(f"🎚 投資ゲート: 標本 {len(tops)} 件は不足 → 固定値 {FALLBACK} を維持")
-        return {"available": False, "n": len(tops), "thresholds": FALLBACK}
+        return {"available": False, "n": len(tops), "thresholds": FALLBACK, **diag}
 
-    tops.sort(); sums.sort()
     if retrained:
         print(f"   ⚠️ 再学習した新モデルが未 commit。窓の起点 {since or '不明'} は前のモデルの配備時刻で、"
               f"閾値は前モデルの予測分布から引いています (window_matches_model=False)")
+    elif widened and diag["window_rule"] == "since_prev_model":
+        print(f"   ⚠️ 現モデル ({since}) 以降の使えるレースが {MIN_SAMPLE_FOR_THRESHOLDS} 件未満。"
+              f"直前のモデル ({diag['prev_model_deployed_at']}) の配備以降の最大120レースから引いています "
+              f"(window_matches_model=False)")
     elif widened:
         print(f"   ⚠️ 現モデル ({since or '配備時刻不明'}) 以降の使えるレースが "
               f"{MIN_SAMPLE_FOR_THRESHOLDS} 件未満。直前のモデルを含む直近120レースから引いています "
               f"(window_matches_model=False)")
-    th = {
-        "top_prob": round(tops[int(len(tops) * TARGET["top_prob"])], 4),
-        "top3_sum": round(sums[int(len(sums) * TARGET["top3_sum"])], 4),
-    }
+    if diag["sd_median_current"] is not None or diag["sd_median_older"] is not None:
+        _f = lambda x: f"{x:.3f}" if x is not None else "-"
+        print(f"   窓の内訳 [{diag['window_rule']}]: 現モデル {diag['n_current']}R (sd中央値 "
+              f"{_f(diag['sd_median_current'])}) / それより前 {diag['n_older']}R (sd中央値 "
+              f"{_f(diag['sd_median_older'])}) / 比 {_f(diag['dispersion_ratio'])} "
+              f"(限度 {DISPERSION_RATIO_LIMIT})")
+    if diag["window_rule"] == "current_model_dispersion_shift":
+        print(f"   ⚠️ 分散のずれを検知 (比 {diag['dispersion_ratio']:.2f} > {DISPERSION_RATIO_LIMIT}) → "
+              f"前のモデルの行を混ぜず、現モデルの {diag['n_current']} レースだけで引いています "
+              f"(30件未満なので分位は粗い)")
+    elif shift:
+        print(f"   ⚠️ {diag['note']}。閾値が現モデルの分布とずれている可能性がある")
+    th = _quantile_thresholds(tops, sums)
     print(f"🎚 投資ゲートの閾値 (n={len(tops)}): "
           f"top_prob≥{th['top_prob']:.3f} / top3_sum≥{th['top3_sum']:.3f} "
           f"(目標遮断率 {TARGET['top_prob']:.0%}/{TARGET['top3_sum']:.0%})")
     return {"available": True, "n": len(tops), "target_block_rate": TARGET,
             "model_deployed_at": since, "window_matches_model": fresh,
             "model_retrained_uncommitted": retrained,   # #169
-            "thresholds": th}
+            "thresholds": th,
+            **diag}   # #170
 
 
 _GRADES = ("S", "A", "B", "C", "D")
@@ -696,11 +880,70 @@ def _bet_gate_or_keep(conn):
                 prev = json.load(f).get("bet_gate")
             if prev:
                 print(f"🎚 投資ゲート: KEEP_BET_GATE=1 → 既存の閾値を維持 {prev.get('thresholds')}")
+                # #170: 閾値は動かさず、現モデルだけの窓との遮断率の差だけ記録する。
+                # 失敗しても据え置き (本来の仕事) は止めない
+                prev = dict(prev)
+                try:
+                    prev["sunday_check"] = _sunday_gate_check(conn, prev)
+                except Exception as e:
+                    prev["sunday_check"] = {"available": False, "error": f"{type(e).__name__}: {e}"}
+                    print(f"   ⚠️ 据え置き閾値の点検に失敗: {type(e).__name__}: {e}")
                 return prev
         except (OSError, ValueError):
             pass
         print("🎚 投資ゲート: KEEP_BET_GATE=1 だが既存値が読めない → 作り直す")
     return build_bet_gate_thresholds(conn)
+
+
+def _sunday_gate_check(conn, kept):
+    """週末の途中 (KEEP_BET_GATE) に据え置いた閾値が、現モデルの分布とずれていないかを測る (#170)。
+
+    毎週再学習 (#169) では、金曜〜土曜未明に引く閾値は毎週「土曜分の新モデル + 前モデル」の
+    拡張窓から来る (build_bet_gate_thresholds)。現モデルだけで30件を超える最初の時点は日曜未明
+    (3場開催の時だけ) だが、そこで引き直すと土曜と日曜で見送りの基準が変わる (#161) ので閾値は
+    動かさない。代わりに、現モデルだけの窓で引いた閾値と据え置いた閾値のそれぞれで、同じ窓の
+    遮断率を並べて残す (window_matches_model が毎週 false で情報を持たない分の補い)。
+    事後の検知は check_raceday_completeness (c) が別にやる。
+    """
+    since, since_utc = current_model_deployed_at(conn)
+    if not since_utc:
+        print("   🔎 据え置き閾値の点検: モデルの配備時刻が取れない → 比較しない")
+        return {"available": False, "note": "モデルの配備時刻が取れない"}
+    rows = list(conn.execute(f"""
+        SELECT pc.predictions_json, g.race_name FROM predictions_cache pc
+        JOIN races g ON pc.race_id = g.race_id
+        WHERE pc.created_at >= ? AND {PRE_START_SQL}
+        ORDER BY g.race_date DESC LIMIT 400
+    """, (since_utc,)))
+    tops, sums = _gate_samples(rows)
+    out = {"available": False, "n": len(tops), "model_deployed_at": since}
+    if len(tops) < MIN_SAMPLE_FOR_THRESHOLDS:
+        out["note"] = (f"現モデルだけの窓の使えるレースが {len(tops)} 件 "
+                       f"(< {MIN_SAMPLE_FOR_THRESHOLDS}) → 比較しない")
+        print(f"   🔎 据え置き閾値の点検: {out['note']}")
+        return out
+    kept_th = (kept or {}).get("thresholds") or {}
+    if not ("top_prob" in kept_th and "top3_sum" in kept_th):
+        out["note"] = "据え置いた閾値が読めない → 比較しない"
+        print(f"   🔎 据え置き閾値の点検: {out['note']}")
+        return out
+    kept_th = {"top_prob": float(kept_th["top_prob"]), "top3_sum": float(kept_th["top3_sum"])}
+    cur_th = _quantile_thresholds(tops, sums)
+    bk = _block_rates(tops, sums, kept_th)
+    bc = _block_rates(tops, sums, cur_th)
+    diff = {k: round(100 * (bk[k] - bc[k]), 1) for k in ("top_prob", "top3_sum", "either")}
+    out.update({"available": True, "thresholds_kept": kept_th, "thresholds_current_window": cur_th,
+                "block_rate_kept": bk, "block_rate_current_window": bc, "diff_pt": diff,
+                "note": "閾値は据え置き (KEEP_BET_GATE)。比較のみ"})
+    _p = lambda r: f"{100 * r['top_prob']:.0f}%/{100 * r['top3_sum']:.0f}% (どちらか {100 * r['either']:.0f}%)"
+    print(f"   🔎 据え置き閾値の点検 (現モデルだけの窓 n={len(tops)}、閾値は動かさない): "
+          f"据え置き {kept_th['top_prob']}/{kept_th['top3_sum']} → 遮断 {_p(bk)} | "
+          f"この窓で引くと {cur_th['top_prob']}/{cur_th['top3_sum']} → 遮断 {_p(bc)} | "
+          f"差 {diff['top_prob']:+.1f}/{diff['top3_sum']:+.1f}pt")
+    if max(abs(diff["top_prob"]), abs(diff["top3_sum"])) >= 10:
+        print("   ⚠️ 据え置いた閾値の遮断率が、現モデルだけの窓で引いた場合と 10pt 以上ずれている "
+              "(来週の金曜に引き直される。投資ゲートの遮断率は check_raceday_completeness (c) も見る)")
+    return out
 
 
 def main():

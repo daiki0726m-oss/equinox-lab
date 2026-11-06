@@ -578,12 +578,40 @@ def main():
     # が分かったが、どちらも週次の監視に無かった。v3 の評価も1週末の勝ち負けでなく、
     # 同じレースの対応比較を貯めて累積で見る。
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    # #170: 2セクションは例外を握って本体の ROI 集計を守るが、握るだけだと欠けたレポートが
+    # exit 0 で commit され、weekly_report.yml の run は緑のまま誰にも届かなかった。
+    # 劣化 (例外で落ちた / 今週の予測時オッズがスナップショットからも履歴からも1レースも取れない) を
+    # 末尾の1行に残し、WEEKLY_REPORT_FAIL_ON_DEGRADED=1 (weekly_report.yml) の時だけ終了コード 3 で返す
+    # (手元の実行の終了コードは変えない)。スナップショットがあれば履歴が無くても今週の (a)(b) は出るので
+    # 劣化扱いにしない。
+    # #170 (検証の指摘): 判定は出力そのもの (今週の行の出どころ) で行う。旧版は「履歴の clone が
+    # 読めるか (available)」も条件にしていたが、available は HEAD を見るだけなので、clone はできて
+    # 予測 JSON の版 (blob) の遅延取得だけが落ちた時は (a)(b) が消えても exit 0 のまま緑で commit され、
+    # その版が「完全版」として火曜の上書きからも守られていた (check_raceday_completeness の
+    # 「版が読めなかった」と同じ故障)。履歴が健全なら投稿前の版の中に必ず同じ予測の版がある
+    # (投稿直前の版そのもの) ので、今週の行が1件以上あって予測時の出どころが0件なら、どの原因でも
+    # (a)(b) は欠けている。available は理由の書き分けにだけ使う。
+    import traceback
+    degraded = []
     if not args.no_market:
         try:
             import weekly_market_compare as wmc
-            wmc.report(target, conn=c)
+            res = wmc.report(target, conn=c) or {}
+            wk_m = res.get('week') or []
+            if wk_m and not any(r.get('src') == 'スナップショット' or str(r.get('src') or '').startswith('git:')
+                                for r in wk_m):
+                # report() と同じ場所 (RACEDAY_HISTORY_REPO か このリポジトリ) の履歴が読めるか (理由の書き分け)
+                if wmc.ph.History(os.environ.get('RACEDAY_HISTORY_REPO') or wmc.ROOT).available():
+                    why = ("予測 JSON の履歴はあるが今週の版を1つも読めない (blob の取得失敗・投稿前の公開版なし・"
+                           "shallow の境界より前のどれか)")
+                else:
+                    why = "予測 JSON の履歴も読めない"
+                degraded.append(f"今週 {len(wk_m)}R の予測時オッズがスナップショットに無く、{why} "
+                                f"((a) 予測時・(b) が出ていない)")
         except Exception as e:
             print(f"\n⚠️ 予測時点の市場との比較 (#169) に失敗: {type(e).__name__}: {e}")
+            traceback.print_exc()       # #170: 詳細は stderr (CI のログ) に。レポート本文は上の1行
+            degraded.append(f"予測時点の市場との比較が例外で落ちた ({type(e).__name__})")
     try:
         import scorecard_v2_paired as v2p
         print("\n=== 点数表 v3 (本番) と v2 の対応比較 (#169) ===")
@@ -592,6 +620,12 @@ def main():
         v2p.report(target, conn=c)
     except Exception as e:
         print(f"\n⚠️ v3/v2 の対応比較 (#169) に失敗: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        degraded.append(f"v3/v2 の対応比較が例外で落ちた ({type(e).__name__})")
+    if degraded:
+        print("\n⚠️ 週次レポートの劣化 (#170): " + " / ".join(degraded))
+        if os.environ.get('WEEKLY_REPORT_FAIL_ON_DEGRADED') == '1':
+            sys.exit(3)
 
 
 if __name__ == '__main__':

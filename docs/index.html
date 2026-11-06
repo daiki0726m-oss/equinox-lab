@@ -1136,10 +1136,17 @@ function renderSummary(data) {
   const bt = state.activeBetType;
   let totalBets = 0, totalAmount = 0, totalPayout = 0;
   let hasAnyResults = false;
+  let provRaces = 0;   // #170
 
   allRaces.forEach(race => {
     const bets = (race.all_bets || {})[bt] || [];
     const scaledBets = scaleBets(bets, state.budget);
+    // #170: 枠順確定前 (仮馬番) のレースはカードで買い目を出さないので、推奨数・投資額・払戻にも数えない。
+    // 推奨のあったレース数だけ「+NR 枠順確定後」と添える (数字が0になる理由が分かるように)
+    if (race.numbers_confirmed === false) {
+      if (scaledBets.some(b => b.amount > 0)) provRaces++;
+      return;
+    }
     // #169: 「推奨数」は金額の乗った買い目だけ (0円 = 見送り(参考) は数えない)
     totalBets += scaledBets.filter(b => b.amount > 0).length;
     scaledBets.forEach(b => {
@@ -1153,7 +1160,11 @@ function renderSummary(data) {
   });
 
   document.getElementById('sumRaces').textContent = allRaces.length;
-  document.getElementById('sumBets').textContent = totalBets;
+  if (provRaces > 0) {
+    document.getElementById('sumBets').innerHTML = `${totalBets}<div style="font-size:9px;font-weight:600;color:var(--text-muted);line-height:1.3">+${provRaces}R 枠順確定後</div>`;
+  } else {
+    document.getElementById('sumBets').textContent = totalBets;
+  }
   document.getElementById('sumAmount').textContent = `¥${totalAmount.toLocaleString()}`;
 
   const roiEl = document.getElementById('sumROI');
@@ -1312,6 +1323,8 @@ function renderRaceCards() {
   if (state.filterBetsOnly) {
     const bt = state.activeBetType;
     races = races.filter(race => {
+      // #170: 枠順確定前のレースはカードに買い目が出ないので「推奨あり」にしない (推奨数と同じ母集団)
+      if (race.numbers_confirmed === false) return false;
       const bets = (race.all_bets || {})[bt] || [];
       // #169: 推奨数と同じ基準 (0円の参考買い目だけのレースは「推奨あり」にしない)
       return bets.some(b => typeof b.amount !== 'number' || b.amount > 0);
@@ -1403,6 +1416,15 @@ function siText(h) { return Math.round(siDisp(h) * 10) / 10; }
 // #169: 枠順確定前の予測 (export の numbers_confirmed=false) は馬番が仮 (五十音順) なので出さない。
 // 予想タブだけが対象 (結果タブは確定後にしか出ない)。X/Threads 側の #27/#150 ガードと同じ扱い
 function numText(h) { return h._provisional ? '–' : h.horse_number; }
+// #170: 取消馬。export が付ける scratched に加え、古い JSON でも拾えるよう
+// 999.9倍 (取消の実オッズ) / 番兵 (負のオッズ・9999人気) でも判定する (X/Threads の #169 判定と同じ式 + 負オッズ)
+function isScratched(h) {
+  // #170: 確定着順のある馬は走っている (999.9倍で実際に走った大穴もいる)。
+  // export の「着順のある馬は取消にしない」・結果タブの finish>0 と同じ基準。scratched===false は見ない
+  // (#169 以降の cache は取消でない馬全般に false が入り、「走った」の証拠にならない)
+  if (h && (h.finish || 0) > 0) return false;
+  return !!(h && (h.scratched || (h.odds_win || 0) >= 999.9 || (h.odds_win || 0) < 0 || (h.popularity || 0) >= 999));
+}
 
 // ─── Prediction Tab ───
 function renderPredTab(race) {
@@ -1410,14 +1432,21 @@ function renderPredTab(race) {
   const _capHtml = '';
   // Sort by mark order: ◎→○→▲→△→×→注→(no mark by pred_win_pct)
   const MARK_ORDER = {'◎': 0, '○': 1, '▲': 2, '△': 3, '☆': 4, '×': 5, '注': 6};
-  const sorted = [...horses].sort((a, b) => {
+  const _byMark = (a, b) => {
     const ma = a.mark in MARK_ORDER ? MARK_ORDER[a.mark] : 100;
     const mb = b.mark in MARK_ORDER ? MARK_ORDER[b.mark] : 100;
     if (ma !== mb) return ma - mb;
     return (b.pred_win_pct || 0) - (a.pred_win_pct || 0);
+  };
+  const sorted = [...horses].sort((a, b) => {
+    const xa = isScratched(a), xb = isScratched(b);   // #170: 取消馬は印の有無によらず末尾
+    if (xa !== xb) return xa ? 1 : -1;
+    return _byMark(a, b);
   });
   const provisional = race.numbers_confirmed === false;   // #169
   sorted.forEach(h => { h._provisional = provisional; });
+  // #170: 相対評価 (能/騎/場) の母集団から取消馬を外す (出走しない馬が順位を押し下げる)
+  const runners = sorted.filter(h => !isScratched(h));
 
   // Compute category grades within race
   // 相対評価カテゴリ（レース内順位で評価）
@@ -1438,7 +1467,7 @@ function renderPredTab(race) {
   // ── 相対評価 ──
   RELATIVE_CATS.forEach((cat, idx) => {
     const _v = h => (cat.val ? cat.val(h) : h[cat.key]) || 0;
-    const rawVals = sorted.map(_v);
+    const rawVals = runners.map(_v);   // #170: 取消馬を除いた母集団
     const uniqueVals = [...new Set(rawVals)];
     const allSame = uniqueVals.length <= 1;
     const allZero = uniqueVals.length === 1 && uniqueVals[0] === 0;
@@ -1454,6 +1483,11 @@ function renderPredTab(race) {
     const vals = rawVals.filter(x => !(cat.zeroNA && x === 0)).sort((a,b) => b - a);
     const n = vals.length;
     sorted.forEach(h => {
+      if (isScratched(h)) {   // #170: 母集団の外なので順位なし
+        if (!h._catGrades) h._catGrades = [];
+        h._catGrades[idx] = { label: cat.label, grade: '-', str: null };
+        return;
+      }
       const v = _v(h);
       const firstIdx = vals.indexOf(v);
       const lastIdx = vals.lastIndexOf(v);
@@ -1518,12 +1552,14 @@ function renderPredTab(race) {
   html += '</div>';
 
   // #144: 「なぜこの印か」— 評価の内訳と市場とのズレ
-  html += renderWhyPanel(race, sorted);
+  // #170: 内訳の「印5頭」は取消を末尾に寄せない印の順で取る (取消の印馬を押し出して ☆/注 で穴埋めしない)
+  html += renderWhyPanel(race, sorted, [...horses].sort(_byMark));
 
   // Bets section
   html += '<div class="bets-section">';
   html += `<div class="bets-title">💰 ${bt}の推奨買い目</div>`;
-  html += investStatusHtml(race);   // #169
+  // #170: 仮馬番の時は投資状態 (見送り/band) も出さない (「買い目は参考表示」と「確定後に表示」が並んで矛盾する)
+  if (!provisional) html += investStatusHtml(race);   // #169
 
   if (provisional) {
     // #169: 仮馬番の買い目は、確定後の馬番と別の馬を指すので出さない
@@ -1587,7 +1623,8 @@ function whyScatter(horses, raceId) {
   // AI複勝率 (縦) × オッズ (横・対数) の散布図。
   // 右上 = AIは来ると見ているのに市場は評価していない (AI高評価×人気薄)
   // 左下 = 市場は人気なのにAIは低評価 = 危険な人気馬
-  const pts = horses.filter(h => (h.odds_win || 0) > 0 && h.pred_top3_pct != null);
+  // #170: 取消馬は描かない (999.9倍の点が横軸を引き伸ばし、出走しない馬が「人気薄」に見える)
+  const pts = horses.filter(h => !isScratched(h) && (h.odds_win || 0) > 0 && h.pred_top3_pct != null);
   if (pts.length < 4) return '';
   const W = 320, H = 200, PL = 34, PR = 10, PT = 14, PB = 26;
   const lx = v => Math.log10(Math.max(1.05, v));
@@ -1633,12 +1670,14 @@ function whyBars(h) {
   // 人気の影響を除くと寄与がほぼゼロで、しかも #147 以降◎はそれで選ばれていない。
   // = 選定に使っていない値を「なぜこの印か」として見せていた。
   const rs = (h.sc_reasons || []).filter(r => r && r.points);
+  // #170: 取消の印馬は内訳に残し (投稿で凍結した印の根拠)、「取消」と札を付ける
+  const scrTag = isScratched(h) ? '<span style="color:#888;font-size:0.68rem">取消</span>' : '';
   if (rs.length) {
     const max = Math.max(...rs.map(r => Math.abs(r.points))) || 1;
     return `<div class="why-horse">
       <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
         <span class="why-num">${numText(h)}</span>
-        <span class="why-name">${h.horse_name || ''}</span>
+        <span class="why-name">${h.horse_name || ''}</span>${scrTag}
         <span class="why-pts">${h.sc_points > 0 ? '+' : ''}${h.sc_points}点</span></div>
       <div class="why-rows">${rs.map(r => {
         const w = Math.round(Math.abs(r.points) / max * 100);
@@ -1656,13 +1695,22 @@ function whyBars(h) {
   }
   // 点数表が無い日 (旧データ) は従来の6軸に落とす
   const gs = (h._catGrades || []).filter(g => g && g.str != null);
-  if (!gs.length) return '';
+  if (!gs.length) {
+    // #170: 取消馬は相対評価 (能/騎/場) の母集団の外。絶対評価 (血/績/天) もデータなしなら、印と「取消」の1行だけ残す
+    if (!scrTag) return '';
+    return `<div class="why-horse">
+    <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
+      <span class="why-num">${numText(h)}</span>
+      <span class="why-name">${h.horse_name || ''}</span>${scrTag}</div>
+  </div>`;
+  }
   const top = [...gs].sort((a, b) => b.str - a.str);
+  // #170: 取消馬は相対評価 (能/騎/場) が無く絶対評価 (血/績/天) だけ残る。オッズの代わりに「取消」
   return `<div class="why-horse">
     <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
       <span class="why-num">${numText(h)}</span>
-      <span class="why-name">${h.horse_name || ''}</span>
-      <span class="why-odds">${h.odds_win ? h.odds_win + '倍' : ''}</span></div>
+      <span class="why-name">${h.horse_name || ''}</span>${scrTag}
+      <span class="why-odds">${!scrTag && h.odds_win ? h.odds_win + '倍' : ''}</span></div>
     <div class="why-bars">${top.map(g => `
       <div class="why-bar-row" title="${WHY_CAT_TIP[g.label] || g.label}: レース内で上位${100 - g.str}%">
         <span class="why-bar-label">${WHY_CAT_FULL[g.label] || g.label}</span>
@@ -1670,8 +1718,10 @@ function whyBars(h) {
       </div>`).join('')}</div>
   </div>`;
 }
-function renderWhyPanel(race, sorted) {
-  const marked = sorted.filter(h => h.mark);
+function renderWhyPanel(race, sorted, byMark) {
+  // #170: 印5頭は印の順 (byMark) で取る。sorted は取消馬を末尾に寄せてあるので、
+  // そこから取ると取消の◎/○が押し出され、捕捉外の ☆/注 が繰り上がる
+  const marked = (byMark || sorted).filter(h => h.mark);
   if (!marked.length) return '';
   const id = 'why-' + race.race_id;
   const sc = whyScatter(sorted, race.race_id);
@@ -1694,9 +1744,12 @@ function renderHorseRow(h) {
   // showReasons param removed 2026-05-25: reason-tag CSS は廃止済 (dead code)
   const markClass = h.mark === '◎' ? 'mark-honmei' : h.mark === '○' ? 'mark-taikou' : h.mark === '▲' ? 'mark-tanana' : h.mark === '注' ? 'mark-chuui' : 'mark-renshita';
 
+  // #170: 取消馬は「取消」と出し、オッズ・人気・AI複勝・勝率予想は出さない (出走しない馬の確率を見せない)
+  const scr = isScratched(h);
+
   // Rank bar width (normalize rank_score to 0-100%)
   const rankScore = h.rank_score || 0;
-  const rankPct = Math.max(0, Math.min(100, (rankScore + 2) * 25)); // map ~[-2, +2] to [0, 100]
+  const rankPct = scr ? 0 : Math.max(0, Math.min(100, (rankScore + 2) * 25)); // map ~[-2, +2] to [0, 100]
 
   // Win rate / Top3 rate color coding
   const wr = h.win_rate || 0;
@@ -1718,15 +1771,15 @@ function renderHorseRow(h) {
         ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade === '-' ? 'unknown' : g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
       </div>
       <div class="horse-stats">
-        ${(h.odds_win > 0 && h.popularity > 0 && h.popularity < 999) ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span><span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span></span>` : ''}
+        ${scr ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">取消</span></span>` : (h.odds_win > 0 && h.popularity > 0 && h.popularity < 999) ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span><span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span></span>` : ''}
         <span class="stat">SI <span class="stat-val">${siText(h)}</span></span>
-        <span class="stat">AI複勝 <span class="stat-val">${predTop3}%</span></span>
+        <span class="stat">AI複勝 <span class="stat-val">${scr ? '–' : predTop3 + '%'}</span></span>
         <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
         <span class="stat">過去連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>
       </div>
     </div>
     <div class="horse-prob">
-      <div class="prob-value">${predWin}%</div>
+      <div class="prob-value">${scr ? '–' : predWin + '%'}</div>
       <div class="prob-label">勝率予想</div>
       <div class="rank-bar"><div class="rank-bar-fill" style="width:${rankPct}%"></div></div>
     </div>

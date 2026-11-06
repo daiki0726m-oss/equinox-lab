@@ -12,6 +12,7 @@ from itertools import combinations
 import sys as _sys150, os as _os150
 _sys150.path.insert(0, _os150.path.dirname(_os150.path.dirname(_os150.path.abspath(__file__))))
 import flags   # #150: 買い目フラグの単一情報源 (env > config/prediction_flags.yml)
+from race_utils import is_scratched_horse as _is_scratched_horse   # #170: 取消の判定 (印と共通)
 
 
 def _bet_sig(bet_type, horse_numbers):
@@ -410,7 +411,8 @@ class BettingStrategy:
                 partners = partners[:6]
         if len(partners) < 2:
             # フォールバック: ML 順 上位5
-            partners = sorted_preds[1:6]
+            # #170: 取消と分かっている馬は外す (取消が無ければ sorted_preds[1:6] と同じ)
+            partners = [q for q in sorted_preds[1:] if not _is_scratched_horse(q)][:5]
         # #95: 軸馬が相手プールに混入しないよう明示的に除外 (同一馬ペア防止の二重防御)
         # #149: 上限は6。#146 で 5→6 に広げたのに**ここだけ 5 のまま**残っており、
         # 切り詰めで最後尾の注が再び消えていた (☆と注が揃った57レース全部で
@@ -531,8 +533,11 @@ class BettingStrategy:
                 # 実運用111R の反実仮想: 現行(○▲△×) ROI 49.8% vs モデル上位4頭 70.1% (+20.3pt)。
                 # D/G は逆に妙味○が的中時の高配当を担うため現行維持 (D: 69.3% vs 36.9%)。
                 # 印(コンテンツ層)は変えず、買い目(ROI層)だけモデル順に戻す — #111 の役割分担。
+                # #170: 取消と分かっている馬 (印の候補から外した _scratched) は相手にしない。
+                # 印は外れているのに資金の乗る三連複に残る食い違いを塞ぐ (取消が無ければ不変)。
                 _a_pool = sorted((q for q in sorted_preds
-                                  if q["horse_number"] != center),
+                                  if q["horse_number"] != center
+                                  and not _is_scratched_horse(q)),
                                  key=lambda q: -(q.get('pred_top3') or 0))[:4]
                 pairs = list(combinations(_a_pool, 2))
             elif trio_focus:

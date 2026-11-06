@@ -149,16 +149,10 @@ def _is_scratch_odds(odds, popularity):
     ※ 999.9倍は JRA の表示上限でもあり、実際に走った大穴も 2021〜2024 に5頭いる
       (全頭12着以下)。予想時点では取消と区別できないが、その5頭はどれも印に値しない
       馬なので、取消側に倒す (印の候補から外れるだけで、行も LGB の確率も残る)。
+    #170: 判定の本体は race_utils.is_scratch_values (投稿・Threads・買い目・export と共通)。
     """
-    try:
-        o = float(odds or 0)
-    except (TypeError, ValueError):
-        o = 0.0
-    try:
-        pop = int(popularity or 0)
-    except (TypeError, ValueError):
-        pop = 0
-    return o < 0 or o >= 999.9 or pop >= 999
+    from race_utils import is_scratch_values
+    return is_scratch_values(odds, popularity)
 
 
 def _scratched_numbers(results_rows, api_odds=None):
@@ -1339,24 +1333,40 @@ def cmd_predict(args):
         # 推奨理由を生成 (UI-2 fix)
         # #117 (2026-07-20): 「直近勝率/複勝率」系の理由は廃止 — 出馬表で誰でも分かる
         # 浅い情報 (ユーザー指摘)。AIにしか出せない「市場との乖離」を理由の主軸に。
-        _t3_order = sorted(sorted_preds, key=lambda q: -(q.get('pred_top3') or 0))
+        # #170: 順位は取消と分かっている馬を除いた母集団で数える (印の候補 _cands と同じ)。
+        # 能力モデルはオッズを見ないので取消馬が能力1位になりうる (11/01 東京7R 11番) —
+        # 母集団に残すと全馬の「能力評価N位」が1つずつずれる。取消馬自身の理由は出さない。
+        from race_utils import is_scratched_horse, running_horses, field_popularities
+        _field = running_horses(sorted_preds)
+        _t3_order = sorted(_field, key=lambda q: -(q.get('pred_top3') or 0))
         _t3_rank = {q['horse_number']: r + 1 for r, q in enumerate(_t3_order)}
-        _ab_order = sorted(sorted_preds, key=lambda q: -(q.get('ability_score') or 0))
+        _ab_order = sorted(_field, key=lambda q: -(q.get('ability_score') or 0))
         _ab_rank = {q['horse_number']: r + 1 for r, q in enumerate(_ab_order)}
+        # #170 手直し: 比べる市場の人気も出走馬の中で数え直す (AI 側だけ出走馬で数えると、
+        # 取消馬が中位人気の番兵時代のレースで存在しない「乖離」が出る。202607020612 12番)。
+        # cache に保存する popularity は変えない。取消馬が最下位 (現行) なら値はそのまま
+        _mkt = field_popularities(sorted_preds)
+        _first = _field[0] if _field else None     # 取消が無ければ sorted_preds[0] と同じ
         for i, p in enumerate(sorted_preds):
+            if is_scratched_horse(p):
+                p["reasons"] = []
+                continue
             pw = p["pred_win"] * 100
             pt = p["pred_top3"] * 100
             # #169: 理由の「SI」も画面と同じ値 (V2d のレースは si_avg_v)。Threads が
             # 「スピード指数NN」に開いて出すので、内訳・画面と別の数字を出さない
             from ml.si_display import display_si, si_rank
             si = round(display_si(p), 1)
-            _sir = si_rank(sorted_preds, p)     # 内訳「平均スピード指数 N位」と同じ順位
+            # 内訳「平均スピード指数 N位」と同じ順位。#170: 母集団は出走馬 (_field) — V2d の
+            # レースは取消馬の値が 0 (zero_scratched) なので結果は同じ、旧指数 (代用モード) の
+            # レースでは点数表と同じく取消馬を数えなくなる
+            _sir = si_rank(_field, p)
             reasons = []
-            if i == 0:
+            if p is _first:
                 if pw >= 40: reasons.append("圧倒的な勝率で本命筆頭")
                 elif pw >= 25: reasons.append("勝率トップで信頼度が高い")
                 else: reasons.append("僅差ながら勝率1位")
-            _pop = p.get('popularity') or 0
+            _pop = _mkt.get(p['horse_number'], p.get('popularity') or 0)
             _tr3 = _t3_rank.get(p['horse_number'], 99)
             _ab = _ab_rank.get(p['horse_number'], 99)
             if _pop >= 6 and _tr3 <= 3:

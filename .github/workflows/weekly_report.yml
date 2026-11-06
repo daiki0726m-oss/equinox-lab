@@ -12,6 +12,8 @@ name: 📊 Weekly Report (#169)
 # - 予測時点のオッズは公開した予測 JSON の git 履歴から取る。この job の checkout は shallow なので
 #   feature_parity.yml と同じ読み取り専用の部分クローン (/tmp/hist) を作る。累計の起点
 #   (点数表で印を選び始めた 09/05) より前から取る。keiba.db.gz の過去版は一切取らない (#119)。
+# #170: 失敗・劣化・push 全滅を固定タイトルの Issue で知らせる (旧版は run が赤くなるだけで、
+#   履歴が読めず (a)(b) を欠いたレポートは緑のまま commit されていた — #155「層を足したら死を知る仕組みも」)。
 on:
   schedule:
     - cron: '0 21 * * 0'      # 毎週月曜 6:00 JST (日曜の結果スイープ 20:00/22:00 の後)
@@ -33,6 +35,7 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
+      issues: write     # #170: 失敗・劣化の通知
     steps:
       - uses: actions/checkout@v4
       - name: Unpack DB
@@ -44,6 +47,7 @@ jobs:
         run: pip install lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
 
       - name: 📜 予測 JSON の履歴を取得
+        id: hist
         continue-on-error: true
         timeout-minutes: 10
         env:
@@ -62,6 +66,10 @@ jobs:
           RACEDAY_HISTORY_REPO: /tmp/hist
           PRED_HISTORY_PREFETCH: '1'
           PRED_HISTORY_CACHE: /tmp/pred_history_cache
+          # #170: 劣化 (#169 の2セクションが例外で落ちた / 今週の予測時オッズがスナップショットからも
+          # 履歴からも1レースも取れない — clone の失敗も、clone はできて版の取得だけ落ちた時も) は
+          # 終了コード 3。step は failure になり、下の Issue 通知に乗る
+          WEEKLY_REPORT_FAIL_ON_DEGRADED: '1'
           DAYS: ${{ github.event.inputs.days }}
         run: |
           set +e
@@ -71,13 +79,21 @@ jobs:
           # v3/v2 の対応比較は既定で対象日の未計算分を計算する (1レース約30〜70秒)
           python3 scripts/weekly_scorecard.py $ARGS --v2-workers 2 | tee /tmp/weekly_report.md
           CODE=${PIPESTATUS[0]}
-          echo "週次レポートの終了コード: $CODE"
+          echo "週次レポートの終了コード: $CODE (0=正常 3=劣化 それ以外=失敗)"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
           exit $CODE
 
       # レポートが途中で落ちても、出せた分は残す (黙って何も無い週を作らない)
+      # #170: ただし完全版 (レポート step が success) が既にある週は、失敗・劣化した出力で上書きしない
+      #   (火曜の保険 run の履歴取得だけが落ちると、月曜の完全版を (a)(b) の無い版で上書きしていた)。
+      #   push が3回とも失敗したら exit 1 — continue-on-error でも outcome は failure になり、下の通知に乗る
+      #   (旧版はループ最後の sleep の 0 で抜け、push 全滅でも何も起きなかった)。
       - name: 📝 レポートを commit
+        id: commit
         if: always()
         continue-on-error: true
+        env:
+          REPORT_OUTCOME: ${{ steps.report.outcome }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -85,26 +101,94 @@ jobs:
             LAST=$(grep -m1 '対象週末' /tmp/weekly_report.md | grep -oE '[0-9]{8}' | tail -1)
             [ -z "$LAST" ] && LAST=$(TZ=Asia/Tokyo date +%Y%m%d)
             mkdir -p docs/data/weekly_reports
-            {
-              echo "<!-- .github/workflows/weekly_report.yml が scripts/weekly_scorecard.py の出力を保存 (#169)。"
-              echo "     レポート step の結果: ${{ steps.report.outcome }} -->"
-              cat /tmp/weekly_report.md
-            } > "docs/data/weekly_reports/report_${LAST}.md"
-            git add "docs/data/weekly_reports/report_${LAST}.md"
+            FILE="docs/data/weekly_reports/report_${LAST}.md"
+            if [ "$REPORT_OUTCOME" != "success" ] && [ -f "$FILE" ] && grep -q 'レポート step の結果: success' "$FILE"; then
+              echo "ℹ️ $FILE は完全版 (レポート step の結果: success) → 今回の出力 ($REPORT_OUTCOME) で上書きしない"
+              echo "kept_complete=true" >> "$GITHUB_OUTPUT"
+            else
+              {
+                echo "<!-- .github/workflows/weekly_report.yml が scripts/weekly_scorecard.py の出力を保存 (#169)。"
+                echo "     レポート step の結果: ${REPORT_OUTCOME} -->"
+                cat /tmp/weekly_report.md
+              } > "$FILE"
+              git add "$FILE"
+            fi
           else
             echo "⚠️ 週次レポートの出力が空"
           fi
           git add docs/data/scorecard_v2_paired.json 2>/dev/null || true
           if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
           git commit -m "📊 週次レポート $(TZ=Asia/Tokyo date '+%m/%d') (#169)"
+          PUSHED=0
           for i in 1 2 3; do
             git pull --rebase --autostash -X theirs origin main || git rebase --abort || true
-            git push origin HEAD:main && break || sleep 5
+            if git push origin HEAD:main; then PUSHED=1; break; fi
+            sleep 5
           done
+          if [ "$PUSHED" != "1" ]; then
+            echo "::error::週次レポートの push が3回とも失敗 — origin に届いていない (#170)"
+            exit 1
+          fi
 
-      - name: ❌ レポートの失敗を run に残す
-        if: steps.report.outcome == 'failure'
+      # #170: 失敗・劣化・push 全滅を Issue で知らせる。固定タイトルの開いた Issue があればコメント、
+      # 無ければ新規 (weekly_retrain の要降格通知と同じ集約。検索は部分一致なのでタイトルの完全一致で絞る)。
+      # 前の step (checkout・pip 等) の失敗と job の時間切れ (cancelled) も拾う。
+      - name: 🔔 失敗・劣化を Issue で通知 (#170)
+        if: failure() || cancelled() || steps.report.outcome == 'failure' || steps.commit.outcome == 'failure'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HIST_OUTCOME: ${{ steps.hist.outcome }}
+          REPORT_OUTCOME: ${{ steps.report.outcome }}
+          REPORT_CODE: ${{ steps.report.outputs.code }}
+          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+          KEPT_COMPLETE: ${{ steps.commit.outputs.kept_complete }}
         run: |
-          echo "::error::週次レポート (weekly_scorecard.py) が失敗した。出力の末尾:"
-          tail -30 /tmp/weekly_report.md 2>/dev/null || true
+          TITLE="📊 週次レポート (weekly_report) の失敗・劣化"
+          if [ "$REPORT_CODE" = "3" ]; then
+            WHAT="レポートが劣化した (一部のセクションが欠けたまま)"
+          elif [ "$REPORT_OUTCOME" = "failure" ]; then
+            WHAT="レポートが失敗した (終了コード ${REPORT_CODE:-不明 — 時間切れ等})"
+          elif [ "$REPORT_OUTCOME" = "success" ]; then
+            WHAT="レポート自体は正常"
+          else
+            WHAT="レポートが実行されていない (${REPORT_OUTCOME:-不明} — 前の step の失敗か時間切れ)"
+          fi
+          [ "$KEPT_COMPLETE" = "true" ] && WHAT="$WHAT — この週末の完全版は保存済みなので、今回の出力では上書きしていない"
+          [ "$COMMIT_OUTCOME" = "failure" ] && WHAT="$WHAT / commit・push に失敗した (origin に届いていない)"
+          BODY=$(printf '%s\n' \
+            "weekly_report.yml: $WHAT。" "" \
+            "- step の結果: 予測 JSON の履歴の取得 ${HIST_OUTCOME:-不明} / レポート ${REPORT_OUTCOME:-不明} (終了コード ${REPORT_CODE:-なし}) / commit ${COMMIT_OUTCOME:-不明}" \
+            "- 劣化 = #169 の2セクション (市場との比較・v3/v2 の対応比較) が例外で落ちた、または今週の予測時オッズがスナップショットからも予測 JSON の履歴からも1レースも取れない (履歴の clone の失敗・版の取得の失敗など。理由は出力の末尾の「週次レポートの劣化」の行)。" \
+            "- 火曜 6:00 の保険 run が同じ週末をもう一度作る (完全版がある週は、失敗・劣化した出力で上書きしない)。" \
+            "" "Run: $RUN_URL" "" \
+            "出力の末尾:" '```' "$(tail -15 /tmp/weekly_report.md 2>/dev/null)" '```' \
+            "_weekly_report.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_")
+          OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty" 2>/dev/null || true)
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" --body "$BODY" || echo "⚠️ Issue コメント失敗"
+          else
+            gh issue create --title "$TITLE" --body "$BODY" || echo "⚠️ Issue 作成失敗"
+          fi
+
+      - name: ❌ 失敗・劣化を run に残す
+        if: always() && (steps.report.outcome == 'failure' || steps.commit.outcome == 'failure')
+        env:
+          REPORT_OUTCOME: ${{ steps.report.outcome }}
+          REPORT_CODE: ${{ steps.report.outputs.code }}
+          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+        run: |
+          if [ "$REPORT_OUTCOME" = "failure" ]; then
+            if [ "$REPORT_CODE" = "3" ]; then
+              echo "::error::週次レポートが劣化した (#170)。出力の末尾:"
+            else
+              echo "::error::週次レポート (weekly_scorecard.py) が失敗した。出力の末尾:"
+            fi
+            tail -30 /tmp/weekly_report.md 2>/dev/null || true
+          fi
+          if [ "$COMMIT_OUTCOME" = "failure" ]; then
+            echo "::error::週次レポートの commit・push に失敗した (#170)"
+          fi
           exit 1

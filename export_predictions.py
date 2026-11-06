@@ -8,8 +8,28 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from database import get_db
+from race_utils import is_scratched_horse, is_scratch_values
 
 JST = timezone(timedelta(hours=9))
+
+
+def scratched_for_export(h, db_r):
+    """公開 JSON の馬が取消と分かっているか (#170)。判定は race_utils と共通。
+
+    - cache の値: scratched フラグ (#169 の予測時に分かった取消) / 番兵 9999人気 / 負のオッズ
+      (cache の正の odds_win は実オッズの無い日の推定値 0.8/勝率 でありうるので見ない —
+       推定値は 999.9 を超えうる。predict の印の段 #169 と同じ扱い)
+    - DB (results) の値: refresh_odds が書く 999.9倍 = 予測の後に分かった取消も拾う
+      (11/01 東京7R 11番は予測時 4.9倍・2人気で、後から 999.9倍になった) / 古い行の番兵
+    """
+    if is_scratched_horse({**h, "_has_real_odds": False}):
+        return True
+    try:
+        if float(h.get("odds_win") or 0) < 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return bool(db_r) and is_scratch_values(db_r["odds"], db_r["popularity"])
 
 
 def numbers_state(conn, race_id, horses):
@@ -271,6 +291,10 @@ def export_predictions(date_str=None):
                 odds_map = {r['horse_number']: r for r in db_results}
                 for h in horses:
                     db_r = odds_map.get(h['horse_number'])
+                    # #170: 取消と分かっている馬に scratched: true を立てる (判定は X/Threads の
+                    # 💡能力値1位・能力値ランキングと共通 = scratched_for_export)。下の上書きで
+                    # cache の番兵 (9999人気) が消えることがあるので、マージの前に判定する。
+                    _scr = scratched_for_export(h, db_r)
                     if db_r:
                         if db_r['odds'] and db_r['odds'] > 0:
                             h['odds_win'] = db_r['odds']
@@ -278,6 +302,14 @@ def export_predictions(date_str=None):
                         # (#149 で results/cache 側は塞いだが export に残っていた)
                         if db_r['popularity'] and 0 < db_r['popularity'] < 999:
                             h['popularity'] = db_r['popularity']
+                    # #170: odds_win / popularity の値は変えない (投稿側は 999.9 / 9999 でも判定する)。
+                    # 取消でない馬のキーは触らない (旧 cache は無し / #169 以降の cache は false)。
+                    # 着順のある馬は走っているので取消にしない (999.9倍で実際に走った大穴もいる)。
+                    if h['horse_number'] in race_results:
+                        if h.get('scratched'):
+                            h['scratched'] = False
+                    elif _scr:
+                        h['scratched'] = True
                     # 結果をマージ
                     res = race_results.get(h['horse_number'])
                     if res:

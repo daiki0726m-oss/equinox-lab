@@ -93,6 +93,28 @@ jobs:
               print(f'ℹ️ slot サイドカー未取得 ({e}) → lock 不明として dispatch する')
               _locked = {}
           slots = json.load(sys.stdin)
+          # #170: auto_post_x への dispatch は 1 tick に1本まで (raceday_safety_net #161 と同じ型)。
+          # auto_post_x の concurrency (group: auto-post-x, cancel-in-progress: false) は待機を1本しか
+          # 持たず、新しい待機が古い待機を黙って取り消す。旧版は missing を全部3秒おきに dispatch
+          # していたため、09:3x に [predict, odds_flash, fetch, predict] と並ぶと末尾の predict が
+          # odds_flash の代打を取り消しえた (#169 で dashboard_predictions が末尾に predict を足した)。
+          # どれを出すかは check_posting_health の並び (投稿 slot を deadline 順 → predict) で決まる。
+          # 待機中の run が既にあれば、この tick は auto_post_x を出さない (出すとそれを取り消す)。
+          # 実行中 (in_progress) だけなら1本出す = 待機に入るだけ (従来どおり)。
+          # auto_post_x 以外 (fetch_weekend_races 等) は concurrency group が別なので従来どおり全部出す。
+          sys.path.insert(0, 'scripts')
+          try:
+              from check_posting_health import order_for_dispatch
+              slots = order_for_dispatch(slots)
+          except Exception as e:
+              print(f'⚠️ dispatch 順の並べ替えに失敗 ({e}) → 受け取った順で処理')
+          try:
+              from raceday_safety_net import _auto_post_pending
+          except Exception as e:
+              print(f'⚠️ 待機中 run の確認関数を読めない ({e}) → 待機なしとして扱う')
+              _auto_post_pending = lambda: 0   # 判定不能なら 0 (raceday_safety_net と同じ扱い)
+          ap_sent = None      # None=未確認 / True=この tick はもう auto_post_x を出さない
+          ap_mode = None
           for s in slots:
               workflow = s.get('workflow', 'auto_post_x.yml')
               mode = s.get('fallback_mode')
@@ -106,6 +128,19 @@ jobs:
                       print(f'    posted_at={existing.get(\"posted_at\")} run_id={existing.get(\"run_id\")}')
                       continue
 
+              # #170: 1 tick 1本 + 待機中があれば出さない
+              if workflow == 'auto_post_x.yml':
+                  if ap_sent is None:
+                      _pending = _auto_post_pending()
+                      if _pending:
+                          print(f'⏳ auto_post_x に待機中の run が {_pending} 本 → この tick では auto_post_x を dispatch しない')
+                      ap_sent = bool(_pending)
+                  if ap_sent:
+                      _why = ('同じ mode を dispatch 済み' if ap_mode is not None and mode == ap_mode
+                              else '既に1本出した/待機中')
+                      print(f'⏭️ {workflow} mode={mode} ({slot_name}): この tick は {_why} → 次の tick に回す')
+                      continue
+
               if workflow == 'auto_post_x.yml' and mode:
                   cmd = ['gh', 'workflow', 'run', workflow,
                          '--ref', 'main', '-f', f'mode={mode}']
@@ -116,6 +151,8 @@ jobs:
               result = subprocess.run(cmd, capture_output=True, text=True)
               if result.returncode == 0:
                   print(f'  ✅ triggered')
+                  if workflow == 'auto_post_x.yml':
+                      ap_sent, ap_mode = True, mode
               else:
                   print(f'  ❌ failed: {result.stderr[:200]}')
               time.sleep(3)

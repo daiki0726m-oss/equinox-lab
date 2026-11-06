@@ -244,17 +244,24 @@ jobs:
       #   「今回モデルを届けなかった (model_changed != true) かつ 最終再学習から14日以上」に限る。
       #   停滞は週をまたいで続く状態なので、日付を入れない1本の Issue に集約し、続く間はコメントで更新する。
       #   開催日で延期した run (run=false) では出さない (翌日の予備 cron が再学習する)。
+      # #170: 失敗も週単位の1本に集約する。旧タイトルは日付入り (失敗 YYYY-MM-DD) で同じ日付しか探さず、
+      #   月曜の失敗が commit されないと火・水の予備 cron が同じ原因で落ちて、週に3本立っていた。
+      #   タイトルは ISO 週 (JST、check の this_week。check より前の step で落ちて空なら date で同じ形式に)、
+      #   既存の Issue はタイトルの完全一致で探し、あれば失敗でもコメントで追記する。
       - name: 🔔 Notify on failure / cancelled / stale
         if: failure() || cancelled() || (github.event_name == 'schedule' && steps.check.outputs.run == 'true' && steps.check.outputs.api_ok == 'true' && steps.check.outputs.age >= 14 && steps.commit.outputs.model_changed != 'true')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THIS_WEEK: ${{ steps.check.outputs.this_week }}
         run: |
           if [ "${{ job.status }}" = "success" ]; then
             KIND="stale"
             TITLE="🧠 weekly_retrain 停滞疑い (モデルが14日以上更新されていない)"
           else
             KIND="failure"
-            TITLE="🧠 weekly_retrain 失敗 $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+            WEEK="$THIS_WEEK"
+            [ -z "$WEEK" ] && WEEK=$(TZ=Asia/Tokyo date '+%G-W%V')
+            TITLE="🧠 weekly_retrain 失敗 $WEEK"
           fi
           BODY=$(printf '%s\n' \
             "weekly_retrain の $KIND を検知しました。モデルが陳腐化すると予測劣化が silent に進行します (#95 で6週間停止の前科あり)。" \
@@ -264,14 +271,15 @@ jobs:
             "今回の判定: retrain=${{ steps.check.outputs.retrain }} (${{ steps.check.outputs.reason }}) / モデル更新=${{ steps.commit.outputs.model_changed }}" \
             "segment flags: ${{ steps.roimon.outputs.flags }}" \
             "" \
-            "確認事項: train のエラー / push の競合 / age 判定 (API) の失敗")
-          EXISTING=$(gh issue list --search "\"$TITLE\" in:title" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            "確認事項: train のエラー / push の競合 / age 判定 (API) の失敗" \
+            "" \
+            "_weekly_retrain が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出 (${{ github.event_name }})_")
+          # 検索は部分一致なので、タイトルの完全一致で絞る (別の Issue にコメントしないため)
+          EXISTING=$(gh issue list --search "\"$TITLE\" in:title" --state open --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty" 2>/dev/null || true)
           if [ -n "$EXISTING" ]; then
-            if [ "$KIND" = "stale" ]; then
-              gh issue comment "$EXISTING" --body "$BODY" || echo "⚠️ Issue コメント失敗"
-            else
-              echo "ℹ️ 既存 Issue あり → スキップ"
-            fi
+            # #170: 失敗も同じ週の Issue に追記する (何日目も失敗しているかが1本で追える)
+            gh issue comment "$EXISTING" --body "$BODY" || echo "⚠️ Issue コメント失敗"
             exit 0
           fi
           gh issue create --title "$TITLE" --body "$BODY" --label "slo-violation" 2>&1 || \

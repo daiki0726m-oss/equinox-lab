@@ -1061,8 +1061,13 @@ def cmd_predict(args):
                     # OOS実測 (#114): 上限なし=複勝7.4%/単勝ROI72円 に対し
                     # 7-30倍=複勝19.7%/単勝ROI91円。深い大穴は favorite-longshot bias
                     # で構造的に過剰人気 (#58/#100)。
+                    # #170: 取消と分かっている馬は候補にしない (💡能力値1位と同じ判定)。
+                    # 取消が API の番兵 (-3.0倍/9999人気) でしか分からない時、cache の odds_win は
+                    # 推定値 (0.8/勝率) になり 7-30倍に入りうる。
+                    from race_utils import is_scratched_horse as _isscr
                     _cands = [q for q in preds
                               if q.get('horse_number') not in _marked
+                              and not _isscr(q)
                               and 7 <= (q.get('odds_win') or 0) < 30]
                     _v = max(_cands, key=lambda q: (q.get('pred_top3_pct') or 0) * (q.get('odds_win') or 0)) if _cands else None
                     if _v and (_v.get('pred_top3_pct') or 0) > 0:
@@ -1082,14 +1087,17 @@ def cmd_predict(args):
             # 能力値1位として出る条件を満たしてしまう。11/01 東京7R 11番で再現)。
             # 予測時に分かった取消は cache の scratched、その後に分かった取消は
             # 999.9倍 / 番兵 9999人気 で拾う。
+            # #170: 判定は race_utils.is_scratched_horse に一本化 (Threads の能力値ランキングと同じ)
+            from race_utils import is_scratched_horse as _isscr2, field_popularities as _fpops
             _by_ab = sorted((q for q in preds if (q.get('ability_score') or 0) > 0
-                             and not q.get('scratched')
-                             and (q.get('popularity') or 0) < 999
-                             and (q.get('odds_win') or 0) < 999.9),
+                             and not _isscr2(q)),
                             key=lambda q: -(q.get('ability_score') or 0))
             if _by_ab:
                 _ab_top = _by_ab[0]
-                _ab_pop = _ab_top.get('popularity') or 0
+                # #170 手直し: 能力1位を出走馬で選ぶので、比べる人気も出走馬の中で数える
+                # (取消馬が中位人気の番兵時代のレースで、人気を1つ以上低く言わないように)
+                _ab_pop = _fpops(preds).get(_ab_top.get('horse_number'),
+                                            _ab_top.get('popularity') or 0)
                 if _ab_pop >= 5:
                     # #150: 印が7つに増えた分だけ文字数予算が厳しく、この行が
                     # 13レース中3レースで落ちていた。オッズ非依存の独自視点 (#98) は

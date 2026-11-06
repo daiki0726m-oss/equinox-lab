@@ -95,7 +95,7 @@ jobs:
       # (b) 確定版と馬番がずれた予測 JSON の公開時間 (c) 投資ゲートの遮断率 も見る。
       # 「週末明けに確かめる」と約束して仕組みを作らなかった反省 (11/05) の再発防止。
       # 3日 = 土曜の開催を日・月・火の朝に見る (schedule が2回続けて飛んでも点検が抜けない)。
-      # 同じ内容を毎朝 Issue に書き込まないよう、本文のハッシュが既に Issue にあれば書かない。
+      # 同じ内容を毎朝 Issue に書き込まないよう、既に Issue に出た行は書かない (#170: 行ごと。下の注記)。
       - name: 🔎 開催日の完了検査 (#161・#169)
         if: always()
         continue-on-error: true
@@ -113,14 +113,73 @@ jobs:
           set -e
           if [ -s /tmp/raceday_quality.md ]; then
             QTITLE="🔎 週末の予測の点検で異常 (巻き戻し・仮馬番・投資ゲート)"
-            QOPEN=$(gh issue list --state open --search "\"$QTITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
-            QHASH=$(sha1sum /tmp/raceday_quality.md | cut -c1-12)
-            if [ -n "$QOPEN" ] && gh issue view "$QOPEN" --json body,comments \
-                 --jq '[.body] + [.comments[].body] | join("\n")' 2>/dev/null | grep -q "quality:$QHASH"; then
-              echo "ℹ️ 同じ点検結果 (quality:$QHASH) は Issue #$QOPEN に記載済み → 書き込まない"
-              QOPEN_SKIP=1
+            # #170: 重複は報告全体のハッシュでなく行ごとに省く。旧版は open の Issue の本文だけを見ていたので、
+            # 閉じた翌朝に同じ内容で立ち直り、水曜 (土曜分が対象から外れ、月曜の報告の部分集合になる) は
+            # ハッシュが変わってまた立っていた。同じタイトルの Issue (open と、直近14日に閉じたもの) の本文・
+            # コメントを集め、まだどこにも出ていない行だけを書く (各行に <!-- qline:… --> の印を埋める)。
+            #   開催日つきの行 … 同じ行が出ていれば省く (印の無い旧形式の行も本文の一致で既出とみなす)
+            #   複数日の集計行 (投資ゲート遮断率) … 含む日付がすべて同じ見出しで出ていれば省く (部分集合)
+            #   日付の無い行 (履歴が読めず・例外) … 今日の日付を混ぜた印で、1日1回だけ出す
+            # 集め損ねた時 (gh の失敗) は書く側に倒す (黙らせすぎより重複の方が害が小さい)。
+            QCUT=$(python3 -c 'import datetime as d; print((d.datetime.now(d.timezone.utc) - d.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ"))')
+            QLIST=$(gh issue list --state all --limit 30 --search "\"$QTITLE\" in:title" \
+              --json number,title,state,closedAt \
+              --jq "map(select(.title == \"$QTITLE\" and (.state == \"OPEN\" or (.closedAt // \"\") >= \"$QCUT\"))) | .[] | \"\(.number) \(.state)\"" \
+              2>/dev/null || true)
+            QOPEN=$(printf '%s\n' "$QLIST" | awk '$2 == "OPEN" {print $1; exit}')
+            : > /tmp/raceday_quality_seen.txt
+            for N in $(printf '%s\n' "$QLIST" | awk 'NF {print $1}'); do
+              gh issue view "$N" --json body,comments --jq '[.body] + [.comments[].body] | join("\n")' \
+                >> /tmp/raceday_quality_seen.txt 2>/dev/null || echo "⚠️ Issue #$N の本文を読めない (その分は未記載として扱う)"
+            done
+            if ! python3 - /tmp/raceday_quality.md /tmp/raceday_quality_seen.txt "$(TZ=Asia/Tokyo date +%Y-%m-%d)" \
+                > /tmp/raceday_quality_new.md <<'PY'
+          import hashlib, re, sys
+          rep, seen_path, today = sys.argv[1:4]
+          DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+          key = lambda s: hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
+          seen = open(seen_path, encoding="utf-8", errors="replace").read()
+          keys = set(re.findall(r"qline:([0-9a-f]{12})", seen))
+          old, agg = set(), set()
+          for s in seen.splitlines():
+              s = re.sub(r"\s*<!--.*?-->", "", s).strip()
+              if not s.startswith("- "):
+                  continue
+              s = s[2:]
+              old.add(s)
+              ds = DATE.findall(s)
+              if ds and not DATE.match(s):
+                  agg.update((s.split(ds[0], 1)[0], d) for d in ds)
+          out, n = [], 0
+          for raw in open(rep, encoding="utf-8"):
+              s = raw.strip()
+              if not s:
+                  continue
+              s = s[2:] if s.startswith("- ") else s
+              n += 1
+              ds = DATE.findall(s)
+              if DATE.match(s):
+                  k = key(s)
+                  if k in keys or s in old:
+                      continue
+              elif ds:
+                  k = key(s)
+                  if all((s.split(ds[0], 1)[0], d) in agg for d in ds):
+                      continue
+              else:
+                  k = key(today + "|" + s)
+                  if k in keys:
+                      continue
+              out.append(f"- {s} <!-- qline:{k} -->")
+          print(f"点検の行 {n}件のうち {n - len(out)}件は記載済み → {len(out)}件を書く", file=sys.stderr)
+          if out:
+              print("\n".join(out))
+          PY
+            then
+              echo "⚠️ 既出の行の判定に失敗 → 点検結果をそのまま書く"
+              cp /tmp/raceday_quality.md /tmp/raceday_quality_new.md
             fi
-            QBODY="$(cat /tmp/raceday_quality.md)
+            QBODY="$(cat /tmp/raceday_quality_new.md)
 
           見方 (#169):
           - 予測の巻き戻し: 新しい予測 (9時台のオッズ反映など) が出た後に、公開 JSON が古い予測内容へ戻った。race_day_runner が起動時の DB を書き戻す #70 型の上書きが疑わしい。
@@ -130,9 +189,9 @@ jobs:
           - 投資ゲートは異常でなくても数字を CI のログに出している。1週末の標本で検出できる差は約±23pt。
           材料は公開した予測 JSON の git 履歴 (scripts/pred_history.py)。手元での再点検: PRED_HISTORY_PREFETCH=1 python3 scripts/check_raceday_completeness.py --dates YYYY-MM-DD (部分クローンでは blob を自動で一括取得する。PRED_HISTORY_PREFETCH=1 で常に一括取得)
 
-          _feature_parity.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_ <!-- quality:$QHASH -->"
-            if [ -n "${QOPEN_SKIP:-}" ]; then
-              :
+          _feature_parity.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_"
+            if [ ! -s /tmp/raceday_quality_new.md ]; then
+              echo "ℹ️ 点検結果はすべて同じタイトルの Issue (open・直近14日に閉じたもの) に記載済み → 書き込まない"
             elif [ -z "$QOPEN" ]; then
               gh issue create --title "$QTITLE" --body "$QBODY" || echo "⚠️ Issue 作成失敗"
             else

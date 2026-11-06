@@ -8,6 +8,7 @@ config/posting_slo.yml を読み、各 slot について:
 
 結果を docs/data/posting_health.json に出力し、
 未投稿 slot リストを stdout (JSON) で返す → watchdog workflow がこれを読んで trigger。
+リストの並びは dispatch の優先順 (#170: watchdog は auto_post_x を先頭から1本だけ出す)。
 
 Usage:
     python3 scripts/check_posting_health.py                    # 通常
@@ -68,6 +69,52 @@ def parse_jst_hhmm(hhmm_str, base_date=None):
     base = base_date or jst_now()
     h, m = hhmm_str.split(":")
     return base.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+
+
+# ── #170: watchdog が auto_post_x を1 tick 1本だけ出すための並び順 ──
+# auto_post_x は workflow 単位の concurrency (group: auto-post-x, cancel-in-progress: false)。
+# GitHub は待機 (pending) を1本しか持たず、新しく入った待機が古い待機を黙って取り消す
+# (#161: 9/22 に odds_flash と post_predict が2秒差で互いを取り消したのを実測)。
+# 旧 watchdog は missing を1 tick で全部3秒おきに dispatch しており、#169 で
+# dashboard_predictions (predict) が末尾に付くようになってから、09:3x の列が
+# [predict, odds_flash, fetch, predict] になり、末尾の predict が odds_flash の代打を取り消しえた。
+# watchdog は missing の先頭から auto_post_x を1本だけ出すので、この並びが優先順位になる:
+#   0. 投稿 slot (odds_flash / post_predict / results / 平日3枠) — deadline が近い順。
+#      deadline を過ぎると missed になり二度と自動では出ないので最優先。
+#   1. 生成 (predict) — weekend_morning_predict / dashboard_predictions (同じ mode は1本にまとまる)。
+#      投稿 slot を出した tick で predict を見送っても失うものは無い:
+#      - odds_flash の run は10時前なら自分で refresh_entries → refresh_odds → predict を通す
+#        (auto_post_x「Refresh odds before lock」)。refresh_entries が通らない日は predict の
+#        run も同じゲートで exit 1 になり予測を作らないので、odds_flash を優先して失うものは無い。
+#      - post_predict / results の run は予測を作り直さないが、どれも preflight --auto-fix
+#        (欠けた予測の作り直し) と export を通す。そもそも predict の run も10時以降は
+#        予測を作り直さないので、見送るのは1 tick 分の refresh_entries / refresh_odds だけ。
+#        missing は次の tick で再判定され、投稿 slot が片付けば predict が出る。
+#   2. auto_post_x 以外 (fetch_weekend_races 等) — concurrency group が別なので並びは影響しない。
+GENERATION_MODES = ("predict",)
+
+
+def dispatch_rank(entry, cfg=None):
+    """missing_slots の1件の dispatch 優先度 (小さいほど先)。#170"""
+    if (entry.get("workflow") or WORKFLOW_NAME) != WORKFLOW_NAME:
+        return (2, 0)
+    if entry.get("fallback_mode") in GENERATION_MODES:
+        return (1, 0)
+    sc = ((cfg or {}).get("slots") or {}).get(entry.get("slot")) or {}
+    try:
+        h, m = str(sc.get("watchdog_deadline_jst") or "24:00").split(":")
+        return (0, int(h) * 60 + int(m))
+    except ValueError:
+        return (0, 24 * 60)
+
+
+def order_for_dispatch(missing_slots, cfg=None):
+    """missing_slots を dispatch の優先順に並べ替える (#170)。何が missing かは変えない。
+
+    cfg 無しで呼ぶと「投稿 > 生成 > その他」の大分類だけの安定ソートになるので、
+    並べ済みの列に watchdog 側で再適用しても順は変わらない。
+    """
+    return sorted(missing_slots, key=lambda e: dispatch_rank(e, cfg))
 
 
 def fetch_recent_runs(workflow_name=WORKFLOW_NAME, window_hours=24):
@@ -409,6 +456,10 @@ def main():
                    "actual": f"{_n}レース (exported_at={_exported})"}
             results["summary"]["ok"] = results["summary"].get("ok", 0) + 1
         results["slots"]["dashboard_predictions"] = _ev
+
+    # #170: dashboard_predictions を末尾に足したままだと、watchdog の dispatch 列の最後に
+    # predict が来て odds_flash 等の待機を取り消しうる。投稿 slot を先に並べる (判定は変えない)
+    missing_slots = order_for_dispatch(missing_slots, cfg)
 
     results["missed_slots"] = missed_slots
 
