@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-07T05:11:11.058654+09:00",
+ "generated_at": "2026-11-07T08:33:20.517954+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -203,7 +203,7 @@
   "available": true,
   "n": 228,
   "sample": "点数表 (現行)",
-  "sample_period": "2026-09-22〜2026-11-07",
+  "sample_period": "2026-09-22〜2026-11-08",
   "target_mix": {
    "S": 0.18,
    "A": 0.24,
@@ -212,16 +212,16 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 34.1,
-   "A": 25.0,
+   "S": 35.4,
+   "A": 24.9,
    "B": 13.9,
-   "C": 9.4
+   "C": 9.3
   },
   "calibrated_on": "補正後 (confidence.post_adjust 込み) の最終構成比",
   "mix_before_adjust": {
-   "S": 0.1096,
-   "A": 0.2061,
-   "B": 0.3947,
+   "S": 0.0877,
+   "A": 0.2368,
+   "B": 0.386,
    "C": 0.1798,
    "D": 0.1096
   },
@@ -232,11 +232,11 @@
    "C": 0.1798,
    "D": 0.1096
   },
-  "adjusted_share": 0.1754,
+  "adjusted_share": 0.1886,
   "realized_mix": {
-   "S": 0.2456,
-   "A": 0.2281,
-   "B": 0.1316,
+   "S": 0.25,
+   "A": 0.2149,
+   "B": 0.1404,
    "C": 0.193,
    "D": 0.2018
   },
@@ -244,17 +244,17 @@
   "realized_note": "各予測の時点の閾値・補正で付いた信頼度 (predictions_cache.confidence)",
   "realized_new_logic_since": "2026-11-07",
   "realized_new_logic_mix": {
-   "S": 0.0526,
-   "A": 0.4211,
-   "B": 0.3158,
-   "C": 0.1053,
-   "D": 0.1053
+   "S": 0.0952,
+   "A": 0.2857,
+   "B": 0.381,
+   "C": 0.0952,
+   "D": 0.1429
   },
-  "realized_new_logic_n": 19
+  "realized_new_logic_n": 21
  },
  "bet_gate": {
   "available": true,
-  "n": 66,
+  "n": 68,
   "target_block_rate": {
    "top_prob": 0.3,
    "top3_sum": 0.25
@@ -263,15 +263,15 @@
   "window_matches_model": false,
   "model_retrained_uncommitted": false,
   "thresholds": {
-   "top_prob": 0.1702,
+   "top_prob": 0.1686,
    "top3_sum": 0.4153
   },
   "window_rule": "since_prev_model",
-  "n_current": 19,
+  "n_current": 21,
   "n_older": 47,
-  "sd_median_current": 0.7892,
+  "sd_median_current": 0.8014,
   "sd_median_older": 0.7447,
-  "dispersion_ratio": 1.06,
+  "dispersion_ratio": 1.076,
   "dispersion_ratio_limit": 1.4,
   "prev_model_deployed_at": "2026-10-20 09:30:46"
  },
