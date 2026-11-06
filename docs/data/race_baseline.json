@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-06T20:01:48.425915+09:00",
+ "generated_at": "2026-11-06T21:04:40.869285+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -212,32 +212,32 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 34.1,
-   "A": 24.8,
-   "B": 13.4,
-   "C": 8.9
+   "S": 37.0,
+   "A": 23.4,
+   "B": 13.5,
+   "C": 9.2
   },
   "calibrated_on": "補正後 (confidence.post_adjust 込み) の最終構成比",
   "mix_before_adjust": {
-   "S": 0.1096,
-   "A": 0.2061,
-   "B": 0.3947,
-   "C": 0.1798,
-   "D": 0.1096
+   "S": 0.0789,
+   "A": 0.2588,
+   "B": 0.3728,
+   "C": 0.1754,
+   "D": 0.114
   },
   "mix_after_adjust": {
    "S": 0.1798,
    "A": 0.2412,
    "B": 0.2895,
-   "C": 0.1798,
-   "D": 0.1096
+   "C": 0.1754,
+   "D": 0.114
   },
-  "adjusted_share": 0.1754,
+  "adjusted_share": 0.1842,
   "realized_mix": {
    "S": 0.2456,
-   "A": 0.2149,
-   "B": 0.1316,
-   "C": 0.193,
+   "A": 0.2018,
+   "B": 0.1491,
+   "C": 0.1886,
    "D": 0.2149
   },
   "realized_n": 228,
@@ -245,9 +245,9 @@
   "realized_new_logic_since": "2026-11-07",
   "realized_new_logic_mix": {
    "S": 0.0526,
-   "A": 0.2632,
-   "B": 0.3158,
-   "C": 0.1053,
+   "A": 0.1053,
+   "B": 0.5263,
+   "C": 0.0526,
    "D": 0.2632
   },
   "realized_new_logic_n": 19
@@ -263,15 +263,15 @@
   "window_matches_model": false,
   "model_retrained_uncommitted": false,
   "thresholds": {
-   "top_prob": 0.1702,
-   "top3_sum": 0.4157
+   "top_prob": 0.17,
+   "top3_sum": 0.4153
   },
   "window_rule": "since_prev_model",
   "n_current": 19,
   "n_older": 47,
-  "sd_median_current": 0.8321,
+  "sd_median_current": 0.7985,
   "sd_median_older": 0.7447,
-  "dispersion_ratio": 1.117,
+  "dispersion_ratio": 1.072,
   "dispersion_ratio_limit": 1.4,
   "prev_model_deployed_at": "2026-10-20 09:30:46"
  },
