@@ -77,10 +77,13 @@ on:
     # 平日夜の冗長フォールバック 20:40 JST (UTC 11:40)
     - cron: '40 11 * * 1-5'
     # ─── 土日の結果系 ───
-    # 土日 9:30 JST (UTC 0:30) → odds_flash（オッズ確定後のAI勝率TOP3を投稿。#79で実投稿化）
+    # #172 (2026-11-06): 予想の確定を 10:00 → 9:30 に早め (1R は 9:45〜発走)、投稿も 9:30 に。
+    # 土日 9:00 JST (UTC 0:00) → odds_flash（最後の作り直し refresh→predict + 朝オッズの投稿。#79）
+    - cron: '0 0 * * 6,0'
+    # 土日 9:30 JST (UTC 0:30) → post_predict（確定した予想 = 印の投稿）
     - cron: '30 0 * * 6,0'
-    # 土日 10:15 JST (UTC 1:15) → post_predict（確定予想投稿）
-    - cron: '15 1 * * 6,0'
+    # 土日 9:50 JST (UTC 0:50) → post_predict の冗長フォールバック (lock で二重投稿しない)
+    - cron: '50 0 * * 6,0'
     # (旧 15:30 hit_flash cron は #57 で削除 — cmd_results の完走ガードにより
     #  15:30 時点では 11R 未発走で常にスキップされる構造的 no-op だった)
     # 土日 17:30 JST (UTC 8:30) → results
@@ -154,8 +157,9 @@ jobs:
             "10 4 * * 1-5")   EXPECTED_MODE="weekday" ;;   # 冗長フォールバック 13:10 JST
             "0 11 * * 1-5")   EXPECTED_MODE="evening" ;;
             "40 11 * * 1-5")  EXPECTED_MODE="evening" ;;   # 冗長フォールバック 20:40 JST
-            "30 0 * * 6,0")   EXPECTED_MODE="odds_flash" ;;
-            "15 1 * * 6,0")   EXPECTED_MODE="post_predict" ;;
+            "0 0 * * 6,0")    EXPECTED_MODE="odds_flash" ;;     # 土日 9:00 JST (#172)
+            "30 0 * * 6,0")   EXPECTED_MODE="post_predict" ;;   # 土日 9:30 JST (#172)
+            "50 0 * * 6,0")   EXPECTED_MODE="post_predict" ;;   # 冗長フォールバック 9:50 JST
             "30 8 * * 6,0")   EXPECTED_MODE="results" ;;
             "30 9 * * 6,0")   EXPECTED_MODE="refresh_dashboard" ;;
             *)                EXPECTED_MODE="" ;;
@@ -410,8 +414,9 @@ jobs:
             "10 4 * * 1-5")   TYPE="weekday" ;;         # 平日昼 冗長 13:10 JST
             "0 11 * * 1-5")   TYPE="evening" ;;         # 平日夜20:00 JST
             "40 11 * * 1-5")  TYPE="evening" ;;         # 平日夜 冗長 20:40 JST
-            "30 0 * * 6,0")   TYPE="odds_flash" ;;      # 土日 9:30 JST
-            "15 1 * * 6,0")   TYPE="post_predict" ;;    # 土日10:15 JST
+            "0 0 * * 6,0")    TYPE="odds_flash" ;;      # 土日 9:00 JST (#172: 最後の作り直し)
+            "30 0 * * 6,0")   TYPE="post_predict" ;;    # 土日 9:30 JST (#172: 確定と同時に投稿)
+            "50 0 * * 6,0")   TYPE="post_predict" ;;    # 土日 9:50 JST (冗長フォールバック)
             "30 8 * * 6,0")   TYPE="results" ;;         # 土日17:30 JST
             "30 9 * * 6,0")   TYPE="refresh_dashboard" ;; # 土日18:30 JST
             *)
@@ -430,7 +435,8 @@ jobs:
                 case "$HOUR" in
                   03|04|05) TYPE="predict" ;;   # #150b: 早朝の生成機会
                   06|07|08) TYPE="predict" ;;
-                  09)       TYPE="odds_flash" ;;
+                  09)       # #172: 9:30 が確定 = 前半は最後の作り直し、後半は予想投稿
+                            if [ "$((10#$(TZ=Asia/Tokyo date +%M)))" -lt 30 ]; then TYPE="odds_flash"; else TYPE="post_predict"; fi ;;
                   10)       TYPE="post_predict" ;;
                   17)       TYPE="results" ;;
                   18|19)    TYPE="refresh_dashboard" ;;
@@ -446,7 +452,7 @@ jobs:
           #   results / refresh_dashboard → 0〜4時台なら前日 (結果・配当の取りこぼしを拾う)
           #   odds_flash / post_predict   → skip。cron は予定より早くは発火しないので、
           #     「今の JST 時刻 < その cron の予定時刻」なら前日の分が遅れて来たもの
-          #     (例: 土 10:15 の post_predict が日 07:15 に来ると、日曜の予想を 10:15 より前に
+          #     (例: 土 9:30 の post_predict が日 07:15 に来ると、日曜の予想を 9:30 より前に
           #      投稿してしまう。post_x の predict には 12:00 の上限しか無く下限が無い)。
           #     当日分は当日の cron が担う。
           #   predict (04:00 cron など) は当日朝の正規の時間帯なので対象外。平日の
@@ -543,9 +549,9 @@ jobs:
           # #171: 999.9倍の馬がいるレースは出馬表の取消行も読むので、他の経路と同じ 420 秒に
           timeout 420 python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ取得失敗 → 既存データで続行"
 
-          # 10時以降は予測を再実行しない（確定済み予測を保護）
-          if [ "$JST_HOUR" -ge 10 ]; then
-            echo "🔒 JST ${JST_HOUR}時: 10時以降のため予測をスキップ（確定済み）"
+          # 確定 (#172: 9:30。race_utils.PREDICTION_LOCK_JST) 以降は予測を再実行しない（確定済み予測を保護）
+          if python -c "import sys, race_utils; sys.exit(0 if race_utils.prediction_lock_passed() else 1)"; then
+            echo "🔒 JST $(TZ=Asia/Tokyo date +%H:%M): 予想の確定 (9:30) 以降のため予測をスキップ（確定済み）"
           else
             echo "🧠 予測を実行..."
             python predict.py predict --date "$DATE"
@@ -608,9 +614,9 @@ jobs:
           echo "📡 ${DATE} の最新オッズを取得..."
           timeout 420 python refresh_odds.py --date "$DATE"
 
-          # 10時以降は再予測しない（オッズ更新のみ）
-          if [ "$JST_HOUR" -ge 10 ]; then
-            echo "🔒 JST ${JST_HOUR}時: 10時以降のため再予測をスキップ"
+          # 確定 (#172: 9:30) 以降は再予測しない（オッズ更新のみ）
+          if python -c "import sys, race_utils; sys.exit(0 if race_utils.prediction_lock_passed() else 1)"; then
+            echo "🔒 JST $(TZ=Asia/Tokyo date +%H:%M): 予想の確定 (9:30) 以降のため再予測をスキップ"
           elif [ "$ENTRIES_OK" != "1" ]; then
             echo "🚫 確定馬番の取り直しに失敗したため再予測しない (既存の予測を残す #169)"
           else
@@ -705,10 +711,10 @@ jobs:
           if [ "$TYPE" = "weekday" ]; then
             python post_x.py weekday
           elif [ "$TYPE" = "predict" ]; then
-            echo "⏳ 7:00予測完了。X投稿は10:15のpost_predict後に実行します"
+            echo "⏳ 予測完了。X投稿は 9:30 の post_predict で実行します (#172)"
           elif [ "$TYPE" = "odds_flash" ]; then
-            # #79: 旧版は echo だけで odds_flash を一度も投稿していなかった (土日9:30枠が空)。
-            # cmd_odds_flash を実際に呼ぶ。post_predict (10:15) とは別物 (オッズ確定後の最終見解)。
+            # #79: 旧版は echo だけで odds_flash を一度も投稿していなかった (土日朝の枠が空)。
+            # cmd_odds_flash を実際に呼ぶ。post_predict (9:30 #172) とは別物 (朝オッズでの最終見解)。
             python post_x.py odds_flash --date "$DATE"
           elif [ "$TYPE" = "post_predict" ]; then
             python post_x.py predict --date "$DATE"

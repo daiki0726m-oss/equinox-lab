@@ -29,7 +29,7 @@ User phrases:
 ### 1. Establish baseline
 
 What's the user actually expecting to see, and where? Confirm:
-- Slot: morning (7:30) / weekday (12:30) / evening (20:00) / post_predict (10:15 weekend)
+- Slot: morning (7:30) / weekday (12:30) / evening (20:00) / odds_flash (9:00 weekend) / post_predict (9:30 weekend, #172)
 - Date: today or specific
 - Channel: X timeline (twitter.com/<account>) or Threads
 
@@ -45,8 +45,9 @@ Map each run to slot:
 - `0 22 * * 5,6` → 土日朝 7:00 (predict)
 - `30 3 * * 1-5` → 平日昼 (12:30 JST)
 - `0 11 * * 1-5` → 平日夜 (20:00 JST)
-- `30 0 * * 6,0` → 土日 09:30 (odds_flash)
-- `15 1 * * 6,0` → 土日 10:15 (post_predict)
+- `0 0 * * 6,0` → 土日 09:00 (odds_flash = 最後の作り直し + 朝オッズ。#172)
+- `30 0 * * 6,0` → 土日 09:30 (post_predict = 予想の確定と同時。#172)
+- `50 0 * * 6,0` → 土日 09:50 (post_predict の冗長フォールバック)
 - `30 6 * * 6,0` → 土日 15:30 (hit_flash)
 - `30 8 * * 6,0` → 土日 17:30 (results)
 - `30 9 * * 6,0` → 土日 18:30 (refresh_dashboard)
@@ -118,8 +119,8 @@ If the failure was novel (not in past mistake list), add an entry to `## 🐛 �
   - cmd_morning: 7:00-11:59 JST
   - cmd_weekday: 11:00-15:59 JST
   - cmd_evening: 19:00-23:59 JST
-  - cmd_predict (post_predict): before 11:00 JST (avoid posting predictions during/after races)
-  - cmd_odds_flash: 9:00-10:30 JST
+  - cmd_predict (post_predict): 9:30 (予想の確定 #172) 〜 12:00 JST (#69)。発走済みのレースは個別に除外
+  - cmd_odds_flash: 9:00〜9:29 JST (9:30 の予想の確定 #172 以降は投稿しない。時刻ガード自体は 9:00-10:59)
 
 - **X Free tier limits**:
   - 1,500 posts / month

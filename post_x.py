@@ -882,6 +882,19 @@ def cmd_predict(args):
               f"→ 午後の予想再投稿を遮断 (#69)。override: SKIP_TIME_GUARD=1")
         return
 
+    # ─── 🛡 下限ガード (#172, 2026-11-06): 予想の確定 (9:30) より前に投稿しない ───
+    # 確定前は 9:00 の odds_flash が予想を作り直しうる。先に投稿すると、投稿した印 (凍結) と
+    # 確定した予想が別物になる (投稿したレースは以後作り直されない #169)。投稿 = 確定と同時。
+    # GAS の時刻トリガー (1時間の幅で発火) が 9:0x に来た時など。lock を取る前に返すので、
+    # 次の cron (9:30/9:50)・runner・watchdog がそのまま投稿できる。
+    from race_utils import prediction_lock_passed, PREDICTION_LOCK_LABEL
+    if (os.environ.get('SKIP_TIME_GUARD') != '1'
+            and now_jst().strftime("%Y%m%d") == date_str
+            and not prediction_lock_passed(now_jst())):
+        print(f"⏭️ [post_predict] {now_jst().strftime('%H:%M JST')} は予想の確定 "
+              f"({PREDICTION_LOCK_LABEL}) より前 → 投稿しない (#172)。override: SKIP_TIME_GUARD=1")
+        return
+
     _acquire_or_exit('post_predict', post_date=date_str)
     weekday = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
     date_label = f"{dt.month}/{dt.day}({weekday})"
@@ -3565,7 +3578,7 @@ def generate_weekend_preview():
         t2 += "\n"
 
     # ツイート3: 配信案内
-    t3 = "🔔 明日朝10時すぎにAI印の最終予想を配信\n\n"
+    t3 = "🔔 明日朝9時半すぎにAI印の最終予想を配信\n\n"
     t3 += "各レースの◎○▲△と\n"
     t3 += "AI印を注目レース分 公開\n\n"   # #150: 記号列挙と「全レース」の過大予告をやめる
     t3 += "フォロー&通知ONで\n"
@@ -3690,7 +3703,7 @@ def cmd_answer_check(args):
     t3 = ""
     if is_saturday:
         t3 = "🔔 明日もAI予想を配信\n\n"
-        t3 += "朝10時すぎにAI印の最終予想を投稿\n"
+        t3 += "朝9時半すぎにAI印の最終予想を投稿\n"
         t3 += "フォロー&通知ONで見逃さない👀"
     else:
         t3 = "🔔 来週も毎日配信\n\n"
@@ -4069,7 +4082,7 @@ def generate_note_promo():
         main_races = [n for n in upcoming_race_names if any(g in n for g in ['G', '杯', '記念', 'S', 'ステークス'])]
         if main_races:
             t3 += f"📢 今週末は {main_races[0]} 🔥\n"
-            t3 += "AI予想は土日朝10時すぎに配信します\n\n"
+            t3 += "AI予想は土日朝9時半すぎに配信します\n\n"
 
     t3 += "フォローして見逃さないでください！"
 
@@ -4329,12 +4342,19 @@ def cmd_odds_flash(args):
     date_label = f"{dt.month}/{dt.day}({weekday})"
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-    # 🛡 時間ガード: odds_flash は朝のオッズ確定後 (9:00-10:30 JST) 専用
+    # 🛡 時間ガード: odds_flash は朝 (9:00〜確定の 9:30 #172) 専用
     # 午後の誤発火は無意味 (post_predict が後で本投稿するため)
     if not os.environ.get("SKIP_TIME_GUARD"):
         now = now_jst()
         if now.strftime("%Y%m%d") == date_str and (now.hour < 9 or now.hour >= 11):
-            print(f"⚠️ odds_flash 時間ガード: {now.strftime('%H:%M JST')} は対象外 (9:00-10:30 のみ)")
+            print(f"⚠️ odds_flash 時間ガード: {now.strftime('%H:%M JST')} は対象外 (9:00-10:59 のみ)")
+            return
+        # #172: 確定 (9:30) を過ぎたら投稿しない。朝オッズは「最後の作り直し + 最終見解」で、
+        # 9:30 の印 (post_predict) より後に出ると予告 (9:00 朝オッズ → 9:30 印) と順番が逆になる
+        # (9:00 の cron が30分以上遅れた日)。runner・保険・SLO も確定後は代打しない。
+        from race_utils import prediction_lock_passed as _lock_passed
+        if now.strftime("%Y%m%d") == date_str and _lock_passed(now):
+            print(f"⚠️ odds_flash: {now.strftime('%H:%M JST')} は予想の確定 (9:30) 後 → 投稿しない (#172)")
             return
 
     with get_db() as conn:

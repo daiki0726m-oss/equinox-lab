@@ -1,7 +1,7 @@
 name: 🧪 Manual Predict (test/debug)
 
 # 任意日付の予測を手動実行するためのワークフロー。
-# 通常の auto_post_x.yml は日付固定+10時ロックがあるため、
+# 通常の auto_post_x.yml は日付固定+予想の確定ロック (9:30 #172) があるため、
 # テスト/デバッグ用にここで実行可能にする。
 
 on:
@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       force:
-        description: '10時ロックを無視して再予測する'
+        description: '予想の確定ロック (9:30 #172) を無視して再予測する'
         required: false
         type: boolean
         default: true

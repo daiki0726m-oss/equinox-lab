@@ -519,7 +519,7 @@ def predict_page():
 
 @app.route("/api/predict-date/<date_str>")
 def api_predict_date(date_str):
-    """日付指定の全レース予測API（キャッシュ + 全券種一括 + 10時ロック）"""
+    """日付指定の全レース予測API（キャッシュ + 全券種一括 + 9:30 確定ロック #172）"""
     try:
         from ml.model import KeibaModel
         from scraper import NetkeibaScraper
@@ -534,11 +534,12 @@ def api_predict_date(date_str):
         budget = max(100, min(budget, 100000))
         strategy.MAX_BET_PER_RACE = budget
 
-        # 10時ロック判定
+        # 確定ロック判定 (#172: 9:30)
         now = datetime.now()
         race_date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
         is_today = now.strftime("%Y-%m-%d") == race_date_str
-        is_locked = is_today and now.hour >= 10
+        from race_utils import prediction_lock_passed
+        is_locked = is_today and prediction_lock_passed(now)   # #172: 9:30 確定
 
         # レースID取得（DB優先、なければスクレイパー）
         race_date_db = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"

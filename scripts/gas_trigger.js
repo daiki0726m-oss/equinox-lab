@@ -68,8 +68,8 @@ function triggerEvening()  { if (isWeekday_()) dispatchWorkflow("evening"); }   
 
 // ═══ 土日 slot ═══
 function triggerPredict()          { if (isWeekend_()) dispatchWorkflow("predict"); }           // 7-8時
-function triggerOddsFlash()        { if (isWeekend_()) dispatchWorkflow("odds_flash"); }        // 9-10時
-function triggerPostPredict()      { if (isWeekend_()) dispatchWorkflow("post_predict"); }      // 10-11時
+function triggerOddsFlash()        { if (isWeekend_()) dispatchWorkflow("odds_flash"); }        // 9-10時 (#172: 9:30 確定後に来た回は投稿しない)
+function triggerPostPredict()      { if (isWeekend_()) dispatchWorkflow("post_predict"); }      // 10-11時 (#172: 9:30/9:50 の cron の後の保険)
 function triggerResults()          { if (isWeekend_()) dispatchWorkflow("results"); }           // 17-18時
 function triggerRefreshDashboard() { if (isWeekend_()) dispatchWorkflow("refresh_dashboard"); } // 18-19時
 // (旧 hit_flash は #57 で廃止 — トリガー不要)
@@ -97,8 +97,8 @@ function setupTriggers() {
     ["triggerWeekday", 12],         // 平日昼 12-13時
     ["triggerEvening", 20],         // 平日夜 20-21時
     ["triggerPredict", 7],          // 土日 予測 7-8時
-    ["triggerOddsFlash", 9],        // 土日 オッズ 9-10時
-    ["triggerPostPredict", 10],     // 土日 予想投稿 10-11時
+    ["triggerOddsFlash", 9],        // 土日 朝オッズ+最後の作り直し 9-10時 (#172: 9:30 以降は投稿しない)
+    ["triggerPostPredict", 10],     // 土日 予想投稿 10-11時 (#172: 9:30/9:50 cron の保険。9時台だと確定前に来て空打ち)
     ["triggerResults", 17],         // 土日 結果 17-18時
     ["triggerRefreshDashboard", 18], // 土日 dashboard 18-19時
     // #150: 収集系にも独立した時計を (GitHub cron 単独だった層)

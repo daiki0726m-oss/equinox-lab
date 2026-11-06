@@ -2677,9 +2677,9 @@ def build_fri_evening(graded_races, today_d, hashtags_fn):
         if rd and rd.weekday() == 5:  # 土曜
             parts.append(f"・{r.get('race_name','')}({r.get('grade','')}) {r.get('venue','')}")
     parts.append("")
-    # #97 (A5): X投稿は10:15の post_predict のみ (7時はXに出ない) + 買い目はXに
+    # #97 (A5): X投稿は9:30 (#172) の post_predict のみ (7時はXに出ない) + 買い目はXに
     #   出さない (ダッシュボード限定 #71) → 実態に合わせて修正。
-    parts.append("⏰ 土曜朝10:15頃に印付き完全予想を配信")
+    parts.append("⏰ 土曜朝9:30頃に印付き完全予想を配信")
     parts.append("AI印を注目レース分")   # #150: 記号列挙をやめ、「全レース」の過大予告も撤回 (実態は品質ゲート付き~14R)
     parts.append("")
     parts.append("(日曜分は別途配信)")

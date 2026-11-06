@@ -53,8 +53,8 @@ Script Properties に保存**する (コードには書かない)。
 | `triggerWeekday` | 12-13時 | 〃 |
 | `triggerEvening` | 20-21時 | 〃 |
 | `triggerPredict` | 7-8時 | 土日のみ |
-| `triggerOddsFlash` | 9-10時 | 〃 |
-| `triggerPostPredict` | 10-11時 | 〃 |
+| `triggerOddsFlash` | 9-10時 (#172: 9:30 以降に来た回は投稿しない) | 〃 |
+| `triggerPostPredict` | 10-11時 (#172: 9:30/9:50 の cron の後の保険) | 〃 |
 | `triggerResults` | 17-18時 | 〃 |
 | `triggerRefreshDashboard` | 18-19時 | 〃 |
 

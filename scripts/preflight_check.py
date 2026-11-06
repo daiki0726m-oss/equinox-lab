@@ -568,10 +568,10 @@ def auto_fix_predictions(date_yyyymmdd: str, race_ids: list[str] | None = None) 
     if not _is_today_or_future(date_yyyymmdd):
         print(f"⏭️ {date_yyyymmdd} は過去日 → 予測の自動修復はしない (後出しの印を作らない #99/#169)")
         return False
-    jst_hour = _jst_now().hour
+    from race_utils import prediction_lock_passed
     posted = os.path.join(repo, "docs", "data", f"posted_marks_{date_yyyymmdd}.json")
-    if race_ids is None and jst_hour >= 10 and os.path.exists(posted):
-        # #169: 10時以降・印を投稿済みなら predict は --force なしで動き、10時ロックで
+    if race_ids is None and prediction_lock_passed(_jst_now()) and os.path.exists(posted):
+        # #169: 確定ロック (#172: 9:30) 以降・印を投稿済みなら predict は --force なしで動き、確定ロックで
         # 何も作り直さない。予測が要るのは「出走馬があって cache が無い」レースだけなので、
         # それだけを渡す。1つも無ければ確定馬番の取り直し (約36ページ) も predict も省く
         # (race_day_runner は10分ごとに来るので、ここで毎回取り直すと無駄打ちになる)。

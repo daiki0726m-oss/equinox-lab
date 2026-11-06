@@ -475,17 +475,27 @@ def cmd_predict(args):
     _predicted_count = 0
     _skipped_races = []  # [(race_id, reason), ...]
 
-    # ─── 10時ロック: 既存キャッシュがある場合は再予測を禁止 ───
-    now_hour = datetime.now(timezone(timedelta(hours=9))).hour
+    # ─── 確定ロック: 既存キャッシュがある場合は再予測を禁止 ───
+    # #172: 10:00 → 9:30 (1R の発走前に確定させる)。時刻は race_utils.PREDICTION_LOCK_JST
+    # 対象日ごとに判定する (金曜夜に土曜分を作る前夜予想は確定前 = 作り直してよい)
+    from race_utils import prediction_locked_for, PREDICTION_LOCK_LABEL
     force = getattr(args, 'force', False)
-    if not force and now_hour >= 10 and race_ids:
+    _lock_date = getattr(args, 'date', None)
+    if not _lock_date and race_ids:
+        try:
+            with get_db() as _lc:
+                _r = _lc.execute("SELECT race_date FROM races WHERE race_id = ?", (race_ids[0],)).fetchone()
+                _lock_date = _r['race_date'] if _r else None
+        except Exception:
+            _lock_date = None
+    if not force and prediction_locked_for(_lock_date) and race_ids:
         with get_db() as conn:
             existing = conn.execute(
                 "SELECT COUNT(*) as c FROM predictions_cache WHERE race_id = ?",
                 (race_ids[0],)
             ).fetchone()
             if existing and existing['c'] > 0:
-                print("🔒 10時以降のため予測を再実行しません（既存キャッシュを使用）")
+                print(f"🔒 {PREDICTION_LOCK_LABEL}以降のため予測を再実行しません（確定済み・既存キャッシュを使用）")
                 print("   強制実行する場合: --force オプションを追加")
                 return
 
@@ -537,6 +547,19 @@ def cmd_predict(args):
         print(f"\n{'='*60}")
         print(f"🏇 レース予測: {race_id}")
         print(f"{'='*60}")
+
+        # ── #172: 処理中に確定 (9:30) を過ぎたら、残りのレースは作り直さない ──
+        # 確定ロックは冒頭で1回しか見ておらず、9:2x に始まった作り直し (36レースで約8分) は
+        # 9:30 を過ぎても続き、ダッシュボードの最終版が 1R の直前まで動いていた。
+        # 予測が既にあるレースだけ止める (無いレースは作る = ダッシュボードの欠けを出さない)。
+        if not force and _lock_date and prediction_locked_for(_lock_date):
+            with get_db() as _lc2:
+                _has_cache = _lc2.execute("SELECT 1 FROM predictions_cache WHERE race_id = ?",
+                                          (race_id,)).fetchone()
+            if _has_cache:
+                print(f"🔒 {race_id}: 予想の確定 ({PREDICTION_LOCK_LABEL}) を過ぎた → 作り直さない (既存の予測を残す #172)")
+                _skipped_races.append((race_id, f'確定 {PREDICTION_LOCK_LABEL} 以降'))
+                continue
 
         # ── 投稿済 seal チェック ──
         # 一度 post_predict された予測は、--force でも上書き禁止。
@@ -1653,8 +1676,10 @@ def cmd_predict(args):
         # 投稿対象 (#71) なので、投稿後の predict --force (幽霊馬除去の再予測など) は毎回 11R を
         # 見送る。これを異常扱いすると CI で exit 1 → 呼び出し側 (remove_ghost_horses) が
         # 再予測失敗として export まで飛ばしていた。
+        # #172: 確定 (9:30) を過ぎて作り直しを止めたのも意図した凍結なので数えない
         main_skipped = [(rid, r) for rid, r in _skipped_races
-                        if rid[10:12] == '11' and r != '投稿済 seal']
+                        if rid[10:12] == '11' and r != '投稿済 seal'
+                        and not str(r).startswith('確定 ')]
         if main_skipped:
             print(f"\n❌ メインレース(11R)を {len(main_skipped)} 件スキップ → 異常状態")
             for rid, r in main_skipped:
@@ -1763,7 +1788,7 @@ def main():
     p_predict = subparsers.add_parser("predict", help="レースを予測")
     p_predict.add_argument("--race-id", help="レースID")
     p_predict.add_argument("--date", help="日付 (YYYYMMDD)")
-    p_predict.add_argument("--force", action="store_true", help="10時以降でも強制再予測")
+    p_predict.add_argument("--force", action="store_true", help="確定 (9:30) 以降でも強制再予測")
     p_predict.add_argument("--allow-zero-odds", action="store_true",
                            help="odds=0 でも予測する (#42 odds充足ゲートを無効化、履歴backtest用)")
 

@@ -120,7 +120,7 @@ jobs:
           # atomic lock が既に取られていれば dispatch しない。
           trigger_post() {
             local mode=$1
-            local minimum_jst_hm=$2  # 例: 1015 = 10:15
+            local minimum_jst_hm=$2  # 例: 0930 = 9:30
             local current_jst_hm=$3
 
             # 🔒 atomic lock 事前 check — run 間でも共有される。
@@ -142,13 +142,55 @@ jobs:
             fi
 
             # 同 run 内の /tmp flag check (旧仕組み)
+            # #172: post_predict だけは「dispatch に成功した」を済みの印にしない。auto_post_x の
+            # concurrency は待機1本で、待機中に別の run が来ると黙って取り消される。取り消されると
+            # 誰も出し直さず、その日の印が出ない (cron は数時間遅れて 12:00 の上限に阻まれる)。
+            # 済みかどうかはサイドカーの lock (上) で見て、無ければ実行中・待機中の post_predict が
+            # 無いことを確かめてから出し直す (11:55 まで。post_x の上限は 12:00 #69)。
+            if [ "$mode" = "post_predict" ] && grep -q "^${mode}\$" "$TRIGGER_FILE" 2>/dev/null; then
+              if [ "$current_jst_hm" -ge 1155 ]; then
+                return 0
+              fi
+              local _active
+              _active=$(gh run list -R ${{ github.repository }} --workflow auto_post_x.yml --limit 20 \
+                --json displayTitle,status \
+                --jq '[.[] | select(.displayTitle == "post_predict" and (.status == "in_progress" or .status == "queued" or .status == "pending" or .status == "waiting" or .status == "requested"))] | length' \
+                2>/dev/null || echo "?")
+              if [ "$_active" != "0" ]; then
+                return 0      # 実行中・待機中 (または確認できない) → 重ねない
+              fi
+              # 投稿そのものが失敗し続ける日 (X/Threads の障害) に 10分ごとに叩き続けないよう3回まで
+              local _nretry
+              _nretry=$(grep -c '^post_predict_retry$' "$TRIGGER_FILE" 2>/dev/null)
+              if [ "${_nretry:-0}" -ge 3 ]; then
+                return 0
+              fi
+              echo "🔁 [post_predict] dispatch 済みなのに lock も実行中の run も無い (待機中に取り消された) → 出し直す (#172)"
+              sed -i "/^post_predict\$/d" "$TRIGGER_FILE"
+              echo "post_predict_retry" >> "$TRIGGER_FILE"
+            fi
             if grep -q "^${mode}\$" "$TRIGGER_FILE" 2>/dev/null; then
+              return 0
+            fi
+
+            # #172: odds_flash は dispatch の直前の時刻で確定 (9:30) を見る。周の頭の時刻だと、
+            # 9:27 に始まった周が collect 等の後 (約3分後) に確定後の odds_flash を出してしまう。
+            if [ "$mode" = "odds_flash" ] && [ "$((10#$(TZ=Asia/Tokyo date +%H%M)))" -ge 930 ]; then
+              return 0
+            fi
+
+            # #172: auto_post_x への dispatch は1周に1本まで。concurrency (待機1本) では、続けて
+            # 投げると後の待機が先の待機を黙って取り消す (9/22 に odds_flash と post_predict が
+            # 2秒差で互いを取り消したのを実測)。9:00 と 9:30 の間隔が短くなったので先に塞ぐ。
+            if [ "$current_jst_hm" -ge "$minimum_jst_hm" ] && [ "${AP_SENT_THIS_ITER:-0}" = "1" ]; then
+              echo "⏭️ [$mode] この周は auto_post_x を既に1本 dispatch 済み → 次の周に回す"
               return 0
             fi
 
             if [ "$current_jst_hm" -ge "$minimum_jst_hm" ]; then
               echo "🚀 [SAFETY-NET] ${mode} を dispatch (予定 ${minimum_jst_hm:0:2}:${minimum_jst_hm:2:4} 到達, 現在 $(TZ=Asia/Tokyo date +%H:%M))"
               if gh workflow run auto_post_x.yml -R ${{ github.repository }} -f mode="$mode" 2>&1; then
+                AP_SENT_THIS_ITER=1
                 echo "${mode}" >> "$TRIGGER_FILE"
                 echo "  ✅ dispatch 成功 → flag 記録"
               else
@@ -158,7 +200,7 @@ jobs:
           }
 
           echo "🏇 Race Day Runner start. date=$DATE, end_hour=${END_HH}:00 JST"
-          echo "📋 投稿 safety net: odds_flash@9:30 / post_predict@10:15 / results@17:30 / refresh_dashboard@18:30"
+          echo "📋 投稿 safety net: odds_flash@9:00 / post_predict@9:30 (#172 確定と同時) / results@17:30 / refresh_dashboard@18:30"
 
           # 🏃 #161: 6時間上限の手前でバトンを渡す。
           # 9/21(月・祝) は 09:08 起動の runner が 15:08 に殺され、10R/11R(神戸新聞杯)/12R と
@@ -244,8 +286,9 @@ jobs:
           while true; do
             JST_HOUR=$(TZ=Asia/Tokyo date +%H)
             JST_MIN=$(TZ=Asia/Tokyo date +%M)
-            JST_HM="${JST_HOUR}${JST_MIN}"  # 例: 1015
+            JST_HM="${JST_HOUR}${JST_MIN}"  # 例: 0930
             ITER=$((ITER + 1))
+            AP_SENT_THIS_ITER=0   # #172: auto_post_x の dispatch は1周に1本
             echo ""
             echo "============================================="
             echo "iter=$ITER  JST $(TZ=Asia/Tokyo date +%H:%M:%S)"
@@ -311,7 +354,7 @@ jobs:
             DB_PUSH=0
             if [ $((ITER % ${DB_PUSH_EVERY:-6})) -eq 0 ]; then DB_PUSH=1; fi
             case "$JST_HM" in
-              092*|093*|100*|101*|172*|173*|181*|182*) DB_PUSH=1 ;;  # 投稿トリガー直前
+              085*|092*|093*|172*|173*|181*|182*) DB_PUSH=1 ;;  # 投稿トリガー直前
             esac
             if [ "$DB_PUSH" = "1" ]; then
               bash scripts/db_pack.sh 2>/dev/null || true
@@ -339,8 +382,14 @@ jobs:
 
             # ── 投稿 safety net: 時刻が来たら post mode を dispatch ──
             # (hit_flash@15:30 は #57 で削除 — 完走ガードで常にスキップされる no-op だった)
-            trigger_post odds_flash    0930 "$JST_HM"
-            trigger_post post_predict  1015 "$JST_HM"
+            # #172: 予想投稿は確定 (9:30) と同時、朝オッズは最後の作り直しを兼ねて 9:00。
+            # 1周に1本なので、両方が期限を過ぎている時は本体の予想 (post_predict) を先に出す。
+            # odds_flash は確定後に出しても予想は作り直さず、印の後に朝オッズが出るだけなので
+            # 9:30 以降は代打しない (minimum に上限が無いので、ここで時刻を見て止める)。
+            trigger_post post_predict  0930 "$JST_HM"
+            if [ "$((10#$JST_HM))" -lt 930 ]; then
+              trigger_post odds_flash  0900 "$JST_HM"
+            fi
             trigger_post results       1730 "$JST_HM"
             trigger_post refresh_dashboard 1830 "$JST_HM"
 

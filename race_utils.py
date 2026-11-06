@@ -38,6 +38,45 @@ def is_ml_out_of_domain(race_name):
     return ("未勝利" in name) or ("新馬" in name) or is_jump_race(name)
 
 
+# ── 予想の確定時刻 (#172) ─────────────────────────────────────
+# 開催日はこの時刻 (JST) を過ぎたら予想を作り直さない (= 確定)。投稿 (post_predict) も
+# この時刻に出す。1R の発走 (9:45〜) より前に確定させるため 10:00 → 9:30 に早めた
+# (ユーザー指示 2026-11-06)。最後の作り直しは 9:00 の odds_flash (refresh → predict)。
+# 予測・ダッシュボード・export・見張り役・保険はすべてここを見る (時刻を書き下さない)。
+PREDICTION_LOCK_JST = (9, 30)
+PREDICTION_LOCK_LABEL = "9:30"
+PREDICTION_LOCK_HM = PREDICTION_LOCK_JST[0] * 100 + PREDICTION_LOCK_JST[1]   # 930 (HHMM の整数)
+
+
+def prediction_lock_passed(now=None):
+    """JST の now (省略時は現在) が予想の確定時刻 (PREDICTION_LOCK_JST) を過ぎているか (#172)。
+    時刻だけを見る。対象日ごとの「確定済みか」は prediction_locked_for を使う。"""
+    if now is None:
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone(timedelta(hours=9)))
+    return (now.hour, now.minute) >= PREDICTION_LOCK_JST
+
+
+def prediction_locked_for(target_date, now=None):
+    """開催日 target_date (YYYYMMDD / YYYY-MM-DD) の予想が確定済みか (#172)。
+    過去の日 → True / 今日 → 確定時刻を過ぎていれば True / 未来の日 → False。
+    時刻だけで判定すると、金曜夜に作った土曜の予想まで「確定済み」になる
+    (ダッシュボードに「9:30に予想確定済み」と出て、22:30 の前夜予想が作り直しを止める)。
+    日付が読めない時は時刻だけで判定する (旧来の挙動)。"""
+    if now is None:
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone(timedelta(hours=9)))
+    d = str(target_date or "").replace("-", "")[:8]
+    if len(d) != 8 or not d.isdigit():
+        return prediction_lock_passed(now)
+    today = now.strftime("%Y%m%d")
+    if d < today:
+        return True
+    if d > today:
+        return False
+    return prediction_lock_passed(now)
+
+
 # ── 出走取消の判定 (#170) ─────────────────────────────────────
 # #169 で取消馬を印・点数表・💡能力値1位・Threads の能力値ランキングから外したが、
 # 判定が呼び出し元ごとの書き下し (scratched / 999.9倍 / 9999人気) で、推奨理由の

@@ -26,6 +26,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)   # #172: race_utils (確定時刻) を読む
 DATA = os.path.join(ROOT, "docs", "data")
 
 
@@ -258,11 +260,12 @@ def main():
     # 無い・足りないなら生成。オッズが順次公開される日は先に売り出された数レースだけ
     # 予測が通り、残りが #52 のオッズゲートで skip される — 0件しか見ないと
     # 1レース通った瞬間に「予測済み」と誤認して残りが埋まらない。
-    # #161: 上限は 10:00。auto_post_x の predict は「10時以降は確定済み予測を保護」で
-    # 予測を再実行しないので、10時以降に dispatch しても何も起きない (旧版は 11:00 まで
-    # 空打ちしていた)。10時を過ぎて足りない場合は人に知らせる。
+    # #161: 上限は確定ロック (#172: 10:00 → 9:30)。auto_post_x の predict は確定後は予測を
+    # 再実行しないので、確定後に dispatch しても何も起きない (旧版は 11:00 まで空打ちしていた)。
+    # 確定を過ぎて足りない場合は人に知らせる。
+    from race_utils import PREDICTION_LOCK_HM, PREDICTION_LOCK_LABEL
     short = n_pred < n_exp
-    if short and 500 <= hm < 1000 and not sent_ap:
+    if short and 500 <= hm < PREDICTION_LOCK_HM and not sent_ap:
         if n_pred:
             print(f"   ⚠️ 予測が不足 ({n_pred}/{n_exp}R) → 埋め直しを試みる")
         active = gh_runs_active("auto_post_x.yml", title="predict")
@@ -275,9 +278,9 @@ def main():
             print("   ⚠️ 実行中 run を確認できない → predict dispatch を見送り")
         else:
             print(f"   ⏳ predict が実行中/待機中 ({active}件) → 重ねない")
-    elif short and hm >= 1000:
-        msg = (f"予測が {n_pred}/{n_exp}R のまま 10:00 を過ぎた "
-               f"(auto_post_x は10時以降に予測を作らない)")
+    elif short and hm >= PREDICTION_LOCK_HM:
+        msg = (f"予測が {n_pred}/{n_exp}R のまま確定 ({PREDICTION_LOCK_LABEL}) を過ぎた "
+               f"(auto_post_x は確定後に予測を作らない)")
         print(f"🚨 {msg}")
         alerts.append(msg)
 
@@ -301,6 +304,7 @@ def main():
     # ── 3. 投稿 slot (lock があれば触らない) ─────────────────────────────
     # #161 で窓を実ガードに合わせた:
     #  - odds_flash: post_x.py 側は 9:00-10:59 のみ受け付ける → 旧 11:30 までの dispatch は空打ち
+    #    (#172: さらに確定 9:30 までに縮めた)
     #  - post_predict: post_x.py の 12:00 ハード上限 (#69) の手前まで
     #  - results / refresh_dashboard: 日付が変わるまで続ける。旧版は 17:30-23:00 と
     #    夜間スイープの 20-21/22-23 時が分断しており、watchdog の実発火 (中央値 195分) が
@@ -310,8 +314,11 @@ def main():
     # 判定できず、tick のたびに DB を push し直してしまう (容量 #153 / 上書き #70)。
     # ダッシュボードの再生成は runner の trigger_post (18:30) と夜間スイープ (export) が担う。
     # 優先順: 本体の予想 (post_predict) > 朝オッズ (odds_flash) > 結果 (results)
-    SLOTS = (("post_predict", 1015, 1155),
-             ("odds_flash", 930, 1100),
+    # #172: 予想投稿は確定 (9:30) と同時、朝オッズは最後の作り直しを兼ねて 9:00。
+    # odds_flash は確定後に代打しても予想は作り直さず、9:30 の印より後に「朝オッズ」が出る
+    # だけなので、代打は確定まで。
+    SLOTS = (("post_predict", PREDICTION_LOCK_HM, 1155),
+             ("odds_flash", 900, PREDICTION_LOCK_HM),
              ("results", 1730, 2400))
     for mode, start, end in SLOTS:
         if not (start <= hm < end):

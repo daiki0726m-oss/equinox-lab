@@ -1234,8 +1234,8 @@ _MORNING_ROTATION = {
             ("notable", _morning_sec_notable_blood),
         ],
         # #97 (A4): 「土朝は本番直前データ」slot は存在しない (土朝morning は投稿されない)
-        # → 実在する配信 (post_predict 10:15 の AI印) だけを予告する。
-        "cta": "🔔 レース当日の朝10時すぎにAI印の最終予想",  # #97: 対象レースが翌日の場合の誤案内防止
+        # → 実在する配信 (post_predict 9:30 #172 の AI印) だけを予告する。
+        "cta": "🔔 レース当日の朝9時半すぎにAI印の最終予想",  # #97: 対象レースが翌日の場合の誤案内防止
     },
     5: {  # 土: 本番直前データ (1番人気の信頼性 + 枠順)
         "emoji": "🎯", "theme": "本番直前データ",
@@ -1244,7 +1244,7 @@ _MORNING_ROTATION = {
             ("post_pos", _morning_sec_post_pos),
         ],
         # #97 (A2): 「買い目」はXに出ない (ダッシュボード限定 #71) ので予告しない。印のみ。
-        "cta": "🔔 レース当日の朝10時すぎにAI印の最終予想を発表",  # #97: 題材が翌日レースでも正しい表現
+        "cta": "🔔 レース当日の朝9時半すぎにAI印の最終予想を発表",  # #97: 題材が翌日レースでも正しい表現
     },
     6: {  # 日: 波乱とコース傾向 (波乱年 + 種牡馬 + 末脚)
         "emoji": "⚠️", "theme": "波乱とコース傾向",
@@ -1254,7 +1254,7 @@ _MORNING_ROTATION = {
             ("pace", _morning_sec_pace),
         ],
         # #97 (A2): 「買い目」はXに出ない (ダッシュボード限定 #71) ので予告しない。印のみ。
-        "cta": "🔔 本日10時すぎにAI印の最終予想を発表",
+        "cta": "🔔 本日9時半すぎにAI印の最終予想を発表",
     },
 }
 
@@ -2183,7 +2183,7 @@ def build_thu_evening_post(race: dict, conn) -> Tuple[str, dict]:
 
     header = f"🌟 {day} {label}\n{theme}"
     # #97 (A2): 「買い目」はXに投稿されない (ダッシュボード限定 #71) → 印だけを予告。
-    cta = "🔔 レース当日の朝10時すぎに印の最終予想"  # #79 note削除 / #81 短縮し3頭目を確保
+    cta = "🔔 レース当日の朝9時半すぎに印の最終予想"  # #79 note削除 / #81 短縮し3頭目を確保
 
     hashtags = _hashtags(race)
     header = _resolve_header(header, day, label, [s for s in sections if s])
@@ -2248,7 +2248,7 @@ def build_fri_weekday_post(race: dict, conn) -> Tuple[str, dict]:
         return None, {"sections_used": [], "samples": samples, "skipped": "no_content"}
 
     header = f"🎯 {day} {label}\n{theme}"
-    cta = "🔔 レース当日の朝10時すぎに印 (◎○▲) の最終予想"  # #97 (A2): 買い目はXに出ないので予告しない
+    cta = "🔔 レース当日の朝9時半すぎに印 (◎○▲) の最終予想"  # #97 (A2): 買い目はXに出ないので予告しない
 
     hashtags = _hashtags(race)
     header = _resolve_header(header, day, label, [s for s in sections if s])
@@ -2299,8 +2299,8 @@ def build_fri_evening_post(race: dict, conn) -> Tuple[str, dict]:
 
     # #97 (A1): 旧「朝7時 印別最終予想 / 朝10時 確定買い目」は二重の嘘だった —
     #   朝7時のX投稿は存在せず (7時は predict cron のみ)、買い目はXに出ない
-    #   (ダッシュボード限定 #71)。実在する配信 (odds_flash 9:30 / post_predict 10:15) に修正。
-    sections.append("【配信予定】(レース当日の朝)\n🌅 9:30 — オッズ確定・最終見解\n🎯 10:15 — 注目レースのAI印を一挙公開")  # #97: 実投稿は品質ゲート付き厳選(~14R)なので「全レース分」と約束しない
+    #   (ダッシュボード限定 #71)。実在する配信 (odds_flash 9:00 / post_predict 9:30 #172) に修正。
+    sections.append("【配信予定】(レース当日の朝)\n🌅 9:00 — 朝オッズで最終見解\n🎯 9:30 — 注目レースのAI印を一挙公開")  # #97: 実投稿は品質ゲート付き厳選(~14R)なので「全レース分」と約束しない
 
     cta = "🔔 週末をお楽しみに🔥"  # #97 (D4)
 

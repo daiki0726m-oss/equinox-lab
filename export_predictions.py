@@ -8,7 +8,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from database import get_db
-from race_utils import is_scratched_horse, is_scratch_values
+from race_utils import is_scratched_horse, is_scratch_values, prediction_locked_for
 
 JST = timezone(timedelta(hours=9))
 
@@ -410,7 +410,7 @@ def export_predictions(date_str=None):
                     "upset_hist": upset_hist,
                     "has_results": has_results,
                     "payouts": race_payouts if has_results else [],
-                    "prediction_locked": datetime.now(JST).hour >= 10,
+                    "prediction_locked": prediction_locked_for(ds, datetime.now(JST)),   # #172: 9:30 確定 (対象日ごと)
                 })
                 # #169: 成果物ゲートは numbers_confirmed=False のレースを「予測あり」と数えない
                 all_races[-1]["numbers_confirmed"] = _numbers_ok
@@ -447,7 +447,7 @@ def export_predictions(date_str=None):
                 # ゲート (prediction_gate) はこれも「馬番未確定」と数え、作り直しを起動する
                 "numbers_withheld": _withheld,
                 "venues": venues,
-                "is_locked": datetime.now(JST).hour >= 10,
+                "is_locked": prediction_locked_for(ds, datetime.now(JST)),   # #172: 9:30 確定 (対象日ごと)
                 "exported_at": datetime.now(JST).isoformat(),
             }
 
@@ -455,7 +455,7 @@ def export_predictions(date_str=None):
             # #150c: 既存 JSON より大幅にレースが減る上書きを止める。
             # 前夜 prefetch が36レースを公開した後、翌朝の predict が部分成功すると
             # その export が N レースで **全置換**し、ダッシュボードが前夜より後退する
-            # (10時ロック以降は再予測されないので、その日は復旧しない)。
+            # (確定ロック (9:30 #172) 以降は再予測されないので、その日は復旧しない)。
             _prev_n = 0
             if os.path.exists(out_path):
                 try:

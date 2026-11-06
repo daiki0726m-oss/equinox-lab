@@ -64,21 +64,25 @@ slots:
     fallback_mode: "predict"  # ← 直接指定で確実性UP
     days: [5, 6]              # 土日
 
+  # #172 (2026-11-06): 予想の確定を 10:00 → 9:30 に早めた (1R は 9:45〜発走)。
+  # 最後の作り直しは 9:00 の odds_flash、予想投稿は確定と同時の 9:30。
   odds_flash:
-    description: "土日朝 9:30 オッズフラッシュ"
-    cron: "30 0 * * 6,0"
-    expected_jst: "09:30"
-    time_guard_jst: [9, 10]  # 9:00-10:30
-    watchdog_deadline_jst: "10:15"
+    description: "土日朝 9:00 朝オッズ + 最後の作り直し"
+    cron: "0 0 * * 6,0"
+    expected_jst: "09:00"
+    time_guard_jst: [9, 10]  # post_x 側は 9:00-10:30
+    # 確定 (9:30) を過ぎてから代打しても予想は作り直さず、9:30 の印の後に朝オッズが出るだけ
+    watchdog_deadline_jst: "09:30"
     fallback_mode: "odds_flash"
     days: [5, 6]
 
   post_predict:
-    description: "土日朝 10:15 予測投稿 (◎○▲ 印 配信)"
-    cron: "15 1 * * 6,0"
-    expected_jst: "10:15"
-    time_guard_jst: [10, 10]  # 10:00-10:59 内 (cmd_predict 時間ガード)
-    watchdog_deadline_jst: "10:50"
+    description: "土日朝 9:30 予想投稿 (◎○▲ 印 配信、確定と同時)"
+    cron: "30 0 * * 6,0"
+    expected_jst: "09:30"
+    time_guard_jst: [9, 11]  # 確定 (9:30) 以降、post_x の上限 12:00 (#69) まで
+    # 発走前のレースだけ投稿するので、遅れても残りのレースには間に合う (旧 10:15→10:50 の35分窓は狭すぎた)
+    watchdog_deadline_jst: "11:00"
     # #149: ここが "predict" だと、代打が呼ばれても**予測を回すだけで投稿しない**まま
     # 「投稿済み」と記録され、失敗が見えなくなる。投稿させたいので post_predict。
     fallback_mode: "post_predict"

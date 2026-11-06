@@ -83,11 +83,11 @@ def parse_jst_hhmm(hhmm_str, base_date=None):
 #      deadline を過ぎると missed になり二度と自動では出ないので最優先。
 #   1. 生成 (predict) — weekend_morning_predict / dashboard_predictions (同じ mode は1本にまとまる)。
 #      投稿 slot を出した tick で predict を見送っても失うものは無い:
-#      - odds_flash の run は10時前なら自分で refresh_entries → refresh_odds → predict を通す
+#      - odds_flash の run は確定 (9:30 #172) 前なら自分で refresh_entries → refresh_odds → predict を通す
 #        (auto_post_x「Refresh odds before lock」)。refresh_entries が通らない日は predict の
 #        run も同じゲートで exit 1 になり予測を作らないので、odds_flash を優先して失うものは無い。
 #      - post_predict / results の run は予測を作り直さないが、どれも preflight --auto-fix
-#        (欠けた予測の作り直し) と export を通す。そもそも predict の run も10時以降は
+#        (欠けた予測の作り直し) と export を通す。そもそも predict の run も確定 (9:30) 以降は
 #        予測を作り直さないので、見送るのは1 tick 分の refresh_entries / refresh_odds だけ。
 #        missing は次の tick で再判定され、投稿 slot が片付けば predict が出る。
 #   2. auto_post_x 以外 (fetch_weekend_races 等) — concurrency group が別なので並びは影響しない。
@@ -216,6 +216,39 @@ def find_recent_run_any(runs, mode_keywords, expected_dt, window_minutes=240,
     return None
 
 
+# #172: 投稿 slot (朝オッズ・予想投稿) は「その時刻に近い run が success したか」ではなく、
+# 投稿 lock の正本 (docs/data/posted_slots_YYYYMMDD.json #141) で判定する。schedule run は
+# cron 文字列が取れず「期待時刻が一番近い slot」に割り当てるため、odds_flash 9:00 と post_predict
+# 9:30 の間が30分になった今は、15分以上遅れた odds_flash の cron が post_predict の成功に
+# 数えられ、post_predict の代打が出なくなる。早く来て投稿しなかった run (時刻ガードで return =
+# success) も同じく ok に数えられていた。
+_SIDECAR_SLOT_MODES = {"odds_flash", "post_predict"}
+
+
+def _sidecar_locked(mode, today):
+    """今日の posted_slots サイドカーに mode の lock があるか。True/False、読めなければ None。"""
+    path = os.path.join(REPO_ROOT, "docs", "data", f"posted_slots_{today.strftime('%Y%m%d')}.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return mode in ((json.load(f) or {}).get("slots") or {})
+    except FileNotFoundError:
+        return False      # まだ何も投稿していない日 (サイドカーは最初の投稿で作られる)
+    except Exception:
+        return None
+
+
+def _apply_sidecar(slot_cfg, recent, today):
+    mode = slot_cfg.get("fallback_mode")
+    if mode not in _SIDECAR_SLOT_MODES:
+        return recent
+    locked = _sidecar_locked(mode, today)
+    if locked is False:
+        return None
+    if locked is True and not recent:
+        return {"created_at": "(posted_slots の lock)", "delay_minutes": 0, "event": "lock"}
+    return recent
+
+
 def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None, all_slots_today=None):
     """1 つの slot を評価して status を返す。
 
@@ -257,6 +290,7 @@ def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None, all_slots_
             window_minutes=monitor_cfg.get("recent_success_window_minutes", 240),
             all_slot_expected_dts=other_dts,
         )
+        recent = _apply_sidecar(slot_cfg, recent, today)
         # #150c: 「期限を1分過ぎた瞬間に復旧を放棄する」のをやめる。
         # 旧実装は deadline 超過を一律 missed とし、posting_watchdog は
         # missing しか dispatch しないため、**その日はもう二度と自動復旧しなかった**。
@@ -269,6 +303,18 @@ def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None, all_slots_
             or slot_cfg.get("workflow", "").startswith("fetch_")
             or slot_name in ("weekend_morning_predict",)
         )
+        # #172: 予想の確定 (9:30) 後は predict を出しても作り直さない (空打ちで auto_post_x の枠を
+        # 占有し、9:30 の予想投稿を待機に回して取り消しの危険を増やす)。予測そのものが無い/空の
+        # 時の補完は dashboard_predictions 側が受け持つ。
+        if slot_name == "weekend_morning_predict" and not recent:
+            if REPO_ROOT not in sys.path:
+                sys.path.insert(0, REPO_ROOT)
+            from race_utils import prediction_lock_passed as _lp
+            if _lp(today):
+                return {"slot": slot_name, "status": "ok_late",
+                        "expected": expected_jst.strftime("%H:%M JST"),
+                        "deadline": deadline.strftime("%H:%M JST"),
+                        "note": "予想の確定 (9:30) 後は作り直さない — 予測の欠けは dashboard_predictions が補う (#172)"}
         _st = "ok_late" if recent else ("missing" if _is_generation else "missed")
         result = {
             "slot": slot_name,
@@ -292,6 +338,7 @@ def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None, all_slots_
         window_minutes=monitor_cfg.get("recent_success_window_minutes", 240),
         all_slot_expected_dts=other_dts,
     )
+    recent = _apply_sidecar(slot_cfg, recent, today)
     if recent:
         delay_min = recent.get("delay_minutes", 0)
         return {
@@ -426,14 +473,17 @@ def main():
             _n = _s["ready"] if _s["total"] else _n
         except Exception:
             pass
-        if _unconf and today.hour >= 10:
-            # #169: 10時以降は predict が確定済み予測を保護して作り直さないので、
+        if REPO_ROOT not in sys.path:
+            sys.path.insert(0, REPO_ROOT)   # #172: race_utils (確定時刻) を読む
+        from race_utils import prediction_lock_passed as _lock_passed
+        if _unconf and _lock_passed(today):
+            # #169: 確定ロック (#172: 9:30) 以降は predict が確定済み予測を保護して作り直さないので、
             # dispatch しても空打ちになる。記録だけ残して人に見えるようにする
             # (fallback_mode 無しで missing_slots に入れると watchdog が mode なしで
             #  auto_post_x を起動し、時刻フォールバックで別の投稿 type になりうる)。
             # 全レースが未確定 (_n=0) でも同じ: cache はあるので predict は作り直さず、
             # dispatch のたびに出馬表の取り直しと keiba.db.gz の push だけが走る。
-            # 10時以降に予測を作らせるのは「JSON が無い/空」の時だけ (下の分岐)
+            # 確定ロック以降に予測を作らせるのは「JSON が無い/空」の時だけ (下の分岐)
             _ev = {"slot": "dashboard_predictions", "status": "stale_numbers",
                    "expected": "開催日は常時",
                    "actual": f"{_n}レース + 馬番未確定 {len(_unconf)}R (exported_at={_exported})",
