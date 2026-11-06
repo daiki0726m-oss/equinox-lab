@@ -89,13 +89,17 @@ def _bg_result_fetcher():
                                         ov = float(vals[0]) if vals[0] and vals[0] != '---.-' else 0
                                         pv = int(vals[2]) if vals[2] else 0
                                         if ov > 0:
-                                            conn.execute("UPDATE results SET odds=?, popularity=? WHERE race_id=? AND horse_number=?",
+                                            # #171: 取消の目印 (人気9999) を API の 999.9倍・人気=頭数で上書きしない
+                                            conn.execute("UPDATE results SET odds=?, popularity=? WHERE race_id=? AND horse_number=?"
+                                                         " AND NOT (COALESCE(popularity, 0) >= 999 AND finish_position = 0)",
                                                          (ov, pv, rid, int(hn_str)))
                                 # predictions_cache更新
                                 cache = conn.execute("SELECT predictions_json FROM predictions_cache WHERE race_id=?", (rid,)).fetchone()
                                 if cache:
                                     preds = json.loads(cache['predictions_json'])
                                     for p in preds:
+                                        if p.get('scratched'):
+                                            continue   # #171: 取消と分かっている馬は API の値で上書きしない
                                         hn = str(p['horse_number']).zfill(2)
                                         if hn in odds_raw:
                                             v = odds_raw[hn]

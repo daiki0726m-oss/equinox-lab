@@ -13,14 +13,17 @@ from race_utils import is_scratched_horse, is_scratch_values
 JST = timezone(timedelta(hours=9))
 
 
-def scratched_for_export(h, db_r):
+def scratched_for_export(h, db_r, race_finished=False):
     """公開 JSON の馬が取消と分かっているか (#170)。判定は race_utils と共通。
 
-    - cache の値: scratched フラグ (#169 の予測時に分かった取消) / 番兵 9999人気 / 負のオッズ
-      (cache の正の odds_win は実オッズの無い日の推定値 0.8/勝率 でありうるので見ない —
-       推定値は 999.9 を超えうる。predict の印の段 #169 と同じ扱い)
-    - DB (results) の値: refresh_odds が書く 999.9倍 = 予測の後に分かった取消も拾う
-      (11/01 東京7R 11番は予測時 4.9倍・2人気で、後から 999.9倍になった) / 古い行の番兵
+    - cache の値: scratched フラグ (#169 の予測時に分かった取消・#171 で refresh_odds が後から
+      立てた取消) / 番兵 9999人気 / 負のオッズ
+      (cache の正の odds_win は実オッズの無い日の推定値 0.8/勝率 でありうるので見ない)
+    - DB (results) の値: 出馬表の取消行・API の照合で書いた人気 9999 (#171) / 古い行の番兵
+    - race_finished (1着が出た = 確定したレース) の時だけ、DB の 999.9倍も取消とみなす。#171 より前の取消馬は
+      results に 999.9倍・人気=頭数で入っており (9/05〜11/01 の17頭)、着順の無い 999.9倍は取消。
+      発走前の 999.9倍は票の少ない走る馬でもありうるので取消にしない (11/06 前夜予想の94頭)。
+      着順のある馬はこの関数の外 (呼び出し側) で取消から外す。
     """
     if is_scratched_horse({**h, "_has_real_odds": False}):
         return True
@@ -29,7 +32,14 @@ def scratched_for_export(h, db_r):
             return True
     except (TypeError, ValueError):
         pass
-    return bool(db_r) and is_scratch_values(db_r["odds"], db_r["popularity"])
+    if not db_r:
+        return False
+    if is_scratch_values(db_r["odds"], db_r["popularity"]):
+        return True
+    try:
+        return bool(race_finished) and float(db_r["odds"] or 0) >= 999.9
+    except (TypeError, ValueError):
+        return False
 
 
 def numbers_state(conn, race_id, horses):
@@ -272,6 +282,9 @@ def export_predictions(date_str=None):
                 """, (race_id,)).fetchall()
 
                 has_results = len(res_rows) > 0
+                # #171: 「着順の無い 999.9倍 = 取消」と言えるのは1着が出た (レース確定) 時だけ (#150e)。
+                # 発走直後の部分取得で一部の着順しか無い間は、走った大穴を取消にしない
+                race_confirmed = any(rr['finish_position'] == 1 for rr in res_rows)
                 race_results = {}
                 for rr in res_rows:
                     race_results[rr['horse_number']] = {
@@ -294,7 +307,7 @@ def export_predictions(date_str=None):
                     # #170: 取消と分かっている馬に scratched: true を立てる (判定は X/Threads の
                     # 💡能力値1位・能力値ランキングと共通 = scratched_for_export)。下の上書きで
                     # cache の番兵 (9999人気) が消えることがあるので、マージの前に判定する。
-                    _scr = scratched_for_export(h, db_r)
+                    _scr = scratched_for_export(h, db_r, race_finished=race_confirmed)
                     if db_r:
                         if db_r['odds'] and db_r['odds'] > 0:
                             h['odds_win'] = db_r['odds']
@@ -302,7 +315,7 @@ def export_predictions(date_str=None):
                         # (#149 で results/cache 側は塞いだが export に残っていた)
                         if db_r['popularity'] and 0 < db_r['popularity'] < 999:
                             h['popularity'] = db_r['popularity']
-                    # #170: odds_win / popularity の値は変えない (投稿側は 999.9 / 9999 でも判定する)。
+                    # #170: odds_win / popularity の値は変えない (投稿側は 9999 でも判定する)。
                     # 取消でない馬のキーは触らない (旧 cache は無し / #169 以降の cache は false)。
                     # 着順のある馬は走っているので取消にしない (999.9倍で実際に走った大穴もいる)。
                     if h['horse_number'] in race_results:

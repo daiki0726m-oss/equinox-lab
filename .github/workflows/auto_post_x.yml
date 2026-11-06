@@ -540,7 +540,8 @@ jobs:
           # 予測の前に odds を埋めておくことが必須。model_rank は gain 92% が odds_log =
           # odds=0 のまま predict すると rank_score がフラット化し全レース confidence=D になる。
           echo "💹 オッズを取得 (予測前に必須 — odds=0 だと全D化する)..."
-          timeout 180 python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ取得失敗 → 既存データで続行"
+          # #171: 999.9倍の馬がいるレースは出馬表の取消行も読むので、他の経路と同じ 420 秒に
+          timeout 420 python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ取得失敗 → 既存データで続行"
 
           # 10時以降は予測を再実行しない（確定済み予測を保護）
           if [ "$JST_HOUR" -ge 10 ]; then

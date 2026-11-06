@@ -137,6 +137,13 @@ def _load_scorecard():
 def _is_scratch_odds(odds, popularity):
     """#169: 予想時点で見えている「出走取消」の値か。
 
+    ⚠️ #171 (2026-11-06): 下の「odds = 999.9 → 取消」は撤回した。999.9倍は票がほとんど無い馬の
+    表示で、前日発売の直後 (11/06 19:05 の前夜予想) は11/07 の28レース・94頭の走る馬がこの値になり、
+    全員が取消扱いで印の候補から外れた。発売中の API は取消馬も 999.9倍・人気=頭数で返すので、
+    値だけでは区別できない。取消は出馬表の取消行 (scraper.scrape_shutuba / refresh_odds の照合) で
+    確かめて人気 9999 の目印 (race_utils.SCRATCH_SENTINEL) を書き、ここでは人気>=999 と負のオッズを見る。
+    以下は #169 時点の記録 (999.9 を取消とみなした根拠。前日発売の直後を見ていなかった)。
+
     実データで実際に出る値 (2026-11 時点の確認):
       - odds = 999.9 (人気=頭数=最下位): 9/05 以降の取消馬は results にこの値で入っている
         (9/05〜11/01 で17頭、全頭 finish_position=0 = 走っていない)。予測 JSON でも
@@ -172,6 +179,15 @@ def _scratched_numbers(results_rows, api_odds=None):
     出馬表の取消行 (tr.HorseList.Cancel) を読むこと (E 班の範囲)。
     """
     out = set()
+    # #171: 確定済み (1着がいる) のレースを作り直す時 (バックテスト・復旧) は、着順の無い 999.9倍も
+    # 取消とみなす。#171 より前の取消馬は 999.9倍・人気=頭数で入っている (export と同じ救済)。
+    # 発走前のレースには効かない (票の少ない 999.9倍の走る馬を取消にしない)。
+    def _fin(r):
+        try:
+            return int(r["finish_position"] or 0)
+        except (TypeError, ValueError, KeyError, IndexError):
+            return 0
+    _confirmed = any(_fin(r) == 1 for r in results_rows or [])
     for r in results_rows or []:
         try:
             hn = int(r["horse_number"])
@@ -179,6 +195,12 @@ def _scratched_numbers(results_rows, api_odds=None):
             continue
         if _is_scratch_odds(r["odds"], r["popularity"]):
             out.add(hn)
+        elif _confirmed and _fin(r) == 0:
+            try:
+                if float(r["odds"] or 0) >= 999.9:
+                    out.add(hn)
+            except (TypeError, ValueError):
+                pass
     for hn, od in (api_odds or {}).items():
         if isinstance(od, dict) and _is_scratch_odds(od.get("odds_win"), od.get("popularity")):
             try:
@@ -213,7 +235,9 @@ def _prefetch_api_odds(race_id, results_rows, horse_numbers):
                     if (od.get("odds_win") or 0) <= 0 or (od.get("popularity") or 0) >= 999:
                         continue
                     conn2.execute(
-                        "UPDATE results SET odds = ?, popularity = ? WHERE race_id = ? AND horse_number = ?",
+                        "UPDATE results SET odds = ?, popularity = ? WHERE race_id = ? AND horse_number = ?"
+                        # #171: 取消の目印 (人気9999) を API の 999.9倍・人気=頭数で上書きしない
+                        " AND NOT (COALESCE(popularity, 0) >= 999 AND finish_position = 0)",
                         (od["odds_win"], od["popularity"], race_id, hn))
             print(f"  📡 APIからオッズ取得: {len(api_odds)}頭 (採点前 #169)")
     except Exception as e:
@@ -619,7 +643,9 @@ def cmd_predict(args):
                             race_id, e.get("horse_id", ""),
                             e.get("jockey_id", ""), e.get("trainer_id", ""),
                             e.get("post_position", 0), e.get("horse_number", 0),
-                            0, 0, 0, "", 0, "", 0, "", 0, 0,
+                            # #171: 出馬表の取消行は scraper が目印 (999.9倍・人気9999) を入れている
+                            e.get("odds", 0) or 0, e.get("popularity", 0) or 0,
+                            0, "", 0, "", 0, "", 0, 0,
                             e.get("impost", 0)
                         ))
 
@@ -689,7 +715,9 @@ def cmd_predict(args):
                                     continue
                                 oconn.execute(
                                     "UPDATE results SET odds = ?, popularity = ? "
-                                    "WHERE race_id = ? AND horse_number = ?",
+                                    "WHERE race_id = ? AND horse_number = ?"
+                                    # #171: 取消の目印 (人気9999) を上書きしない
+                                    " AND NOT (COALESCE(popularity, 0) >= 999 AND finish_position = 0)",
                                     (win, pop, race_id, int(hn))
                                 )
                                 _n += 1
@@ -890,7 +918,9 @@ def cmd_predict(args):
                                 if (od.get("odds_win") or 0) <= 0 or (od.get("popularity") or 0) >= 999:
                                     continue
                                 conn2.execute(
-                                    "UPDATE results SET odds = ?, popularity = ? WHERE race_id = ? AND horse_number = ?",
+                                    "UPDATE results SET odds = ?, popularity = ? WHERE race_id = ? AND horse_number = ?"
+                                    # #171: 取消の目印 (人気9999) を API の 999.9倍・人気=頭数で上書きしない
+                                    " AND NOT (COALESCE(popularity, 0) >= 999 AND finish_position = 0)",
                                     (od["odds_win"], od["popularity"], race_id, hn))
                         print(f"  📡 APIからオッズ取得: {len(api_odds)}頭")
                 except Exception as e:
@@ -1245,10 +1275,11 @@ def cmd_predict(args):
             # #169: 予想時点で取消と分かっている馬は印 (◎○▲△△/☆/注) の候補から外す。
             # #147 で印の主軸をオッズ非依存の点数表にしたため、999.9倍の取消馬でも点数が
             # 高ければ印が付いた (10/17 東京5R ○ / 10/25 京都3R ▲ — 公開ダッシュボードで発生)。
-            # API の値 (番兵 9999人気 / 999.9倍) は通常は採点前の _prefetch_api_odds で拾うが、
+            # API の番兵 (9999人気 / 負のオッズ) は通常は採点前の _prefetch_api_odds で拾うが、
             # そこで API が空を返し予測行ループ内で初めて取れた時に備えて、ここでも拾う
-            # (点数表の採点より後に分かった分)。999.9倍はループ内 API だと人気=頭数で来るので
-            # 人気だけでなくオッズも見る。推定オッズ (0.8/勝率) は 999.9 を超えうるので実オッズのみ。
+            # (点数表の採点より後に分かった分)。推定オッズ (0.8/勝率) は見ない (実オッズのみ)。
+            # #171: 999.9倍だけでは取消にしない (前日発売の直後は走る馬も 999.9倍)。発売中の取消は
+            # 出馬表の取消行から results に書いた人気 9999 で、_scratched_numbers が拾う。
             for p in sorted_preds:
                 if _is_scratch_odds(p.get('odds_win') if p.get('_has_real_odds') else 0,
                                     p.get('popularity')):

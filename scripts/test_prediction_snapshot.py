@@ -7,7 +7,7 @@
 確かめること:
   - 既定はローカルで書かない / CI (GITHUB_ACTIONS=true) で書く / PREDICTION_SNAPSHOT=0 で止まる
   - skip したレースと過去日のレースは書かない
-  - 予測時オッズ・人気・印・取消 (999.9倍) が cache / results のとおりに入る。実オッズが無い馬は null
+  - 予測時オッズ・人気・印・取消 (人気9999 の目印 #171。999.9倍だけでは取消にしない) が cache / results のとおりに入る。実オッズが無い馬は null
   - 取消の判定が predict._is_scratch_odds と同じ (cache の人気 9999・"_scratched" キーも取消。
     実オッズの無い馬の推定オッズ 1000倍超は取消にしない)
   - horse_id と numbers_confirmed (全頭 post_position>0) が入る
@@ -51,9 +51,10 @@ def _env(**kw):
 
 
 def _seed(conn, race_id, race_date, horses, created_at="now", start_time="15:40", drawn=True,
-          extra=None):
+          extra=None, res_pop=None):
     """horses: [(馬番, 馬名, results.odds, 印, cache の odds_win, 人気)]
-    drawn: 枠番 (post_position) を入れる = 枠順確定後 / extra: {馬番: cache に足すキー}"""
+    drawn: 枠番 (post_position) を入れる = 枠順確定後 / extra: {馬番: cache に足すキー}
+    res_pop: {馬番: results の人気} (#171: 出馬表の取消行で results に書く人気 9999 の再現用)"""
     conn.execute(
         "INSERT OR REPLACE INTO races (race_id, race_date, venue, race_number, distance, surface,"
         " track_condition, weather, start_time) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -65,7 +66,8 @@ def _seed(conn, race_id, race_date, horses, created_at="now", start_time="15:40"
         # results の人気は API の番兵 (9999) を書かない (#149/#150) — cache にだけ入る形を再現
         conn.execute("INSERT INTO results (race_id, horse_id, horse_number, odds, popularity,"
                      " post_position, finish_position) VALUES (?,?,?,?,?,?,0)",
-                     (race_id, f"h{race_id}{hn}", hn, ro, 0 if _pop >= 999 else _pop,
+                     (race_id, f"h{race_id}{hn}", hn, ro,
+                      (res_pop or {}).get(hn, 0 if _pop >= 999 else _pop),
                       (hn + 1) // 2 if drawn else 0))
     preds = [dict({"horse_number": hn, "horse_name": name, "mark": mk, "odds_win": ow,
                    "popularity": pop, "pred_win_pct": 10.0 + hn,
@@ -103,13 +105,16 @@ def main():
     R1, R2, R3, RP = "209905050101", "209905050102", "209905050103", "209905050199"
     RS, RT = "209905050104", "209905050105"
     with database.get_db() as c:
-        # R1: 2番 = 999.9倍 (refresh_odds の取消) / 3番 = 実オッズ無し (推定)
-        #     4番 = API の番兵 (cache の人気 9999・results は 0倍) / 5番 = predict の "_scratched"
-        #     6番 = 実オッズ無しで推定オッズが 1000倍超 (勝率が低いだけ。取消ではない)
+        # R1: 2番 = 999.9倍・3人気 (前日発売の直後の票の少ない走る馬。#171 で取消にしない) /
+        #     3番 = 実オッズ無し (推定) / 4番 = API の番兵 (cache の人気 9999・results は 0倍) /
+        #     5番 = predict の "_scratched" / 6番 = 実オッズ無しで推定オッズが 1000倍超 (取消ではない) /
+        #     7番 = 出馬表の取消行で results に書いた目印 (999.9倍・人気9999 #171。cache は API の
+        #           発売中の値 999.9倍・人気=頭数)
         _seed(c, R1, fut, [(1, "アルファ", 3.2, "◎", 3.2, 1), (2, "ベータ", 999.9, "", 999.9, 3),
                            (3, "ガンマ", 0.0, "○", 12.0, 0), (4, "シータ", 0.0, "", 22.6, 9999),
-                           (5, "イオタ", 0.0, "", 30.0, 0), (6, "カッパ", 0.0, "", 1600.0, 0)],
-              extra={5: {"_scratched": True}})
+                           (5, "イオタ", 0.0, "", 30.0, 0), (6, "カッパ", 0.0, "", 1600.0, 0),
+                           (7, "ラムダ", 999.9, "", 999.9, 7)],
+              extra={5: {"_scratched": True}}, res_pop={7: 9999})
         # R2 は枠順確定前 (post_position=0) の馬番
         _seed(c, R2, fut, [(1, "デルタ", 5.0, "◎", 5.0, 1), (2, "イプシロン", 8.0, "☆", 8.0, 2)],
               drawn=False)
@@ -169,7 +174,10 @@ def main():
         hs = {h["horse_number"]: h for h in r1["horses"]}
         check("odds-real", hs[1]["odds"] == 3.2 and hs[1]["popularity"] == 1, str(hs[1]))
         check("odds-estimated-null", hs[3]["odds"] is None and hs[3]["popularity"] == 0, str(hs[3]))
-        check("scratched-999", hs[2]["scratched"] == 1 and hs[1]["scratched"] == 0)
+        # #171: 999.9倍だけでは取消にしない / 出馬表の取消行の目印 (results の人気 9999) は取消
+        check("not-scratched-999-thin-market", hs[2]["scratched"] == 0 and hs[1]["scratched"] == 0,
+              str(hs[2]))
+        check("scratched-sentinel-results-9999", hs[7]["scratched"] == 1, str(hs[7]))
         check("scratched-cache-pop-9999", hs[4]["scratched"] == 1, str(hs[4]))
         check("scratched-predict-key", hs[5]["scratched"] == 1, str(hs[5]))
         check("not-scratched-estimated-1600x", hs[6]["scratched"] == 0 and hs[3]["scratched"] == 0,
@@ -275,8 +283,9 @@ def main():
         with database.get_db() as c:
             _seed(c, R1, fut, [(1, "アルファ", 3.6, "◎", 3.6, 1), (2, "ベータ", 999.9, "", 999.9, 3),
                                (3, "ガンマ", 0.0, "○", 12.0, 0), (4, "シータ", 0.0, "", 22.6, 9999),
-                               (5, "イオタ", 0.0, "", 30.0, 0), (6, "カッパ", 0.0, "", 1600.0, 0)],
-                  extra={5: {"_scratched": True}})
+                               (5, "イオタ", 0.0, "", 30.0, 0), (6, "カッパ", 0.0, "", 1600.0, 0),
+                               (7, "ラムダ", 999.9, "", 999.9, 7)],
+                  extra={5: {"_scratched": True}}, res_pop={7: 9999})
         _env(GITHUB_RUN_ID="116")
         check("r1-second-version", len(ps.record_run([R1], [], args=A)) == 1)
         ap3 = ps.at_posting(fut_ymd, marks_path=pm)

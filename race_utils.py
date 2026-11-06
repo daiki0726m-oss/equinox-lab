@@ -44,15 +44,25 @@ def is_ml_out_of_domain(race_name):
 # 「能力評価N位」や Threads の「M頭中K位」は取消馬を順位の母集団に残したままだった
 # (11/01 東京7R: 取消11番が能力1位のため全馬の能力順位が1つずつずれ、母数も「15頭中」)。
 # 値の判定 (predict._is_scratch_odds と同じ) と馬1頭の判定をここに1つだけ置く。
-SCRATCH_ODDS = 999.9    # refresh_odds が results に書く取消馬のオッズ (JRA の表示上限)
-SCRATCH_POP = 999       # オッズ API の番兵 (人気 9999)
+SCRATCH_ODDS = 999.9    # JRA の表示上限。取消の目印に書く値 (SCRATCH_SENTINEL) の片方
+SCRATCH_POP = 999       # 人気がこれ以上 = 取消 (オッズ API の番兵 9999 / 出馬表の取消行で書く 9999)
+# #171: 取消と分かった馬 (出馬表の取消行・API の登録頭数>出走頭数) に results へ書く値。
+# 999.9倍だけでは取消と区別できない (前日発売の直後は票が少なく、走る馬も 999.9倍になる。
+# 11/06 19:05 の前夜予想で、11/07 の28レースに計94頭の「取消」が出た。実際の取消は0頭)。
+# 取消の目印は人気 9999 の方で、オッズ 999.9 は LGB の特徴量を「最も人気薄」に保つための値。
+SCRATCH_SENTINEL = (999.9, 9999)
 
 
 def is_scratch_values(odds, popularity):
     """オッズ・人気の値が「出走取消」をあらわすか (#169 predict._is_scratch_odds の本体)。
 
-    odds<0 (API の番兵 -3.0) / odds>=999.9 (refresh_odds が書く取消馬) / 人気>=999 (番兵 9999)。
-    変換できない値は 0 扱い (= 取消ではない)。実測の根拠は predict._is_scratch_odds の docstring。
+    odds<0 (API の番兵 -3.0) / 人気>=999 (API の番兵 9999・出馬表の取消行で書く SCRATCH_SENTINEL)。
+    変換できない値は 0 扱い (= 取消ではない)。
+    #171: 「999.9倍以上」は取消の判定に使わない。999.9倍は票がほとんど無い馬の表示で、
+    前日発売の直後や薄い市場では走る馬も普通にこの値になる (11/06 19:05 の前夜予想で
+    11/07 の28レース・94頭を誤って取消扱いにし、印の候補から外した)。発売中の API は
+    取消馬も 999.9倍・人気=頭数で返すので、値だけでは区別できない。取消は出馬表の取消行
+    (scraper.scrape_shutuba / refresh_odds の取消照合) で確かめて SCRATCH_SENTINEL を書く。
     """
     try:
         o = float(odds or 0)
@@ -62,7 +72,7 @@ def is_scratch_values(odds, popularity):
         pop = int(popularity or 0)
     except (TypeError, ValueError):
         pop = 0
-    return o < 0 or o >= SCRATCH_ODDS or pop >= SCRATCH_POP
+    return o < 0 or pop >= SCRATCH_POP
 
 
 def is_scratched_horse(h):
@@ -70,9 +80,10 @@ def is_scratched_horse(h):
 
     - フラグ: cache・公開 JSON の "scratched"、predict 内部の "_scratched"
     - 値: odds_win (無ければ odds) と popularity を is_scratch_values で見る
-      (予測の後に分かった取消 = refresh_odds が書いた 999.9倍 / 番兵 9999人気 もここで拾う)
-    - predict の dict で _has_real_odds=False の馬は odds_win が推定値 (0.8/勝率) で、勝率が
-      低いと 999.9 を超えうるのでオッズを見ない (predict の印の段 #169 と同じ扱い)
+      (予測の後に分かった取消 = refresh_odds が書いた番兵 9999人気 もここで拾う。#171 で
+       999.9倍だけでは取消にしない)
+    - predict の dict で _has_real_odds=False の馬は odds_win が推定値 (0.8/勝率) なので
+      オッズを見ない (predict の印の段 #169 と同じ扱い)
     """
     if not h:
         return False
@@ -97,7 +108,7 @@ def field_popularities(horses):
     中位に入る。AI の順位だけ出走馬で数えると、取消馬より人気が下の馬は AI の順位だけ繰り上がり、
     存在しない「乖離」が出る (202604030109: 取消2頭が9・10人気で、11人気以下の5頭すべてに
     「AIの複勝評価は13頭中N位（市場は想定N+2番人気）」が出た)。
-    人気から「それより人気が上の取消馬の数」を引く。取消が無い・取消馬が最下位 (999.9倍 /
+    人気から「それより人気が上の取消馬の数」を引く。取消が無い・取消馬が最下位 (人気=頭数 /
     番兵 9999人気 = 現行) なら popularity の値のまま、同人気は同人気のまま、0 (未確定) は 0。
     取消馬はキーに含めない。cache・公開 JSON の popularity は書き換えない (投稿側が 9999 で判定する)。
     """

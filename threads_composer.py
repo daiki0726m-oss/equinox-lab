@@ -91,7 +91,7 @@ def _race_title(race):
 def _ability_rank(horses):
     """オッズ非依存の能力値ランキング (上位のみ)。"""
     # #169: 取消馬は並べない (「3連系の紐には◯◯を入れます」で取消馬を名指ししうる)。
-    # 予測時に分かった取消は scratched、その後に分かった取消は 999.9倍 / 番兵 9999人気。
+    # 予測時に分かった取消は scratched、その後に分かった取消は番兵 9999人気 (#171: 999.9倍だけでは取消にしない)。
     # #170: 判定は race_utils.is_scratched_horse に一本化 (eval_points・💡 と同じ)
     from race_utils import running_horses
     scored = [h for h in running_horses(horses) if (h.get("ability_score") or 0) > 0]

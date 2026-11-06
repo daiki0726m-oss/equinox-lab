@@ -1086,7 +1086,7 @@ def cmd_predict(args):
             # #169: 取消馬は名指ししない (取消馬は人気=頭数で来るので「想定15人気」の
             # 能力値1位として出る条件を満たしてしまう。11/01 東京7R 11番で再現)。
             # 予測時に分かった取消は cache の scratched、その後に分かった取消は
-            # 999.9倍 / 番兵 9999人気 で拾う。
+            # 番兵 9999人気 で拾う (#171: 999.9倍だけでは取消にしない)。
             # #170: 判定は race_utils.is_scratched_horse に一本化 (Threads の能力値ランキングと同じ)
             from race_utils import is_scratched_horse as _isscr2, field_popularities as _fpops
             _by_ab = sorted((q for q in preds if (q.get('ability_score') or 0) > 0

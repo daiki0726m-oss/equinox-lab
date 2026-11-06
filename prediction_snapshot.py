@@ -126,9 +126,9 @@ _EXTRA_FLAGS = [
 #  無関係な env が多いので接頭辞にせず、上の明示リストだけにする)
 _FLAG_PREFIXES = ("MARKS_", "BET_", "CONFIDENCE_")
 
-# 取消をあらわす値 (refresh_odds が書く 999.9倍。API の番兵は -3.0倍/9999人気 #149)。
-# 閾値は predict._is_scratch_odds (#169 P班: odds<0 / odds>=999.9 / 人気>=999) と揃える
-_SCRATCH_ODDS = 999.9
+# 取消をあらわす値 (API の番兵 -3.0倍/9999人気 #149、出馬表の取消行で書く人気 9999 #171)。
+# 閾値は race_utils.is_scratch_values (odds<0 / 人気>=999) と揃える。#171: 999.9倍は取消の
+# 判定に使わない (前日発売の直後は票の少ない走る馬も 999.9倍になる)
 _SCRATCH_POP = 999
 # 予測 JSON (cache) に取消フラグが入っている時の候補キー。predict は印の選定に
 # "_scratched" を使う (P班 #169)。cache に保存されれば (列挙リストに足されれば) そのまま拾う
@@ -272,28 +272,20 @@ def _run_meta(args=None, scorecard=None):
 
 
 def _scratch_value(odds, popularity):
-    """predict._is_scratch_odds (P班 #169) と同じ述語: 負のオッズ / 999.9倍以上 / 人気999以上。"""
-    try:
-        o = float(odds or 0)
-    except (TypeError, ValueError):
-        o = 0.0
-    try:
-        pop = int(popularity or 0)
-    except (TypeError, ValueError):
-        pop = 0
-    return o < 0 or o >= _SCRATCH_ODDS or pop >= _SCRATCH_POP
+    """race_utils.is_scratch_values と同じ述語: 負のオッズ / 人気999以上 (#171 で 999.9倍は外した)。"""
+    from race_utils import is_scratch_values
+    return is_scratch_values(odds, popularity)
 
 
 def _is_scratched(h, res_odds, res_pop=None):
     """予測時点で取消と分かっていたか (1/0)。predict が印の候補から外すのと同じ判定にする。
 
-    - results の値 (refresh_odds が書く 999.9倍 = 9/05 以降の取消馬)
+    - results の値 (出馬表の取消行・refresh_odds の照合で書く人気 9999 #171。#171 より前の
+      取消馬は 999.9倍・人気=頭数で入っており、予測時点の値だけでは走る馬と区別できない)
     - cache の人気 (オッズ API の番兵 9999。#149/#150 のガードで results には書かれず、
       predict がループ内で API を引いた時だけ cache の popularity に入る — DB コピーでは
       cache の人気 9999 が61頭、全頭 finish_position=0)
-    - cache のオッズ (負の値 = 古い版の番兵 -3.0/-2.0。実オッズの馬だけ 999.9倍も見る。
-      実オッズの無い馬の odds_win は 0.8/勝率 の推定値で、勝率が低いと 1000 倍を超えうるので
-      取消の判定に使わない)
+    - cache のオッズ (負の値 = 古い版の番兵 -3.0/-2.0)
     - 予測 JSON の取消フラグ (_SCRATCH_KEYS)
     """
     if any(h.get(k) for k in _SCRATCH_KEYS):
@@ -308,10 +300,9 @@ def _is_scratched(h, res_odds, res_pop=None):
         return 1
     try:
         ow = float(h.get("odds_win") or 0)
-        real = float(res_odds or 0) > 0
     except (TypeError, ValueError):
-        ow, real = 0.0, False
-    if ow < 0 or (real and ow >= _SCRATCH_ODDS):
+        ow = 0.0
+    if ow < 0:
         return 1
     return 0
 

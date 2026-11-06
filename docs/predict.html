@@ -953,7 +953,7 @@ async function loadPredictions() {
   try {
     const url = `/api/predict-date/${dateStr}?budget=${state.budget}`;
     const res = await fetch(url);
-    const data = await res.json();
+    const data = markFinishedScratches(await res.json());
 
     if (data.error) {
       alert(data.error);
@@ -1293,13 +1293,34 @@ function siText(h) { return Math.round(siDisp(h) * 10) / 10; }
 // 予想タブだけが対象 (結果タブは確定後にしか出ない)。X/Threads 側の #27/#150 ガードと同じ扱い
 function numText(h) { return h._provisional ? '–' : h.horse_number; }
 // #170: 取消馬。export が付ける scratched に加え、古い JSON でも拾えるよう
-// 999.9倍 (取消の実オッズ) / 番兵 (負のオッズ・9999人気) でも判定する (X/Threads の #169 判定と同じ式 + 負オッズ)
+// 番兵 (負のオッズ・9999人気) でも判定する (X/Threads の race_utils.is_scratched_horse と同じ式)
 function isScratched(h) {
   // #170: 確定着順のある馬は走っている (999.9倍で実際に走った大穴もいる)。
   // export の「着順のある馬は取消にしない」・結果タブの finish>0 と同じ基準。scratched===false は見ない
   // (#169 以降の cache は取消でない馬全般に false が入り、「走った」の証拠にならない)
   if (h && (h.finish || 0) > 0) return false;
-  return !!(h && (h.scratched || (h.odds_win || 0) >= 999.9 || (h.odds_win || 0) < 0 || (h.popularity || 0) >= 999));
+  // #171: 999.9倍だけでは取消にしない (前日発売の直後は票の少ない走る馬も 999.9倍になり、
+  // 11/06 の前夜予想で 94頭を誤って取消表示した)。発走前は export の scratched と番兵 (負のオッズ・
+  // 9999人気) で判定し、着順が出たレースの古い JSON は markFinishedScratches が scratched を補う。
+  return !!(h && (h.scratched || (h.odds_win || 0) < 0 || (h.popularity || 0) >= 999));
+}
+
+// #171: 確定したレース (1着がいる) で、着順の無い 999.9倍の馬は取消 (#171 より前の取消馬はこの値で入っている)。
+// export の race_finished と同じ基準。発走前のレースには何もしない。
+function markFinishedScratches(data) {
+  try {
+    Object.values((data && data.venues) || {}).forEach(v => {
+      const races = Array.isArray(v) ? v : ((v && v.races) || []);
+      races.forEach(r => {
+        // 1着がいる = 確定 (結果タブの #150e と同じ基準。部分取得の間は取消にしない)
+        if (!r || !r.has_results || !(r.horses || []).some(h => h && h.finish === 1)) return;
+        (r.horses || []).forEach(h => {
+          if (h && !((h.finish || 0) > 0) && (h.odds_win || 0) >= 999.9) h.scratched = true;
+        });
+      });
+    });
+  } catch (e) { /* 表示の補助だけ。失敗しても描画は続ける */ }
+  return data;
 }
 
 // ─── Prediction Tab ───

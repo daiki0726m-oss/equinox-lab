@@ -978,6 +978,19 @@ class NetkeibaScraper:
                     entry["horse_number"] = entry_idx  # 仮: 登録順の連番 (1, 2, 3, ...)
                     entry["_provisional_number"] = True  # マーク (DBには入れない)
 
+                # #171: 出走取消・除外の行 (tr.HorseList.Cancel、3列目が「取消」「除外」)。
+                # 取消の確かな信号はこれだけ (オッズ API は発売中の取消馬を 999.9倍・人気=頭数で返し、
+                # 票の少ない走る馬と区別できない)。results に SCRATCH_SENTINEL (999.9倍・人気9999) を
+                # 書かせ、取消の判定 (race_utils.is_scratch_values の人気>=999) に乗せる。
+                # 行は残す (#43 の同期削除で取消馬を消さない。finish_position=0 は取消も含む #150e)。
+                _row_cls = row.get("class") or []
+                _row_mark = cols[2].get_text(strip=True) if len(cols) > 2 else ""
+                entry["_cancel_checked"] = True   # この版の出馬表で取消の有無を見た (DBには入れない)
+                if "Cancel" in _row_cls or _row_mark in ("取消", "除外"):
+                    from race_utils import SCRATCH_SENTINEL
+                    entry["scratched"] = True
+                    entry["odds"], entry["popularity"] = SCRATCH_SENTINEL
+
                 # 馬名 td (cols[3] = 馬名)
                 horse_tag = cols[3].find("a") if len(cols) > 3 else None
                 entry["horse_name"] = cols[3].get_text(strip=True) if len(cols) > 3 else ""
@@ -1019,6 +1032,23 @@ class NetkeibaScraper:
 
         race_data["entries"] = entries
         return race_data
+
+    def scrape_cancelled_numbers(self, race_id):
+        """#171: 出馬表の取消・除外の馬番の集合。取得できなければ None (= 分からない)。
+
+        refresh_odds が、オッズ API の登録頭数 (touroku) > 出走頭数 (shusso) の時だけ呼ぶ
+        (発売中の API は取消馬も 999.9倍・人気=頭数で返すので、どの馬かは出馬表で確かめる)。
+        """
+        data = self.scrape_shutuba(race_id)
+        entries = (data or {}).get("entries") or []
+        if not entries:
+            return None
+        # 枠番の無いページ (仮馬番 = 五十音順/登録順の連番) では馬番が当てにならない → 分からない
+        if any(e.get("_provisional_number") for e in entries) or \
+                not any((e.get("post_position") or 0) > 0 for e in entries):
+            return None
+        return {e["horse_number"] for e in entries
+                if e.get("scratched") and e.get("horse_number")}
 
     # =========================================================
     # DBへの保存
@@ -1167,6 +1197,18 @@ class NetkeibaScraper:
                     r.get("weight", 0), r.get("weight_change", 0),
                     r.get("impost", 0)
                 ))
+
+            # #171: 出馬表で取消でなかった馬に、前の版の取消の目印 (人気9999) が残っていたら外す
+            # (誤って取消扱いのまま印の候補から外れ続けないように)。着順のある行と、取消の有無を
+            # 見ていない経路 (結果ページ・旧形式) は触らない。オッズは 0 に戻し refresh_odds が埋め直す。
+            if not _has_finish:
+                for r in horse_records:
+                    if r.get("_cancel_checked") and not r.get("scratched") and r.get("horse_number"):
+                        conn.execute(
+                            "UPDATE results SET odds = 0, popularity = 0 "
+                            "WHERE race_id = ? AND horse_number = ? AND finish_position = 0 "
+                            "AND popularity >= 999",
+                            (race_data["race_id"], r["horse_number"]))
 
             # 配当保存
             for p in race_data.get("payouts", []):
