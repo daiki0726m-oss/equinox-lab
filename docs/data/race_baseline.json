@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-02T19:51:42.554628+09:00",
+ "generated_at": "2026-11-06T18:21:21.908987+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -8,46 +8,46 @@
       "label": "10頭以下",
       "min": 0,
       "max": 10,
-      "n": 145,
-      "cap5": 0.4345,
-      "cap7": 0.6,
-      "avg_captured": 2.317
+      "n": 137,
+      "cap5": 0.4307,
+      "cap7": 0.5912,
+      "avg_captured": 2.307
      },
      {
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 176,
-      "cap5": 0.2955,
-      "cap7": 0.4034,
-      "avg_captured": 2.085
+      "n": 166,
+      "cap5": 0.2831,
+      "cap7": 0.3976,
+      "avg_captured": 2.066
      },
      {
       "label": "13-14頭",
       "min": 13,
       "max": 14,
-      "n": 164,
-      "cap5": 0.2195,
-      "cap7": 0.2988,
-      "avg_captured": 1.945
+      "n": 153,
+      "cap5": 0.2026,
+      "cap7": 0.281,
+      "avg_captured": 1.922
      },
      {
       "label": "15-16頭",
       "min": 15,
       "max": 16,
-      "n": 285,
-      "cap5": 0.193,
-      "cap7": 0.2456,
-      "avg_captured": 1.807
+      "n": 267,
+      "cap5": 0.176,
+      "cap7": 0.2322,
+      "avg_captured": 1.779
      },
      {
       "label": "17頭以上",
       "min": 17,
       "max": 99,
-      "n": 71,
-      "cap5": 0.1268,
-      "cap7": 0.2254,
-      "avg_captured": 1.62
+      "n": 63,
+      "cap5": 0.0952,
+      "cap7": 0.1905,
+      "avg_captured": 1.54
      }
     ]
    },
@@ -57,52 +57,53 @@
       "label": "10頭以下",
       "min": 0,
       "max": 10,
-      "n": 168,
-      "cap5": 0.5833,
-      "cap7": 0.744,
-      "avg_captured": 2.488
+      "n": 161,
+      "cap5": 0.5776,
+      "cap7": 0.7453,
+      "avg_captured": 2.484
      },
      {
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 147,
-      "cap5": 0.3469,
-      "cap7": 0.4966,
-      "avg_captured": 2.197
+      "n": 136,
+      "cap5": 0.3309,
+      "cap7": 0.4779,
+      "avg_captured": 2.176
      },
      {
       "label": "13-14頭",
       "min": 13,
       "max": 14,
-      "n": 134,
-      "cap5": 0.2985,
-      "cap7": 0.4179,
-      "avg_captured": 2.06
+      "n": 126,
+      "cap5": 0.3016,
+      "cap7": 0.4206,
+      "avg_captured": 2.063
      },
      {
       "label": "15-16頭",
       "min": 15,
       "max": 16,
-      "n": 285,
-      "cap5": 0.3404,
-      "cap7": 0.3965,
-      "avg_captured": 2.039
+      "n": 249,
+      "cap5": 0.3133,
+      "cap7": 0.3775,
+      "avg_captured": 1.988
      },
      {
       "label": "17頭以上",
       "min": 17,
       "max": 99,
-      "n": 69,
-      "cap5": 0.2029,
-      "cap7": 0.2609,
-      "avg_captured": 1.797
+      "n": 60,
+      "cap5": 0.1667,
+      "cap7": 0.2333,
+      "avg_captured": 1.75
      }
     ]
    }
   },
-  "period": "2026-05-09〜2026-11-01",
-  "source": "投稿時に凍結した印 × 確定着順 (平場 / 未勝利・新馬・障害 を分けて集計)"
+  "period": "2026-05-10〜2026-11-01",
+  "excluded_post_start": 126,
+  "source": "predictions_cache に残る各レースの予測の印 (発走前に作られたものだけ。配信していないレースも含む) × 確定着順 (平場 / 未勝利・新馬・障害 を分けて集計)"
  },
  "payout": {
   "groups": {
@@ -200,8 +201,9 @@
  },
  "confidence": {
   "available": true,
-  "n": 228,
+  "n": 229,
   "sample": "点数表 (現行)",
+  "sample_period": "2026-09-20〜2026-11-01",
   "target_mix": {
    "S": 0.18,
    "A": 0.24,
@@ -210,11 +212,45 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 32.1,
-   "A": 21.4,
+   "S": 35.3,
+   "A": 25.0,
    "B": 13.6,
-   "C": 9.4
-  }
+   "C": 9.5
+  },
+  "calibrated_on": "補正後 (confidence.post_adjust 込み) の最終構成比",
+  "mix_before_adjust": {
+   "S": 0.1004,
+   "A": 0.214,
+   "B": 0.3974,
+   "C": 0.1747,
+   "D": 0.1135
+  },
+  "mix_after_adjust": {
+   "S": 0.179,
+   "A": 0.2402,
+   "B": 0.2926,
+   "C": 0.1747,
+   "D": 0.1135
+  },
+  "adjusted_share": 0.1834,
+  "realized_mix": {
+   "S": 0.2751,
+   "A": 0.2052,
+   "B": 0.1135,
+   "C": 0.2052,
+   "D": 0.2009
+  },
+  "realized_n": 229,
+  "realized_note": "各予測の時点の閾値・補正で付いた信頼度 (predictions_cache.confidence)",
+  "realized_new_logic_since": "2026-11-07",
+  "realized_new_logic_mix": {
+   "S": 0.0,
+   "A": 0.0,
+   "B": 0.0,
+   "C": 0.0,
+   "D": 0.0
+  },
+  "realized_new_logic_n": 0
  },
  "bet_gate": {
   "available": true,
@@ -223,11 +259,42 @@
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
-  "model_deployed_at": "2026-10-20 09:30:46",
-  "window_matches_model": true,
+  "model_deployed_at": "2026-11-02 19:52:02",
+  "window_matches_model": false,
+  "model_retrained_uncommitted": false,
   "thresholds": {
    "top_prob": 0.1749,
    "top3_sum": 0.4217
-  }
+  },
+  "window_rule": "since_prev_model",
+  "n_current": 0,
+  "n_older": 68,
+  "sd_median_current": null,
+  "sd_median_older": 0.7349,
+  "dispersion_ratio": null,
+  "dispersion_ratio_limit": 1.4,
+  "prev_model_deployed_at": "2026-10-20 09:30:46"
+ },
+ "confidence_adjust_watch": {
+  "since": "2026-11-07",
+  "band_odds": [
+   5.0,
+   8.0
+  ],
+  "population": "新しい補正で信頼度が付き、1円以上張った平場の確定レース (実額)",
+  "band": {
+   "n": 0,
+   "spend": 0,
+   "ret": 0,
+   "roi": null
+  },
+  "rest": {
+   "n": 0,
+   "spend": 0,
+   "ret": 0,
+   "roi": null
+  },
+  "rule": "帯の n≥30 かつ (帯−残り) の95%CI上端<0 で要レビュー",
+  "status": "サンプル不足 (帯 n=0 < 30)"
  }
 }
