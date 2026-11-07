@@ -3278,5 +3278,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "18357483841271454",
+  "posted_at": "2026-11-07T09:39:24.070131+09:00",
+  "slot": "post_predict",
+  "pattern": "minimal",
+  "race_id": "202605050111",
+  "race_name": "京王杯2歳S",
+  "chunk": 0,
+  "chars": 199
  }
 ]
