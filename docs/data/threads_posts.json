@@ -3398,5 +3398,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "17921847762456894",
+  "posted_at": "2026-11-08T09:43:28.438729+09:00",
+  "slot": "post_predict",
+  "pattern": "upset",
+  "race_id": "202608050211",
+  "race_name": "みやこS",
+  "chunk": 0,
+  "chars": 201
  }
 ]
