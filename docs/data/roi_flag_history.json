@@ -2,5 +2,13 @@
  "note": "#169: ROI 監視の要降格フラグの連続記録。weekly_retrain が scripts/roi_flag_alert.py で更新する。ISO週 (JST) ごとに1件。導入時点から数え始める (それ以前のフラグは母集団が誤っていたため)。",
  "min_streak": 2,
  "alerting": [],
- "weeks": {}
+ "weeks": {
+  "2026-W46": {
+   "recorded_at": "2026-11-09T20:13:12+09:00",
+   "roi_generated_at": "2026-11-09T11:13:10.813758",
+   "population": "169-funded-bets-v1",
+   "flagged": {}
+  }
+ },
+ "notified_streaks": {}
 }
