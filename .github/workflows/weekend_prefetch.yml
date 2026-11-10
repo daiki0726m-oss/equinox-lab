@@ -15,6 +15,21 @@ name: 🌙 Weekend Prefetch (前夜に予測を作っておく)
 #   朝の cron が何本落ちてもダッシュボードは埋まっている。
 #
 # 投稿は一切しない (JSON の生成と公開だけ)。X/Threads には触らない。
+#
+# #173 (2026-11-10): **日曜分の前夜予想が無かった**。cron は 金17:30 / 金22:30 / 土日03:30 だけで、
+#   土曜の夜に日曜分を作る起動が無かった。金曜夜・土曜朝の回では日曜分は作れない (実測: 11/06 20:55・
+#   11/07 05:01・08:21 の回とも、日曜36Rのうち34Rが仮馬番 + 発売前の予想オッズ (status=yoso) で
+#   skip。日 07:08 の回では36Rとも確定馬番・実オッズ)。
+#   11/08 のダッシュボードは 土08:33〜日07:16 の22時間43分、2レース (前日発売と確定馬番が
+#   あった重賞2つ) しか無かった。日曜分が36Rそろったのは、日03:30 の cron が 3h38m 遅れて
+#   07:08 に起動し、07:16 に公開した時。
+#   → 土曜の夕方〜夜に日曜分を作る回を3本足す。土曜に動いた回は土曜分を対象から外す
+#     (refresh_entries / refresh_odds / predict / export を無駄打ちしない)。外すのは確定 (9:30)
+#     後だけでなく、当日の最後の作り直し (9:00 predict.FINAL_REBUILD_JST) 以降も。この workflow は
+#     JSON しか公開せず DB を push しないので、ここで当日分を作り直すと、DB の予測を配信する
+#     post_predict の印とダッシュボードがずれる (11/07 の ☆/注 の入れ替わりと同じ型)。
+#     投資ゲートと信頼度の閾値は土曜の最後の作り直し (9:00) 以降は据え置く
+#     (土曜と日曜で見送りの基準を変えない #161)。
 
 on:
   schedule:
@@ -26,11 +41,31 @@ on:
     # 金 22:30 JST (UTC 13:30 金) — 土日2日分を前夜に生成
     - cron: '30 13 * * 5'
     # 土 03:30 JST / 日 03:30 JST (UTC 18:30 金・土) — 前夜が落ちた時の2本目
+    # (日 03:30 の回は #173 の土曜の回が全部落ちた時の保険。11/08 は 3h38m 遅れて 07:08 に起動し、
+    # 07:16 に36Rを公開した)
     - cron: '30 18 * * 5,6'
+    # #173: 土 15:41 / 19:41 / 23:41 JST (UTC 06:41 / 10:41 / 14:41 土) — 日曜分を土曜のうちに作る。
+    # GitHub cron は数時間遅れる (この workflow の 9/06〜11/08 の実測で 2.0〜6.5時間。他の workflow
+    # では8時間級もある。11/06〜07 は3本の cron に対し schedule の run が2本しか無く、1本は丸ごと
+    # 飛ばされた) ので、金曜と同じく「遅れても日曜朝より前に着く」時刻を複数置く
+    # (23:41 が8時間遅れても日 07:41 = 当日の最後の作り直し 9:00 の前)。定刻に動いて日曜の
+    # 前日発売がまだ無ければ、オッズ充足ゲート (#52) が skip する。その時に失敗扱いにしないのは、
+    # 「発売前の予想オッズしか無かった」ことを refresh_odds の出力で確かめた時だけ (下の『発売前』判定)。
+    # 分を :41 にずらすのは、毎時0分・30分付近の混雑で遅れやすいという GitHub の案内に従うため。
+    # 曜日欄が '6' だけの cron = 土曜の回 (下の concurrency がこれで見分ける)
+    - cron: '41 6 * * 6'
+    - cron: '41 10 * * 6'
+    - cron: '41 14 * * 6'
   workflow_dispatch:
 
 concurrency:
-  group: keiba-db-accum          # 蓄積系 writer を直列化 (#70)
+  # 蓄積系 writer を直列化 (#70)。#173: ただし土曜の回 (曜日欄が '6' だけの cron) は別グループ。
+  # GitHub の concurrency は同じグループに「実行中1本 + 待機1本」しか持てず、3本目が来ると待機中の
+  # run を取り消す。土曜の夜は collect_results の夜間スイープ (20:00/22:00、実発火は 22:59〜翌02:53)
+  # が同じグループで走るので、ここに3本足すとスイープか前夜予想のどちらかが取り消されうる。
+  # この workflow は keiba.db.gz を push しない (公開は docs/data だけ) ので、スイープと並走しても
+  # DB の clobber は起きない。金曜・日曜未明の回は従来どおり keiba-db-accum。
+  group: ${{ (github.event_name == 'schedule' && endsWith(github.event.schedule, ' * * 6')) && 'weekend-prefetch-sat' || 'keiba-db-accum' }}
   cancel-in-progress: false
 
 permissions:
@@ -68,21 +103,77 @@ jobs:
         id: gen
         run: |
           set -o pipefail
-          # 今日から見て「次の土曜・日曜」(今日が土日ならその日と翌日)
-          DATES=$(python3 - <<'PY'
-          import datetime
-          jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-          d = jst.date()
-          out = []
-          for i in range(0, 3):
-              c = d + datetime.timedelta(days=i)
-              if c.weekday() in (5, 6):
-                  out.append(c.strftime("%Y%m%d"))
-          print(" ".join(out[:2]))
+          # 公開と基準表の step は generated を見て動く。途中で落ちた時に「未設定 = 公開してよい」に
+          # ならないよう、最初に0を書き、1日分できるたびに書き直す (同じキーは最後の値が使われる)
+          echo "generated=0" >> $GITHUB_OUTPUT
+          # 今日から見て「次の土曜・日曜」(今日が土日ならその日と翌日) のうち、次の日は外す (#173):
+          #   - 予想が確定済みの日 (race_utils.prediction_locked_for #172)
+          #   - 今日で、当日の最後の作り直し (predict.FINAL_REBUILD_JST = 9:00) を過ぎた日。
+          #     9:00〜確定の作り直しは odds_flash (と、それが作り直さなかった日の auto_post_x の
+          #     predict) の仕事で、どちらも DB を push する。post_predict は DB の予測を配信するので、
+          #     DB を push しないこの workflow が当日分を作り直して JSON だけ公開すると、投稿した印と
+          #     ダッシュボードの ☆/注 がずれる (11/07 と同じ型)。予測の無いレースの欠け埋めは
+          #     race_day_runner の preflight がやる (predict.rebuild_scope_for の 'missing')
+          # 土曜の夕方〜夜の回が、土曜分に refresh_entries / refresh_odds / predict / export を
+          # 無駄打ちしないため (predict は確定後に作り直さないが、他の3つは走っていた)。
+          # 判定材料 (今日の日付・21時前か) もここで1回だけ決め、下の終了判定で使う。
+          # 変数への代入にするのは、Python が落ちた時に step を止めるため (eval "$(...)" だと素通りする)
+          DECISION=$(python3 - <<'PY'
+          import contextlib, datetime, sys
+          from race_utils import prediction_locked_for, PREDICTION_LOCK_LABEL
+          # predict の import はモデル周りまで読む (数秒)。import 時の出力が eval に混ざらないよう stderr へ
+          with contextlib.redirect_stdout(sys.stderr):
+              from predict import FINAL_REBUILD_JST
+          fr = tuple(FINAL_REBUILD_JST)
+          now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+          d = now.date()
+          today = d.strftime("%Y%m%d")
+          cands = [c for c in (d + datetime.timedelta(days=i) for i in range(3))
+                   if c.weekday() in (5, 6)][:2]
+          dates, locked, final = [], [], []
+          for c in cands:
+              ds = c.strftime("%Y%m%d")
+              if prediction_locked_for(ds, now):
+                  locked.append(ds)
+              elif ds == today and (now.hour, now.minute) >= fr:
+                  final.append(ds)
+              else:
+                  dates.append(ds)
+          print('DATES="%s"' % " ".join(dates))
+          print('LOCKED="%s"' % " ".join(locked))
+          print('FINAL_SKIP="%s"' % " ".join(final))
+          print('LOCK_LABEL="%s"' % PREDICTION_LOCK_LABEL)
+          print('FINAL_LABEL="%d:%02d"' % fr)
+          print('FINAL_HM="%02d%02d"' % fr)
+          print('TODAY="%s"' % today)
+          print('BEFORE21="%d"' % (1 if now.hour < 21 else 0))
+          # 今日が開催日 (土日) で、今日の分をもう作らない回 = 土曜の夕方〜夜の回 (日曜分だけを作る)
+          print('TODAY_EXCLUDED="%d"' % (1 if today in locked + final else 0))
           PY
           )
-          echo "対象日: $DATES"
+          eval "$DECISION"
+          # 公開の step が「当日分を最後の作り直し以降に公開しない」の判定に使う
+          echo "final_hm=$FINAL_HM" >> $GITHUB_OUTPUT
+          for D in $LOCKED; do
+            echo "⏭️ $D: 予想は確定済み (${LOCK_LABEL}) → 対象外 (#173)"
+          done
+          for D in $FINAL_SKIP; do
+            echo "⏭️ $D: 当日の最後の作り直し (${FINAL_LABEL}〜) の時間帯 → 対象外。作り直しは DB を push する経路 (odds_flash / auto_post_x) の仕事 (#173)"
+          done
+          echo "対象日: ${DATES:-なし}"
+          if [ -z "$DATES" ] && [ -n "$LOCKED$FINAL_SKIP" ]; then
+            # 日曜の 9:00 以降に遅れて動いた回など。作り直すものが無いのは正常 (失敗にしない)
+            echo "ℹ️ 対象の日はすべて対象外 (確定済み / 当日の最後の作り直しの時間帯) → 何もしない"
+            exit 0
+          fi
           GENERATED=0
+          # 生成できなかった日がすべて「正常に作れなかった」(発売前 / 公開済みの版の方が多い) か
+          EXCUSED_ALL=1
+          # #173: 「この run で書いた JSON か」の基準時刻。checkout と reset --hard は origin の
+          # 古い JSON も今の時刻で書き出すので、旧判定 (更新から30分以内) では前の回の JSON を
+          # 「今回生成した」と数えていた。土曜の回は前の回の日曜分が必ずあるので、export が
+          # 書かなかった時 (予測が2割超減って上書きを止めた等) も成功扱いになる
+          RUN_START=$(date +%s)
           for D in $DATES; do
             N=$(python3 -c "
           from database import get_db
@@ -92,9 +183,13 @@ jobs:
           " 2>/dev/null || echo 0)
             if [ "${N:-0}" -lt 1 ]; then
               echo "⏭️ $D: レース未登録 → skip"
+              EXCUSED_ALL=0
               continue
             fi
             echo "── $D (${N}レース) ──"
+            # refresh_odds と predict の出力を残す (下の『発売前』判定が status=yoso の行を数える)
+            LOG_D="${RUNNER_TEMP:-/tmp}/prefetch_odds_$D.log"
+            : > "$LOG_D"
             # 確定馬番に同期。#150c: ここを握り潰すと **仮馬番 (五十音順) のまま
             # 予測を公開**してしまう。auto_post_x 側は同じ理由で exit 1 のハードゲートに
             # したのに、prefetch だけ「続行」にしていた (#83『誤配信 ≫ 無配信』の原則違反)。
@@ -103,39 +198,114 @@ jobs:
             # レースがあれば非0。枠順前 (土曜朝の日曜分) は仮馬番のまま0を返す (正当な仮馬番)。
             if ! timeout 420 python3 refresh_entries.py --date "$D"; then
               echo "❌ $D: 確定馬番の同期に失敗 → この日は生成しない (仮馬番での公開を避ける)"
+              EXCUSED_ALL=0
               continue
             fi
             # 前日発売のオッズ。発売前の「予想オッズ」は refresh_odds 側で弾かれ、
             # predict のオッズ充足ゲート (#52) が当該レースを skip する
-            timeout 420 python3 refresh_odds.py --date "$D" || echo "⚠️ オッズ取得に失敗 → 続行"
-            python3 predict.py predict --date "$D" || echo "⚠️ 予測に失敗 → 続行"
+            PYTHONUNBUFFERED=1 timeout 420 python3 refresh_odds.py --date "$D" 2>&1 | tee -a "$LOG_D" \
+              || echo "⚠️ オッズ取得に失敗 → 続行"
+            PYTHONUNBUFFERED=1 python3 predict.py predict --date "$D" 2>&1 | tee -a "$LOG_D" \
+              || echo "⚠️ 予測に失敗 → 続行"
             python3 export_predictions.py "$D" || echo "⚠️ export に失敗 → 続行"
-            # #150c: ファイルの存在だけでは「前からある古いJSON」と区別できない。
-            # 今回の run で書かれた (=更新時刻が新しい) かつ中身があることを確認する。
-            OK=$(python3 -c "
-          import json, os, time, sys
-          p = 'docs/data/predictions_$D.json'
-          if not os.path.exists(p): print(0); sys.exit()
-          fresh = (time.time() - os.path.getmtime(p)) < 1800
-          try:
-              n = int(json.load(open(p)).get('total_races') or 0)
-          except Exception:
-              n = 0
-          print(1 if (fresh and n > 0) else 0)
-          " 2>/dev/null || echo 0)
-            if [ "$OK" = "1" ]; then
-              echo "✅ $D の予測JSONを生成"
-              GENERATED=$((GENERATED+1))
-            else
-              echo "⚠️ $D: JSONが更新されていない (発売前でオッズ未取得の可能性)"
-            fi
+            # この日の結果を1つに決める (#173):
+            #   NEW     … この run で書いた JSON があり、公開済みの版 (HEAD = 起動時の origin) より
+            #             予測ありのレース (prediction_gate の ready) も総数も減っていない → 公開する
+            #   KEPT    … この run の版の方が少ない → 公開済みの版に戻す。この workflow は DB を push
+            #             しないので、土曜の回は前の回が作った日曜の予測を DB に持たずに一から作り直す。
+            #             数レースだけ見送られると (オッズの取得失敗など)、export の「2割超の減少なら
+            #             中止」に掛からない範囲で公開済みのレースを落として上書きし、回を重ねるごとに
+            #             減っていく (36→31→…)。ダッシュボードは埋まっているので失敗にはしない
+            #   PRESALE … 作れなかった理由が「発売前の予想オッズしか無い」だけ = 出走馬のいる全レースの
+            #             オッズが全頭0で、その全レースについて refresh_odds / predict が status=yoso を
+            #             出した。API が落ちている時は yoso の行が出ないのでここに入らない
+            #   OTHER   … それ以外 (取得の失敗・予測の失敗・export が書かなかった等)
+            # #150c: ファイルの存在だけでは「前からある古いJSON」と区別できないので、この step の
+            # 開始以降に書かれたか (RUN_START) と中身を見る
+            RES=$(PREFETCH_D="$D" PREFETCH_RUN_START="$RUN_START" PREFETCH_LOG="$LOG_D" python3 - <<'PY'
+          import json, os, re, subprocess, sys
+          sys.path.insert(0, "scripts")
+          from prediction_gate import summarize
+          D = os.environ["PREFETCH_D"]
+          t0 = float(os.environ["PREFETCH_RUN_START"])
+          log = os.environ.get("PREFETCH_LOG") or ""
+          p = f"docs/data/predictions_{D}.json"
+          def _json(text):
+              try:
+                  return json.loads(text)
+              except Exception:
+                  return None
+          new = None
+          if os.path.exists(p) and os.path.getmtime(p) >= t0:
+              with open(p, encoding="utf-8") as f:
+                  new = _json(f.read())
+          if new and int(new.get("total_races") or 0) > 0:
+              r = subprocess.run(["git", "show", f"HEAD:{p}"], capture_output=True, text=True)
+              head = _json(r.stdout) if r.returncode == 0 else None
+              ns = summarize(new)
+              hs = summarize(head) if head else None
+              if hs and (ns["ready"] < hs["ready"] or ns["total"] < hs["total"]):
+                  print(f"KEPT 今回の版 {ns['ready']}/{ns['total']}R < 公開済みの版 {hs['ready']}/{hs['total']}R (予測あり/総数)")
+              else:
+                  print(f"NEW {ns['ready']}/{ns['total']}R (予測あり/総数)")
+              sys.exit(0)
+          from database import get_db
+          iso = f"{D[:4]}-{D[4:6]}-{D[6:8]}"
+          with get_db() as c:
+              rows = c.execute(
+                  # 取消の目印 (999.9倍・人気9999) は「オッズあり」と数えない (#173。predict の #52 ゲートと同じ)
+                  "SELECT r.race_id, SUM(CASE WHEN res.odds > 0 AND COALESCE(res.popularity, 0) < 999 THEN 1 ELSE 0 END) "
+                  "FROM races r JOIN results res ON res.race_id = r.race_id "
+                  "WHERE r.race_date IN (?, ?) GROUP BY r.race_id", (D, iso)).fetchall()
+          no_odds = {r[0] for r in rows if not (r[1] or 0)}
+          has_odds = {r[0] for r in rows if (r[1] or 0)}
+          yoso = set()
+          if log and os.path.exists(log):
+              with open(log, encoding="utf-8", errors="replace") as f:
+                  yoso = set(re.findall(r"(?<!\d)(\d{12})(?!\d)[^\n]*status=yoso", f.read()))
+          if no_odds and not has_odds and no_odds <= yoso:
+              print(f"PRESALE 出走馬のいる{len(no_odds)}Rすべて発売前の予想オッズ")
+          else:
+              print(f"OTHER オッズありの{len(has_odds)}R / オッズ無しの{len(no_odds)}R"
+                    f" (うち発売前と確認できた{len(no_odds & yoso)}R)")
+          PY
+            ) || RES="OTHER 判定に失敗"
+            case "${RES%% *}" in
+              NEW)
+                echo "✅ $D の予測JSONを生成 (${RES#* })"
+                GENERATED=$((GENERATED+1))
+                echo "generated=$GENERATED" >> $GITHUB_OUTPUT ;;
+              KEPT)
+                git checkout HEAD -- "docs/data/predictions_$D.json"
+                echo "::warning::$D: ${RES#* } → 公開済みの版を残し、この回の版は公開しない (#173)" ;;
+              PRESALE)
+                echo "ℹ️ $D: ${RES#* } → 予測なし (前日発売の前)" ;;
+              *)
+                echo "⚠️ $D: JSONが更新されていない (${RES#* })"
+                EXCUSED_ALL=0 ;;
+            esac
           done
           echo "generated=$GENERATED" >> $GITHUB_OUTPUT
           if [ "$GENERATED" -lt 1 ]; then
+            # #173: 作れなかった日がすべて「発売前」か「公開済みの版の方が多い」なら正常。
+            # 発売前かは refresh_odds の出力 (status=yoso) で確かめる。土曜の回 (日曜分だけ) は
+            # これでしか緑にしない — 旧判定 (21時前なら緑) だと、15:41 / 19:41 の回は日曜分が
+            # 取得の失敗や障害で1件も作れなくても必ず緑になり、赤になりうるのは 23:41 の1本だけだった。
+            # 日曜の重賞は土曜の朝から前日発売がある (11/07 08:32 に2R) ので、土曜の夕方に
+            # 全レースが発売前ということは普通は無い
+            if [ -n "$DATES" ] && [ "$EXCUSED_ALL" = "1" ]; then
+              echo "ℹ️ 作れなかった日はすべて発売前 / 公開済みの版の方が多い → 生成なしで終了 (後続の回に任せる)"
+              exit 0
+            fi
             # #169: 金曜 21時前の回 (17:30 の cron が定刻どおりに動いた時) は、前日発売の
-            # オッズがまだ無いのが普通。失敗にせず、22:30 と土 03:30 の回に任せる
-            if [ "$(TZ=Asia/Tokyo date +%u)" = "5" ] && [ "$(TZ=Asia/Tokyo date +%H)" -lt 21 ]; then
-              echo "ℹ️ 金曜 21時前でオッズ発売前の可能性 → 生成なしで終了 (後続の回に任せる)"
+            # オッズがまだ無いのが普通。失敗にせず、22:30 と土 03:30 の回に任せる。
+            # 金曜 (今日が開催日でない回) だけの猶予: 対象日がすべて翌日以降 かつ 21時前
+            ALL_FUTURE=1
+            for D in $DATES; do
+              [[ "$D" > "$TODAY" ]] || ALL_FUTURE=0
+            done
+            if [ "$TODAY_EXCLUDED" != "1" ] && [ -n "$DATES" ] && [ "$ALL_FUTURE" = "1" ] && [ "$BEFORE21" = "1" ]; then
+              echo "ℹ️ 21時前で対象日はすべて翌日以降 (前日発売の前の可能性) → 生成なしで終了 (後続の回に任せる)"
               exit 0
             fi
             echo "❌ 1日分も生成できなかった (朝の404リスクが残る)"
@@ -148,15 +318,19 @@ jobs:
       # ここは新モデルが週末2日分を予測し終えた直後なので、「閾値と分布がペア」
       # (#36/#120/#147/#156) が初めて成立する唯一の地点。
       - name: 🎚 基準表を新モデルの分布で引き直す
+        # #173: 生成なし (発売前・確定済みで何もしない回) は公開もしないので、作り直しても捨てるだけ
+        if: steps.gen.outputs.generated != '0'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # #161: モデルの本当の配備時刻を API で引く
+          # #161/#173: 週末の途中 (土曜の最後の作り直し 9:00 以降〜日曜) は、見送りの基準になる
+          # 閾値 (投資ゲート・信頼度。信頼度は should_bet の C/D 遮断に効く) を動かさない。
+          # 土曜の印と見送りは 9:00 の odds_flash がその時の閾値で作り直すので、それ以降に
+          # 引き直すと日曜だけ別の基準になる (捕捉率・配当の実測値は従来どおり更新)。
+          # 判定は build_race_baseline.py (_weekend_gate_hold) の1か所で、**この step を実行する
+          # 時刻**で決める (生成に最長40分かかるので、生成開始の時刻だと 9:00 をまたいだ回を誤る)。
+          # 土曜の 9:00 前 (金曜夜の回が土曜未明に遅れて動いた等) は従来どおり引き直す。
+          KEEP_BET_GATE: auto
         run: |
-          # #161: 日曜未明の回 (土曜夜の cron) は週末の途中なので、投資ゲートの閾値は動かさない。
-          # 土曜と日曜で見送りの基準が変わるのを防ぐ (信頼度・捕捉率などは従来どおり更新)。
-          if [ "$(TZ=Asia/Tokyo date +%u)" = "7" ]; then
-            export KEEP_BET_GATE=1
-            echo "🎚 週末の途中 (日曜) → 投資ゲートの閾値は据え置き"
-          fi
           python3 scripts/build_race_baseline.py || echo "⚠️ 基準表の再構築に失敗 → 既存値を継続使用"
 
       - name: 公開 (docs/data のみ)
@@ -166,6 +340,28 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # keiba.db.gz は push しない — 並行 workflow との clobber (#70) を避け、
           # 朝の予測が前夜の DB で上書きされないようにする。公開に必要なのは JSON だけ。
+          # #173: 当日分の予測 JSON は、当日の最後の作り直し (9:00 predict.FINAL_REBUILD_JST) 以降は
+          # 公開しない。生成の step は開始時刻で当日分を外すが、8:5x に始まった回は当日分を作って
+          # 9:00 過ぎに push しうる。odds_flash (DB も push する) より後に push すると -X theirs で
+          # こちらの版が残り、DB の予測を配信する post_predict の印とダッシュボードがずれる。
+          # 時刻はここで取り直す (日付も: 23:41 の回は公開が日付をまたぐ)。生成の step が時刻を
+          # 書けなかった時は "0000" = 当日分は常に公開しない側に倒す
+          FINAL_HM="${{ steps.gen.outputs.final_hm }}"
+          FINAL_HM="${FINAL_HM:-0000}"
+          TODAY_NOW=$(TZ=Asia/Tokyo date +%Y%m%d)
+          HM_NOW=$(TZ=Asia/Tokyo date +%H%M)
+          P_TODAY="docs/data/predictions_${TODAY_NOW}.json"
+          if [ "$((10#$HM_NOW))" -ge "$((10#$FINAL_HM))" ] && [ -f "$P_TODAY" ]; then
+            if git cat-file -e "HEAD:$P_TODAY" 2>/dev/null; then
+              if ! git diff --quiet HEAD -- "$P_TODAY"; then
+                git checkout HEAD -- "$P_TODAY"
+                echo "⏭️ ${TODAY_NOW}: 当日の最後の作り直し (${FINAL_HM:0:2}:${FINAL_HM:2:2}) 以降 → 当日分の JSON は公開済みの版のまま (#173)"
+              fi
+            else
+              rm -f "$P_TODAY"
+              echo "⏭️ ${TODAY_NOW}: 当日の最後の作り直し (${FINAL_HM:0:2}:${FINAL_HM:2:2}) 以降 → 当日分の JSON は公開しない (#173)"
+            fi
+          fi
           git add docs/data/
           if git diff --staged --quiet; then
             echo "📭 変更なし"

@@ -1439,12 +1439,25 @@ function markFinishedScratches(data) {
         // 1着がいる = 確定 (結果タブの #150e と同じ基準。部分取得の間は取消にしない)
         if (!r || !r.has_results || !(r.horses || []).some(h => h && h.finish === 1)) return;
         (r.horses || []).forEach(h => {
-          if (h && !((h.finish || 0) > 0) && (h.odds_win || 0) >= 999.9) h.scratched = true;
+          if (h && !((h.finish || 0) > 0) && !h.dnf && !h.excluded && (h.odds_win || 0) >= 999.9) h.scratched = true;
         });
       });
     });
   } catch (e) { /* 表示の補助だけ。失敗しても描画は続ける */ }
   return data;
+}
+
+// #173: 確定したレースで着順の無い馬の表示 [着順欄, 説明]。着順0 は「走っていない (取消・除外 = 返還)」と
+// 「走った (競走中止・失格 = 外れ)」の両方を含む。export が通過順のある馬 (= 走った) に dnf を、
+// そのうち走破時計もある馬 (失格) には dq も立てる (取消の目印を先に見るので scratched とは排他)。
+// どちらでもない馬は除外か中止か区別できない (通過順の無い競走中止もある: 11/07 京都JS グラニットピーク)。
+// 旧表示は一律「取消 / 出走取消・除外」
+function unplacedLabel(h) {
+  if (h && h.dq) return ['失格', '失格（外れ）'];
+  if (h && h.dnf) return ['中止', '競走中止（外れ）'];
+  if (h && h.excluded) return ['除外', '競走除外（返還）'];
+  if (isScratched(h)) return ['取消', '出走取消・除外（返還）'];
+  return ['―', '競走除外か競走中止'];
 }
 
 // ─── Prediction Tab ───
@@ -1827,13 +1840,14 @@ function renderResultTab(race) {
   if (!race.has_results) return '';
   const horses = [...(race.horses || [])].filter(h => h.finish > 0).sort((a, b) => a.finish - b.finish);
   // #150: 印を打った馬が取消 (finish=0) だと結果一覧から消え、「◎はどうなったのか」が
-  // 分からなくなる。取消の印馬は別行で明示する (印の説明責任)。
-  // #150e: 「取消」と断定してよいのは **そのレースが確定している時だけ**。
+  // 分からなくなる。着順の無い印馬は別行で明示する (印の説明責任)。
+  // #150e: 着順の無い理由を断定してよいのは **そのレースが確定している時だけ**。
   // 収集途中 (1着がまだ入っていない) の馬を取消と表示すると、
   // 実際には走っている馬を「出走取消・除外」と誤って公開してしまう
   // (9/5 札幌4R で実際に発生: 部分スクレイプで13頭が一時的に消えた)。
+  // #173: 理由は unplacedLabel で 取消 / 中止 / 除外か中止 に分ける
   const _confirmed = (race.horses || []).some(h => h.finish === 1);
-  const scratched = _confirmed
+  const unplaced = _confirmed
     ? (race.horses || []).filter(h => !(h.finish > 0) && h.mark)
     : [];
 
@@ -1856,15 +1870,16 @@ function renderResultTab(race) {
       <div style="font-size:11px;color:var(--text-muted);">${h.actual_odds || ''}倍</div>
     </div>`;
   });
-  scratched.forEach(h => {
+  unplaced.forEach(h => {
+    const [rankLabel, detail] = unplacedLabel(h);
     html += `<div class="podium-row" style="opacity:.6">
-      <div class="podium-rank">取消</div>
+      <div class="podium-rank">${rankLabel}</div>
       <div class="horse-number">${h.horse_number}</div>
       <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;">
         <span class="horse-mark mark-renshita" style="font-size:14px;">${h.mark}</span>
         ${h.horse_name || ''}
       </div>
-      <div style="font-size:11px;color:var(--text-muted);" colspan="2">出走取消・除外</div>
+      <div style="font-size:11px;color:var(--text-muted);" colspan="2">${detail}</div>
     </div>`;
   });
   html += '</div>';

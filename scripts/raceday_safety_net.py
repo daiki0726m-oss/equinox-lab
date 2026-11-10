@@ -263,7 +263,7 @@ def main():
     # #161: 上限は確定ロック (#172: 10:00 → 9:30)。auto_post_x の predict は確定後は予測を
     # 再実行しないので、確定後に dispatch しても何も起きない (旧版は 11:00 まで空打ちしていた)。
     # 確定を過ぎて足りない場合は人に知らせる。
-    from race_utils import PREDICTION_LOCK_HM, PREDICTION_LOCK_LABEL
+    from race_utils import PREDICTION_LOCK_HM, PREDICTION_LOCK_LABEL, ODDS_FLASH_LATEST_HM
     short = n_pred < n_exp
     if short and 500 <= hm < PREDICTION_LOCK_HM and not sent_ap:
         if n_pred:
@@ -318,7 +318,9 @@ def main():
     # odds_flash は確定後に代打しても予想は作り直さず、9:30 の印より後に「朝オッズ」が出る
     # だけなので、代打は確定まで。
     SLOTS = (("post_predict", PREDICTION_LOCK_HM, 1155),
-             ("odds_flash", 900, PREDICTION_LOCK_HM),
+             # #173: 代打は確定の15分前まで (race_utils.ODDS_FLASH_LATEST_HM)。遅く出すと
+             # 9:30 の予想投稿を concurrency の後ろで待たせる
+             ("odds_flash", 900, ODDS_FLASH_LATEST_HM),
              ("results", 1730, 2400))
     for mode, start, end in SLOTS:
         if not (start <= hm < end):

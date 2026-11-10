@@ -204,6 +204,13 @@ def init_db(db_path=None):
         if "posted_marks_json" not in cols:
             conn.execute("ALTER TABLE predictions_cache ADD COLUMN posted_marks_json TEXT")
             print("🔧 predictions_cache: posted_marks_json カラム追加 (#97: 投稿した印のスナップショット)")
+        # #173: 着順の無い馬の理由 (netkeiba の着順欄の先頭1字: 中=競走中止 / 失=失格 / 除=競走除外 /
+        # 取=出走取消)。着順0 は走った馬 (中止・失格 = 外れ) と走っていない馬 (除外・取消 = 返還) の
+        # 両方を含み、通過順の無い競走中止は他の列から区別できなかった
+        rcols = [r[1] for r in conn.execute("PRAGMA table_info(results)").fetchall()]
+        if rcols and "finish_status" not in rcols:
+            conn.execute("ALTER TABLE results ADD COLUMN finish_status TEXT DEFAULT ''")
+            print("🔧 results: finish_status カラム追加 (#173: 競走中止・除外・取消・失格の区別)")
     print("✅ データベース初期化完了")
 
 

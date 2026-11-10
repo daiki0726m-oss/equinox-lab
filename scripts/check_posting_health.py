@@ -286,7 +286,7 @@ def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None, all_slots_
     if now > deadline:
         # 期限後で見つからなければ「missed」
         recent = find_recent_run_any(
-            runs, [slot_cfg["fallback_mode"], slot_name], expected_jst,
+            runs, [slot_cfg["fallback_mode"], slot_name] + list(slot_cfg.get("match_titles") or []), expected_jst,
             window_minutes=monitor_cfg.get("recent_success_window_minutes", 240),
             all_slot_expected_dts=other_dts,
         )
@@ -334,7 +334,7 @@ def evaluate_slot(slot_name, slot_cfg, runs, monitor_cfg, today=None, all_slots_
 
     # 期待〜期限の間: success run を探す
     recent = find_recent_run_any(
-        runs, [slot_cfg["fallback_mode"], slot_name], expected_jst,
+        runs, [slot_cfg["fallback_mode"], slot_name] + list(slot_cfg.get("match_titles") or []), expected_jst,
         window_minutes=monitor_cfg.get("recent_success_window_minutes", 240),
         all_slot_expected_dts=other_dts,
     )
@@ -428,6 +428,12 @@ def main():
         slot_cfg2 = dict(slot_cfg)
         slot_cfg2.setdefault("fallback_mode", "auto")  # ダミー
         slot_cfg2.setdefault("time_guard_jst", [0, 23])  # データ収集は時間ガード無し相当
+        # #173: dispatch された fetch (見張り役・手動) の run は run-name が無く、表示名は workflow 名。
+        # mode/slot 名との完全一致では成功に数えられず、schedule が丸ごと落ちた日は見張り役が
+        # tick ごとに fetch を出し直していた (1本ごとに DB push ~25MB #153)。fetch_runs はこの
+        # workflow の run だけなので、workflow 名の title も成功として照合する
+        slot_cfg2.setdefault("match_titles", sorted({r.get("name") for r in fetch_runs if r.get("name")})
+                             or ["📅 Fetch Weekend Races"])
         evaluation = evaluate_slot(slot_name, slot_cfg2, fetch_runs, monitor, today,
                                    all_slots_today=fetch_slots_today)
         evaluation["workflow"] = slot_cfg.get("workflow", "fetch_weekend_races.yml")

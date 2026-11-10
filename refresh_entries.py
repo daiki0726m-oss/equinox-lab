@@ -63,6 +63,31 @@ def _db_runner_count(conn, race_id):
     return int(row[0] or 0) if row else 0
 
 
+def _entries_changed(before, after):
+    """取り直しで馬番↔馬の対応が変わったか (#173)。before/after = {馬番: (horse_id, 馬名)}。
+
+    旧版は before を finish_position=0 の行だけ、after を出馬表の全頭で作って比べていた。
+    確定したレースに着順0の馬 (取消・除外・競走中止) が1頭でもいると before が空でなくなり、
+    着順のある馬番はすべて「before に無い」= 変化ありと判定され、馬番は何も変わっていないのに
+    「🔧 馬番を確定版に更新」と出ていた (11/07 13:28 京都3R・11/08 13:12 福島4R)。
+    両方とも全頭で比べる。馬の同一性は horse_id (両方ある時) で見て、無い時だけ馬名で見る
+    (化け名 #90 は馬名の違いと数えない)。DB が空 (初回の取得) は「更新」と言わない (旧版と同じ)。
+    """
+    if not before:
+        return False
+    if set(before) != set(after):
+        return True   # 馬番の集合が違う (仮馬番の幽霊が消える・頭数が変わる)
+    _ffd = chr(65533)
+    for hn, (bid, bnm) in before.items():
+        aid, anm = after[hn]
+        if bid and aid:
+            if bid != aid:
+                return True
+        elif bnm and anm and _ffd not in bnm and _ffd not in anm and bnm != anm:
+            return True
+    return False
+
+
 def _refresh_one(scraper, rid, date_str):
     """1レースを取り直す。成功なら (True, shutuba)、失敗なら (False, 理由)。"""
     try:
@@ -129,22 +154,24 @@ def refresh_entries(date_str, retry_wait=2.0):
 
     def _attempt(race):
         rid = race["race_id"]
-        # 更新前の馬番→馬名スナップショット (変化検出用)
+        # 更新前の馬番→(horse_id, 馬名) スナップショット (変化検出用)。
+        # #173: 着順で絞らず全頭 (after = 出馬表の全頭と母集団をそろえる)
         with get_db() as conn:
             before = {
-                r["horse_number"]: r["horse_name"]
+                r["horse_number"]: (r["horse_id"] or "", r["horse_name"] or "")
                 for r in conn.execute("""
-                    SELECT re.horse_number, h.horse_name
-                    FROM results re JOIN horses h ON re.horse_id = h.horse_id
-                    WHERE re.race_id = ? AND re.finish_position = 0
+                    SELECT re.horse_number, re.horse_id, h.horse_name
+                    FROM results re LEFT JOIN horses h ON re.horse_id = h.horse_id
+                    WHERE re.race_id = ?
                 """, (rid,)).fetchall()
             }
         ok, res = _refresh_one(scraper, rid, date_str)
         if not ok:
             return False, res
         out["updated"] += 1
-        after = {e.get("horse_number"): e.get("horse_name") for e in res["entries"]}
-        if before and any(before.get(hn) != after.get(hn) for hn in after):
+        after = {e.get("horse_number"): (e.get("horse_id") or "", e.get("horse_name") or "")
+                 for e in res["entries"]}
+        if _entries_changed(before, after):
             out["changed"] += 1
             print(f"  🔧 {_label(race)}: 馬番を確定版に更新")
         return True, None

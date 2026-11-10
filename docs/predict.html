@@ -1315,12 +1315,24 @@ function markFinishedScratches(data) {
         // 1着がいる = 確定 (結果タブの #150e と同じ基準。部分取得の間は取消にしない)
         if (!r || !r.has_results || !(r.horses || []).some(h => h && h.finish === 1)) return;
         (r.horses || []).forEach(h => {
-          if (h && !((h.finish || 0) > 0) && (h.odds_win || 0) >= 999.9) h.scratched = true;
+          if (h && !((h.finish || 0) > 0) && !h.dnf && !h.excluded && (h.odds_win || 0) >= 999.9) h.scratched = true;
         });
       });
     });
   } catch (e) { /* 表示の補助だけ。失敗しても描画は続ける */ }
   return data;
+}
+
+// #173: 確定したレースで着順の無い馬の表示 [着順欄, 説明]。index.html の unplacedLabel と同じ。
+// 着順0 は「走っていない (取消・除外 = 返還)」と「走った (競走中止・失格 = 外れ)」の両方を含む。
+// export が通過順のある馬 (= 走った) に dnf を、そのうち失格の馬には dq も立てる
+// (取消の目印を先に見るので scratched とは排他)
+function unplacedLabel(h) {
+  if (h && h.dq) return ['失格', '失格（外れ）'];
+  if (h && h.dnf) return ['中止', '競走中止（外れ）'];
+  if (h && h.excluded) return ['除外', '競走除外（返還）'];
+  if (isScratched(h)) return ['取消', '出走取消・除外（返還）'];
+  return ['―', '競走除外か競走中止'];
 }
 
 // ─── Prediction Tab ───
@@ -1637,6 +1649,12 @@ function toggleRestHorses(raceId, btn) {
 function renderResultTab(race) {
   if (!race.has_results) return '';
   const horses = [...(race.horses || [])].filter(h => h.finish > 0).sort((a, b) => a.finish - b.finish);
+  // #173: 着順の無い印馬 (「◎はどうなったのか」) を index.html と同じく別行で出す。
+  // 理由を断定してよいのはレースが確定している (1着がいる) 時だけ (#150e)
+  const _confirmed = (race.horses || []).some(h => h.finish === 1);
+  const unplaced = _confirmed
+    ? (race.horses || []).filter(h => !(h.finish > 0) && h.mark)
+    : [];
 
   let html = '<div class="results-section">';
 
@@ -1655,6 +1673,18 @@ function renderResultTab(race) {
       </div>
       <div style="font-size:11px;color:var(--text-secondary);">${h.time || ''}</div>
       <div style="font-size:11px;color:var(--text-muted);">${h.actual_odds || ''}倍</div>
+    </div>`;
+  });
+  unplaced.forEach(h => {
+    const [rankLabel, detail] = unplacedLabel(h);
+    html += `<div class="podium-row" style="opacity:.6">
+      <div class="podium-rank">${rankLabel}</div>
+      <div class="horse-number">${h.horse_number}</div>
+      <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;">
+        <span class="horse-mark mark-renshita" style="font-size:14px;">${h.mark}</span>
+        ${h.horse_name || ''}
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);">${detail}</div>
     </div>`;
   });
   html += '</div>';

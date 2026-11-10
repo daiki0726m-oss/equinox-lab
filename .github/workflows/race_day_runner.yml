@@ -118,10 +118,80 @@ jobs:
           # 遅延 cron 発火で別 run が起動すると flag check を素通りして重複 dispatch していた
           # (6/7 17:03 二重投稿事故の原因)。対策として **posted_slots テーブル** を事前 check し、
           # atomic lock が既に取られていれば dispatch しない。
+          #
+          # ⏰ #173: 予定時刻に達したかは **dispatch の直前の時刻**で判定する (周の頭の時刻ではなく)。
+          # 周の頭で取った時刻だと、collect 等 (約3.5分) の後に判定するので、11/08 は 09:28 に始まった周が
+          # 09:32:36 に判定しながら「まだ 09:28」と読んで出さず、次の周の 09:42 に dispatch していた
+          # (予想投稿 09:43:20 = 福島1R 9:45 の1分40秒前。odds_flash も 09:02 の判定を見送り 09:12)。
+          now_hm() { echo $((10#$(TZ=Asia/Tokyo date +%H%M))); }
+          # 朝の予定時刻 (HHMM の整数)。確定 (= post_predict) は race_utils の1か所から読む (#172)
+          ODDS_FLASH_HM=900
+          LOCK_HM=$(python3 -c "from race_utils import PREDICTION_LOCK_HM as h; print(int(h))" 2>/dev/null || true)
+          case "$LOCK_HM" in ''|*[!0-9]*) LOCK_HM=0 ;; esac
+          if [ "$LOCK_HM" -le "$ODDS_FLASH_HM" ] || [ "$LOCK_HM" -ge 1155 ]; then
+            echo "⚠️ race_utils.PREDICTION_LOCK_HM を読めない/範囲外 ('$LOCK_HM') → 930"; LOCK_HM=930
+          fi
+          LOCK_HM4=$(printf '%04d' "$LOCK_HM"); ODDS_FLASH_HM4=$(printf '%04d' "$ODDS_FLASH_HM")
+          # #173: odds_flash を代打で出してよい最後の時刻 (race_utils.ODDS_FLASH_LATEST_HM = 確定の15分前)。
+          # odds_flash の run (~10.5分) が auto_post_x の枠を占め、遅く出すと 9:30 の post_predict を待たせる
+          ODDS_FLASH_LAST_HM=$(python3 -c "from race_utils import ODDS_FLASH_LATEST_HM as h; print(int(h))" 2>/dev/null || true)
+          case "$ODDS_FLASH_LAST_HM" in ''|*[!0-9]*) ODDS_FLASH_LAST_HM=0 ;; esac
+          if [ "$ODDS_FLASH_LAST_HM" -le "$ODDS_FLASH_HM" ] || [ "$ODDS_FLASH_LAST_HM" -gt "$LOCK_HM" ]; then
+            echo "⚠️ race_utils.ODDS_FLASH_LATEST_HM を読めない/範囲外 ('$ODDS_FLASH_LAST_HM') → 確定時刻"
+            ODDS_FLASH_LAST_HM=$LOCK_HM
+          fi
+          # 🔒 サイドカーの lock を読む。"<読んだ所> <run_id>" を出す (読んだ所 = api / raw / none、run_id は無ければ空)。
+          # #173: 先に contents API (CDN を通らない = push 直後から見える) を読み、失敗した時だけ
+          # raw.githubusercontent に落ちる。raw は Cache-Control: max-age=300 で、push の後も最大5分は
+          # 古い版を返しうる (実測。クエリを付けても回避できない)。軽い周で 9:30:10 に出した post_predict は
+          # ~90秒で lock を書くが、次の判定 (~3.5分後) が raw の古い版を読むと「待機中に取り消された」と
+          # 誤認して出し直していた (auto_post_x が1本余分に走り、preflight の API 照合と 21MB の DB push = #153)。
+          # run_id は空かどうかでしか使わないので、どちらで読んでも意味は同じ。
+          read_slot_lock() {
+            local mode=$1 ymd js src=api api404=0
+            ymd=$(TZ=Asia/Tokyo date +%Y%m%d)
+            # gh api には時間制限のフラグが無いので timeout で包む (応答が返らないと runner の周ごと止まる。
+            # 124 は失敗扱い → raw に落ちる)
+            if ! js=$(timeout 20 gh api "repos/${{ github.repository }}/contents/docs/data/posted_slots_${ymd}.json?ref=main" \
+                        -H "Accept: application/vnd.github.raw" 2>/dev/null); then
+              # API の 404 (= その日の lock がまだ1つも無い) か、API の失敗。どちらも raw を読んでみる
+              case "$js" in *'"404"'*) api404=1 ;; esac
+              if js=$(curl -sf --max-time 10 \
+                        "https://raw.githubusercontent.com/${{ github.repository }}/main/docs/data/posted_slots_${ymd}.json" \
+                        2>/dev/null); then
+                src=raw
+              else
+                js=""
+                # API も raw も「ファイルが無い」= lock 無しで確定 (API の答えとして扱う)
+                if [ "$api404" = "1" ]; then src=api; else src=none; fi
+              fi
+            fi
+            printf '%s %s\n' "$src" "$(printf '%s' "$js" \
+              | python3 -c "import json,sys; print((json.load(sys.stdin).get('slots') or {}).get('$mode',{}).get('run_id',''))" \
+              2>/dev/null || true)"
+          }
+          # auto_post_x の実行中・待機中の run のうち、run-name (= displayTitle) が mode のものの数。
+          # 確認できない時は "?"。cron 起動の run は run-name が "cron" なので数えられない (下の注記)。
+          count_active_runs() {
+            timeout 20 gh run list -R ${{ github.repository }} --workflow auto_post_x.yml --limit 20 \
+              --json displayTitle,status \
+              --jq "[.[] | select(.displayTitle == \"$1\" and (.status == \"in_progress\" or .status == \"queued\" or .status == \"pending\" or .status == \"waiting\" or .status == \"requested\"))] | length" \
+              2>/dev/null || echo "?"
+          }
+          # #173: post_predict を最後に dispatch した時刻 (epoch)。出し直しの判定に使う
+          PP_LAST_DISPATCH_AT=0
+          # 出し直しは最後の dispatch からこの秒数が経つまで待つ。#173 より前は次の判定が ~10分後に
+          # 来ていたので、軽い周で早く出すようになった分だけ「早すぎる出し直し」を塞ぐ。
+          #  - lock を contents API で読めた時: 60秒 (dispatch した run が run 一覧に出るまでの余裕。
+          #    lock は run の終わりより前に push される (auto_post_x の Persist post locks) ので、run が
+          #    一覧から消えた時点で API には lock が見えている = 取り消しだけを拾える)
+          #  - raw に落ちた時: 360秒。run が待機なしで走った日は、post_x 自身の raw 読み込み (開始 ~30秒後)
+          #    で埋まった古い版も dispatch から 360秒で期限が切れる
+          PP_REDISPATCH_MIN_SEC=${PP_REDISPATCH_MIN_SEC:-360}
           trigger_post() {
             local mode=$1
-            local minimum_jst_hm=$2  # 例: 0930 = 9:30
-            local current_jst_hm=$3
+            local minimum_jst_hm=$2  # 例: 0930 = 9:30 (判定は dispatch 直前の時刻 #173)
+            local now _act _checked="" _src _min
 
             # 🔒 atomic lock 事前 check — run 間でも共有される。
             # #150: 参照先を DB の posted_slots から **テキストサイドカー**に変更。
@@ -129,11 +199,7 @@ jobs:
             # DB 側は並行 workflow の `-X theirs` push で丸ごと巻き戻る (#70)。
             # 巻き戻った DB を見ると「lock 無し」と読んで再 dispatch → 重複配信になる
             # (直近12開催日中6日で予想スレッドが二重、8/22 は三重配信されていた)。
-            TODAY_YMD=$(TZ=Asia/Tokyo date +%Y%m%d)
-            EXISTING=$(curl -sf --max-time 10 \
-              "https://raw.githubusercontent.com/${{ github.repository }}/main/docs/data/posted_slots_${TODAY_YMD}.json" \
-              | python3 -c "import json,sys; print((json.load(sys.stdin).get('slots') or {}).get('$mode',{}).get('run_id',''))" \
-              2>/dev/null || true)
+            read -r _src EXISTING <<< "$(read_slot_lock "$mode")"
             if [ -n "$EXISTING" ]; then
               echo "⏭️ [$mode] posted_slots に lock 済み (run=$EXISTING) → dispatch skip"
               # /tmp flag にも記録して次 iter で再 check しない
@@ -148,20 +214,25 @@ jobs:
             # 済みかどうかはサイドカーの lock (上) で見て、無ければ実行中・待機中の post_predict が
             # 無いことを確かめてから出し直す (11:55 まで。post_x の上限は 12:00 #69)。
             if [ "$mode" = "post_predict" ] && grep -q "^${mode}\$" "$TRIGGER_FILE" 2>/dev/null; then
-              if [ "$current_jst_hm" -ge 1155 ]; then
+              if [ "$(now_hm)" -ge 1155 ]; then
                 return 0
               fi
-              local _active
-              _active=$(gh run list -R ${{ github.repository }} --workflow auto_post_x.yml --limit 20 \
-                --json displayTitle,status \
-                --jq '[.[] | select(.displayTitle == "post_predict" and (.status == "in_progress" or .status == "queued" or .status == "pending" or .status == "waiting" or .status == "requested"))] | length' \
-                2>/dev/null || echo "?")
-              if [ "$_active" != "0" ]; then
+              # #173: dispatch の直後は run がまだ一覧に出ない・lock がまだ見えないことがある
+              _min=60; [ "$_src" = "api" ] || _min=$PP_REDISPATCH_MIN_SEC
+              if [ $(( $(date +%s) - PP_LAST_DISPATCH_AT )) -lt "$_min" ]; then
+                return 0
+              fi
+              _act=$(count_active_runs post_predict)
+              if [ "$_act" != "0" ]; then
                 return 0      # 実行中・待機中 (または確認できない) → 重ねない
               fi
+              _checked=1
               # 投稿そのものが失敗し続ける日 (X/Threads の障害) に 10分ごとに叩き続けないよう3回まで
               local _nretry
-              _nretry=$(grep -c '^post_predict_retry$' "$TRIGGER_FILE" 2>/dev/null)
+              # #173: `|| true` 必須。この step は bash -e で動く (GitHub の既定 shell) ので、まだ1回も出し直して
+              # いない時 (grep -c が 0 件で終了コード 1) に代入ごと失敗して runner のループ全体が落ちていた
+              # (結果収集が止まり、出し直しも行われない。偽の時計のハーネスを bash -e で回して再現)
+              _nretry=$(grep -c '^post_predict_retry$' "$TRIGGER_FILE" 2>/dev/null || true)
               if [ "${_nretry:-0}" -ge 3 ]; then
                 return 0
               fi
@@ -173,34 +244,181 @@ jobs:
               return 0
             fi
 
+            # #173: end_hour 以降の予定は出さない (軽い周と同じ条件)。判定を dispatch 直前の時刻に
+            # したので、end_hour=9 の試運転でも 8:5x に始まった周が 9:00 を越えて odds_flash を出していた。
+            # 旧版は周の頭 (< end_hour) で判定していた = 「予定 < end_hour」と同じ意味。
+            if [ "$((10#$minimum_jst_hm))" -ge $(( END_HH * 100 )) ]; then
+              return 0
+            fi
+
+            # ⏰ #173: ここから dispatch までの判定は、dispatch の直前の時刻で行う (周の頭の時刻ではなく)。
+            now=$(now_hm)
+            if [ "$now" -lt "$minimum_jst_hm" ]; then
+              return 0
+            fi
+
             # #172: odds_flash は dispatch の直前の時刻で確定 (9:30) を見る。周の頭の時刻だと、
             # 9:27 に始まった周が collect 等の後 (約3分後) に確定後の odds_flash を出してしまう。
-            if [ "$mode" = "odds_flash" ] && [ "$((10#$(TZ=Asia/Tokyo date +%H%M)))" -ge 930 ]; then
+            if [ "$mode" = "odds_flash" ] && [ "$now" -ge "$ODDS_FLASH_LAST_HM" ]; then
+              # #173: 確定の15分前を過ぎた odds_flash は出さない (9:30 の post_predict を待たせる)
+              grep -q "^odds_flash\$" "$TRIGGER_FILE" 2>/dev/null || {
+                echo "⏭️ [odds_flash] JST $(TZ=Asia/Tokyo date +%H:%M) は代打の締切 (${ODDS_FLASH_LAST_HM}) を過ぎた → 出さない (#173)"
+                echo "odds_flash" >> "$TRIGGER_FILE"; }
+              return 0
+            fi
+            # #173: post_predict は出し直しと同じく 11:55 まで (post_x の上限は 12:00 #69)。旧版から、昼以降に
+            # 起動した runner (保険 cron 11/13/15時) は初回の判定で post_predict を出していた。投稿は post_x が
+            # 止めるが、run は preflight の API 照合と export/deploy (DB push) まで走る。
+            if [ "$mode" = "post_predict" ] && [ "$now" -ge 1155 ]; then
               return 0
             fi
 
             # #172: auto_post_x への dispatch は1周に1本まで。concurrency (待機1本) では、続けて
             # 投げると後の待機が先の待機を黙って取り消す (9/22 に odds_flash と post_predict が
             # 2秒差で互いを取り消したのを実測)。9:00 と 9:30 の間隔が短くなったので先に塞ぐ。
-            if [ "$current_jst_hm" -ge "$minimum_jst_hm" ] && [ "${AP_SENT_THIS_ITER:-0}" = "1" ]; then
+            # (#173 の軽い周も「1周」として数える = 軽い周の中でも1本まで)
+            if [ "${AP_SENT_THIS_ITER:-0}" = "1" ]; then
               echo "⏭️ [$mode] この周は auto_post_x を既に1本 dispatch 済み → 次の周に回す"
               return 0
             fi
 
-            if [ "$current_jst_hm" -ge "$minimum_jst_hm" ]; then
-              echo "🚀 [SAFETY-NET] ${mode} を dispatch (予定 ${minimum_jst_hm:0:2}:${minimum_jst_hm:2:4} 到達, 現在 $(TZ=Asia/Tokyo date +%H:%M))"
-              if gh workflow run auto_post_x.yml -R ${{ github.repository }} -f mode="$mode" 2>&1; then
-                AP_SENT_THIS_ITER=1
-                echo "${mode}" >> "$TRIGGER_FILE"
-                echo "  ✅ dispatch 成功 → flag 記録"
-              else
-                echo "  ⚠️ dispatch 失敗 (次の iter で再試行)"
+            # #173: 朝の2つは、他の経路 (GAS・watchdog・手動) が同じ mode を実行中・待機中なら重ねない。
+            # 軽い周は予定時刻の10秒後に出すので、定刻どおりに来た他経路の run と重なりやすくなった
+            # (lock で二重投稿にはならないが、odds_flash の2本目は作り直しをもう一度通る)。
+            # flag は付けないので、その run が待機中に取り消されたら次の判定で出し直す。
+            # 確認できない ("?") 時は出す (出さない方が害が大きい。二重投稿は lock が止める)。
+            # 注: cron 起動の run は run-name が "cron" なので見えない (区別する手段が無い)。
+            if [ -z "$_checked" ] && { [ "$mode" = "odds_flash" ] || [ "$mode" = "post_predict" ]; }; then
+              _act=$(count_active_runs "$mode")
+              case "$_act" in
+                ''|'?'|*[!0-9]*) ;;
+                0) ;;
+                *) echo "⏭️ [$mode] 他の経路の run が実行中・待機中 ($_act 本) → 重ねない (次の判定で lock を確認)"
+                   return 0 ;;
+              esac
+              # 上の確認 (ネットワーク) の間に 9:30 を越えたら odds_flash は出さない
+              if [ "$mode" = "odds_flash" ] && [ "$(now_hm)" -ge "$ODDS_FLASH_LAST_HM" ]; then
+                return 0
               fi
+            fi
+
+            echo "🚀 [SAFETY-NET] ${mode} を dispatch (予定 ${minimum_jst_hm:0:2}:${minimum_jst_hm:2:4} 到達, 現在 $(TZ=Asia/Tokyo date +%H:%M:%S))"
+            if gh workflow run auto_post_x.yml -R ${{ github.repository }} -f mode="$mode" 2>&1; then
+              AP_SENT_THIS_ITER=1
+              echo "${mode}" >> "$TRIGGER_FILE"
+              if [ "$mode" = "post_predict" ]; then PP_LAST_DISPATCH_AT=$(date +%s); fi
+              echo "  ✅ dispatch 成功 → flag 記録"
+            else
+              echo "  ⚠️ dispatch 失敗 (次の iter で再試行)"
             fi
           }
 
+          # 朝の投稿の判定 (重い周の最後と、#173 の軽い周の両方から呼ぶ)。
+          # #172: 予想投稿は確定 (9:30) と同時、朝オッズは最後の作り直しを兼ねて 9:00。
+          # 1周に1本なので、両方が期限を過ぎている時は本体の予想 (post_predict) を先に出す。
+          # odds_flash は確定後に出しても予想は作り直さず、印の後に朝オッズが出るだけなので
+          # 9:30 以降は代打しない (minimum に上限が無いので、ここと trigger_post の中で時刻を見て止める)。
+          # $1=light (軽い周) の時は、runner の DB push が新しい時だけ post_predict を出す (下の説明。
+          # 判定は軽い周を計画する時に済んでいる。ここは寝過ごした時の保険なので1分の余裕を持たせる)。
+          morning_post_checks() {
+            MORNING_CHECK_AT=$(date +%s)   # next_morning_due が「判定済みの予定」を見分けるのに使う
+            if [ "${1:-}" != "light" ] || [ $(( $(date +%s) - LAST_DB_PUSH_AT )) -le $(( PP_MAX_PUSH_AGE + 60 )) ]; then
+              trigger_post post_predict "$LOCK_HM4"
+            fi
+            if [ "$(now_hm)" -lt "$ODDS_FLASH_LAST_HM" ]; then
+              trigger_post odds_flash "$ODDS_FLASH_HM4"
+            fi
+          }
+
+          # ⏰ #173: 周の間隔 (約10分) による遅れを縮める「軽い周」。
+          # 重い周 (collect → … → deploy → 投稿の判定) は判定が周の頭から約3.5分後になるので、周の頭の
+          # 位置しだいで予定時刻から最大 ~13分遅れる (11/08 は 9:30 の予想投稿が 09:42)。
+          # そこで、まだ出していない朝の予定時刻 (9:00 odds_flash / 9:30 post_predict) の直後に起きて
+          # **投稿の判定だけ** を行う。
+          #  - 軽い周は collect / export / DB push をしない (#153)。重い周の間隔は 10分より短くならない
+          #    (= collect と DB push の回数は増えない)。
+          #  - 予定時刻が寝ている間 (次の重い周の前) に来る → その直後に軽い周。重い周の予定は動かさない。
+          #  - 次の重い周の処理中に来る → その周の判定が予定時刻より後になる見込みの時だけ、重い周の開始を
+          #    軽い周の後まで遅らせる。遅らせる幅は POST_TICK_DEFER_MAX (240秒) まで。見込み (直前の周の
+          #    処理秒) にも同じ上限をかける: 初回の周は preflight の auto-fix で長い (11/07 は 763秒) ので、
+          #    それを見込みにすると重い周を13分近く止めてしまう (オッズ・JSON の更新と DB push が空白になる)。
+          #    上限を越える時は重い周を先に回し、その周の判定かその後の軽い周に任せる。
+          #  - post_predict は origin の DB の predictions_cache を読む。そこには runner の refresh_odds が書く
+          #    オッズ・人気・後から分かった取消が入っており、投稿時点の記録 (odds_win_at_post) と ⚡穴注意/💡能力値
+          #    の取消除外に使われる。軽い周は push しないので、runner が直近 PP_MAX_PUSH_AGE (600秒 = 重い周
+          #    1回分) 以内に DB を push している時だけ軽い周で出す。寝ている間に 9:30 が来る時は直前の周の頭が
+          #    9:20〜9:30 (092* = 必ず push する) なので条件を満たし、内容はその push の時点 (9:30 の数分前、
+          #    最大で「600秒 - 処理秒」前) のもの。旧版は push の直後に出していた代わりに最大 ~13分遅れていた。
+          #    条件を満たさない時は重い周 (頭が 092*/093* = push する) の deploy の後で出す。
+          #  - odds_flash は自分で refresh_entries → refresh_odds → 再予測するので、runner の push は要らない。
+          #  - results (17:30) と refresh_dashboard (18:30) は「直前に DB を push してから出す」(#153) 必要が
+          #    あるので、これまで通り重い周 (deploy の直後) で出す。
+          POST_TICK=${POST_TICK:-1}                           # 0 で軽い周を止める (判定の時刻だけ直前になる)
+          POST_TICK_MARGIN_SEC=${POST_TICK_MARGIN_SEC:-10}    # 予定時刻の何秒後に判定するか
+          POST_TICK_DEFER_MAX=${POST_TICK_DEFER_MAX:-240}     # 重い周の開始を遅らせる幅の上限 (秒)
+          PP_MAX_PUSH_AGE=${PP_MAX_PUSH_AGE:-600}             # 軽い周で post_predict を出せる DB push の古さ (秒)
+          LAST_DB_PUSH_AT=0                                    # この runner が最後に DB を push した時刻 (epoch)
+          MORNING_CHECK_AT=0                                   # 最後に朝の投稿の判定をした時刻 (epoch)
+          # まだ出していない朝の予定時刻のうち、今より後で最も早いもの ("epoch mode")。無ければ空。
+          # JST は夏時間が無いので「epoch + 9h」の日内秒で計算する。end_hour 以降の予定は対象外。
+          next_morning_due() {
+            local now sod best="" best_mode="" spec mode hm slot_sod due
+            now=$(date +%s)
+            sod=$(( (now + 32400) % 86400 ))
+            for spec in "post_predict:$LOCK_HM" "odds_flash:$ODDS_FLASH_HM"; do
+              mode=${spec%%:*}; hm=${spec##*:}
+              grep -q "^${mode}\$" "$TRIGGER_FILE" 2>/dev/null && continue   # dispatch 済み / lock 済み
+              slot_sod=$(( (hm / 100) * 3600 + (hm % 100) * 60 ))
+              [ "$slot_sod" -lt $(( END_HH * 3600 )) ] || continue
+              due=$(( now + slot_sod - sod ))
+              # 「過ぎたか」は今でなく最後の朝の判定 (MORNING_CHECK_AT) と比べる。重い周が予定時刻の
+              # 数秒前に判定して出さずに戻り、その後の lock 読みの間に予定時刻を越えた時、今と比べると
+              # 誰も出していないのに「過ぎた = 重い周が出す」扱いになり、次の重い周 (~10分後) まで遅れる。
+              # 判定より後に来た予定は、wake が過去でも軽い周を即座に走らせる。判定より前の予定
+              # (判定したが他経路の run が実行中などで出さなかったもの) は重い周に任せる。
+              [ "$due" -gt "${MORNING_CHECK_AT:-0}" ] || continue
+              if [ -z "$best" ] || [ "$due" -lt "$best" ]; then best=$due; best_mode=$mode; fi
+            done
+            echo "$best $best_mode"
+          }
+          # 軽い周を挟むなら、その時刻 (epoch 秒) を返す。挟まないなら空。
+          # $1 = 次の重い周の予定開始 (epoch)、$2 = 直前の重い周の処理秒 (= 次の周の判定までの見込み)
+          post_tick_wake_at() {
+            local next_iter_at=$1 est=$2 now heavy_at due mode wake
+            [ "$POST_TICK" = "1" ] || return 0
+            read -r due mode <<< "$(next_morning_due)"
+            [ -n "$due" ] || return 0
+            wake=$(( due + POST_TICK_MARGIN_SEC ))
+            # post_predict は直近の DB push が新しい時だけ (上の説明)。古ければ重い周の push の後で出す
+            if [ "$mode" = "post_predict" ] && [ $(( wake - LAST_DB_PUSH_AT )) -gt "$PP_MAX_PUSH_AGE" ]; then
+              return 0
+            fi
+            now=$(date +%s)
+            heavy_at=$next_iter_at
+            if [ "$heavy_at" -lt "$now" ]; then heavy_at=$now; fi
+            # 予定時刻が次の重い周より前 (寝ている間) → 重い周の予定は動かさずに挟む
+            if [ "$wake" -le "$heavy_at" ]; then
+              echo "$wake"; return 0
+            fi
+            # 次の重い周の処理中 → その周の判定 (頭 + 見込み) が予定時刻より後になり、かつ遅らせる幅が
+            # 上限以内の時だけ、重い周の開始を軽い周の後まで遅らせる。それ以外はその周の判定に任せる
+            # (判定が予定時刻の少し前に来た時も、その周の後に寝ている間の軽い周が拾う)。
+            if [ "$est" -gt "$POST_TICK_DEFER_MAX" ]; then est=$POST_TICK_DEFER_MAX; fi
+            if [ $(( wake - heavy_at )) -lt "$est" ]; then
+              echo "$wake"
+            fi
+          }
+          # 重い周の判定の直後に軽い周が来て2本が続くのは、9:30 の直前に odds_flash を出した周の後だけ。
+          # その odds_flash は確定後は投稿も作り直しもしない (#172) ので、post_predict の待機に取り消されても
+          # 失うものが無い (逆に post_predict が取り消された時は上の出し直しが拾う)。
+          light_post_tick() {
+            AP_SENT_THIS_ITER=0   # 軽い周も「1周に1本」(#172)
+            echo "⏰ #173 軽い周 JST $(TZ=Asia/Tokyo date +%H:%M:%S) — 投稿の判定だけ (collect / DB push はしない)"
+            morning_post_checks light
+          }
+
           echo "🏇 Race Day Runner start. date=$DATE, end_hour=${END_HH}:00 JST"
-          echo "📋 投稿 safety net: odds_flash@9:00 / post_predict@9:30 (#172 確定と同時) / results@17:30 / refresh_dashboard@18:30"
+          echo "📋 投稿 safety net: odds_flash@${ODDS_FLASH_HM4:0:2}:${ODDS_FLASH_HM4:2:2} / post_predict@${LOCK_HM4:0:2}:${LOCK_HM4:2:2} (#172 確定と同時、#173 予定時刻の直後に軽い周で判定) / results@17:30 / refresh_dashboard@18:30"
 
           # 🏃 #161: 6時間上限の手前でバトンを渡す。
           # 9/21(月・祝) は 09:08 起動の runner が 15:08 に殺され、10R/11R(神戸新聞杯)/12R と
@@ -351,10 +569,21 @@ jobs:
             #  - 万一ずれても次の iter (10分後) の export で自己修復する。
             #
             # DB_PUSH_EVERY=1 にすれば旧挙動 (毎iter) に即戻せる。
+            #
+            # ⏰ #173: 朝の2つ (odds_flash 9:00 / post_predict 9:30) は軽い周で予定時刻の直後に出すので、
+            # 085*/092*/093* の push と同じ周で出るとは限らない。odds_flash は自分で refresh→再予測するので
+            # runner の DB は要らない。post_predict は origin の DB の predictions_cache (runner が push した
+            # オッズ・人気・取消) を読むので、軽い周で出すのは「この runner の DB push が 600秒以内」の時だけ
+            # (寝ている間に 9:30 が来る時は直前の 092* の push = 9:30 の数分前の内容になる。旧版は push の
+            # 直後に出していた)。条件を満たさなければこれまで通りこの周の deploy の後で出す (上の軽い周の説明)。
+            # results / refresh_dashboard は従来どおり重い周 (deploy の後) で出す。
+            # 091*: 起動が 8:57 以降の日は重い周の位相が x0:10 にそろわず、092* の周の処理中に 9:30 が
+            # 来ると、直前の 091* の周が push していないので軽い周の条件 (600秒以内) を満たせず、
+            # post_predict がその周の deploy の後 (最大で処理秒ぶん遅れ) に回っていた。push は増えても1日1回。
             DB_PUSH=0
             if [ $((ITER % ${DB_PUSH_EVERY:-6})) -eq 0 ]; then DB_PUSH=1; fi
             case "$JST_HM" in
-              085*|092*|093*|172*|173*|181*|182*) DB_PUSH=1 ;;  # 投稿トリガー直前
+              085*|091*|092*|093*|172*|173*|181*|182*) DB_PUSH=1 ;;  # 投稿トリガー直前 (091*: 下の注)
             esac
             if [ "$DB_PUSH" = "1" ]; then
               bash scripts/db_pack.sh 2>/dev/null || true
@@ -373,7 +602,10 @@ jobs:
                 if git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" && \
                    remerge_if_origin_moved && \
                    git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then
-                  echo "🚀 deployed (try $i)"; break
+                  echo "🚀 deployed (try $i)"
+                  # #173: 軽い周で post_predict を出してよいかの判定に使う (origin の DB の新しさ)
+                  if [ "$DB_PUSH" = "1" ]; then LAST_DB_PUSH_AT=$(date +%s); fi
+                  break
                 fi
                 git rebase --abort 2>/dev/null || true
                 echo "⚠️ push失敗→retry($i)"; sleep 5
@@ -382,25 +614,38 @@ jobs:
 
             # ── 投稿 safety net: 時刻が来たら post mode を dispatch ──
             # (hit_flash@15:30 は #57 で削除 — 完走ガードで常にスキップされる no-op だった)
-            # #172: 予想投稿は確定 (9:30) と同時、朝オッズは最後の作り直しを兼ねて 9:00。
-            # 1周に1本なので、両方が期限を過ぎている時は本体の予想 (post_predict) を先に出す。
-            # odds_flash は確定後に出しても予想は作り直さず、印の後に朝オッズが出るだけなので
-            # 9:30 以降は代打しない (minimum に上限が無いので、ここで時刻を見て止める)。
-            trigger_post post_predict  0930 "$JST_HM"
-            if [ "$((10#$JST_HM))" -lt 930 ]; then
-              trigger_post odds_flash  0900 "$JST_HM"
-            fi
-            trigger_post results       1730 "$JST_HM"
-            trigger_post refresh_dashboard 1830 "$JST_HM"
+            # 予定時刻の判定は trigger_post の中で dispatch 直前の時刻を見る (#173)。
+            # results / refresh_dashboard はこの周の deploy (直前の DB push) の後に出す (#153)。
+            morning_post_checks
+            trigger_post results       1730
+            trigger_post refresh_dashboard 1830
 
             # cache保存
             ELAPSED=$(( $(date +%s) - ITER_START ))
             echo "⏱️  iter elapsed=${ELAPSED}s"
 
             # 次のiterまで sleep (合計10分間隔を保つ)
-            SLEEP=$(( 600 - ELAPSED ))
+            NEXT_ITER_AT=$(( ITER_START + 600 ))
+            # ⏰ #173: まだ出していない朝の予定時刻の直後に軽い周を挟む (寝ている間に来る時は重い周の
+            # 予定を動かさない。次の重い周の処理中に来る時は、上限つきで重い周の開始を軽い周の後まで遅らせる)
+            WAKE_AT=$(post_tick_wake_at "$NEXT_ITER_AT" "$ELAPSED")
+            PLAN_END=$NEXT_ITER_AT
+            if [ -n "$WAKE_AT" ] && [ "$WAKE_AT" -gt "$PLAN_END" ]; then PLAN_END=$WAKE_AT; fi
+            WAIT=$(( PLAN_END - $(date +%s) ))
             # 次の iter の頭では上限を越えている → 寝る前に渡す (sleep 中に殺されない)
-            if [ "$SLEEP" -gt 0 ] && handoff_if_due "$(( SLEEP + 600 ))"; then break; fi
+            if [ "$WAIT" -gt 0 ] && handoff_if_due "$(( WAIT + 600 ))"; then break; fi
+            NTICK=0
+            while [ -n "$WAKE_AT" ] && [ "$NTICK" -lt 3 ]; do
+              NTICK=$((NTICK + 1))
+              WAIT=$(( WAKE_AT - $(date +%s) ))
+              if [ "$WAIT" -gt 0 ]; then
+                echo "💤 sleep ${WAIT}s → 予定時刻の直後に投稿の判定だけを行う (#173 軽い周)"
+                sleep "$WAIT"
+              fi
+              light_post_tick
+              WAKE_AT=$(post_tick_wake_at "$NEXT_ITER_AT" "$ELAPSED")
+            done
+            SLEEP=$(( NEXT_ITER_AT - $(date +%s) ))
             if [ "$SLEEP" -gt 0 ]; then
               echo "💤 sleep ${SLEEP}s"
               sleep "$SLEEP"

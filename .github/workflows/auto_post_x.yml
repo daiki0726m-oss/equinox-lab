@@ -549,13 +549,33 @@ jobs:
           # #171: 999.9倍の馬がいるレースは出馬表の取消行も読むので、他の経路と同じ 420 秒に
           timeout 420 python refresh_odds.py --date "$DATE" || echo "⚠️ オッズ取得失敗 → 既存データで続行"
 
-          # 確定 (#172: 9:30。race_utils.PREDICTION_LOCK_JST) 以降は予測を再実行しない（確定済み予測を保護）
-          if python -c "import sys, race_utils; sys.exit(0 if race_utils.prediction_lock_passed() else 1)"; then
-            echo "🔒 JST $(TZ=Asia/Tokyo date +%H:%M): 予想の確定 (9:30) 以降のため予測をスキップ（確定済み）"
-          else
-            echo "🧠 予測を実行..."
-            python predict.py predict --date "$DATE"
-          fi
+          # どこまで作り直すか (#173。判定は predict.rebuild_scope_for の1か所、対象日ごと):
+          #   full    … 当日 9:00 より前 / 未来の日 / 当日 9:00〜確定で 9:00 以降の作り直しがまだ無い
+          #             → 全レースを作り直す (従来どおり。9:30 を跨いだ分は #172 の途中停止が止める)
+          #   missing … 当日 9:00〜確定 (9:30) で、9:00 以降の作り直しが済んでいる (その日の予測の
+          #             過半数が 9:00 以降に作られた = 通常は 9:00 の odds_flash) → 予測の無いレースだけ
+          #             作る。11/07 は odds_flash (09:14〜09:19) の後に、遅れて来た 05:30 cron が
+          #             09:22〜09:29:59 に全レースを作り直して ☆/注 を入れ替えていた。時刻だけで
+          #             止めないのは、odds_flash が作り直さない日 (concurrency の待機の取り消し・
+          #             確定馬番の取り直し失敗) に 9:00 以降の作り直しが1度も起きなくなるため
+          #   locked  … 確定 (#172: 9:30。race_utils.PREDICTION_LOCK_JST) 以降 / 過去の日 → 予測しない
+          # 判定できない時 (import の失敗など) は missing に倒す (既存の予測を作り直さない側)。
+          # (`|| SCOPE=""`: step の shell は -e と pipefail なので、失敗を拾わないと step ごと落ちる)
+          SCOPE=$(python -c "from predict import rebuild_scope_for; print(rebuild_scope_for('$DATE'))" 2>/dev/null | tail -n 1) || SCOPE=""
+          case "$SCOPE" in
+            locked)
+              echo "🔒 JST $(TZ=Asia/Tokyo date +%H:%M): ${DATE} の予想は確定済み (確定 9:30 以降 / 過去の日) のため予測をスキップ" ;;
+            full)
+              echo "🧠 JST $(TZ=Asia/Tokyo date +%H:%M): 予測を実行 (全レース)..."
+              python predict.py predict --date "$DATE" ;;
+            *)
+              if [ "$SCOPE" = "missing" ]; then
+                echo "🧩 JST $(TZ=Asia/Tokyo date +%H:%M): 9:00 以降の作り直し (通常は odds_flash) が済んでいる → 予測の無いレースだけ作る (#173)"
+              else
+                echo "⚠️ 作り直しの範囲を判定できない ('${SCOPE}') → 予測の無いレースだけ作る (#173)"
+              fi
+              python predict.py predict --date "$DATE" --only-missing ;;
+          esac
           echo "🔄 race_id同期..."
           python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')"
 
@@ -601,6 +621,24 @@ jobs:
         run: |
           DATE="${{ steps.determine.outputs.date }}"
           JST_HOUR=$(TZ=Asia/Tokyo date +%H)
+          # #173: 朝オッズが既に配信済み (posted_slots サイドカーに odds_flash の lock) なら、
+          # 作り直しも取り直しもしない。2本目の odds_flash (定刻に発火した cron と runner の代打が
+          # 重なった日など) が lock を見るのは最後の post_x だけで、その前に全レースを作り直して
+          # 配信済みの朝オッズの TOP3 と 9:30 の印を食い違わせていた (二重投稿にはならない)。
+          # この run の checkout は Force git DB で origin を取り直しており、concurrency で前の
+          # run の後に走るので、前の run が push した lock が見える。SKIP_POST_LOCK=1 の時は従来どおり。
+          if [ "${SKIP_POST_LOCK:-0}" != "1" ] && python3 - "$DATE" <<'PY'
+          import json, sys
+          try:
+              d = json.load(open(f"docs/data/posted_slots_{sys.argv[1]}.json", encoding="utf-8"))
+          except Exception:
+              sys.exit(1)
+          sys.exit(0 if (d.get("slots") or {}).get("odds_flash") else 1)
+          PY
+          then
+            echo "⏭️ ${DATE} の朝オッズは配信済み (posted_slots に odds_flash の lock) → 取り直し・作り直しをしない (#173)"
+            exit 0
+          fi
           # 🆕 確定馬番リフレッシュ (#44): オッズ取得前に馬番を確定版に揃える
           # #169: 旧版は失敗しても「続行」で再予測まで進んでいた。取り直せなければ
           # 再予測はしない (既存の予測を残す)。オッズの更新は馬番に関係なく続けてよい

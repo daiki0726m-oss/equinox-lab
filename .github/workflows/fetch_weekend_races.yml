@@ -13,6 +13,9 @@ on:
     - cron: '0 20 * * 5'
     # 日曜 5:00 JST (UTC 土曜 20:00) — 日曜レース当日朝の最終フェッチ
     - cron: '0 20 * * 6'
+  # 見張り役 (posting_watchdog の fetch slot の代打) が GITHUB_TOKEN で起こす経路。
+  # この経路の完了は auto_post_x の workflow_run (#88) を起こさないので、
+  # 最後の step で predict を自分で dispatch する (#173)。GAS (PAT) と手動の dispatch は連鎖する。
   workflow_dispatch:
 
 concurrency:
@@ -24,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write   # #173: 最後の step で auto_post_x を dispatch する / 待機中 run を数える
     steps:
       - uses: actions/checkout@v4
 
@@ -206,3 +210,190 @@ jobs:
         with:
           path: keiba.db
           key: keiba-db-${{ github.run_number }}
+
+      # 🔗 #173 (2026-11-10): 見張り役が代わりに起こした fetch でも「fetch 完了 → predict」(#88) をつなぐ。
+      # 11/07(土) 07:30・11/08(日) 08:13 に posting_watchdog が dispatch した fetch は成功したのに、
+      # auto_post_x の workflow_run が2回とも始まらなかった。GITHUB_TOKEN で起こした run の完了は
+      # workflow_run を起こさない (GitHub の仕様。実測: 9/15〜11/09 に github-actions[bot] が起こした fetch 40本は
+      # 1本も連鎖せず、schedule の fetch 40本は全部連鎖した = workflow_run の auto_post_x 40本と1対1)。
+      # workflow_dispatch は GITHUB_TOKEN でも起こせるので、ここで predict を自分で出す。
+      # - schedule で動いた時はこの step 自体を通さない (従来どおり workflow_run に任せる = 二重にしない)
+      # - 人・PAT (GAS) が起こした dispatch も workflow_run が連鎖するので出さない
+      # - 開催日 (土日、または race_calendar.json に今日が載っている祝日開催) だけ。
+      #   平日の fetch (来週末のレース登録) では出さない
+      # - 最後の作り直し (predict.FINAL_REBUILD_JST = 9:00 の odds_flash) の PREDICT_RUN_MIN 分前まで (= 8:48)。
+      #   predict run は週末の実測で 6.9〜12.2分 (中央値10.4分)。これより遅く出すと auto-post-x の枠を
+      #   9:00 の odds_flash・9:30 の post_predict の時間まで占有し、投稿 run を待機に回して
+      #   取り消しの危険を作る (#170/#161)。9:00 以降の predict は「予測の無いレースだけ」(#173) なので
+      #   8:48 以降に出しても得るものはほとんど無い (9:00 の odds_flash が全レースを作り直す)
+      # - schedule の fetch が後ろで待っていれば出さない (その完了で workflow_run が連鎖する)。
+      #   ただし土日だけ。auto_post_x の workflow_run は土日しか predict しない (determine の DOW>=6) ので、
+      #   祝日開催では schedule の fetch に任せると誰も predict を起こさない
+      # - 直近 DEDUP_MIN 分に title=predict の auto_post_x が成功していれば出さない。
+      #   見張り役は dispatch した fetch を fetch slot の成功に数えない (check_posting_health は title で照合し、
+      #   この workflow の title は固定) ので、schedule が丸ごと落ちた日は tick ごとに fetch を出し直す。
+      #   それぞれが predict を起こすと DB の push (25MB) が倍になる (#153)。predict は自分で一覧を
+      #   取り直す (#169) ので、fetch の度に作り直す必要は無い
+      # - auto_post_x が実行中・待機中なら出さない。concurrency (group: auto-post-x) は待機を1本しか持たず、
+      #   新しい待機が古い待機 (odds_flash 等) を黙って取り消す (#170/#161)。実行中の run の後ろに積むと
+      #   開始が遅れて 9:00/9:30 に重なりうる。確認できない時も出さない (取り消す側に倒さない。
+      #   07:00/07:40 の predict cron と見張り役が残る)。この確認は dispatch の直前に1回だけ行う (取り消しの窓を狭く)
+      # dispatch に失敗しても fetch 自体は成功しているので job は落とさない
+      # (落とすと見張り役が fetch の失敗と読んで再 dispatch する)。
+      - name: Chain predict (dispatch 起動の fetch は workflow_run が起きないため)
+        if: github.event_name != 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TRIGGER_ACTOR: ${{ github.triggering_actor }}
+          PREDICT_RUN_MIN: '12'
+          DEDUP_MIN: '150'
+        run: |
+          # 開催日・作り直しの締切前か (CHAIN_NOW_JST はテスト用の時刻上書き。workflow では設定しない)
+          # 終了コード: 0=土日の開催日 / 11=土日以外の開催日 (race_calendar.json) / 10=出さない
+          RC=0
+          python3 - <<'PY' || RC=$?
+          import datetime as dt, json, os, re, sys
+          import race_utils
+          JST = dt.timezone(dt.timedelta(hours=9))
+          o = os.environ.get("CHAIN_NOW_JST", "").strip()
+          if o:
+              now = dt.datetime.fromisoformat(o)
+              now = now.replace(tzinfo=JST) if now.tzinfo is None else now.astimezone(JST)
+          else:
+              now = dt.datetime.now(JST)
+          day = now.date().isoformat()
+          # カレンダーはこの job の commit step で DB から作り直したばかりの版 (#161)。
+          # 「載っている = 開催日」の肯定にだけ使う (土日は載っていなくても曜日で開催日とみなす = #88 と同じ)
+          try:
+              with open(os.path.join("docs", "data", "race_calendar.json"), encoding="utf-8") as f:
+                  listed = bool((json.load(f).get("dates") or {}).get(day))
+          except Exception as e:
+              print(f"ℹ️ race_calendar.json を読めない ({e}) → 曜日だけで判定")
+              listed = False
+          weekend = now.weekday() >= 5
+          if not (weekend or listed):
+              print(f"⏭️ {day} は開催日でない (平日の来週末登録 fetch) → predict は出さない")
+              sys.exit(10)
+          # 最後の作り直しの時刻は predict.py の FINAL_REBUILD_JST が正本 (#173)。predict は lightgbm 等を
+          # import するので読み込まず、定義行だけ読む。読めなければ 9:00 (odds_flash の cron 時刻)
+          fr, fr_src = (9, 0), "既定値"
+          try:
+              with open("predict.py", encoding="utf-8") as f:
+                  m = re.search(r"^FINAL_REBUILD_JST\s*=\s*\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)", f.read(), re.M)
+              if m:
+                  fr, fr_src = (int(m.group(1)), int(m.group(2))), "predict.FINAL_REBUILD_JST"
+          except Exception as e:
+              print(f"ℹ️ predict.py を読めない ({e}) → 最後の作り直しは 9:00 とみなす")
+          run_min = int(os.environ.get("PREDICT_RUN_MIN") or 0)
+          end = now + dt.timedelta(minutes=run_min)
+          # now 単独の判定も残す (end が日付をまたぐ深夜に「締切前」と誤読しないため)
+          if race_utils.prediction_lock_passed(now) or race_utils.prediction_lock_passed(end):
+              print(f"⏭️ JST {now:%H:%M}: 予想の確定 ({race_utils.PREDICTION_LOCK_LABEL}) "
+                    f"{'を過ぎた' if race_utils.prediction_lock_passed(now) else f'まで{run_min}分を切った'}"
+                    f" → predict は出さない (確定後は予測を作り直さない)")
+              sys.exit(10)
+          if (now.hour, now.minute) >= fr or (end.hour, end.minute) >= fr:
+              print(f"⏭️ JST {now:%H:%M}: 最後の作り直し ({fr[0]}:{fr[1]:02d} の odds_flash、{fr_src}) まで"
+                    f"{run_min}分を切った/過ぎた → predict は出さない"
+                    f" (odds_flash が全レースを作り直す。後ろに積むと odds_flash・9:30 の投稿を待機に回す)")
+              sys.exit(10)
+          why = "土日" if weekend else "race_calendar.json"
+          print(f"📅 {day} は開催日 ({why})・JST {now:%H:%M} は作り直しの締切 "
+                f"({fr[0]}:{fr[1]:02d} の{run_min}分前) より前")
+          sys.exit(0 if weekend else 11)
+          PY
+          case "$RC" in
+            0)  WEEKEND=1 ;;
+            11) WEEKEND=0 ;;
+            10) exit 0 ;;
+            *)  echo "::warning::開催日・時刻の判定に失敗 (rc=$RC) → predict は出さない"; exit 0 ;;
+          esac
+
+          # 人・PAT が起こした fetch は、完了時に workflow_run が連鎖する。ただし auto_post_x の
+          # workflow_run は土日しか predict しない (determine の DOW>=6) ので、任せるのは土日だけ。
+          # 土日以外の開催日 (祝日・順延) は bot と同じく下の確認 → dispatch に進む (#173)
+          if [ "$TRIGGER_ACTOR" != "github-actions[bot]" ] && [ "$WEEKEND" = "1" ]; then
+            echo "⏭️ 起動者 ${TRIGGER_ACTOR} (人/PAT)・土日 → 完了時に workflow_run が連鎖するので任せる (二重にしない)"
+            exit 0
+          fi
+
+          # schedule の fetch が後ろで待っていれば、その完了で workflow_run が連鎖する (土日だけ)。
+          # 確認できない時は数えない (二重の predict は無害、出さない方が害が大きい)
+          if [ "$WEEKEND" = "1" ]; then
+            SF=0
+            for st in pending queued waiting requested; do
+              C=$(gh api "repos/${REPO}/actions/workflows/fetch_weekend_races.yml/runs?status=${st}&event=schedule&per_page=1" \
+                    --jq '.total_count' 2>/dev/null) || C=0
+              case "$C" in ''|*[!0-9]*) C=0 ;; esac
+              SF=$((SF + C))
+            done
+            if [ "$SF" != "0" ]; then
+              echo "⏭️ schedule の fetch が待機中 (${SF} 本) → その完了で workflow_run が predict を起こすので任せる"
+              exit 0
+            fi
+          else
+            echo "ℹ️ 土日以外の開催日: auto_post_x の workflow_run は土日しか predict しない → schedule の fetch には任せない"
+          fi
+
+          # auto_post_x の実行中・待機中 run と、直近の predict の成功を1回の取得で確かめ、すぐ dispatch する。
+          # 一覧は新しい順で、concurrency のため待機中の run は常に最新側にある (30本で足りる)。
+          # 取得失敗は「待機あり」扱い = 出さない側に倒す
+          RUNS_FILE=$(mktemp)
+          if ! gh api "repos/${REPO}/actions/workflows/auto_post_x.yml/runs?per_page=30" \
+                 --jq '.workflow_runs[] | [.status, (.conclusion // ""), .display_title, .created_at] | @tsv' \
+                 > "$RUNS_FILE" 2>/dev/null; then
+            rm -f "$RUNS_FILE"
+            echo "::warning::auto_post_x の run 一覧を確認できない → predict は出さない"
+            exit 0
+          fi
+          RC=0
+          RUNS_FILE="$RUNS_FILE" python3 - <<'PY' || RC=$?
+          import datetime as dt, os, sys
+          JST = dt.timezone(dt.timedelta(hours=9))
+          o = os.environ.get("CHAIN_NOW_JST", "").strip()
+          if o:
+              now = dt.datetime.fromisoformat(o)
+              now = now.replace(tzinfo=JST) if now.tzinfo is None else now.astimezone(JST)
+          else:
+              now = dt.datetime.now(JST)
+          dedup = dt.timedelta(minutes=int(os.environ.get("DEDUP_MIN") or 0))
+          pend, running, recent = [], [], []
+          with open(os.environ["RUNS_FILE"], encoding="utf-8") as f:
+              for line in f:
+                  p = line.rstrip("\n").split("\t")
+                  if len(p) < 4:
+                      continue
+                  status, concl, title, created = p[0], p[1], p[2], p[3]
+                  ca = dt.datetime.fromisoformat(created.replace("Z", "+00:00")).astimezone(JST)
+                  if status == "in_progress":
+                      running.append(f"{title} {ca:%H:%M}")
+                  elif status != "completed":
+                      pend.append(f"{title} {ca:%H:%M}")
+                  elif title == "predict" and concl == "success" and now - dedup <= ca <= now:
+                      recent.append(f"{ca:%H:%M}")
+          if pend:
+              print(f"⏳ auto_post_x に待機中の run が {len(pend)} 本 ({', '.join(pend)}) → 出さない (出すとそれを取り消す)")
+              sys.exit(10)
+          if running:
+              print(f"⏳ auto_post_x が実行中 ({', '.join(running)}) → 出さない"
+                    f" (後ろに積むと開始が遅れて 9:00/9:30 の投稿に重なりうる。予測は実行中の run と後続の cron に任せる)")
+              sys.exit(10)
+          if recent:
+              print(f"⏭️ 直近{dedup.seconds // 60}分に predict が成功済み ({', '.join(recent)} JST) → 出さない"
+                    f" (見張り役の fetch の出し直しごとに predict を重ねない #153)")
+              sys.exit(10)
+          PY
+          rm -f "$RUNS_FILE"
+          if [ "$RC" = "10" ]; then exit 0; fi
+          if [ "$RC" != "0" ]; then
+            echo "::warning::auto_post_x の run 一覧の判定に失敗 (rc=$RC) → predict は出さない"
+            exit 0
+          fi
+
+          echo "🔗 dispatch 起動の fetch が完了 → auto_post_x を mode=predict で dispatch"
+          if gh workflow run auto_post_x.yml -R "${REPO}" --ref main -f mode=predict; then
+            echo "✅ dispatched: auto_post_x.yml mode=predict"
+          else
+            echo "::warning::auto_post_x の dispatch に失敗 (fetch 自体は成功。07:00/07:40 の predict cron と見張り役に任せる)"
+          fi

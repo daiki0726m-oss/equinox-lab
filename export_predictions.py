@@ -42,6 +42,94 @@ def scratched_for_export(h, db_r, race_finished=False):
         return False
 
 
+# #173: 確定したレースで着順の無い馬 (finish_position=0) の表示名。
+# 着順0 は「走っていない (取消・除外 = 返還)」と「走った (競走中止・失格 = 外れ)」の両方を含む。
+UNPLACED_LABEL = {"scratched": "取消", "excluded": "除外", "dnf": "中止", "dq": "失格",
+                  "unknown": "除外/中止"}
+# 走った (外れとして集計の分母に入れる) 分類
+UNPLACED_RAN = ("dnf", "dq")
+
+
+def unplaced_status(h, db_r, race_confirmed):
+    """確定したレースで着順の無い馬が走ったか (#173)。着順のある馬は呼ばない。
+
+    戻り値:
+      'scratched' : 取消の目印がある (= 走っていない・返還)。判定は scratched_for_export と同じ
+                    (#170/#171: cache の scratched・人気9999・負のオッズ、確定レースの 999.9倍)
+      'dnf'       : 目印が無く、通過順 (results.passing_order) がある = 走って着順が付かなかった
+                    (競走中止)。外れとして集計の分母に入れる
+      'dq'        : 'dnf' の条件に加えて走破時計もある = 完走した上で着順が付かなかった (失格)。
+                    外れとして分母に入れる。2020〜2026 で1頭 (2020-11-07 東京4R ソーヴァリアント、
+                    netkeiba の着順欄「失」) だけで、走破時計のある着順0 はこの1頭以外いない
+      'excluded'  : 競走除外 (results.finish_status='除'。走っていない = 返還)
+      'unknown'   : どちらでもない = 競走除外か、最初の通過地点の前に止まった競走中止。
+                    finish_status (#173 で追加。netkeiba の着順欄の先頭1字) が入る前に収集した
+                    レースは区別する材料が無い (旧 scraper は着順欄の「中」「除」を 0 にして捨てていた)
+      None        : レースが未確定 (1着がいない) — 発走直後の部分取得で走った馬を誤判定しない (#150e)
+
+    11/07・08 の着順0 は5頭 (取消の目印なし)。4頭は通過順があり走っている。netkeiba で確かめた
+    3頭 (11/08 福島4R の2頭・11/07 京都JS グラニットピーク = 通過順なし) はすべて「中」(競走中止)
+    で、旧表示「取消/出走取消・除外」は誤りだった。通過順の無い馬は「中」と「除」が混ざる
+    (10/24 京都7R リーチグローリー = 除、10/12 東京4R パワーホール = 中) ので、'unknown' を
+    「除外」と言い切らない。
+    目印と通過順の両方を持つ馬は 2020 年以降 0頭 (矛盾は観測されていない)。目印を先に見るので
+    #171 の取消判定 (export の scratched・ダッシュボードの isScratched) とは必ず排他になる。
+    """
+    if not race_confirmed:
+        return None
+    # #173: netkeiba の着順欄が残っていればそれが正本 (中=競走中止 / 失=失格 / 除=競走除外 / 取=出走取消)。
+    # 取消の目印より先に見る: 999.9倍 (票の少ない大穴) で走って競走中止した馬を、確定後の 999.9倍の
+    # 取消判定 (#171) で「取消」と誤らないため。着順欄の無い古い行は従来どおり目印 → 通過順の順に見る
+    fs = ""
+    if db_r is not None:
+        try:
+            fs = str(db_r["finish_status"] or "").strip()[:1]
+        except (IndexError, KeyError):
+            fs = ""
+    if fs in ("中", "失", "除", "取"):
+        return {"中": "dnf", "失": "dq", "除": "excluded", "取": "scratched"}[fs]
+    if scratched_for_export(h or {}, db_r, race_finished=True):
+        return "scratched"
+    po = ""
+    timed = False
+    if db_r is not None:
+        try:
+            po = str(db_r["passing_order"] or "").strip()
+        except (IndexError, KeyError):
+            po = ""
+        try:
+            timed = float(db_r["finish_time_seconds"] or 0) > 0
+        except (IndexError, KeyError, TypeError, ValueError):
+            timed = False
+    if not po:
+        return "unknown"
+    return "dq" if timed else "dnf"
+
+
+def _finish_status_col(conn):
+    """results に finish_status (#173) があれば SELECT に足す断片。無い DB (テスト・古い版) では空。"""
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(results)").fetchall()}
+    except Exception:
+        cols = set()
+    return ", finish_status" if "finish_status" in cols else ""
+
+
+def unplaced_status_map(conn, race_id):
+    """#173: レースの着順の無い馬 → unplaced_status。未確定のレースは {}。
+
+    結果投稿 (post_x の結果ビルダー) が results から直接引く時に使う。印のスナップショットには
+    cache の scratched が無いので、results の値 (人気9999・負のオッズ・確定後の 999.9倍) だけで見る。
+    """
+    rows = conn.execute(
+        f"SELECT horse_number, finish_position, odds, popularity, passing_order, finish_time_seconds"
+        f"{_finish_status_col(conn)} FROM results WHERE race_id = ?", (race_id,)).fetchall()
+    if not any((r["finish_position"] or 0) == 1 for r in rows):
+        return {}
+    return {r["horse_number"]: unplaced_status({}, r, True)
+            for r in rows if not ((r["finish_position"] or 0) > 0)}
+
+
 def numbers_state(conn, race_id, horses):
     """予測の馬番が枠順確定後の正しいものか (#169)。戻り値 (numbers_confirmed, 理由 or None)。
 
@@ -298,7 +386,8 @@ def export_predictions(date_str=None):
 
                 # 最新のオッズ・人気をマージ
                 db_results = conn.execute(
-                    "SELECT horse_number, odds, popularity FROM results WHERE race_id = ?",
+                    "SELECT horse_number, odds, popularity, passing_order, finish_time_seconds"
+                    f"{_finish_status_col(conn)} FROM results WHERE race_id = ?",
                     (race_id,)
                 ).fetchall()
                 odds_map = {r['horse_number']: r for r in db_results}
@@ -323,6 +412,30 @@ def export_predictions(date_str=None):
                             h['scratched'] = False
                     elif _scr:
                         h['scratched'] = True
+                    # #173: 確定したレースで着順が無く、取消の目印も無い馬のうち、通過順がある馬は
+                    # 競走中止 (走った = 外れ)。旧表示は着順0を一律「取消 / 出走取消・除外」にしていた。
+                    # 取消の目印を先に見るので scratched とは排他 (scratched の判定は変えない)。
+                    # キーは走った馬にだけ立て、それ以外は消す (cache に残っていても出さない)。
+                    # dnf = 走って着順が付かなかった (中止・失格 = 外れ)、dq = そのうち失格
+                    _unpl = (unplaced_status(h, db_r, race_confirmed)
+                             if h['horse_number'] not in race_results else None)
+                    if _unpl in UNPLACED_RAN:
+                        h['dnf'] = True
+                        # 着順欄 (#173 finish_status) で走ったと分かった馬は、確定後の 999.9倍で
+                        # 立った取消の目印を外す (走った大穴の競走中止を「取消」と出さない)
+                        if h.get('scratched'):
+                            h['scratched'] = False
+                    else:
+                        h.pop('dnf', None)
+                    if _unpl == "dq":
+                        h['dq'] = True
+                    else:
+                        h.pop('dq', None)
+                    # 競走除外 (netkeiba の着順欄「除」#173)。走っていない = 返還。scratched (取消) とは別に出す
+                    if _unpl == "excluded":
+                        h['excluded'] = True
+                    else:
+                        h.pop('excluded', None)
                     # 結果をマージ
                     res = race_results.get(h['horse_number'])
                     if res:

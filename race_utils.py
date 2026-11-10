@@ -47,6 +47,16 @@ PREDICTION_LOCK_JST = (9, 30)
 PREDICTION_LOCK_LABEL = "9:30"
 PREDICTION_LOCK_HM = PREDICTION_LOCK_JST[0] * 100 + PREDICTION_LOCK_JST[1]   # 930 (HHMM の整数)
 
+# 朝オッズ (odds_flash = refresh → 作り直し + 投稿) を代打 (runner / 保険) で出してよい最後の時刻 (#173)。
+# odds_flash の run は ~10.5分 (確定馬番・オッズの取り直し → 全レースの作り直し → export/deploy) かかり、
+# auto_post_x の concurrency の枠を占める。確定の15分前より後に出すと、9:30 の予想投稿 (post_predict) が
+# その後ろで待たされて 9:40 前後にずれ (試験で起動 09:25 → 投稿 ~9:40)、待機中に別の run に取り消される
+# 危険も生む。作り直しも 9:30 の途中停止 (#172) に掛かって大半が残らない。
+ODDS_FLASH_LATEST_MARGIN_MIN = 15
+_ofl = PREDICTION_LOCK_JST[0] * 60 + PREDICTION_LOCK_JST[1] - ODDS_FLASH_LATEST_MARGIN_MIN
+ODDS_FLASH_LATEST_HM = (_ofl // 60) * 100 + _ofl % 60   # 915 (HHMM の整数)
+del _ofl
+
 
 def prediction_lock_passed(now=None):
     """JST の now (省略時は現在) が予想の確定時刻 (PREDICTION_LOCK_JST) を過ぎているか (#172)。

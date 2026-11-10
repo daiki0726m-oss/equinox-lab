@@ -3,8 +3,9 @@
 
 毎週の振り返りで inline スクリプトを書き捨てていた結果、「対象週末の日付取り違え」
 (8/17週・8/24週の2回発生) と集計ロジックの微妙な揺れが起きていた。
-- 対象週末は「posted_marks が存在し results が確定している最新2日」を自動判定
-- 集計: 印別成績 / 信頼度別◎複勝率 (#120以降のみ) / 買い目の実額ROI / 新体制累計
+- 対象週末は「results が確定している最新2開催日」を自動判定 (開催日は posted_marks ∪ 予測 JSON、#173)
+- 集計: 印別成績 (投稿した凍結印) / 信頼度別◎複勝率 (#120以降のみ) /
+  買い目の実額ROI (金額が乗った全レース。予測が発走後に作り直されたレースは除く、#173) / 新体制累計
 
 #152 でなぜ実額ベースに変えたか
 ------------------------------
@@ -65,15 +66,35 @@ A の設計値 84-86% (#112/#113) を測った窓は学習データに食い込�
 - 毎週月曜に .github/workflows/weekly_report.yml が GitHub 側でこのスクリプトを実行し、
   出力を docs/data/weekly_reports/ に commit する (月曜の定例は無人実行で止まるため #169)。
 
+#173 で直したもの (11/07-08 の振り返りの反証で発覚)
+--------------------------------------------------
+- 「○複勝」は実際には ☆ を数えていた (`mk.get('☆') or mk.get('○')`)。☆ が無いレースは
+  ○ (#140 以降は実力2位) で代用され、累計「妙味枠(☆) 22.7% (100/441)」は
+  ☆ 46/241 + #110 時代 (07/18〜09/04) の妙味○ 46/192 + ☆無しの日の○代用 8/8 の混ぜ物だった。
+  → 表示を ☆ にし、☆ が無いレースは数えない。累計は ☆ が付き始めた日 (posted_marks から
+    自動判定、実測 2026-09-05) 以降の ☆ だけ。注の累計も同じ期間で並べる。
+- 実額 ROI の母集団が「投稿したレース」だけだった (race_rows が posted_marks を回すため)。
+  金額が乗ったのに投稿上限で投稿されなかったレース (11/08 福島12R 1,200円→0円) が抜け、
+  週末 120.1% (正 114.6%)・累計 79.9% (正 79.5%) と出ていた。
+  → 金額の母集団 (all_bets の amount>0) と印の母集団 (投稿した凍結印) を分ける。
+    金額の開催日は posted_marks ∪ 予測 JSON から列挙する。posted_marks は実際に配信できた時しか
+    書かれない (#150(7)) ので、X も Threads も落ちた日 (posted_marks 無し) の金額も数え、
+    冒頭の ⚠️ 行と累計の ※ 行で「投稿なしの日」と書き分ける。その日は対象週末の判定にも入れる。
+    未投稿レースは seal されない (#169 以降 seal は投稿したレースだけ) ので、予測が発走後に
+    作り直されていた (predictions_cache.created_at が発走時刻以降) レースは look-ahead (#99) の
+    疑いとして数えず、件数を出す。
+
 実行: python3 scripts/weekly_scorecard.py [--days YYYYMMDD YYYYMMDD] [--legacy] [--no-v2] [--no-market]
 """
-import argparse, glob, json, math, os, random, sqlite3, statistics, sys
+import argparse, glob, json, math, os, random, re, sqlite3, statistics, sys
 from itertools import combinations
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEW_ERA = '20260718'      # 新体制 (◎ブレンド×妙味○×適応型買い目) 開始日
 CONF_STABLE = '20260809'  # #120 (信頼度基準の安定化) 以降のみ信頼度別を集計
-DESIGN = {'o_rate': 25, 'chu_rate': 20, 'full': 30}   # #152: 'roi' は撤去 (上記の理由)
+# #152: 'roi' は撤去 (上記の理由)。#173: 残りも #141 で測った窓が学習データに食い込んでいたと
+# 分かっており物差しにならない。表示する時は「参考」と明記し、達成/未達の判定には使わない
+DESIGN = {'o_rate': 25, 'chu_rate': 20, 'full': 30}
 
 # 払戻の組み合わせキーが着順を保つ券種
 ORDERED_BETS = {'三連単', '馬単'}
@@ -82,6 +103,20 @@ BET_ORDER = ['三連複', 'ワイド', '馬連', '三連単', '馬単', '単勝'
 
 def db():
     return sqlite3.connect(os.path.join(ROOT, 'keiba.db'))
+
+
+def _days_of(prefix):
+    """docs/data/{prefix}_YYYYMMDD.json がある日付を昇順で返す。
+
+    #173: 旧版は 'posted_marks_2026*.json' の glob で、2027年の開催日を拾えなかった。
+    """
+    pat = re.compile(rf'^{re.escape(prefix)}_(\d{{8}})\.json$')
+    out = []
+    for p in glob.glob(os.path.join(ROOT, 'docs', 'data', f'{prefix}_*.json')):
+        m = pat.match(os.path.basename(p))
+        if m:
+            out.append(m.group(1))
+    return sorted(out)
 
 
 def load_marks(day):
@@ -288,6 +323,99 @@ def race_rows(c, day):
         yield rid, mk, fin, meta
 
 
+def _made_after_start(c, rid):
+    """そのレースの予測 (= all_bets) が発走後に作り直された証拠があれば True。
+
+    未投稿レースは seal されない (#169 以降 seal は投稿したレースだけ) ので、凍結は
+    #172 の 9:30 確定ロック頼み。それ以前の日や --force の再予測では、発走後に確定オッズで
+    作り直された買い目が入りうる (#99 の look-ahead)。predictions_cache.created_at は
+    最後に書いた時刻 (UTC 保存、database.py)。行・時刻が無く判定できない時は False (落とさない)。
+    """
+    row = c.execute("SELECT datetime(pc.created_at, '+9 hours'), r.race_date, r.start_time "
+                    "FROM predictions_cache pc JOIN races r ON r.race_id = pc.race_id "
+                    "WHERE pc.race_id = ?", (str(rid),)).fetchone()
+    if not row or not row[0] or not row[1] or not row[2]:
+        return False
+    rd, stt = str(row[1]), str(row[2]).strip()
+    if len(rd) == 8 and rd.isdigit():
+        rd = f"{rd[:4]}-{rd[4:6]}-{rd[6:]}"
+    if len(stt) != 5 or stt[2] != ':':
+        return False
+    return row[0] >= f"{rd} {stt}:00"
+
+
+def funded_unposted(c, bets_map, seen, skipped=None):
+    """#173: 投稿されなかったが金額が乗ったレースを (rid, lines) で列挙。結果未確定はスキップ。
+
+    race_rows は posted_marks (投稿した凍結印) しか回さないので、投稿上限 (#71) などで
+    投稿から落ちたレースの買い目が実額から抜けていた (11/08 福島12R 1,200円→0円)。
+    金額の母集団は all_bets の amount>0 が正本 (#152)。印の成績には入れない (印は投稿していない)。
+    投稿が1本も配信されなかった日 (posted_marks 無し) は seen が空なので、全レースがここを通る。
+    seen = race_rows で既に数えた race_id (str)。
+    予測が発走後に作り直されていたレースは数えず、skipped (list) に race_id を積む。
+    """
+    for rid, lines in bets_map.items():
+        if rid in seen:
+            continue
+        if not any(l['amount'] > 0 for ls in lines.values() for l in ls):
+            continue
+        # race_rows と同じ「1着が居れば確定」(#91)
+        if not c.execute("SELECT 1 FROM results WHERE race_id=? AND finish_position=1 LIMIT 1",
+                         (rid,)).fetchone():
+            continue
+        if _made_after_start(c, rid):
+            if skipped is not None:
+                skipped.append(rid)
+            continue
+        yield rid, lines
+
+
+def _day_settled(c, day):
+    """予測 JSON のレースに1着が1つでもあれば True (= 結果が確定し始めた開催日)。
+
+    posted_marks の無い日 (投稿が1本も配信されなかった日) の対象週末判定に使う (#173)。
+    posted_marks のある日は従来どおり race_rows (投稿レースの確定) で判定する。
+    """
+    for rid in load_bets(day):
+        if c.execute("SELECT 1 FROM results WHERE race_id=? AND finish_position=1 LIMIT 1",
+                     (rid,)).fetchone():
+            return True
+    return False
+
+
+def _staked(lines):
+    """そのレースで金額が乗ったラインの合計額 (円)。"""
+    return sum(l['amount'] for ls in lines.values() for l in ls if l['amount'] > 0)
+
+
+def add_money(bucket, sc, key):
+    """構造ごとの実額集計に1レース分を足す。金額が乗っていれば True、表示のみなら False。"""
+    m = bucket.setdefault(key, {'spend': 0, 'ret': 0.0, 'hits': 0, 'races': 0, 'shown': 0})
+    m['races'] += 1
+    if sc['spend'] > 0:
+        m['spend'] += sc['spend']; m['ret'] += sc['ret']; m['hits'] += sc['hits']
+        return True
+    m['shown'] += 1
+    return False
+
+
+def first_star_day(days):
+    """posted_marks で ☆ が最初に付いた開催日 (#140 の新設。実測 2026-09-05)。無ければ None。
+
+    ☆ の累計はこの日以降だけ。それ以前の妙味枠は ○ (#110) で、#140 で ○ は実力2位に
+    意味が変わったため、記号で混ぜると別物の合算になる (#173)。
+    """
+    for d in days:
+        if any(e.get('mark') == '☆' for lst in load_marks(d).values() for e in lst):
+            return d
+    return None
+
+
+def _race_label(c, rid):
+    r = c.execute("SELECT venue, race_number FROM races WHERE race_id=?", (str(rid),)).fetchone()
+    return f"{r[0]}{r[1]}R" if r and r[0] else str(rid)
+
+
 def boot(pairs, seed=42, n_boot=4000):
     """(spend, return) をレース単位でリサンプルした ROI の 95%CI と標準誤差。
 
@@ -368,19 +496,43 @@ def main():
     ap.add_argument('--v2-workers', type=int, default=4)
     args = ap.parse_args()
     c = db()
-    all_days = sorted(os.path.basename(p)[13:21]
-                      for p in glob.glob(os.path.join(ROOT, 'docs', 'data', 'posted_marks_2026*.json')))
-    era_days = [d for d in all_days if d >= NEW_ERA]
+    # 印の開催日 = posted_marks のある日 (投稿した凍結印)
+    era_days = [d for d in _days_of('posted_marks') if d >= NEW_ERA]
+    marks_set = set(era_days)
+    # #173: 金額の開催日 = posted_marks ∪ 予測 JSON。posted_marks は実際に配信できた時しか
+    # 書かれない (#150(7)) ので、X も Threads も落ちた日は posted_marks が無いが、all_bets には
+    # 金額が乗っている。旧版は posted_marks だけを回していたため、その日の金額が警告なしで
+    # 累計から消えていた (roi_weekly_monitor は予測 JSON の日付を回すので2つの実額がずれる)。
+    money_days = sorted(marks_set | {d for d in _days_of('predictions') if d >= NEW_ERA})
     missing_json = [d for d in era_days if _pred_json(d) is None]
     if missing_json:
         print(f"⚠️ 買い目JSONが無い開催日 {len(missing_json)}件 → 集計から静かに落ちる: "
               f"{', '.join(missing_json)}\n")
+    # missing_json の逆向き: 金額が乗って着順も確定したのに posted_marks が無い開催日
+    nopost_warn = []
+    for d in money_days:
+        if d in marks_set:
+            continue
+        late_d = []
+        rows = list(funded_unposted(c, load_bets(d), set(), late_d))
+        if rows or late_d:
+            nopost_warn.append(f"{d} ({len(rows)}R {sum(_staked(ls) for _, ls in rows):,}円"
+                               + (f"・発走後に作り直されていて数えない{len(late_d)}R" if late_d else "") + ")")
+    if nopost_warn:
+        print(f"⚠️ 金額が乗って着順も確定したのに posted_marks が無い開催日 (投稿が1本も配信されなかった日) "
+              f"{len(nopost_warn)}件 → 金額は実額に含め、印の成績には入れない (#173): "
+              f"{', '.join(nopost_warn)}\n")
     if args.days:
         target = args.days
+        how = '指定'
     else:
-        settled = [d for d in era_days if any(True for _ in race_rows(c, d))]
+        # #173: 投稿の無かった開催日も「結果が確定した開催日」として数える (旧版はその日を飛ばし、
+        # 対象週末が前の週にずれていた)
+        settled = [d for d in money_days
+                   if (any(True for _ in race_rows(c, d)) if d in marks_set else _day_settled(c, d))]
         target = settled[-2:]
-    print(f"=== 対象週末: {', '.join(target)} (自動判定) ===\n")
+        how = '自動判定'
+    print(f"=== 対象週末: {', '.join(target)} ({how}) ===\n")
 
     wk = {'spend': 0, 'ret': 0.0}
     for day in target:
@@ -390,7 +542,10 @@ def main():
         bets_map = load_bets(day)
         money = {}          # 構造 -> {'spend','ret','hits','races','shown_races'}
         legacy = {}
+        seen = set()        # #173: 印の母集団 (投稿した凍結印) として数えた race_id
+        unposted = []       # #173: 金額だけの母集団 [(rid, spend, ret)]
         for rid, mk, fin, meta in race_rows(c, day):
+            seen.add(str(rid))
             top3 = {hn for hn, fp in fin.items() if fp <= 3}
             axhn = mk['◎']['horse_number']
             st['n'] += 1
@@ -401,7 +556,8 @@ def main():
             five = [e['horse_number'] for e in mk['_all']
                     if e['mark'] in ('◎', '○', '▲', '△', '×')]
             st['full'] += (len(set(five) & top3) == 3)
-            _v = mk.get('☆') or mk.get('○')
+            # #173: ☆ だけを数える。旧版は ☆ が無いレースで ○ (実力2位) を代用していた
+            _v = mk.get('☆')
             if _v:
                 st['on'] += 1
                 st['o'] += (_v['horse_number'] in top3)
@@ -415,28 +571,45 @@ def main():
 
             lines = bets_map.get(str(rid), {})
             sc = score_actual(payouts_of(c, rid), lines)
-            key = classify_structure(lines)
-            m = money.setdefault(key, {'spend': 0, 'ret': 0.0, 'hits': 0, 'races': 0, 'shown': 0})
-            m['races'] += 1
-            if sc['spend'] > 0:
-                m['spend'] += sc['spend']; m['ret'] += sc['ret']; m['hits'] += sc['hits']
+            if add_money(money, sc, classify_structure(lines)):
                 wk['spend'] += sc['spend']; wk['ret'] += sc['ret']
-            else:
-                m['shown'] += 1
             if args.legacy:
                 lb = uniform_bets(c, rid, mk, fin, meta)
                 if lb:
                     s = legacy.setdefault(lb[0], [0, 0, 0])
                     s[0] += lb[1]; s[1] += lb[2]; s[2] += 1
+        # #173: 投稿から落ちたが金額が乗ったレース (印の成績には入れない)
+        late = []
+        for rid, lines in funded_unposted(c, bets_map, seen, late):
+            sc = score_actual(payouts_of(c, rid), lines)
+            if add_money(money, sc, classify_structure(lines)):
+                wk['spend'] += sc['spend']; wk['ret'] += sc['ret']
+            unposted.append((rid, sc['spend'], sc['ret']))
 
         n = st['n'] or 1
         opop = statistics.mean(st['opop']) if st['opop'] else 0
-        print(f"【{day[4:6]}/{day[6:]}】投稿{st['n']}R")
-        print(f"  ◎勝率{st['axw']}/{st['n']} ◎複勝{st['axt3']}/{st['n']} ({100*st['axt3']/n:.0f}%) 完全捕捉{st['full']}/{st['n']}")
-        print(f"  ○複勝{st['o']}/{st['on']} ({opop:.1f}人気) 注{st['chu']}/{st['chun']}")
+        # #173: posted_marks の無い日 = 投稿が1本も配信されなかった日。印の成績は無く、金額だけ数える
+        nopost_day = not load_marks(day)
+        if nopost_day:
+            # 「配信されなかった」と言えるのは、予測 JSON があって結果が確定し始めている時だけ。
+            # --days で開催の無い日・まだ走っていない日を渡した時に、配信の失敗と断定しない
+            if not load_bets(day):
+                why0 = "posted_marks も予測 JSON も無い (開催日でないか日付の指定違い)"
+            elif not _day_settled(c, day):
+                why0 = "posted_marks が無く、結果も未確定"
+            else:
+                why0 = "posted_marks が無い (投稿が1本も配信されなかった日)。印の成績は無し、金額だけ数える (#173)"
+            print(f"【{day[4:6]}/{day[6:]}】投稿0R — {why0}")
+        else:
+            print(f"【{day[4:6]}/{day[6:]}】投稿{st['n']}R")
+            print(f"  ◎勝率{st['axw']}/{st['n']} ◎複勝{st['axt3']}/{st['n']} ({100*st['axt3']/n:.0f}%) 完全捕捉{st['full']}/{st['n']}")
+            star = f"☆複勝{st['o']}/{st['on']} ({opop:.1f}人気)" if st['on'] else "☆なし"
+            print(f"  {star} 注{st['chu']}/{st['chun']}")
         if byconf:
             print("  信頼度別◎複勝: " + ' '.join(f"{k}:{v[0]}/{v[1]}" for k, v in sorted(byconf.items())))
         print("  買い目 (実額):")
+        if not money:
+            print("    金額が乗って着順も確定したレースなし")
         for k, m in sorted(money.items()):
             invested = m['races'] - m['shown']
             if m['spend']:
@@ -445,6 +618,13 @@ def main():
                       + (f" / 表示のみ{m['shown']}R" if m['shown'] else ""))
             else:
                 print(f"    {k}: {m['races']}R すべて表示のみ (投資額0円)")
+        if unposted:
+            why = "投稿なしの日" if nopost_day else "未投稿 (投稿上限など) "
+            print(f"    ※ {why}だが金額が乗ったレースも実額に含めた (#173): "
+                  + ' / '.join(f"{_race_label(c, r)} {sp:,}円→{rt:,.0f}円" for r, sp, rt in unposted))
+        if late:
+            print("    ⚠️ 未投稿で金額が乗ったが予測が発走後に作り直されていたため数えないレース (#173、look-ahead の疑い): "
+                  + ' / '.join(_race_label(c, r) for r in late))
         if args.legacy and legacy:
             print("  [旧基準・参考] 全レース一律100円の仮想:")
             for k, (a, b, cnt) in sorted(legacy.items()):
@@ -453,49 +633,65 @@ def main():
     print(f"週末合計 (実額): {wk['spend']:,}円 → {wk['ret']:,.0f}円 = ROI {_roi(wk['spend'], wk['ret']):.1f}%\n")
 
     # ── 累計 (新体制) ──
-    agg = {}; conf_agg = {}; o_tot = [0, 0]; by_type = {}
+    # #173: ☆ と注の累計は ☆ が付き始めた日以降だけ (それ以前の妙味枠は ○ で別物)
+    star_from = first_star_day(era_days)
+    agg = {}; conf_agg = {}; o_tot = [0, 0]; chu_tot = [0, 0]; by_type = {}
     pairs_by_struct = {}
     layer = {'honor': {'spend': 0, 'ret': 0.0, 'hits': 0}, 'ev': {'spend': 0, 'ret': 0.0, 'hits': 0}}
     legacy_agg = {}
-    for d in era_days:
+    unposted_tot = [0, 0, 0.0]      # #173: 金額だけのレース [R数, spend, ret] (投稿のあった日)
+    nopost_tot = [0, 0, 0.0]        # #173: 投稿が1本も配信されなかった日 (posted_marks 無し) の分
+    late_tot = []                   # #173: 予測が発走後に作り直されていて数えなかったレース
+
+    def add_cum(rid, lines, d):
+        sc = score_actual(payouts_of(c, rid), lines)
+        key = classify_structure(lines)
+        if add_money(agg, sc, key):
+            pairs_by_struct.setdefault(key, []).append((sc['spend'], sc['ret'], d))
+            for bt, t in sc['by_type'].items():
+                g = by_type.setdefault(bt, {'spend': 0, 'ret': 0.0, 'hits': 0, 'points': 0})
+                g['spend'] += t['spend']; g['ret'] += t['ret']
+                g['hits'] += t['hits']; g['points'] += t['points']
+            for lk in ('honor', 'ev'):
+                layer[lk]['spend'] += sc[lk]['spend']
+                layer[lk]['ret'] += sc[lk]['ret']
+                layer[lk]['hits'] += sc[lk]['hits']
+        return sc
+
+    # #173: 金額は money_days (posted_marks ∪ 予測 JSON) を回す。posted_marks の無い日は
+    # race_rows が空なので、印の成績には何も入らず、全レースが funded_unposted を通る
+    for d in money_days:
         conf_map = load_conf(d)
         bets_map = load_bets(d)
+        seen = set()
         for rid, mk, fin, meta in race_rows(c, d):
+            seen.add(str(rid))
             top3 = {hn for hn, fp in fin.items() if fp <= 3}
             axhn = mk['◎']['horse_number']
-            _v = mk.get('☆') or mk.get('○')
-            if _v:
-                o_tot[1] += 1; o_tot[0] += (_v['horse_number'] in top3)
+            if star_from and d >= star_from:
+                _v = mk.get('☆')        # #173: ☆ が無いレースは数えない (○ で代用しない)
+                if _v:
+                    o_tot[1] += 1; o_tot[0] += (_v['horse_number'] in top3)
+                if '注' in mk:
+                    chu_tot[1] += 1; chu_tot[0] += (mk['注']['horse_number'] in top3)
             if d >= CONF_STABLE:
                 cf = conf_map.get(rid, '?')
                 if cf in 'SABCD':
                     b = conf_agg.setdefault(cf, [0, 0]); b[1] += 1; b[0] += (axhn in top3)
 
-            lines = bets_map.get(str(rid), {})
-            sc = score_actual(payouts_of(c, rid), lines)
-            key = classify_structure(lines)
-            m = agg.setdefault(key, {'spend': 0, 'ret': 0.0, 'hits': 0, 'races': 0, 'shown': 0})
-            m['races'] += 1
-            if sc['spend'] > 0:
-                m['spend'] += sc['spend']; m['ret'] += sc['ret']; m['hits'] += sc['hits']
-                pairs_by_struct.setdefault(key, []).append((sc['spend'], sc['ret'], d))
-                for bt, t in sc['by_type'].items():
-                    g = by_type.setdefault(bt, {'spend': 0, 'ret': 0.0, 'hits': 0, 'points': 0})
-                    g['spend'] += t['spend']; g['ret'] += t['ret']
-                    g['hits'] += t['hits']; g['points'] += t['points']
-                for lk in ('honor', 'ev'):
-                    layer[lk]['spend'] += sc[lk]['spend']
-                    layer[lk]['ret'] += sc[lk]['ret']
-                    layer[lk]['hits'] += sc[lk]['hits']
-            else:
-                m['shown'] += 1
+            add_cum(rid, bets_map.get(str(rid), {}), d)
             if args.legacy:
                 lb = uniform_bets(c, rid, mk, fin, meta)
                 if lb:
                     s = legacy_agg.setdefault(lb[0], [0, 0, 0])
                     s[0] += lb[1]; s[1] += lb[2]; s[2] += 1
+        # #173: 投稿から落ちたが金額が乗ったレース (印の成績には入れない)
+        t = unposted_tot if d in marks_set else nopost_tot
+        for rid, lines in funded_unposted(c, bets_map, seen, late_tot):
+            sc = add_cum(rid, lines, d)
+            t[0] += 1; t[1] += sc['spend']; t[2] += sc['ret']
 
-    print(f"=== 新体制累計 ({era_days[0][4:6]}/{era_days[0][6:]}〜) — 実額ベース ===")
+    print(f"=== 新体制累計 ({money_days[0][4:6]}/{money_days[0][6:]}〜) — 実額ベース ===")
     gsp = sum(m['spend'] for m in agg.values())
     gret = sum(m['ret'] for m in agg.values())
     for k, m in sorted(agg.items()):
@@ -512,6 +708,15 @@ def main():
         else:
             print(f"  {k}: {m['races']}R すべて表示のみ — **投資額0円なのでROIは存在しない**")
     print(f"  総合: {gsp:,}円→{gret:,.0f}円 ROI {_roi(gsp, gret):.1f}%")
+    if unposted_tot[0]:
+        print(f"    ※ うち未投稿 (投稿上限など) で金額が乗ったレース {unposted_tot[0]}R "
+              f"({unposted_tot[1]:,}円→{unposted_tot[2]:,.0f}円) を含む (#173)。印の成績は投稿した凍結印だけで数える")
+    if nopost_tot[0]:
+        print(f"    ※ うち投稿なしの日 (posted_marks 無し = 投稿が1本も配信されなかった日) の金額 {nopost_tot[0]}R "
+              f"({nopost_tot[1]:,}円→{nopost_tot[2]:,.0f}円) を含む (#173)。この日の印の成績は無い")
+    if late_tot:
+        print(f"    ⚠️ 未投稿で金額が乗ったが予測が発走後に作り直されていたため数えなかったレース {len(late_tot)}R "
+              f"(#173、look-ahead の疑い): {', '.join(late_tot[:10])}" + (" ほか" if len(late_tot) > 10 else ""))
     if layer['honor']['spend'] or layer['ev']['spend']:
         print("  レイヤー別 (実額): "
               f"適応型構造 {layer['honor']['spend']:,}円→{layer['honor']['ret']:,.0f}円 "
@@ -524,8 +729,15 @@ def main():
             t = by_type[bt]
             print(f"    {bt}: {t['points']}点 {t['spend']:,}円→{t['ret']:,.0f}円 "
                   f"ROI {_roi(t['spend'], t['ret']):.1f}% 的中{t['hits']}本")
-    print(f"  妙味枠(☆)複勝率 累計: {o_tot[0]}/{o_tot[1]} = "
-          f"{100*o_tot[0]/max(o_tot[1],1):.1f}% (設計値{DESIGN['o_rate']}%)")
+    # #173: ☆ が付いたレースだけ (○ で代用しない)。注も同じ期間で並べる
+    if star_from:
+        print(f"  妙味枠(☆)複勝率 累計 ({star_from[4:6]}/{star_from[6:]}〜・☆が付いたレースのみ): "
+              f"{o_tot[0]}/{o_tot[1]} = {100*o_tot[0]/max(o_tot[1],1):.1f}% / "
+              f"注 {chu_tot[0]}/{chu_tot[1]} = {100*chu_tot[0]/max(chu_tot[1],1):.1f}%")
+        print(f"      ※ 旧設計値 (☆{DESIGN['o_rate']}%・注{DESIGN['chu_rate']}%) は参考。"
+              "測った窓が学習データに食い込んでいたと #141 で分かったため、達成/未達の判定には使わない")
+    else:
+        print("  妙味枠(☆)複勝率 累計: ☆ が付いたレースがまだ無い")
     if conf_agg:
         print("  信頼度別◎複勝 (#120以降): " + ' '.join(
             f"{k}:{v[0]}/{v[1]}({100*v[0]/v[1]:.0f}%)" for k, v in sorted(conf_agg.items())))

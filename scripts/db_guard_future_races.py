@@ -53,7 +53,10 @@ def merge_future_races(local_path: str, origin_path: str, today_jst: str) -> lis
         conn.execute(
             f"INSERT OR IGNORE INTO races SELECT * FROM o.races WHERE race_id IN ({ph})", missing)
         # results は id を除いて挿入 (race_id,horse_id に UNIQUE が無いので missing レース限定で重複回避)
-        rcols = [c[1] for c in conn.execute("PRAGMA table_info(results)").fetchall() if c[1] != 'id']
+        # 列は local と origin の共通部分だけ (#173: 列を足した直後は origin の DB にまだ無い)
+        _ocols = {c[1] for c in conn.execute("PRAGMA o.table_info(results)").fetchall()}
+        rcols = [c[1] for c in conn.execute("PRAGMA table_info(results)").fetchall()
+                 if c[1] != 'id' and c[1] in _ocols]
         rcols_sql = ",".join(rcols)
         conn.execute(
             f"INSERT INTO results ({rcols_sql}) "

@@ -406,6 +406,40 @@ def _is_today_or_future(date_yyyymmdd: str) -> bool:
     return date_yyyymmdd >= today
 
 
+def _rebuild_scope(date_yyyymmdd: str) -> str:
+    """予測をどこまで作り直してよいか (#173)。'full' / 'missing' / 'locked'。
+
+    判定は predict.rebuild_scope_for の1か所 ('missing' = 当日 9:00〜確定で 9:00 以降の作り直しが
+    済んでいる / 'locked' = 確定後・過去日 / 'full' = それ以外)。
+    読み込めない時は 'missing' (作り直さない側。予測の無いレースは作るので欠けは埋まる)。
+    """
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo not in sys.path:
+        sys.path.insert(0, repo)
+    try:
+        from predict import rebuild_scope_for
+        return rebuild_scope_for(date_yyyymmdd, _jst_now())
+    except Exception as e:
+        print(f"⚠️ 作り直しの範囲を判定できない ({type(e).__name__}: {e}) → 予測の無いレースだけ作る (#173)")
+        return "missing"
+
+
+def _past_final_rebuild_time(date_yyyymmdd: str) -> bool:
+    """開催当日の 9:00 (最後の作り直しの開始 = predict.FINAL_REBUILD_JST) 以降か (#173)。
+
+    この時間帯は --force を使わない。確定 (9:30) 前は --force の有無で作り直す範囲は同じで、
+    違いは「処理の途中で 9:30 を過ぎても止まらない」(= 確定ロックのすり抜け) ことだけ。
+    """
+    now = _jst_now()
+    if date_yyyymmdd != now.strftime("%Y%m%d"):
+        return False
+    try:
+        from predict import FINAL_REBUILD_JST
+    except Exception:
+        FINAL_REBUILD_JST = (9, 0)
+    return (now.hour, now.minute) >= tuple(FINAL_REBUILD_JST)
+
+
 def _ensure_entries(date_yyyymmdd: str) -> bool:
     """予測前の確定馬番の取り直し (#169)。判定は refresh_entries.ensure_confirmed_entries の1か所。"""
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -560,6 +594,22 @@ def auto_fix_predictions(date_yyyymmdd: str, race_ids: list[str] | None = None) 
     #169: race_ids を渡すと、そのレースだけを予測する (--race-id、--force なし)。
     predict の10時ロックは「対象の先頭レースに cache があるか」で決まるので、
     cache の無いレースだけを渡せば10時以降でも作り直しは起きず、欠けた分だけ埋まる。
+
+    #173: 開催当日の 9:00 以降は **--force を使わない**。旧版は投稿記録 (posted_marks) が無いと
+    日付ごとの predict に --force を付けたので、確定 (9:30) から投稿 (9:3x) までの間に予測不足を
+    検知すると確定ロックをすり抜けて全レースを作り直しえた (11/07 08:46 は runner の preflight が
+    「予測キャッシュ 0件」で predict --force を実行。9:30 前で害は無かったが、9:30〜投稿の間なら
+    投稿前の印が動く)。範囲は predict.rebuild_scope_for の1か所で決める:
+      'missing' (9:00 以降の作り直しが済んだ〜確定) / 'locked' (確定後) → 予測の無いレースだけ作る
+                (odds_flash の後に作り直すと ☆/注 が入れ替わる)
+      'full' で当日 9:00〜確定 (9:00 以降の作り直しがまだ無い) → 全レースを --force なしで作り直す
+                (#172 の途中停止が 9:30 で止める)
+      'full' で 9:00 より前・未来の日 → 従来どおり (投稿記録が無ければ --force)
+    なお runner や各 workflow の DB (origin の keiba.db.gz) には前夜予想が入っていない
+    (#150b: prefetch は DB を push しない) ので、ここで「全レースの予測が無い」なら全レースを
+    作る。予測が無いよりよい。
+    返り値: predict を失敗させなかったか。作る対象が無かった時も True (直ったかどうかは
+    呼び出し側 main が検査し直して決める #173)。
     """
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # #169: 過去日は予測しない。日付をまたいで遅れて発火した run (11/01 00:24 の
@@ -568,14 +618,18 @@ def auto_fix_predictions(date_yyyymmdd: str, race_ids: list[str] | None = None) 
     if not _is_today_or_future(date_yyyymmdd):
         print(f"⏭️ {date_yyyymmdd} は過去日 → 予測の自動修復はしない (後出しの印を作らない #99/#169)")
         return False
-    from race_utils import prediction_lock_passed
     posted = os.path.join(repo, "docs", "data", f"posted_marks_{date_yyyymmdd}.json")
-    if race_ids is None and prediction_lock_passed(_jst_now()) and os.path.exists(posted):
-        # #169: 確定ロック (#172: 9:30) 以降・印を投稿済みなら predict は --force なしで動き、確定ロックで
-        # 何も作り直さない。予測が要るのは「出走馬があって cache が無い」レースだけなので、
-        # それだけを渡す。1つも無ければ確定馬番の取り直し (約36ページ) も predict も省く
+    scope = _rebuild_scope(date_yyyymmdd)
+    only_missing = scope != "full"
+    if race_ids is None and only_missing:
+        # #169/#173: 確定後と、9:00 以降の作り直しが済んだ後は作り直さない。
+        # 予測が要るのは「出走馬があって cache が無い」レースだけなので、それだけを渡す。
+        # 1つも無ければ確定馬番の取り直し (約36ページ) も predict も省く
         # (race_day_runner は10分ごとに来るので、ここで毎回取り直すと無駄打ちになる)。
         race_ids = _races_needing_prediction(date_yyyymmdd)
+        why = "確定後" if scope == "locked" else "9:00 以降の作り直しの後"
+        print(f"🧩 {date_yyyymmdd}: {why} → --force を使わず、予測の無い "
+              f"{len(race_ids)}レースだけ作る (#173)")
     if race_ids is not None:
         race_ids = _drop_started(date_yyyymmdd, race_ids)
         if not race_ids:
@@ -590,16 +644,28 @@ def auto_fix_predictions(date_yyyymmdd: str, race_ids: list[str] | None = None) 
     if race_ids is not None:
         print(f"🔧 自動修復: {len(race_ids)}レースだけ予測 ({', '.join(race_ids[:6])}) — "
               f"他のレースの予測は作り直さない #169")
-        ok_all = True
-        for rid in race_ids:
-            ok_all = _run_predict(["python3", "predict.py", "predict",
-                                   "--race-id", rid, "--date", date_yyyymmdd]) and ok_all
-        if ok_all:
+        # #173: 1プロセスにまとめて渡す (predict の --race-id はカンマ区切り可)。レースごとに
+        # 別プロセスだとモデル・統計の読み込みが毎回かかる (ローカル実測で 1レース 0〜11秒の
+        # 上乗せ。確定後にキャッシュ0件の36レースを作る時は、投稿前の preflight がそのぶん延びる)。
+        # --only-missing … 渡した時点から predict が始まるまでに別の経路が予測を作っていたら
+        # (runner の取り込み・遅れた workflow)、それを作り直さない
+        ok = _run_predict(["python3", "predict.py", "predict",
+                           "--race-id", ",".join(race_ids), "--date", date_yyyymmdd,
+                           "--only-missing"])
+        if ok:
             print("✅ 予測完了")
-        return ok_all
+        return ok
     cmd = ["python3", "predict.py", "predict", "--date", date_yyyymmdd]
-    if os.path.exists(posted):
+    if only_missing:
+        # 確定後・9:00 以降の作り直しの後は上で race_ids を埋めて返るので、ここは通らない。
+        # 念のため、通っても --force は付けず無いレースだけにする (#173)
+        cmd.append("--only-missing")
+    elif os.path.exists(posted):
         print(f"🔒 {date_yyyymmdd} は印を投稿済み → --force を外して欠落分のみ生成")
+    elif _past_final_rebuild_time(date_yyyymmdd):
+        # #173: 当日 9:00〜確定で、9:00 以降の作り直しがまだ無い → 全レースを作り直すが
+        # --force は付けない (処理の途中で 9:30 を過ぎたら #172 の途中停止が止める)
+        print(f"🧠 {date_yyyymmdd}: 9:00 以降の作り直しがまだ無い → 全レースを --force なしで作り直す (#173)")
     else:
         cmd.append("--force")
     print(f"🔧 自動修復: 予測実行中 ({date_yyyymmdd})...")
@@ -610,27 +676,89 @@ def auto_fix_predictions(date_yyyymmdd: str, race_ids: list[str] | None = None) 
 
 
 def auto_fix_ghosts(date_yyyymmdd: str) -> bool:
-    """幽霊馬を除去し、該当日を再予測+再export (remove_ghost_horses 経由)。"""
+    """幽霊馬を除去し、幽霊のいたレースだけを再予測+再export (remove_ghost_horses の除去を再利用)。
+
+    #173: 旧版は remove_ghost_horses.py --apply --repredict を呼んでいた。その再予測は
+    `predict --date D --force` で時刻を見ないので、9:00 以降の作り直しの後にも確定 (9:30) の後にも
+    投稿前の**全レース**を作り直し、☆/注 を入れ替えうる (preflight の --force と同じ確定ロックの
+    すり抜け)。幽霊が出走馬を変えるのはそのレースだけなので、除去 (remove_ghosts) だけを呼び、
+    幽霊のいた未発走・未投稿のレースだけを1プロセスで作り直す。そのレースは出走馬が変わったので
+    確定後でも作り直す (--force はそのレースに限る。投稿済み = seal は predict 側でも作り直さない)。
+    """
     print(f"🔧 自動修復: 幽霊馬を除去中 ({date_yyyymmdd})...")
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "remove_ghost_horses.py")
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if not os.path.exists(script):
-        print(f"❌ {script} が存在しないため幽霊馬の自動修復ができません")
+    if rgh is None:
+        print("❌ remove_ghost_horses を読み込めないため幽霊馬の自動修復ができません")
         return False
     try:
-        result = subprocess.run(
-            ["python3", script, "--date", date_yyyymmdd, "--apply", "--repredict"],
-            cwd=repo, capture_output=True, text=True, timeout=900,
-        )
-        print(result.stdout[-800:])
-        # remove_ghost_horses 返り値: 0=幽霊なし / 1=検出して削除 (どちらも正常)
-        if result.returncode in (0, 1):
-            return True
-        print(f"❌ 幽霊除去失敗: {result.stderr[-200:]}")
-        return False
+        res = rgh.remove_ghosts(date=date_yyyymmdd, apply=True, use_api=True, verbose=True)
     except Exception as e:
-        print(f"❌ 幽霊除去例外: {e}")
+        print(f"❌ 幽霊除去例外: {type(e).__name__}: {e}")
         return False
+    rids = sorted({g["race_id"] for g in (res.get("findings") or []) if g.get("race_id")})
+    if not res.get("deleted") or not rids:
+        return True
+    # 過去日は再予測しない (発走後に印を作り直すと後出しになる #99/#169)
+    if not _is_today_or_future(date_yyyymmdd):
+        print(f"⏭️ {date_yyyymmdd} は過去日 → 再予測しない (後出しの印を作らない #99/#169)")
+        return True
+    from database import is_prediction_sealed
+    sealed = [r for r in rids if is_prediction_sealed(r)]
+    if sealed:
+        print(f"🔒 投稿済みの {len(sealed)}レースは作り直さない: {', '.join(sealed[:6])}")
+    targets = _drop_started(date_yyyymmdd, [r for r in rids if r not in sealed])
+    if not targets:
+        print("🔒 作り直す未発走・未投稿のレースが無い → 再予測しない")
+        return True
+    # #169: 再予測の前に確定馬番を取り直し、失敗したら予測しない (既存の予測を残す)
+    if not _ensure_entries(date_yyyymmdd):
+        print(f"🚫 {date_yyyymmdd}: 確定馬番を取り直せない → 再予測しない (既存の予測を残す #169)")
+        return False
+    print(f"🔄 幽霊のいた {len(targets)}レースだけ再予測: {', '.join(targets[:6])} "
+          f"(他のレースは作り直さない #173)")
+    if not _run_predict(["python3", "predict.py", "predict", "--race-id", ",".join(targets),
+                         "--date", date_yyyymmdd, "--force"]):
+        return False
+    print("  ✅ 再予測完了")
+    try:
+        e = subprocess.run(["python3", "export_predictions.py", date_yyyymmdd],
+                           cwd=repo, capture_output=True, text=True, timeout=300)
+        if e.returncode == 0:
+            print("  ✅ 再export完了")
+        else:
+            print(f"  ⚠️ export失敗: {e.stderr[-200:]}")
+    except Exception as ex:
+        print(f"  ⚠️ export例外: {ex}")
+    return True
+
+
+def _severity_after_fix(date_yyyymmdd: str, date_iso: str, all_issues: list[str]) -> int:
+    """予測の自動修復の後に検査し直し、残った問題から総合の重さを決める (#173)。
+
+    予測 0件のまま → 2 (投稿できない。post_predict の preflight は投稿を止める)
+    出走馬の無いレースが残る → 1 (中止の可能性。旧版も修復後は投稿を止めていなかった)
+    ML flat が残る → 1 (確定前の作り直しを止めた後は直す手段が無い。投稿は止めない)
+    """
+    with get_db() as conn:
+        sev_p, iss_p = check_predictions(conn, date_iso)
+        sev_r, iss_r = check_runners(conn, date_iso)
+        sev_m, iss_m = check_ml_output_sanity(conn, date_iso)
+    sev = 0
+    if sev_p == 2:
+        sev = 2
+        all_issues.append("❌ 自動修復の後も予測が無い: " + " / ".join(iss_p))
+    if sev_r == 2:
+        sev = max(sev, 1)
+        all_issues.append("⚠️ 自動修復の後も出走馬の無いレースが残る (中止の可能性): "
+                          + " / ".join(iss_r))
+    if sev_m == 2:
+        sev = max(sev, 1)
+        if _rebuild_scope(date_yyyymmdd) != "full":
+            all_issues.append("⚠️ ML flat が残っている — 9:00 以降の作り直しの後・確定後のため"
+                              "作り直さない (#173)")
+        else:
+            all_issues.append("⚠️ 再予測の後も ML flat が残っている")
+    return sev
 
 
 def main():
@@ -728,15 +856,24 @@ def main():
         if pred_critical or runners_critical or ml_critical or races_fixed:
             # 出走馬入ったら予測も再実行。ML flat output も再 predict で修復試行
             if ml_critical:
-                print("🔄 ML flat output → predict --force で再予測")
+                # #173: 9:00 以降の作り直しが済んだ後と確定後は作り直さない (予測の無いレースだけ
+                # 作る) ので、flat な予測はそれより前にしか直らない。直らなければ下の検査し直しで警告
+                print("🔄 ML flat output → 再予測 (9:00 以降の作り直しの後・確定後は予測の無いレースだけ #173)")
             # #169: 欠番を取っただけ (他に致命的な問題が無い) なら、取ったレースだけを予測する。
             # 日付ごとの predict は posted_marks が無いと --force で全レースを作り直すので、
             # 10:15 の post_predict の preflight (投稿前で posted_marks がまだ無い) で欠番が
             # 見つかると、10時ロック後に全レースの予測が作り直されてしまう。
             only_new = races_fixed and not (pred_critical or runners_critical or ml_critical)
             if auto_fix_predictions(args.date, race_ids=fetched_race_ids if only_new else None):
-                print("✅ 予測の自動修復成功")
-                overall_severity = 0
+                # #173: 旧版はここで一律に 0 (OK) にしていた。9:00 以降は「作る対象が無い」でも
+                # True が返るので、予測 0件・出走馬なし・ML flat が何も直っていないまま
+                # 「総合 OK」になり、post_predict の preflight の赤信号 (exit 2 → 投稿スキップ) が
+                # 消えていた。直ったかどうかは検査し直して決める。
+                overall_severity = _severity_after_fix(args.date, date_iso, all_issues)
+                if overall_severity == 0:
+                    print("✅ 予測の自動修復成功")
+                else:
+                    print("⚠️ 予測の自動修復の後も問題が残る (下の一覧)")
             else:
                 print("❌ 予測の自動修復失敗")
 

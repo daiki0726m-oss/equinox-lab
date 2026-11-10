@@ -441,6 +441,11 @@ class NetkeibaScraper:
                 # 着順
                 pos_text = _get(cols, "finish_position")
                 entry["finish_position"] = int(pos_text) if pos_text.isdigit() else 0
+                # #173: 着順の無い馬の理由 (中止/失格/除外/取消) を先頭1字で残す。旧版は 0 にして
+                # 捨てていたため、通過順の無い競走中止 (障害戦の早い落馬など) を除外と区別できなかった
+                entry["finish_status"] = (pos_text[:1]
+                                          if entry["finish_position"] == 0 and pos_text[:1] in "中失除取"
+                                          and pos_text else "")
 
                 # 枠番
                 post_text = _get(cols, "post_position")
@@ -1168,8 +1173,9 @@ class NetkeibaScraper:
                     (race_id, horse_id, jockey_id, trainer_id,
                      post_position, horse_number, odds, popularity,
                      finish_position, finish_time, finish_time_seconds,
-                     margin, last_3f, passing_order, weight, weight_change, impost)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     margin, last_3f, passing_order, weight, weight_change, impost,
+                     finish_status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(race_id, horse_number) DO UPDATE SET
                         horse_id = CASE WHEN excluded.horse_id != '' THEN excluded.horse_id ELSE results.horse_id END,
                         jockey_id = CASE WHEN excluded.jockey_id != '' THEN excluded.jockey_id ELSE results.jockey_id END,
@@ -1185,7 +1191,10 @@ class NetkeibaScraper:
                         passing_order = CASE WHEN excluded.passing_order != '' THEN excluded.passing_order ELSE results.passing_order END,
                         weight = CASE WHEN excluded.weight != 0 THEN excluded.weight ELSE results.weight END,
                         weight_change = CASE WHEN excluded.weight_change != 0 THEN excluded.weight_change ELSE results.weight_change END,
-                        impost = CASE WHEN excluded.impost != 0 THEN excluded.impost ELSE results.impost END
+                        impost = CASE WHEN excluded.impost != 0 THEN excluded.impost ELSE results.impost END,
+                        finish_status = CASE WHEN excluded.finish_status != '' THEN excluded.finish_status
+                                             WHEN excluded.finish_position != 0 THEN ''
+                                             ELSE COALESCE(results.finish_status, '') END
                 """, (
                     race_data["race_id"], r.get("horse_id", ""),
                     r.get("jockey_id", ""), r.get("trainer_id", ""),
@@ -1195,7 +1204,7 @@ class NetkeibaScraper:
                     r.get("finish_time_seconds", 0), r.get("margin", ""),
                     r.get("last_3f", 0), r.get("passing_order", ""),
                     r.get("weight", 0), r.get("weight_change", 0),
-                    r.get("impost", 0)
+                    r.get("impost", 0), r.get("finish_status", "") or ""
                 ))
 
             # #171: 出馬表で取消でなかった馬に、前の版の取消の目印 (人気9999) が残っていたら外す

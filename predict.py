@@ -441,6 +441,81 @@ def cmd_train(args):
     sys.exit(result.returncode)
 
 
+# ── 最後の作り直しの開始時刻 (#173) ─────────────────────────────
+# 開催当日は 9:00 の odds_flash (refresh → predict) が最後の作り直しで、9:30 (確定) に投稿する。
+# 11/07 は 9:00 の odds_flash (09:14〜09:19) の後に、遅れて発火した 05:30 の predict cron
+# (concurrency で待って 09:20 開始) が 09:22〜09:29:59 にもう一度全レースを作り直し、投稿14Rの
+# うち4Rで ☆/注 が入れ替わった (◎○▲△△ はオッズ非依存の点数表なので不変)。09:11 の
+# workflow_run (fetch 完了 → predict) の作り直しもあった。
+# このため開催当日の 9:00 以降は、odds_flash 以外の予測 (type=predict の cron・workflow_run・
+# dispatch、preflight の自動修復) は「予測の無いレースだけ」を作る (--only-missing)。
+# ただし時刻だけでは決めない: 9:00 以降の作り直しが実際に済んだ (= その日の予測の過半数が
+# 9:00 以降に作られた) 時だけ。odds_flash が作り直さない日がある — auto_post_x の concurrency は
+# 待機を1本しか持たず、後から来た run が待機中の odds_flash を取り消す (11/07 は 23 秒差で
+# 免れた) / refresh_entries に失敗すると odds_flash は再予測しない (ENTRIES_OK=0)。その日に
+# 時刻だけで止めると 9:00 以降の作り直しが1度も起きず、☆/注 は 9:00 前のオッズのまま投稿され、
+# その後の取消も印に残る。作り直しが済んでいなければ、9:30 までは遅れて来た predict が最後の
+# 作り直しを引き受ける (途中で 9:30 を過ぎた分は #172 の途中停止が止める)。
+# 確定時刻は race_utils.PREDICTION_LOCK_JST (ここには書かない)。
+FINAL_REBUILD_JST = (9, 0)
+
+
+def final_rebuild_done(target_date):
+    """今日 9:00 以降に、その日の予測の作り直しが済んだ証拠があるか (#173)。
+
+    その日 (races.race_date) の予測キャッシュの**過半数**が 9:00 JST 以降に作られていれば済んだとみなす。
+    「全部」にしないのは、作り直しでも odds 充足ゲート (#52) などで見送ったレースは古い版が残るため。
+    「1件でも」にしないのは、予測の無いレースだけを作った分 (preflight の欠け埋め・幽霊馬の
+    レース単位の再予測) を作り直しと取り違えないため。キャッシュが1件も無ければ済んでいない
+    (どの範囲でも全レースを作ることになる)。
+    created_at は UTC ('YYYY-MM-DD HH:MM:SS'、predict が書くたびに datetime('now')、
+    db_merge_predictions は新しい方を残す) なので、9:00 JST を UTC に直して比べる。
+    読めない時は True (作り直さない側。予測の無いレースは作るので欠けは埋まる)。"""
+    d = str(target_date or "").replace("-", "")[:8]
+    if len(d) != 8 or not d.isdigit():
+        return True
+    jst = timezone(timedelta(hours=9))
+    since_utc = (datetime(int(d[:4]), int(d[4:6]), int(d[6:8]), *FINAL_REBUILD_JST, tzinfo=jst)
+                 .astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n_all, "
+                "       SUM(CASE WHEN datetime(pc.created_at) >= datetime(?) THEN 1 ELSE 0 END) AS n_new "
+                "FROM predictions_cache pc JOIN races r ON r.race_id = pc.race_id "
+                "WHERE r.race_date IN (?, ?)",
+                (since_utc, f"{d[:4]}-{d[4:6]}-{d[6:8]}", d)).fetchone()
+    except Exception as e:
+        print(f"⚠️ 9:00 以降の作り直しの有無を判定できない ({type(e).__name__}: {e}) → 済んだ扱い (#173)")
+        return True
+    n_all, n_new = (row[0] or 0), (row[1] or 0)
+    return n_new > 0 and n_new * 2 >= n_all
+
+
+def rebuild_scope_for(target_date, now=None):
+    """開催日 target_date (YYYYMMDD / YYYY-MM-DD) の予測を、odds_flash 以外の経路が
+    今どこまで作り直してよいか (#173)。
+
+    'locked'  … 確定済み (過去の日 / 今日の確定 9:30 以降) → 作り直さない (#172)
+    'missing' … 今日の 9:00〜確定で、9:00 以降の作り直しが済んでいる → 予測の無いレースだけ作る
+    'full'    … 今日の 9:00 より前 / 未来の日 / 今日の 9:00〜確定で 9:00 以降の作り直しが
+                まだ無い → 全レースを作り直してよい (final_rebuild_done)
+
+    日付が読めない時は時刻だけで判定する (race_utils.prediction_locked_for と同じ扱い)。
+    odds_flash (最後の作り直し) はこれを見ない。"""
+    from race_utils import prediction_locked_for
+    if now is None:
+        now = datetime.now(timezone(timedelta(hours=9)))
+    if prediction_locked_for(target_date, now):
+        return 'locked'
+    d = str(target_date or "").replace("-", "")[:8]
+    if len(d) == 8 and d.isdigit() and d != now.strftime("%Y%m%d"):
+        return 'full'      # 未来の日 (過去の日は上で locked)
+    if (now.hour, now.minute) < FINAL_REBUILD_JST:
+        return 'full'
+    return 'missing' if final_rebuild_done(target_date) else 'full'
+
+
 def cmd_predict(args):
     """レース予測コマンド"""
     model = KeibaModel()
@@ -448,7 +523,10 @@ def cmd_predict(args):
     speed_calc = SpeedIndexCalculator()
 
     if args.race_id:
-        race_ids = [args.race_id]
+        # #173: カンマ区切りで複数を受ける (preflight の欠け埋め・幽霊馬の再予測を1プロセスで
+        # 回す。レースごとに別プロセスだとモデル・統計の読み込みが毎回かかる。ローカル実測で
+        # 1レース 0〜11秒の上乗せ = 機械の負荷で揺れる)
+        race_ids = [r.strip() for r in str(args.race_id).split(",") if r.strip()]
     elif args.date:
         scraper = NetkeibaScraper()
         race_ids = scraper.get_race_list_by_date(args.date)
@@ -470,6 +548,24 @@ def cmd_predict(args):
     else:
         print("❌ --race-id か --date を指定してください")
         return
+
+    # ─── #173: --only-missing = 予測キャッシュの無いレースだけを作る ───
+    # 既に予測があるレースは作り直さない (オッズが動いても ☆/注 を入れ替えない)。対象から
+    # 先に外すので、下の確定ロック (先頭レースの cache で判定) にも掛からず、確定後でも
+    # 無いレースは作れる。外したレースは「予測しなかった」扱いにしない (スキップ一覧・
+    # 11R の異常終了・スナップショットに入れない)。判定は確定ロックと同じ「行があるか」。
+    if getattr(args, 'only_missing', False) and race_ids:
+        with get_db() as _mc:
+            _ph = ",".join("?" * len(race_ids))
+            _have = {r[0] for r in _mc.execute(
+                f"SELECT race_id FROM predictions_cache WHERE race_id IN ({_ph})", list(race_ids))}
+        _n_all = len(race_ids)
+        race_ids = [r for r in race_ids if r not in _have]
+        print(f"🧩 --only-missing: 予測の無い {len(race_ids)}/{_n_all} レースだけ作る "
+              f"(予測のある {_n_all - len(race_ids)} レースは作り直さない #173)")
+        if not race_ids:
+            print("✅ 全レースに予測あり → 何も作らない")
+            return
 
     # silent skip 検知: 各continueでreason付きで記録
     _predicted_count = 0
@@ -705,10 +801,14 @@ def cmd_predict(args):
         # それでも0なら degenerate を書かず、このレースを skip して既存 cache を保持する。
         # (refresh_odds が後で走れば次サイクルで正常予測される)
         if not getattr(args, 'allow_zero_odds', False):
+            # #173: 取消の目印 (999.9倍・人気9999 = race_utils.SCRATCH_SENTINEL) は「オッズあり」と
+            # 数えない。旧版は取消が1頭でもいると、発売前 (走る馬が全頭0) でもゲートを素通りし、
+            # degenerate な予測を作っていた (金夕方・土朝の前夜予想で起きる)。走る馬だけで判定する。
+            from race_utils import is_scratch_values as _is_scr
             with get_db() as oconn:
-                odds_rows = oconn.execute(
-                    "SELECT odds FROM results WHERE race_id = ?", (race_id,)
-                ).fetchall()
+                odds_rows = [r for r in oconn.execute(
+                    "SELECT odds, popularity FROM results WHERE race_id = ?", (race_id,)
+                ).fetchall() if not _is_scr(r['odds'], r['popularity'])]
             n_horses = len(odds_rows)
             n_zero = sum(1 for r in odds_rows if not (r['odds'] and r['odds'] > 0))
             if n_horses > 0 and n_zero == n_horses:
@@ -749,9 +849,9 @@ def cmd_predict(args):
                     print(f"  ⚠️ API オッズ取得失敗: {e}")
                 # 再確認: まだ全頭0なら degenerate 予測を避けて skip
                 with get_db() as oconn:
-                    odds_rows2 = oconn.execute(
-                        "SELECT odds FROM results WHERE race_id = ?", (race_id,)
-                    ).fetchall()
+                    odds_rows2 = [r for r in oconn.execute(
+                        "SELECT odds, popularity FROM results WHERE race_id = ?", (race_id,)
+                    ).fetchall() if not _is_scr(r['odds'], r['popularity'])]
                 n_zero2 = sum(1 for r in odds_rows2 if not (r['odds'] and r['odds'] > 0))
                 if n_zero2 == len(odds_rows2) and len(odds_rows2) > 0:
                     print(f"  🚫 オッズ取得不能 (全頭0) → degenerate 予測を避けて skip (既存cache保持)")
@@ -1786,9 +1886,11 @@ def main():
 
     # predict
     p_predict = subparsers.add_parser("predict", help="レースを予測")
-    p_predict.add_argument("--race-id", help="レースID")
+    p_predict.add_argument("--race-id", help="レースID (カンマ区切りで複数可 #173)")
     p_predict.add_argument("--date", help="日付 (YYYYMMDD)")
     p_predict.add_argument("--force", action="store_true", help="確定 (9:30) 以降でも強制再予測")
+    p_predict.add_argument("--only-missing", action="store_true",
+                           help="予測キャッシュの無いレースだけ作る (既にあるレースは作り直さない #173)")
     p_predict.add_argument("--allow-zero-odds", action="store_true",
                            help="odds=0 でも予測する (#42 odds充足ゲートを無効化、履歴backtest用)")
 

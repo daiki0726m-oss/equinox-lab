@@ -1593,17 +1593,35 @@ def _build_results_from_json(date_str):
             continue  # まだ確定していない
 
         marked = []
+        from export_predictions import scratched_for_export as _scr_res
         for horse in marked_in_order(horses):   # #143: △2頭を両方
             m = horse['mark']
             fin = horse.get('finish')
             if not isinstance(fin, int) or fin < 1:
                 fin = None
+            # #173: 着順の無い印馬が走ったか。export が走った馬に dnf、そのうち失格に dq を立てる
+            # (取消とは排他)。取消の判定は DB ビルダー (unplaced_status_map) と同じく確定レースの
+            # 999.9倍も取消とみなす (#171 より前に export した JSON は scratched が無く、取消馬が
+            # 999.9倍・人気=頭数のまま残っている: 4/26 東京10R ウェイワードアクト 等5頭)
+            _unpl = None
+            if fin is None:
+                # export が着順欄 (#173 finish_status) から立てた dq/dnf/excluded を先に見る
+                # (export の unplaced_status と同じ順。旧 JSON にはこれらが無いので取消の判定に進む)
+                _unpl = ('dq' if horse.get('dq')
+                         else 'dnf' if horse.get('dnf')
+                         else 'excluded' if horse.get('excluded')
+                         else 'scratched' if _scr_res(
+                            horse, {'odds': horse.get('odds_win'),
+                                    'popularity': horse.get('popularity')},
+                            race_finished=True)
+                         else 'unknown')
             marked.append({
                 'mark': m,
                 'horse_number': horse.get('horse_number', 0),
                 'horse_name': horse.get('horse_name', ''),
                 'finish': fin,
                 'popularity': horse.get('popularity') or 0,
+                'unplaced': _unpl,
             })
 
         if marked:
@@ -1698,11 +1716,14 @@ def _build_results_jsonmarks_dbfinish(date_str):
                 continue
             rid = race.get('race_id')
             # 着順は results テーブル (新規収集済み) が source of truth
+            # #173: 人気は着順の無い馬 (競走中止など) の分も引く (旧版は finish_position>0 の行だけで
+            # pop_map を作っており、8/08「◎7 サトノエピック 中止」(1番人気) に人気が付かなかった)。
+            # 取消の番兵 (9999) は表示側 (_mark_lines) で落とす
             _res_rows = conn.execute(
                 "SELECT horse_number, finish_position, popularity FROM results "
-                "WHERE race_id=? AND finish_position>0", (rid,)
+                "WHERE race_id=?", (rid,)
             ).fetchall()
-            finish_map = {row[0]: row[1] for row in _res_rows}
+            finish_map = {row[0]: row[1] for row in _res_rows if (row[1] or 0) > 0}
             pop_map = {row[0]: (row[2] or 0) for row in _res_rows}
             if not finish_map:
                 continue  # まだ結果が収集されていない → スキップ (次 run で再試行)
@@ -1714,6 +1735,10 @@ def _build_results_jsonmarks_dbfinish(date_str):
             # (collect はレース単位で全着順を一括保存するため、1着の存在が確定の証)。
             if 1 not in finish_map.values():
                 continue
+            # #173: 着順の無い馬が走ったか (取消 / 中止 / 除外か中止)。旧表示は一律「除外」で、
+            # 競走中止の馬 (走った = 外れ) まで 3着内率の分母から外していた
+            from export_predictions import unplaced_status_map
+            unplaced_map = unplaced_status_map(conn, rid)
 
             marked = []
             # #97: 投稿時の印スナップショット (posted_marks_json) を最優先。
@@ -1739,6 +1764,8 @@ def _build_results_jsonmarks_dbfinish(date_str):
                         # #118: 人気併記 (#116) が本番で出なかった真因 — 最優先ビルダーの
                         # snap 分岐 (毎回通る) だけ popularity 付与が漏れていた (#21型)
                         'popularity': pop_map.get(s.get('horse_number', 0), 0),
+                        # #173: snap 分岐 (毎回通る) にも付ける (#118 と同じ漏れを作らない)
+                        'unplaced': unplaced_map.get(s.get('horse_number', 0)),
                     })
             else:
                 horses = race.get('horses', [])
@@ -1750,6 +1777,7 @@ def _build_results_jsonmarks_dbfinish(date_str):
                         'horse_name': h.get('horse_name', ''),
                         'finish': finish_map.get(h.get('horse_number', 0)),
                         'popularity': h.get('popularity') or 0,
+                        'unplaced': unplaced_map.get(h.get('horse_number', 0)),
                     })
             if marked:
                 race_data.append({
@@ -1850,14 +1878,19 @@ def _assemble_results_race_data(conn, races, date_str):
                 if not race_id:
                     continue
 
+                # #173: 人気は着順の無い馬の分も引く (主ビルダーと同じ。番兵は _mark_lines で落とす)
                 finishes = conn.execute("""
                     SELECT horse_number, finish_position, popularity FROM results
-                    WHERE race_id = ? AND finish_position > 0
+                    WHERE race_id = ?
                 """, (race_id,)).fetchall()
-                finish_map = {f['horse_number']: f['finish_position'] for f in finishes}
+                finish_map = {f['horse_number']: f['finish_position'] for f in finishes
+                              if (f['finish_position'] or 0) > 0}
                 pop_map = {f['horse_number']: (f['popularity'] or 0) for f in finishes}
                 if not finish_map:
                     continue
+                # #173: 着順の無い馬が走ったか (主ビルダーと同じ判定。未確定のレースは {})
+                from export_predictions import unplaced_status_map
+                unplaced_map = unplaced_status_map(conn, race_id)
 
                 marked = []
                 # #97: 投稿時の印スナップショット優先 (JSON path と同じ理由)
@@ -1879,6 +1912,7 @@ def _assemble_results_race_data(conn, races, date_str):
                             'horse_name': s.get('horse_name', ''),
                             'finish': finish_map.get(s.get('horse_number', 0)),
                             'popularity': pop_map.get(s.get('horse_number', 0), 0),
+                            'unplaced': unplaced_map.get(s.get('horse_number', 0)),
                         })
                 else:
                     for horse in marked_in_order(preds):   # #143: △2頭を両方
@@ -1890,6 +1924,7 @@ def _assemble_results_race_data(conn, races, date_str):
                             'horse_name': horse.get('horse_name', ''),
                             'finish': fin,
                             'popularity': pop_map.get(horse.get('horse_number', 0), 0),
+                            'unplaced': unplaced_map.get(horse.get('horse_number', 0)),
                         })
 
                 race_data.append({
@@ -2046,25 +2081,53 @@ def cmd_results(args):
     def medal(fin):
         return {1: '🏆', 2: '🥈', 3: '🥉'}.get(fin, '')
 
-    def fmt_finish(fin):
+    from export_predictions import UNPLACED_LABEL, UNPLACED_RAN
+    from race_utils import SCRATCH_POP
+
+    def fmt_finish(fin, unplaced=None):
         # v3 (2026-05-17): 「?着」表示を廃止 (中途半端表示を禁止)。
         # 上記の has_finish フィルタで「全頭確定」レースのみ通過するため、
-        # ここで未確定 (0/None) になることは原則ない (除外/中止のみ)。
-        return f'{fin}着' if fin else '除外'
+        # ここで未確定 (0/None) になることは原則ない (取消・除外・中止のみ)。
+        # #173: 旧実装は着順0を一律「除外」と出していたが、11/07・08 の5頭のうち4頭は通過順が
+        # あり走っていた (netkeiba で確かめた3頭はすべて競走中止)。
+        # 取消 (目印あり) / 中止 (通過順あり = 走った) / 失格 (通過順と走破時計あり) /
+        # 除外/中止 (区別できない) に分ける
+        if fin:
+            return f'{fin}着'
+        return UNPLACED_LABEL.get(unplaced, UNPLACED_LABEL['unknown'])
 
     # 集計
     n_races = len(race_data)
     won = placed = showed = 0      # ◎の1着/2着内/3着内
     total_marked = 0
     top3_marked = 0
-    n_scratched = 0
+    n_scratched = 0     # 取消 (走っていない = 返還) → 分母から外す
+    n_excluded = 0      # 競走除外 (走っていない = 返還、着順欄「除」#173) → 分母から外す
+    n_unknown = 0       # 除外か中止か区別できない → 分母から外す (従来どおり)
+    n_dnf = 0           # 競走中止 (走った = 外れ) → 分母に入れる (#173)
+    n_dq = 0            # 失格 (走った = 外れ) → 分母に入れる (#173)
     for r in race_data:
         for m in r['marks']:
             # #150: 取消・除外 (finish=0/None) を母数に入れない。
             # 旧実装は「印馬の3着内率 4/7 (57%)」の分母に走っていない馬を
             # 含めており、率を実際より低く報告していた。
+            # #173: ただし競走中止は走っている (馬券は外れ) ので分母に入れる。
+            # 旧実装はこれも外しており、8/08 ◎サトノエピック (1.6倍・通過順 2-2-2-2 で着順なし) などで
+            # 率を高く報告していた (8/08 の集計は 27/70 → 27/72)
             if not m['finish']:
-                n_scratched += 1
+                _st = m.get('unplaced')
+                if _st in UNPLACED_RAN:
+                    if _st == 'dq':
+                        n_dq += 1
+                    else:
+                        n_dnf += 1
+                    total_marked += 1
+                elif _st == 'scratched':
+                    n_scratched += 1
+                elif _st == 'excluded':
+                    n_excluded += 1
+                else:
+                    n_unknown += 1
                 continue
             total_marked += 1
             if m['finish'] <= 3:
@@ -2100,9 +2163,17 @@ def cmd_results(args):
             for m in r['marks']:
                 mdl = medal(m['finish'])
                 name_disp = m['horse_name'][:name_len]
-                _pop = (f"({m.get('popularity')}人気)"
-                        if (with_pop and m.get('popularity')) else "")
-                lines += f"{m['mark']}{m['horse_number']} {name_disp} {fmt_finish(m['finish'])}{_pop}{mdl}\n"
+                # #173: 人気を出すのは 0<人気<999 で取消でない時だけ。取消馬の人気は番兵 9999
+                # (JSON フォールバックで「取消(9999人気)」と出ていた) か #171 以前の「人気=頭数」で、
+                # どちらも実際の人気ではない。競走中止・除外の人気は発走前の実際の人気なので出す
+                try:
+                    _pv = int(m.get('popularity') or 0)
+                except (TypeError, ValueError):
+                    _pv = 0
+                _pop = (f"({_pv}人気)"
+                        if (with_pop and 0 < _pv < SCRATCH_POP
+                            and m.get('unplaced') != 'scratched') else "")
+                lines += f"{m['mark']}{m['horse_number']} {name_disp} {fmt_finish(m['finish'], m.get('unplaced'))}{_pop}{mdl}\n"
             return lines
 
         for m in r['marks']:
@@ -2144,18 +2215,34 @@ def cmd_results(args):
     t_last += f" 🏆勝利:    {won}/{n_races}\n"
     t_last += f" 🥈連対(1-2): {placed}/{n_races}\n"
     t_last += f" 🥉複勝(1-3): {showed}/{n_races}\n"
-    if total_marked > 0:
-        rate = round(top3_marked * 100 / total_marked)
-        _sc = f" ※取消{n_scratched}頭を除く" if n_scratched else ""
-        t_last += f"\n印馬の3着内率: {top3_marked}/{total_marked} ({rate}%){_sc}\n"
-
     # #115: 外れ週も同じフォーマットで必ず出す「全成績公開」の宣言
-    t_last += "\n📌 予想は投稿時点で凍結記録\n外れも隠さず毎週ROIを公開しています\n"
     next_label = "来週も"
     if dt.weekday() == 5:  # 土曜
         next_label = "明日も"
-    t_last += f"\n{next_label}AI予想配信🔔\n"
-    t_last += "#競馬予想 #AI予想 #競馬結果"
+    _foot = ("\n📌 予想は投稿時点で凍結記録\n外れも隠さず毎週ROIを公開しています\n"
+             f"\n{next_label}AI予想配信🔔\n"
+             "#競馬予想 #AI予想 #競馬結果")
+    if total_marked > 0:
+        rate = round(top3_marked * 100 / total_marked)
+        # #173: 外した理由を正確に書く (旧実装は除外も中止も「取消N頭を除く」と書いていた)。
+        # 区別できない馬は各レースの行では「除外/中止」だが、注記では「理由不明」と書く
+        # (「除外/中止N頭を除く、中止N頭は着外」だと中止が除く側と入れる側の両方に出て読み違える)。
+        # 3種が重なると 280字を超えうる (各2桁頭数の合成ケースで、旧案の書式は 288) ので、入らなければ
+        # 着外の注記 → 全注記の順に落とす (各レースの行に「取消」「中止」と出ているので読み取れる)
+        _ex = [f"{lab}{n}頭" for lab, n in (("取消", n_scratched), ("除外", n_excluded),
+                                             ("理由不明", n_unknown)) if n]
+        _ex_note = f"{'・'.join(_ex)}を除く" if _ex else ""
+        _ran = [f"{lab}{n}頭" for lab, n in (("競走中止", n_dnf), ("失格", n_dq)) if n]
+        _dnf_note = f"{'・'.join(_ran)}は着外" if _ran else ""
+        _rate = f"\n印馬の3着内率: {top3_marked}/{total_marked} ({rate}%)"
+        for _notes in ([_ex_note, _dnf_note], [_ex_note], []):
+            _notes = [x for x in _notes if x]
+            _sc = f" ※{'、'.join(_notes)}" if _notes else ""
+            if x_weighted_len(t_last + _rate + _sc + "\n" + _foot) <= 280:
+                break
+        t_last += f"{_rate}{_sc}\n"
+
+    t_last += _foot
     tweets.append(t_last)
 
     client = None

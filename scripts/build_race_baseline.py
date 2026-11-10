@@ -867,22 +867,100 @@ def build_adjust_watch(conn):
     return out
 
 
-def _bet_gate_or_keep(conn):
-    """KEEP_BET_GATE=1 なら既存の bet_gate をそのまま使う (#161)。
+def _final_rebuild_jst():
+    """開催当日の最後の作り直しの開始時刻 (predict.FINAL_REBUILD_JST #173)。読めなければ None。
+    predict の import はモデル周りまで読む (数秒) ので、土曜の 9:30 前の判定でだけ呼ぶ。"""
+    try:
+        import contextlib
+        # import 時の出力を stdout (基準表の表示) に混ぜない
+        with contextlib.redirect_stdout(sys.stderr):
+            from predict import FINAL_REBUILD_JST
+        return tuple(FINAL_REBUILD_JST)
+    except Exception as e:
+        print(f"⚠️ 当日の最後の作り直しの時刻 (predict.FINAL_REBUILD_JST) を読めない "
+              f"({type(e).__name__}: {e})")
+        return None
 
-    weekend_prefetch は金曜夜だけでなく**土曜夜 (日曜 03:30)** にも走り、基準表を作り直す。
-    そこで投資ゲートの閾値が変わると、同じ週末の土曜と日曜で見送りの基準が変わる
-    (#161 の修正後は 0/24 → 約3割見送り)。週末の途中では投資判断を動かさない。
+
+def _weekend_gate_hold(now=None):
+    """週末の途中か (= 見送りの基準になる閾値を動かしてはいけないか) を JST の now で判定する (#173)。
+    戻り値 (据え置くか, 理由)。
+
+    - 日曜                                   … 土曜の予想は確定済み (従来どおり #161)
+    - 土曜で当日の最後の作り直し (9:00) 以降 … 土曜の印と見送り (should_bet) は 9:00 の odds_flash
+      (それが作り直さなかった日は遅れて来た auto_post_x の predict) が、その run の起動時に読んだ閾値で
+      作り直し、9:30 に確定する。9:00 以降に引き直した閾値を push すると、その作り直しが読む版と
+      ずれたり、日曜だけ別の基準になる (#161)。確定 (9:30) を境界にすると 9:00〜9:30 に動いた回が
+      引き直してしまう。#173 で土曜の夕方〜夜に日曜分を作る回を足したので、その回は全部ここに入る
+    - 土曜で 9:00 を読めない                 … 据え置く側 (9:00 前に据え置いても、前夜の値を使うだけ)
+    - 土曜の 9:00 前 (金曜夜の回が土曜未明に遅れて動いた等)・金曜以前 … 引き直してよい
+      (土曜の 9:00 の作り直しが新しい閾値で土曜分を揃える)
+    「確定済みか」は race_utils.prediction_locked_for (#172)、9:00 は predict.FINAL_REBUILD_JST を
+    正とする (時刻を書き下さない)。weekend_prefetch の生成の step も同じ2つで当日分を外す。
+    月曜の開催 (祝日・順延) は見ない: weekend_prefetch は月曜を対象にせず、weekly_retrain は
+    開催日の月曜は再学習ごと延期する (retrain_decision #169)。
     """
-    if os.environ.get("KEEP_BET_GATE") == "1":
+    from race_utils import prediction_locked_for, PREDICTION_LOCK_LABEL
+    if now is None:
+        now = datetime.now(JST)
+    wd = now.weekday()   # 月=0 … 土=5, 日=6
+    if wd == 6:
+        return True, "日曜 = 土曜の予想は確定済み"
+    if wd == 5:
+        if prediction_locked_for(now.strftime("%Y%m%d"), now):
+            return True, f"土曜の予想の確定 ({PREDICTION_LOCK_LABEL}) 後"
+        fr = _final_rebuild_jst()
+        if fr is None:
+            return True, "土曜で、当日の最後の作り直しの時刻を読めない → 据え置く側"
+        label = f"{fr[0]}:{fr[1]:02d}"
+        if (now.hour, now.minute) >= fr:
+            return True, f"土曜の最後の作り直し ({label}) 以降"
+        return False, f"土曜の最後の作り直し ({label}) 前"
+    return False, "週末の途中ではない"
+
+
+def _keep_thresholds_requested(now=None):
+    """KEEP_BET_GATE を読む (#161 / #173)。戻り値 (据え置くか, 理由 or None)。
+
+    据え置くのは見送りの基準になる閾値 = 投資ゲート (bet_gate) と信頼度 (confidence)。
+    変数名は #161 のまま (信頼度は #173 で加えた)。main() でこれを**1回だけ**呼び、
+    両方に同じ判定を渡す (別々に時刻を見ると、9:00 をまたいで片方だけ引き直しうる)。
+
+    1    … 無条件で据え置く (手動の固定用)
+    auto … _weekend_gate_hold で判定する (weekend_prefetch が渡す。判定はこの1か所に置く)。
+           基準表を作る**この時点**の時刻で決める — 生成の step は最長40分ほどかかるので、
+           生成を始めた時刻で決めると、8:5x に始まった回が 9:00 をまたいで引き直してしまう
+    それ以外 (未設定) … 引き直す (weekly_retrain など)
+    """
+    v = (os.environ.get("KEEP_BET_GATE") or "").strip().lower()
+    if v == "1":
+        return True, "KEEP_BET_GATE=1"
+    if v == "auto":
+        hold, why = _weekend_gate_hold(now)
+        if not hold:
+            print(f"🎚 閾値 (投資ゲート・信頼度): KEEP_BET_GATE=auto → {why} → 引き直す")
+            return False, None
+        return True, f"週末の途中 ({why})"
+    return False, None
+
+
+def _bet_gate_or_keep(conn, keep=False, why=None):
+    """週末の途中 (KEEP_BET_GATE) なら既存の bet_gate をそのまま使う (#161 / #173)。
+
+    weekend_prefetch は金曜夜だけでなく**土曜の夕方〜夜・日曜未明**にも走り、基準表を作り直す
+    (#173 で土曜の回を足した)。そこで投資ゲートの閾値が変わると、同じ週末の土曜と日曜で
+    見送りの基準が変わる (#161 の修正後は 0/24 → 約3割見送り)。週末の途中では投資判断を動かさない。
+    """
+    if keep:
         try:
             with open(OUT, encoding="utf-8") as f:
                 prev = json.load(f).get("bet_gate")
             if prev:
-                print(f"🎚 投資ゲート: KEEP_BET_GATE=1 → 既存の閾値を維持 {prev.get('thresholds')}")
+                print(f"🎚 投資ゲート: {why} → 既存の閾値を維持 {prev.get('thresholds')}")
                 # #170: 閾値は動かさず、現モデルだけの窓との遮断率の差だけ記録する。
                 # 失敗しても据え置き (本来の仕事) は止めない
                 prev = dict(prev)
+                prev["keep_reason"] = why   # #173: どの回がなぜ据え置いたか (毎回上書き)
                 try:
                     prev["sunday_check"] = _sunday_gate_check(conn, prev)
                 except Exception as e:
@@ -891,8 +969,46 @@ def _bet_gate_or_keep(conn):
                 return prev
         except (OSError, ValueError):
             pass
-        print("🎚 投資ゲート: KEEP_BET_GATE=1 だが既存値が読めない → 作り直す")
+        print(f"🎚 投資ゲート: {why} だが既存値が読めない → 作り直す")
     return build_bet_gate_thresholds(conn)
+
+
+# 据え置いた信頼度の dict を main() がそのまま表示するのに要るキー
+_CONFIDENCE_KEYS = ("thresholds", "sample", "n", "target_mix", "mix_before_adjust",
+                    "mix_after_adjust", "adjusted_share", "realized_mix", "realized_n",
+                    "realized_new_logic_since", "realized_new_logic_mix", "realized_new_logic_n")
+
+
+def _confidence_or_keep(conn, keep=False, why=None):
+    """週末の途中 (KEEP_BET_GATE) なら既存の信頼度の閾値をそのまま使う (#173)。
+
+    信頼度は should_bet の C/D 遮断 (#25) と投稿レースの選定 (S/A/B) に効くので、投資ゲートと
+    同じく見送りの基準の一部。#161 は投資ゲートだけを据え置いていたため、週末の途中の回でも
+    信頼度の閾値は動いていた (11/07 08:21 の回 S≥35.4 / A≥24.9 / B≥13.9 / C≥9.3 →
+    11/08 07:08 の回 S≥35.4 / A≥24.5 / B≥13.6 / C≥9.4)。#173 で土曜の回を足すと、
+    動く機会が土曜に最大3回増えるので、投資ゲートと同じ判定で据え置く。
+    据え置いた時も引き直した値は if_rebuilt に残す (次の金曜にどれだけ動くかの目安)。
+    """
+    fresh = build_confidence_thresholds(conn)
+    if not keep:
+        return fresh
+    try:
+        with open(OUT, encoding="utf-8") as f:
+            prev = json.load(f).get("confidence")
+    except (OSError, ValueError):
+        prev = None
+    if isinstance(prev, dict) and prev.get("available") and all(k in prev for k in _CONFIDENCE_KEYS):
+        held = dict(prev)
+        held["keep_reason"] = why
+        held["if_rebuilt"] = ({"thresholds": fresh["thresholds"], "n": fresh["n"],
+                               "sample_period": fresh.get("sample_period")}
+                              if fresh.get("available") else
+                              {"available": False, "note": fresh.get("note")})
+        print(f"🎚 信頼度: {why} → 既存の閾値を維持 {prev['thresholds']} "
+              f"(引き直した場合: {held['if_rebuilt'].get('thresholds')})")
+        return held
+    print(f"🎚 信頼度: {why} だが既存値が読めない → 作り直す")
+    return fresh
 
 
 def _sunday_gate_check(conn, kept):
@@ -904,6 +1020,8 @@ def _sunday_gate_check(conn, kept):
     動かさない。代わりに、現モデルだけの窓で引いた閾値と据え置いた閾値のそれぞれで、同じ窓の
     遮断率を並べて残す (window_matches_model が毎週 false で情報を持たない分の補い)。
     事後の検知は check_raceday_completeness (c) が別にやる。
+    #173: 土曜の最後の作り直し (9:00) 以降 (夕方〜夜の回) にも走る。JSON のキー名 sunday_check は
+    互換のため変えない。
     """
     since, since_utc = current_model_deployed_at(conn)
     if not since_utc:
@@ -954,12 +1072,14 @@ def main():
 
     conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
+    # #173: 週末の途中か (見送りの基準になる閾値を据え置くか) は1回だけ判定し、両方に渡す
+    keep, why = _keep_thresholds_requested()
     data = {
         "generated_at": datetime.now(JST).isoformat(),
         "capture": build_capture(conn),
         "payout": build_payout(conn),
-        "confidence": build_confidence_thresholds(conn),
-        "bet_gate": _bet_gate_or_keep(conn),   # #156 / #161
+        "confidence": _confidence_or_keep(conn, keep, why),   # #151 / #173
+        "bet_gate": _bet_gate_or_keep(conn, keep, why),       # #156 / #161 / #173
     }
     # #169 review: 撤去した過信帯の実額監視。失敗しても基準表 (閾値) の作成は止めない
     try:
