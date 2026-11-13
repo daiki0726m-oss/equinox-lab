@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-09T20:13:08.923317+09:00",
+ "generated_at": "2026-11-14T01:50:03.317691+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -201,9 +201,9 @@
  },
  "confidence": {
   "available": true,
-  "n": 228,
+  "n": 225,
   "sample": "点数表 (現行)",
-  "sample_period": "2026-09-27〜2026-11-08",
+  "sample_period": "2026-10-03〜2026-11-15",
   "target_mix": {
    "S": 0.18,
    "A": 0.24,
@@ -212,68 +212,68 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 37.0,
-   "A": 24.8,
-   "B": 13.6,
+   "S": 40.4,
+   "A": 22.8,
+   "B": 13.4,
    "C": 9.3
   },
   "calibrated_on": "補正後 (confidence.post_adjust 込み) の最終構成比",
   "mix_before_adjust": {
-   "S": 0.0833,
-   "A": 0.2368,
-   "B": 0.3904,
-   "C": 0.1798,
-   "D": 0.1096
+   "S": 0.0578,
+   "A": 0.2756,
+   "B": 0.3733,
+   "C": 0.1822,
+   "D": 0.1111
   },
   "mix_after_adjust": {
-   "S": 0.1798,
-   "A": 0.2412,
-   "B": 0.2895,
-   "C": 0.1798,
-   "D": 0.1096
+   "S": 0.1822,
+   "A": 0.24,
+   "B": 0.2844,
+   "C": 0.1822,
+   "D": 0.1111
   },
-  "adjusted_share": 0.1974,
+  "adjusted_share": 0.2133,
   "realized_mix": {
-   "S": 0.2456,
-   "A": 0.2018,
-   "B": 0.1711,
-   "C": 0.1886,
-   "D": 0.193
+   "S": 0.2267,
+   "A": 0.1911,
+   "B": 0.1956,
+   "C": 0.1911,
+   "D": 0.1956
   },
-  "realized_n": 228,
+  "realized_n": 225,
   "realized_note": "各予測の時点の閾値・補正で付いた信頼度 (predictions_cache.confidence)",
   "realized_new_logic_since": "2026-11-07",
   "realized_new_logic_mix": {
-   "S": 0.15,
+   "S": 0.1333,
    "A": 0.2,
-   "B": 0.425,
-   "C": 0.125,
-   "D": 0.1
+   "B": 0.4167,
+   "C": 0.1333,
+   "D": 0.1167
   },
-  "realized_new_logic_n": 40
+  "realized_new_logic_n": 60
  },
  "bet_gate": {
   "available": true,
-  "n": 40,
+  "n": 60,
   "target_block_rate": {
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
-  "model_deployed_at": "2026-11-02 19:52:02",
+  "model_deployed_at": "2026-11-09 20:13:31",
   "window_matches_model": false,
-  "model_retrained_uncommitted": true,
+  "model_retrained_uncommitted": false,
   "thresholds": {
-   "top_prob": 0.1572,
-   "top3_sum": 0.3953
+   "top_prob": 0.1509,
+   "top3_sum": 0.3875
   },
-  "window_rule": "current_model",
-  "n_current": 40,
-  "n_older": null,
-  "sd_median_current": null,
-  "sd_median_older": null,
-  "dispersion_ratio": null,
+  "window_rule": "since_prev_model",
+  "n_current": 20,
+  "n_older": 40,
+  "sd_median_current": 0.6906,
+  "sd_median_older": 0.8027,
+  "dispersion_ratio": 1.162,
   "dispersion_ratio_limit": 1.4,
-  "prev_model_deployed_at": null
+  "prev_model_deployed_at": "2026-11-02 19:52:02"
  },
  "confidence_adjust_watch": {
   "since": "2026-11-07",
