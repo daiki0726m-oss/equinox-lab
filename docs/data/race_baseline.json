@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-14T05:45:19.068859+09:00",
+ "generated_at": "2026-11-14T08:59:04.922094+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -212,43 +212,43 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 39.7,
-   "A": 23.4,
-   "B": 13.1,
+   "S": 40.4,
+   "A": 22.8,
+   "B": 13.2,
    "C": 9.4
   },
   "calibrated_on": "補正後 (confidence.post_adjust 込み) の最終構成比",
   "mix_before_adjust": {
-   "S": 0.0667,
-   "A": 0.2578,
-   "B": 0.3867,
-   "C": 0.1822,
-   "D": 0.1067
+   "S": 0.0578,
+   "A": 0.2756,
+   "B": 0.3778,
+   "C": 0.1778,
+   "D": 0.1111
   },
   "mix_after_adjust": {
    "S": 0.1822,
    "A": 0.24,
    "B": 0.2889,
-   "C": 0.1822,
-   "D": 0.1067
+   "C": 0.1778,
+   "D": 0.1111
   },
   "adjusted_share": 0.2133,
   "realized_mix": {
    "S": 0.2267,
-   "A": 0.1956,
-   "B": 0.1822,
-   "C": 0.2089,
-   "D": 0.1867
+   "A": 0.1911,
+   "B": 0.1911,
+   "C": 0.2,
+   "D": 0.1911
   },
   "realized_n": 225,
   "realized_note": "各予測の時点の閾値・補正で付いた信頼度 (predictions_cache.confidence)",
   "realized_new_logic_since": "2026-11-07",
   "realized_new_logic_mix": {
    "S": 0.1333,
-   "A": 0.2167,
-   "B": 0.3667,
-   "C": 0.2,
-   "D": 0.0833
+   "A": 0.2,
+   "B": 0.4,
+   "C": 0.1667,
+   "D": 0.1
   },
   "realized_new_logic_n": 60
  },
@@ -264,14 +264,14 @@
   "model_retrained_uncommitted": false,
   "thresholds": {
    "top_prob": 0.1509,
-   "top3_sum": 0.3881
+   "top3_sum": 0.3871
   },
   "window_rule": "since_prev_model",
   "n_current": 20,
   "n_older": 40,
-  "sd_median_current": 0.7049,
+  "sd_median_current": 0.7147,
   "sd_median_older": 0.8027,
-  "dispersion_ratio": 1.139,
+  "dispersion_ratio": 1.123,
   "dispersion_ratio_limit": 1.4,
   "prev_model_deployed_at": "2026-11-02 19:52:02"
  },
