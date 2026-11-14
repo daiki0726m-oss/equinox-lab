@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-14T22:56:01.829476+09:00",
+ "generated_at": "2026-11-15T01:53:25.029329+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -251,13 +251,13 @@
    "D": 0.1
   },
   "realized_new_logic_n": 60,
-  "keep_reason": "週末の途中 (土曜の予想の確定 (9:30) 後)",
+  "keep_reason": "週末の途中 (日曜 = 土曜の予想は確定済み)",
   "if_rebuilt": {
    "thresholds": {
-    "S": 39.7,
-    "A": 21.8,
-    "B": 12.9,
-    "C": 9.3
+    "S": 40.4,
+    "A": 21.5,
+    "B": 13.2,
+    "C": 9.2
    },
    "n": 227,
    "sample_period": "2026-10-10〜2026-11-15"
@@ -285,7 +285,7 @@
   "dispersion_ratio": 1.123,
   "dispersion_ratio_limit": 1.4,
   "prev_model_deployed_at": "2026-11-02 19:52:02",
-  "keep_reason": "週末の途中 (土曜の予想の確定 (9:30) 後)",
+  "keep_reason": "週末の途中 (日曜 = 土曜の予想は確定済み)",
   "sunday_check": {
    "available": true,
    "n": 40,
@@ -295,23 +295,23 @@
     "top3_sum": 0.3871
    },
    "thresholds_current_window": {
-    "top_prob": 0.1535,
-    "top3_sum": 0.3917
+    "top_prob": 0.1478,
+    "top3_sum": 0.3796
    },
    "block_rate_kept": {
-    "top_prob": 0.3,
-    "top3_sum": 0.25,
-    "either": 0.35
+    "top_prob": 0.375,
+    "top3_sum": 0.325,
+    "either": 0.4
    },
    "block_rate_current_window": {
     "top_prob": 0.325,
     "top3_sum": 0.275,
-    "either": 0.375
+    "either": 0.4
    },
    "diff_pt": {
-    "top_prob": -2.5,
-    "top3_sum": -2.5,
-    "either": -2.5
+    "top_prob": 5.0,
+    "top3_sum": 5.0,
+    "either": 0.0
    },
    "note": "閾値は据え置き (KEEP_BET_GATE)。比較のみ"
   }
