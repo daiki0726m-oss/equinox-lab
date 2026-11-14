@@ -3578,5 +3578,15 @@
   "race_name": "",
   "chunk": 0,
   "chars": 0
+ },
+ {
+  "post_id": "17922292671306776",
+  "posted_at": "2026-11-14T10:36:10.604940+09:00",
+  "slot": "post_predict",
+  "pattern": "transparency",
+  "race_id": "202608050311",
+  "race_name": "デイリー杯2歳S",
+  "chunk": 0,
+  "chars": 166
  }
 ]
