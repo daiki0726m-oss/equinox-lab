@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-15T04:38:54.460225+09:00",
+ "generated_at": "2026-11-15T07:49:24.059844+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -255,9 +255,9 @@
   "if_rebuilt": {
    "thresholds": {
     "S": 40.4,
-    "A": 21.6,
+    "A": 21.5,
     "B": 13.1,
-    "C": 9.2
+    "C": 9.3
    },
    "n": 227,
    "sample_period": "2026-10-10〜2026-11-15"
@@ -295,7 +295,7 @@
     "top3_sum": 0.3871
    },
    "thresholds_current_window": {
-    "top_prob": 0.1494,
+    "top_prob": 0.1465,
     "top3_sum": 0.3779
    },
    "block_rate_kept": {
@@ -304,14 +304,14 @@
     "either": 0.375
    },
    "block_rate_current_window": {
-    "top_prob": 0.325,
+    "top_prob": 0.3,
     "top3_sum": 0.25,
-    "either": 0.35
+    "either": 0.325
    },
    "diff_pt": {
-    "top_prob": 2.5,
+    "top_prob": 5.0,
     "top3_sum": 7.5,
-    "either": 2.5
+    "either": 5.0
    },
    "note": "閾値は据え置き (KEEP_BET_GATE)。比較のみ"
   }
