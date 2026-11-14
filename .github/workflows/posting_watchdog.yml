@@ -291,6 +291,40 @@ jobs:
             fi
           fi
 
+      # 🧱 #174 (2026-11-14): GitHub に workflow ファイルごと拒否されている workflow を検知する。
+      # 11/10 に race_day_runner.yml が「式の長さ 21,000 字」の上限で拒否され、cron も dispatch も
+      # 一切起動しないまま 11/14 (土) の朝まで4日間だれも気づかなかった (結果収集ゼロ)。
+      # 拒否は push の後の event=push の失敗 run としてしか見えない (この repo に on: push は無い)。
+      # あわせて、いまの workflow ファイルが上限に近づいていないかも見る。
+      - name: 🧱 workflow ファイルの拒否を検知 (#174)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          OUT=$(python3 scripts/check_workflow_rejections.py 2>&1); RC1=$?
+          LIM=$(python3 scripts/check_workflow_limits.py 2>&1); RC2=$?
+          set -e
+          echo "$OUT"; echo "$LIM"
+          if [ "$RC1" = "1" ] || [ "$RC2" = "1" ]; then
+            TITLE="🧱 workflow ファイルが GitHub に拒否されています"
+            OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            BODY=$(printf '%s\n' \
+              "拒否された workflow は **cron も dispatch も一切起動しません** (dispatch は HTTP 422)。" \
+              "11/10〜11/14 は race_day_runner.yml がこの状態で、土曜の結果収集が一度も動きませんでした (#174)。" "" \
+              '```' "$OUT" "$LIM" '```' "" \
+              "**対処**: Actions の該当 run を開くとエラー行が出ます。式の長さ上限なら、run ブロックの" \
+              "式 (ドル記号と二重の波括弧) を環境変数 (GITHUB_REPOSITORY など) に置き換える。直して push したら手で dispatch して確認。" "" \
+              "_posting_watchdog.yml が自動生成 ($(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M'))_")
+            if [ -z "$OPEN" ]; then
+              gh issue create --title "$TITLE" --body "$BODY" 2>&1 || echo "⚠️ Issue 作成失敗"
+            else
+              gh issue comment "$OPEN" --body "$BODY" 2>&1 || echo "⚠️ Issue コメント失敗"
+            fi
+            exit 1
+          fi
+
       # 🏇 #160 (2026-09-21): 平日・祝日開催のセーフティネット (曜日でなくカレンダー駆動)
       #
       # auto_post_x.yml の race-day cron は全て DOW '6,0' (土日) 固定、race_day_runner も
