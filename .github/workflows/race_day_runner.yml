@@ -585,6 +585,20 @@ jobs:
             case "$JST_HM" in
               085*|091*|092*|093*|172*|173*|181*|182*) DB_PUSH=1 ;;  # 投稿トリガー直前 (091*: 下の注)
             esac
+            # #174: 起動直後の1周目と、この周の後で出す投稿 (post_predict / results / refresh_dashboard) が
+            # まだ残っている周は必ず push する。投稿の run は origin の DB から export し直すので、runner の
+            # 結果が origin に無いと公開中の結果を消す (11/14: 10:31 起動の runner が 10:35 に結果入りの JSON を
+            # 公開 → 1分後に自分で出した post_predict が push 前の古い DB から export し、全結果が消えた)。
+            # 上の時刻の窓は「起動が朝から動いていた日」の前提で、遅く起動した日・窓を過ぎてから出す日は外れる。
+            if [ "$ITER" = "1" ]; then DB_PUSH=1; fi
+            _HM_NOW=$(now_hm)
+            for _pm in "post_predict:$LOCK_HM:1155" "results:1730:2400" "refresh_dashboard:1830:2400"; do
+              IFS=: read -r _m _from _to <<< "$_pm"
+              if [ "$_HM_NOW" -ge "$_from" ] && [ "$_HM_NOW" -lt "$_to" ] \
+                 && ! grep -q "^${_m}\$" "$TRIGGER_FILE" 2>/dev/null; then
+                DB_PUSH=1
+              fi
+            done
             if [ "$DB_PUSH" = "1" ]; then
               bash scripts/db_pack.sh 2>/dev/null || true
               git add keiba.db.gz 2>/dev/null || true

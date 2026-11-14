@@ -216,6 +216,61 @@ def _hold_back_unconfirmed(output_dir, ds, all_races):
     return out, withheld
 
 
+# 公開 JSON の馬ごとの結果の項目 (export が DB の results から書くもの)
+_RESULT_HORSE_KEYS = ("finish", "time", "actual_odds", "last_3f", "margin", "dnf", "dq", "excluded")
+
+
+def _carry_forward_results(out_path, ds, all_races):
+    """#174: 公開済みの JSON にある結果を、今回の DB に結果が無いレースへ引き継ぐ (結果を後退させない)。
+
+    11/14 10:35 に race_day_runner が結果入りの JSON を公開した1分後、runner 自身が dispatch した
+    post_predict の run が **origin の DB (runner はまだ push していない = 結果なし)** から export し直し、
+    全36レースの結果を消した。#68/#90 と同じ「古い DB からの再 export で JSON が巻き戻る」型で、
+    runner の DB push の間引き (#153) のたびに起こりうる。結果は確定した後は変わらないので、
+    今回の DB にそのレースの着順が1つも無い時だけ、公開済みの版の結果を残す。DB に着順があれば
+    DB を正とする (訂正・降着は DB 側で入る)。過去の日・確定前の日にも同じ規則で効く。
+    """
+    try:
+        with open(out_path, encoding="utf-8") as f:
+            prev = json.load(f)
+    except Exception:
+        return 0
+    prev_races = {}
+    for rs in (prev.get("venues") or {}).values():
+        for r in (rs if isinstance(rs, list) else (rs or {}).get("races", [])) or []:
+            if isinstance(r, dict) and r.get("race_id") and r.get("has_results"):
+                prev_races[r["race_id"]] = r
+    if not prev_races:
+        return 0
+    kept = []
+    for r in all_races:
+        if r.get("has_results") or r.get("race_id") not in prev_races:
+            continue
+        pr = prev_races[r["race_id"]]
+        ph = {h.get("horse_number"): h for h in (pr.get("horses") or []) if isinstance(h, dict)}
+        for h in r.get("horses") or []:
+            src = ph.get(h.get("horse_number"))
+            if not src:
+                continue
+            for k in _RESULT_HORSE_KEYS:
+                if k in src:
+                    h[k] = src[k]
+                else:
+                    h.pop(k, None)
+            if src.get("scratched"):
+                h["scratched"] = True
+            if (src.get("finish") or 0) > 0 and src.get("popularity"):
+                h["popularity"] = src["popularity"]
+        r["has_results"] = True
+        r["payouts"] = pr.get("payouts") or []
+        kept.append(r)
+    if kept:
+        print(f"  🛡 {ds}: DB に着順が無い {len(kept)}R は公開済みの結果を残す (古い DB からの再 export で"
+              f"結果を消さない #174): " + ", ".join(f"{x.get('venue', '')}{x.get('race_number', '')}R"
+                                                     for x in kept[:8]))
+    return len(kept)
+
+
 def export_predictions(date_str=None):
     """指定日の予測データをJSONファイルに書き出し"""
 
@@ -565,6 +620,7 @@ def export_predictions(date_str=None):
             }
 
             out_path = os.path.join(output_dir, f"predictions_{ds}.json")
+            _carry_forward_results(out_path, ds, all_races)
             # #150c: 既存 JSON より大幅にレースが減る上書きを止める。
             # 前夜 prefetch が36レースを公開した後、翌朝の predict が部分成功すると
             # その export が N レースで **全置換**し、ダッシュボードが前夜より後退する
