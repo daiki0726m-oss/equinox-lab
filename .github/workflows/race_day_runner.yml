@@ -152,12 +152,12 @@ jobs:
             ymd=$(TZ=Asia/Tokyo date +%Y%m%d)
             # gh api には時間制限のフラグが無いので timeout で包む (応答が返らないと runner の周ごと止まる。
             # 124 は失敗扱い → raw に落ちる)
-            if ! js=$(timeout 20 gh api "repos/${{ github.repository }}/contents/docs/data/posted_slots_${ymd}.json?ref=main" \
+            if ! js=$(timeout 20 gh api "repos/${GITHUB_REPOSITORY}/contents/docs/data/posted_slots_${ymd}.json?ref=main" \
                         -H "Accept: application/vnd.github.raw" 2>/dev/null); then
               # API の 404 (= その日の lock がまだ1つも無い) か、API の失敗。どちらも raw を読んでみる
               case "$js" in *'"404"'*) api404=1 ;; esac
               if js=$(curl -sf --max-time 10 \
-                        "https://raw.githubusercontent.com/${{ github.repository }}/main/docs/data/posted_slots_${ymd}.json" \
+                        "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/docs/data/posted_slots_${ymd}.json" \
                         2>/dev/null); then
                 src=raw
               else
@@ -173,7 +173,7 @@ jobs:
           # auto_post_x の実行中・待機中の run のうち、run-name (= displayTitle) が mode のものの数。
           # 確認できない時は "?"。cron 起動の run は run-name が "cron" なので数えられない (下の注記)。
           count_active_runs() {
-            timeout 20 gh run list -R ${{ github.repository }} --workflow auto_post_x.yml --limit 20 \
+            timeout 20 gh run list -R ${GITHUB_REPOSITORY} --workflow auto_post_x.yml --limit 20 \
               --json displayTitle,status \
               --jq "[.[] | select(.displayTitle == \"$1\" and (.status == \"in_progress\" or .status == \"queued\" or .status == \"pending\" or .status == \"waiting\" or .status == \"requested\"))] | length" \
               2>/dev/null || echo "?"
@@ -303,7 +303,7 @@ jobs:
             fi
 
             echo "🚀 [SAFETY-NET] ${mode} を dispatch (予定 ${minimum_jst_hm:0:2}:${minimum_jst_hm:2:4} 到達, 現在 $(TZ=Asia/Tokyo date +%H:%M:%S))"
-            if gh workflow run auto_post_x.yml -R ${{ github.repository }} -f mode="$mode" 2>&1; then
+            if gh workflow run auto_post_x.yml -R ${GITHUB_REPOSITORY} -f mode="$mode" 2>&1; then
               AP_SENT_THIS_ITER=1
               echo "${mode}" >> "$TRIGGER_FILE"
               if [ "$mode" = "post_predict" ]; then PP_LAST_DISPATCH_AT=$(date +%s); fi
@@ -436,7 +436,7 @@ jobs:
             fi
             if [ $(( $(date +%s) - RUN_START + extra )) -ge "$MAX_LOOP_SEC" ]; then
               echo "⏳ 6時間上限の手前 → 後続 runner を dispatch して終了 (end_hour=${END_HH})"
-              gh workflow run race_day_runner.yml -R ${{ github.repository }} -f end_hour="$END_HH" \
+              gh workflow run race_day_runner.yml -R ${GITHUB_REPOSITORY} -f end_hour="$END_HH" \
                 && echo "  ✅ 後続を dispatch (concurrency で本 run 終了後に開始)" \
                 || echo "  ⚠️ 後続 dispatch 失敗 — watchdog / safety net の再起動に委ねる"
               return 0
