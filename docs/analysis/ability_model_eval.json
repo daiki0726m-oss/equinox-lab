@@ -1,0 +1,772 @@
+{
+  "baselines": {
+    "bet_all": {
+      "bets": 85776,
+      "hits": 6267,
+      "hit_pct": 7.3,
+      "roi_pct": 73.1,
+      "avg_odds": 68.4,
+      "best_day_return_share_pct": 1.2,
+      "roi_excl_best_day_pct": 72.5
+    },
+    "bet_favorite": {
+      "bets": 6264,
+      "hits": 2087,
+      "hit_pct": 33.3,
+      "roi_pct": 78.8,
+      "avg_odds": 2.6,
+      "best_day_return_share_pct": 0.9,
+      "roi_excl_best_day_pct": 78.5
+    }
+  },
+  "raw_edge": {
+    "edge>=1.5": {
+      "bets": 39317,
+      "hits": 853,
+      "hit_pct": 2.2,
+      "roi_pct": 68.1,
+      "avg_odds": 102.1,
+      "best_day_return_share_pct": 2.4,
+      "roi_excl_best_day_pct": 66.7
+    },
+    "edge>=2.0": {
+      "bets": 29128,
+      "hits": 451,
+      "hit_pct": 1.5,
+      "roi_pct": 67.0,
+      "avg_odds": 118.8,
+      "best_day_return_share_pct": 3.3,
+      "roi_excl_best_day_pct": 65.1
+    }
+  },
+  "ev_band": {
+    "odds2-10_ev>=1.0": {
+      "bets": 3557,
+      "hits": 449,
+      "hit_pct": 12.6,
+      "roi_pct": 77.7,
+      "avg_odds": 6.8,
+      "best_day_return_share_pct": 1.8,
+      "roi_excl_best_day_pct": 76.8,
+      "by_year": {
+        "2025": {
+          "bets": 1896,
+          "hits": 246,
+          "hit_pct": 13.0,
+          "roi_pct": 81.0,
+          "avg_odds": 6.8,
+          "best_day_return_share_pct": 3.2,
+          "roi_excl_best_day_pct": 79.4
+        },
+        "2026": {
+          "bets": 1661,
+          "hits": 203,
+          "hit_pct": 12.2,
+          "roi_pct": 73.9,
+          "avg_odds": 6.8,
+          "best_day_return_share_pct": 2.5,
+          "roi_excl_best_day_pct": 73.2
+        }
+      }
+    },
+    "odds2-10_ev>=1.2": {
+      "bets": 1774,
+      "hits": 205,
+      "hit_pct": 11.6,
+      "roi_pct": 74.3,
+      "avg_odds": 7.2,
+      "best_day_return_share_pct": 2.5,
+      "roi_excl_best_day_pct": 73.0,
+      "by_year": {
+        "2025": {
+          "bets": 949,
+          "hits": 111,
+          "hit_pct": 11.7,
+          "roi_pct": 75.7,
+          "avg_odds": 7.1,
+          "best_day_return_share_pct": 4.6,
+          "roi_excl_best_day_pct": 73.2
+        },
+        "2026": {
+          "bets": 825,
+          "hits": 94,
+          "hit_pct": 11.4,
+          "roi_pct": 72.7,
+          "avg_odds": 7.2,
+          "best_day_return_share_pct": 3.9,
+          "roi_excl_best_day_pct": 70.8
+        }
+      }
+    },
+    "odds2-10_ev>=1.5": {
+      "bets": 585,
+      "hits": 72,
+      "hit_pct": 12.3,
+      "roi_pct": 84.5,
+      "avg_odds": 7.5,
+      "best_day_return_share_pct": 5.0,
+      "roi_excl_best_day_pct": 81.0,
+      "by_year": {
+        "2025": {
+          "bets": 308,
+          "hits": 39,
+          "hit_pct": 12.7,
+          "roi_pct": 84.8,
+          "avg_odds": 7.5,
+          "best_day_return_share_pct": 9.5,
+          "roi_excl_best_day_pct": 78.2
+        },
+        "2026": {
+          "bets": 277,
+          "hits": 33,
+          "hit_pct": 11.9,
+          "roi_pct": 84.1,
+          "avg_odds": 7.5,
+          "best_day_return_share_pct": 6.9,
+          "roi_excl_best_day_pct": 80.0
+        }
+      }
+    },
+    "odds3-15_ev>=1.0": {
+      "bets": 6583,
+      "hits": 614,
+      "hit_pct": 9.3,
+      "roi_pct": 76.2,
+      "avg_odds": 9.6,
+      "best_day_return_share_pct": 1.7,
+      "roi_excl_best_day_pct": 75.4,
+      "by_year": {
+        "2025": {
+          "bets": 3589,
+          "hits": 328,
+          "hit_pct": 9.1,
+          "roi_pct": 74.9,
+          "avg_odds": 9.6,
+          "best_day_return_share_pct": 2.8,
+          "roi_excl_best_day_pct": 73.6
+        },
+        "2026": {
+          "bets": 2994,
+          "hits": 286,
+          "hit_pct": 9.6,
+          "roi_pct": 77.9,
+          "avg_odds": 9.5,
+          "best_day_return_share_pct": 3.6,
+          "roi_excl_best_day_pct": 76.1
+        }
+      }
+    },
+    "odds3-15_ev>=1.2": {
+      "bets": 3765,
+      "hits": 321,
+      "hit_pct": 8.5,
+      "roi_pct": 74.1,
+      "avg_odds": 10.1,
+      "best_day_return_share_pct": 2.0,
+      "roi_excl_best_day_pct": 73.0,
+      "by_year": {
+        "2025": {
+          "bets": 2058,
+          "hits": 177,
+          "hit_pct": 8.6,
+          "roi_pct": 76.1,
+          "avg_odds": 10.1,
+          "best_day_return_share_pct": 3.3,
+          "roi_excl_best_day_pct": 74.3
+        },
+        "2026": {
+          "bets": 1707,
+          "hits": 144,
+          "hit_pct": 8.4,
+          "roi_pct": 71.7,
+          "avg_odds": 10.0,
+          "best_day_return_share_pct": 4.5,
+          "roi_excl_best_day_pct": 69.4
+        }
+      }
+    },
+    "odds3-15_ev>=1.5": {
+      "bets": 1578,
+      "hits": 129,
+      "hit_pct": 8.2,
+      "roi_pct": 75.8,
+      "avg_odds": 10.8,
+      "best_day_return_share_pct": 3.1,
+      "roi_excl_best_day_pct": 73.9,
+      "by_year": {
+        "2025": {
+          "bets": 865,
+          "hits": 72,
+          "hit_pct": 8.3,
+          "roi_pct": 77.2,
+          "avg_odds": 10.9,
+          "best_day_return_share_pct": 5.6,
+          "roi_excl_best_day_pct": 73.7
+        },
+        "2026": {
+          "bets": 713,
+          "hits": 57,
+          "hit_pct": 8.0,
+          "roi_pct": 74.1,
+          "avg_odds": 10.7,
+          "best_day_return_share_pct": 6.8,
+          "roi_excl_best_day_pct": 69.9
+        }
+      }
+    },
+    "odds2-30_ev>=1.0": {
+      "bets": 14747,
+      "hits": 975,
+      "hit_pct": 6.6,
+      "roi_pct": 83.0,
+      "avg_odds": 16.2,
+      "best_day_return_share_pct": 1.3,
+      "roi_excl_best_day_pct": 82.4,
+      "by_year": {
+        "2025": {
+          "bets": 8120,
+          "hits": 516,
+          "hit_pct": 6.4,
+          "roi_pct": 79.0,
+          "avg_odds": 16.4,
+          "best_day_return_share_pct": 2.3,
+          "roi_excl_best_day_pct": 78.2
+        },
+        "2026": {
+          "bets": 6627,
+          "hits": 459,
+          "hit_pct": 6.9,
+          "roi_pct": 88.0,
+          "avg_odds": 16.1,
+          "best_day_return_share_pct": 2.7,
+          "roi_excl_best_day_pct": 86.6
+        }
+      }
+    },
+    "odds2-30_ev>=1.2": {
+      "bets": 10207,
+      "hits": 584,
+      "hit_pct": 5.7,
+      "roi_pct": 82.5,
+      "avg_odds": 17.6,
+      "best_day_return_share_pct": 1.7,
+      "roi_excl_best_day_pct": 81.6,
+      "by_year": {
+        "2025": {
+          "bets": 5660,
+          "hits": 318,
+          "hit_pct": 5.6,
+          "roi_pct": 80.8,
+          "avg_odds": 17.7,
+          "best_day_return_share_pct": 2.6,
+          "roi_excl_best_day_pct": 79.6
+        },
+        "2026": {
+          "bets": 4547,
+          "hits": 266,
+          "hit_pct": 5.9,
+          "roi_pct": 84.7,
+          "avg_odds": 17.5,
+          "best_day_return_share_pct": 3.7,
+          "roi_excl_best_day_pct": 82.5
+        }
+      }
+    },
+    "odds2-30_ev>=1.5": {
+      "bets": 5811,
+      "hits": 286,
+      "hit_pct": 4.9,
+      "roi_pct": 79.8,
+      "avg_odds": 19.3,
+      "best_day_return_share_pct": 2.4,
+      "roi_excl_best_day_pct": 78.4,
+      "by_year": {
+        "2025": {
+          "bets": 3251,
+          "hits": 157,
+          "hit_pct": 4.8,
+          "roi_pct": 78.0,
+          "avg_odds": 19.4,
+          "best_day_return_share_pct": 4.4,
+          "roi_excl_best_day_pct": 75.5
+        },
+        "2026": {
+          "bets": 2560,
+          "hits": 129,
+          "hit_pct": 5.0,
+          "roi_pct": 81.9,
+          "avg_odds": 19.2,
+          "best_day_return_share_pct": 4.0,
+          "roi_excl_best_day_pct": 79.8
+        }
+      }
+    }
+  },
+  "stacked": {
+    "odds2-10_ev2>=1.0": {
+      "bets": 4,
+      "hits": 3,
+      "hit_pct": 75.0,
+      "roi_pct": 487.5,
+      "avg_odds": 7.1,
+      "best_day_return_share_pct": 44.1,
+      "roi_excl_best_day_pct": 363.3,
+      "by_year": {
+        "2025": {
+          "bets": 3,
+          "hits": 2,
+          "hit_pct": 66.7,
+          "roi_pct": 456.7,
+          "avg_odds": 7.5,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 255.0
+        },
+        "2026": {
+          "bets": 1,
+          "hits": 1,
+          "hit_pct": 100.0,
+          "roi_pct": 580.0,
+          "avg_odds": 5.8,
+          "best_day_return_share_pct": null,
+          "roi_excl_best_day_pct": null
+        }
+      }
+    },
+    "odds2-10_ev2>=1.1": {
+      "bets": 3,
+      "hits": 2,
+      "hit_pct": 66.7,
+      "roi_pct": 456.7,
+      "avg_odds": 7.5,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 255.0,
+      "by_year": {
+        "2025": {
+          "bets": 3,
+          "hits": 2,
+          "hit_pct": 66.7,
+          "roi_pct": 456.7,
+          "avg_odds": 7.5,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 255.0
+        }
+      }
+    },
+    "odds2-10_ev2>=1.2": {
+      "bets": 3,
+      "hits": 2,
+      "hit_pct": 66.7,
+      "roi_pct": 456.7,
+      "avg_odds": 7.5,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 255.0,
+      "by_year": {
+        "2025": {
+          "bets": 3,
+          "hits": 2,
+          "hit_pct": 66.7,
+          "roi_pct": 456.7,
+          "avg_odds": 7.5,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 255.0
+        }
+      }
+    },
+    "odds2-10_ev2>=1.4": {
+      "bets": 3,
+      "hits": 2,
+      "hit_pct": 66.7,
+      "roi_pct": 456.7,
+      "avg_odds": 7.5,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 255.0,
+      "by_year": {
+        "2025": {
+          "bets": 3,
+          "hits": 2,
+          "hit_pct": 66.7,
+          "roi_pct": 456.7,
+          "avg_odds": 7.5,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 255.0
+        }
+      }
+    },
+    "odds3-15_ev2>=1.0": {
+      "bets": 5,
+      "hits": 3,
+      "hit_pct": 60.0,
+      "roi_pct": 390.0,
+      "avg_odds": 7.8,
+      "best_day_return_share_pct": 44.1,
+      "roi_excl_best_day_pct": 272.5,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        },
+        "2026": {
+          "bets": 1,
+          "hits": 1,
+          "hit_pct": 100.0,
+          "roi_pct": 580.0,
+          "avg_odds": 5.8,
+          "best_day_return_share_pct": null,
+          "roi_excl_best_day_pct": null
+        }
+      }
+    },
+    "odds3-15_ev2>=1.1": {
+      "bets": 4,
+      "hits": 2,
+      "hit_pct": 50.0,
+      "roi_pct": 342.5,
+      "avg_odds": 8.3,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 170.0,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        }
+      }
+    },
+    "odds3-15_ev2>=1.2": {
+      "bets": 4,
+      "hits": 2,
+      "hit_pct": 50.0,
+      "roi_pct": 342.5,
+      "avg_odds": 8.3,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 170.0,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        }
+      }
+    },
+    "odds3-15_ev2>=1.4": {
+      "bets": 4,
+      "hits": 2,
+      "hit_pct": 50.0,
+      "roi_pct": 342.5,
+      "avg_odds": 8.3,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 170.0,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        }
+      }
+    },
+    "odds2-30_ev2>=1.0": {
+      "bets": 6,
+      "hits": 3,
+      "hit_pct": 50.0,
+      "roi_pct": 325.0,
+      "avg_odds": 10.6,
+      "best_day_return_share_pct": 44.1,
+      "roi_excl_best_day_pct": 218.0,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        },
+        "2026": {
+          "bets": 2,
+          "hits": 1,
+          "hit_pct": 50.0,
+          "roi_pct": 290.0,
+          "avg_odds": 15.1,
+          "best_day_return_share_pct": 100.0,
+          "roi_excl_best_day_pct": 0.0
+        }
+      }
+    },
+    "odds2-30_ev2>=1.1": {
+      "bets": 5,
+      "hits": 2,
+      "hit_pct": 40.0,
+      "roi_pct": 274.0,
+      "avg_odds": 11.5,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 127.5,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        },
+        "2026": {
+          "bets": 1,
+          "hits": 0,
+          "hit_pct": 0.0,
+          "roi_pct": 0.0,
+          "avg_odds": 24.4,
+          "best_day_return_share_pct": null,
+          "roi_excl_best_day_pct": null
+        }
+      }
+    },
+    "odds2-30_ev2>=1.2": {
+      "bets": 5,
+      "hits": 2,
+      "hit_pct": 40.0,
+      "roi_pct": 274.0,
+      "avg_odds": 11.5,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 127.5,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        },
+        "2026": {
+          "bets": 1,
+          "hits": 0,
+          "hit_pct": 0.0,
+          "roi_pct": 0.0,
+          "avg_odds": 24.4,
+          "best_day_return_share_pct": null,
+          "roi_excl_best_day_pct": null
+        }
+      }
+    },
+    "odds2-30_ev2>=1.4": {
+      "bets": 5,
+      "hits": 2,
+      "hit_pct": 40.0,
+      "roi_pct": 274.0,
+      "avg_odds": 11.5,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 127.5,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        },
+        "2026": {
+          "bets": 1,
+          "hits": 0,
+          "hit_pct": 0.0,
+          "roi_pct": 0.0,
+          "avg_odds": 24.4,
+          "best_day_return_share_pct": null,
+          "roi_excl_best_day_pct": null
+        }
+      }
+    },
+    "all_ev2>=1.0": {
+      "bets": 7,
+      "hits": 3,
+      "hit_pct": 42.9,
+      "roi_pct": 278.6,
+      "avg_odds": 9.3,
+      "best_day_return_share_pct": 44.1,
+      "roi_excl_best_day_pct": 181.7,
+      "by_year": {
+        "2025": {
+          "bets": 5,
+          "hits": 2,
+          "hit_pct": 40.0,
+          "roi_pct": 274.0,
+          "avg_odds": 7.0,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 127.5
+        },
+        "2026": {
+          "bets": 2,
+          "hits": 1,
+          "hit_pct": 50.0,
+          "roi_pct": 290.0,
+          "avg_odds": 15.1,
+          "best_day_return_share_pct": 100.0,
+          "roi_excl_best_day_pct": 0.0
+        }
+      }
+    },
+    "all_ev2>=1.1": {
+      "bets": 5,
+      "hits": 2,
+      "hit_pct": 40.0,
+      "roi_pct": 274.0,
+      "avg_odds": 11.5,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 127.5,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        },
+        "2026": {
+          "bets": 1,
+          "hits": 0,
+          "hit_pct": 0.0,
+          "roi_pct": 0.0,
+          "avg_odds": 24.4,
+          "best_day_return_share_pct": null,
+          "roi_excl_best_day_pct": null
+        }
+      }
+    },
+    "all_ev2>=1.2": {
+      "bets": 5,
+      "hits": 2,
+      "hit_pct": 40.0,
+      "roi_pct": 274.0,
+      "avg_odds": 11.5,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 127.5,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        },
+        "2026": {
+          "bets": 1,
+          "hits": 0,
+          "hit_pct": 0.0,
+          "roi_pct": 0.0,
+          "avg_odds": 24.4,
+          "best_day_return_share_pct": null,
+          "roi_excl_best_day_pct": null
+        }
+      }
+    },
+    "all_ev2>=1.4": {
+      "bets": 5,
+      "hits": 2,
+      "hit_pct": 40.0,
+      "roi_pct": 274.0,
+      "avg_odds": 11.5,
+      "best_day_return_share_pct": 62.8,
+      "roi_excl_best_day_pct": 127.5,
+      "by_year": {
+        "2025": {
+          "bets": 4,
+          "hits": 2,
+          "hit_pct": 50.0,
+          "roi_pct": 342.5,
+          "avg_odds": 8.3,
+          "best_day_return_share_pct": 62.8,
+          "roi_excl_best_day_pct": 170.0
+        },
+        "2026": {
+          "bets": 1,
+          "hits": 0,
+          "hit_pct": 0.0,
+          "roi_pct": 0.0,
+          "avg_odds": 24.4,
+          "best_day_return_share_pct": null,
+          "roi_excl_best_day_pct": null
+        }
+      }
+    }
+  },
+  "meta": {
+    "eval_start": "2025-01-01",
+    "train_races": 17278,
+    "eval_races": 6265,
+    "auc_val": 0.7762,
+    "n_features": 49,
+    "importance_top10": [
+      {
+        "feature": "avg_finish_5r",
+        "gain_pct": 13.3
+      },
+      {
+        "feature": "jt_score",
+        "gain_pct": 10.2
+      },
+      {
+        "feature": "dist_top3_rate",
+        "gain_pct": 7.3
+      },
+      {
+        "feature": "top3_rate_10r",
+        "gain_pct": 6.2
+      },
+      {
+        "feature": "jockey_cond_top3",
+        "gain_pct": 3.5
+      },
+      {
+        "feature": "sire_surface_top3_rate",
+        "gain_pct": 3.1
+      },
+      {
+        "feature": "si_latest",
+        "gain_pct": 3.1
+      },
+      {
+        "feature": "jockey_cond_win",
+        "gain_pct": 3.0
+      },
+      {
+        "feature": "trainer_cond_top3",
+        "gain_pct": 3.0
+      },
+      {
+        "feature": "avg_pos_ratio",
+        "gain_pct": 2.9
+      }
+    ],
+    "stack_coef": {
+      "p_model": -0.295,
+      "p_market": 1.712,
+      "odds_log_s": -1.01,
+      "horse_count": 0.002
+    }
+  }
+}

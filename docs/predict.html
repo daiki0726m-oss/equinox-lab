@@ -1,0 +1,1773 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AI KEIBA PREDICTOR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ─── Design System ─── */
+:root {
+  --bg-primary: #0B1426;
+  --bg-card: #111B2E;
+  --bg-elevated: #162236;
+  --bg-hover: #1A2A42;
+  --border: #1E3050;
+  --border-light: #253B5A;
+  --text-primary: #E8ECF5;
+  --text-secondary: #8899B4;
+  --text-muted: #4A5E7A;
+  --gold: #D4A843;
+  --gold-light: #E8C86A;
+  --gold-dim: rgba(212,168,67,0.15);
+  --green: #34D399;
+  --green-dim: rgba(52,211,153,0.12);
+  --red: #F87171;
+  --red-dim: rgba(248,113,113,0.12);
+  --conf-s: #EF4444;
+  --conf-a: #F59E0B;
+  --conf-b: #3B82F6;
+  --conf-c: #6B7280;
+  --conf-d: #4B5563;
+  --bet-tansho: #EF4444;
+  --bet-fukusho: #F59E0B;
+  --bet-wide: #10B981;
+  --bet-umaren: #3B82F6;
+  --bet-sanrenpuku: #8B5CF6;
+  --bet-sanrentan: #EC4899;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 100px;
+  --shadow: 0 2px 12px rgba(0,0,0,0.3);
+  --transition: 0.2s cubic-bezier(0.4,0,0.2,1);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+html { font-size: 14px; }
+body {
+  font-family: 'Inter','Noto Sans JP',-apple-system,sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* ─── Header ─── */
+.header {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(17,27,46,0.92);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+}
+.header-top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 8px;
+}
+.logo {
+  font-size: 15px; font-weight: 800;
+  background: linear-gradient(135deg, var(--gold), var(--gold-light));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  white-space: nowrap;
+}
+.header-controls {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.input-date, .input-budget {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border var(--transition);
+}
+.input-date { width: 130px; }
+.input-budget { width: 80px; text-align: right; }
+.input-date:focus, .input-budget:focus { border-color: var(--gold); }
+.budget-label { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+.budget-unit { font-size: 12px; color: var(--text-secondary); }
+.btn-predict {
+  background: linear-gradient(135deg, var(--gold), #C6963A);
+  color: #0B1426;
+  border: none; border-radius: var(--radius-sm);
+  padding: 7px 18px;
+  font-size: 13px; font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.btn-predict:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(212,168,67,0.3); }
+.btn-predict:active { transform: translateY(0); }
+.btn-predict:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+/* ─── Bet Type Selector (header 内に配置されているので header と一緒に sticky 化) ─── */
+.bet-selector {
+  margin-top: 4px;
+  padding: 8px 0 0;
+  display: flex; gap: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.bet-selector::-webkit-scrollbar { display: none; }
+.bet-chip {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
+  font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  transition: all var(--transition);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.bet-chip:active { transform: scale(0.96); }
+.bet-chip[data-type="単勝"].active { background: var(--bet-tansho); color: #fff; border-color: var(--bet-tansho); }
+.bet-chip[data-type="複勝"].active { background: var(--bet-fukusho); color: #fff; border-color: var(--bet-fukusho); }
+.bet-chip[data-type="ワイド"].active { background: var(--bet-wide); color: #fff; border-color: var(--bet-wide); }
+.bet-chip[data-type="馬連"].active { background: var(--bet-umaren); color: #fff; border-color: var(--bet-umaren); }
+.bet-chip[data-type="三連複"].active { background: var(--bet-sanrenpuku); color: #fff; border-color: var(--bet-sanrenpuku); }
+.bet-chip[data-type="三連単"].active { background: var(--bet-sanrentan); color: #fff; border-color: var(--bet-sanrentan); }
+
+/* ─── Lock Banner ─── */
+.lock-banner {
+  display: none;
+  align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 16px;
+  background: var(--gold-dim);
+  border-bottom: 1px solid rgba(212,168,67,0.2);
+  font-size: 11px; color: var(--gold);
+  font-weight: 600;
+}
+.lock-banner.visible { display: flex; }
+
+/* ─── Summary Strip ─── */
+.summary-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  margin: 12px 16px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.summary-item {
+  background: var(--bg-card);
+  padding: 12px 8px;
+  text-align: center;
+}
+.summary-value {
+  font-size: 20px; font-weight: 800;
+  color: var(--gold);
+  line-height: 1.2;
+}
+.summary-label {
+  font-size: 10px; color: var(--text-muted);
+  margin-top: 2px;
+}
+.summary-item.clickable {
+  cursor: pointer;
+  transition: background var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.summary-item.clickable:hover { background: var(--bg-elevated); }
+.summary-item.clickable.active {
+  background: var(--gold-dim);
+  box-shadow: inset 0 -2px 0 var(--gold);
+}
+
+/* ─── Venue Tabs ─── */
+.venue-tabs {
+  display: flex; gap: 0; margin: 0 16px 12px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.venue-tab {
+  flex: 1;
+  padding: 8px 12px;
+  text-align: center;
+  font-size: 12px; font-weight: 600;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  transition: all var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.venue-tab:last-child { border-right: none; }
+.venue-tab.active {
+  background: var(--bg-elevated);
+  color: var(--gold);
+  box-shadow: inset 0 -2px 0 var(--gold);
+}
+
+/* ─── Main Content ─── */
+.main { padding: 0 16px 100px; max-width: 900px; margin: 0 auto; }
+
+/* ─── Race Card ─── */
+.race-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  margin-bottom: 10px;
+  overflow: hidden;
+  transition: border-color var(--transition);
+}
+.race-card:hover { border-color: var(--border-light); }
+.race-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.race-left { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.race-num {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: 12px; font-weight: 800;
+  color: var(--gold);
+  flex-shrink: 0;
+}
+.race-info { min-width: 0; }
+.race-name-line {
+  font-size: 13px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.race-meta {
+  font-size: 10px; color: var(--text-muted);
+  display: flex; gap: 8px; margin-top: 2px;
+}
+.race-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.conf-badge {
+  padding: 3px 10px; border-radius: var(--radius-pill);
+  font-size: 11px; font-weight: 700; color: #fff;
+}
+.conf-badge.S { background: var(--conf-s); }
+.conf-badge.A { background: var(--conf-a); }
+.conf-badge.B { background: var(--conf-b); }
+.conf-badge.C { background: var(--conf-c); }
+.conf-badge.D { background: var(--conf-d); }
+/* #151: 実測バッジ。色は良し悪しでなく率の大きさだけを表す */
+.conf-badge.cap { color: #fff; background: #4B5563; }
+.conf-badge.cap.hi  { background: #C9A227; color: #1a1a1a; }
+.conf-badge.cap.mid { background: #3B82F6; }
+.conf-badge.cap.lo  { background: #4B5563; opacity: 0.75; }
+.cap-block {
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px; padding: 10px 12px; margin: 0 0 10px; font-size: 12px; line-height: 1.7;
+}
+.cap-title { font-weight: 700; margin-bottom: 6px; }
+.cap-title span { font-weight: 400; opacity: 0.6; font-size: 11px; margin-left: 4px; }
+.cap-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cap-row b { font-size: 15px; font-weight: 800; color: #f0c040; }
+.cap-row i { font-style: normal; opacity: 0.6; font-size: 11px; }
+.cap-note { margin-top: 6px; opacity: 0.8; }
+.toggle-icon {
+  font-size: 10px; color: var(--text-muted);
+  transition: transform var(--transition);
+}
+.race-card.open .toggle-icon { transform: rotate(180deg); }
+.result-badge {
+  font-size: 10px; font-weight: 600;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+  background: var(--green-dim); color: var(--green);
+}
+.locked-badge {
+  font-size: 10px; font-weight: 600;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+  background: var(--gold-dim); color: var(--gold);
+}
+
+/* ─── Race Body ─── */
+.race-body { display: none; border-top: 1px solid var(--border); }
+.race-card.open .race-body { display: block; }
+
+/* Tab bar */
+.tab-bar {
+  display: flex; border-bottom: 1px solid var(--border);
+}
+.tab-btn {
+  flex: 1; padding: 10px;
+  text-align: center; font-size: 12px; font-weight: 600;
+  color: var(--text-secondary);
+  background: none; border: none;
+  cursor: pointer; position: relative;
+  transition: color var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.tab-btn.active { color: var(--gold); }
+.tab-btn.active::after {
+  content: ''; position: absolute;
+  bottom: 0; left: 20%; right: 20%;
+  height: 2px; background: var(--gold);
+  border-radius: 1px;
+}
+
+/* ─── Horse List ─── */
+.horse-list { padding: 8px 12px; }
+.horse-row {
+  display: grid;
+  grid-template-columns: 24px 28px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(30,48,80,0.4);
+}
+.horse-row:last-child { border-bottom: none; }
+.horse-mark {
+  font-size: 14px; font-weight: 800;
+  text-align: center;
+  line-height: 1;
+}
+.mark-honmei { color: var(--conf-s); }
+.mark-taikou { color: var(--conf-a); }
+.mark-tanana { color: var(--conf-b); }
+.mark-renshita { color: var(--text-secondary); }
+.mark-chuui { color: #A855F7; }
+.horse-number {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  font-size: 11px; font-weight: 800;
+  background: var(--bg-elevated);
+  border: 1.5px solid var(--border-light);
+  color: var(--text-primary);
+}
+.horse-detail { min-width: 0; }
+.horse-name-row {
+  display: flex; align-items: baseline; gap: 6px;
+}
+.horse-name { font-size: 13px; font-weight: 700; }
+.horse-jockey { font-size: 10px; color: var(--text-muted); }
+.horse-stats {
+  display: flex; gap: 6px; margin-top: 3px; flex-wrap: wrap;
+}
+.stat { font-size: 10px; color: var(--text-secondary); }
+.stat-val { font-weight: 700; color: var(--text-primary); }
+.stat-val.hot { color: var(--green); }
+.stat-val.warn { color: var(--red); }
+.horse-prob {
+  text-align: right;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+}
+.prob-value {
+  font-size: 14px; font-weight: 800;
+  color: var(--gold);
+}
+.prob-label {
+  font-size: 9px; color: var(--text-muted);
+}
+.rank-bar {
+  width: 48px; height: 4px;
+  background: var(--bg-primary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.rank-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--gold), var(--gold-light));
+  transition: width 0.4s ease;
+}
+.horse-reasons {
+  grid-column: 1 / -1;
+  padding: 4px 0 0 60px;
+}
+.reason-tag {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  margin: 2px 4px 2px 0;
+}
+.show-all-btn {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-top: 1px solid rgba(30,48,80,0.4);
+  cursor: pointer;
+  transition: color var(--transition);
+}
+.show-all-btn:hover { color: var(--text-secondary); }
+
+/* ─── Bets Section ─── */
+.bets-section { padding: 12px; }
+.bets-title {
+  font-size: 12px; font-weight: 700;
+  color: var(--gold);
+  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 6px;
+}
+.bet-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.bet-card.hit {
+  border-color: var(--green);
+  background: var(--green-dim);
+}
+.bet-card.miss {
+  border-color: var(--red);
+  background: var(--red-dim);
+  opacity: 0.7;
+}
+.bet-type-label {
+  font-size: 10px; font-weight: 700;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  color: #fff;
+}
+.bet-detail-text { font-size: 13px; font-weight: 600; margin-left: 8px; }
+.bet-amount {
+  font-size: 14px; font-weight: 800;
+  color: var(--gold);
+}
+.bet-hit-label {
+  font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+}
+.bet-hit-label.hit { background: var(--green-dim); color: var(--green); }
+.bet-hit-label.miss { background: var(--red-dim); color: var(--red); }
+.bet-payout {
+  font-size: 12px; font-weight: 700; color: var(--green);
+  margin-top: 4px;
+}
+.no-bets {
+  text-align: center;
+  padding: 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.bets-roi {
+  text-align: right;
+  padding: 8px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+.roi-positive { color: var(--green); }
+.roi-negative { color: var(--red); }
+
+/* Myomi Badge */
+.myomi-badge {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 700; white-space: nowrap;
+}
+.myomi-3 { background: linear-gradient(135deg, #f39c12, #e67e22); color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.3); animation: myomi-glow 2s ease-in-out infinite alternate; }
+.myomi-2 { background: linear-gradient(135deg, #3498db, #2980b9); color: #fff; }
+.myomi-1 { background: rgba(255,255,255,0.1); color: var(--text-secondary); border: 1px solid rgba(255,255,255,0.15); }
+@keyframes myomi-glow {
+  from { box-shadow: 0 0 4px rgba(243,156,18,0.3); }
+  to { box-shadow: 0 0 10px rgba(243,156,18,0.6); }
+}
+
+/* Results indicator */
+.result-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  font-weight: 600;
+}
+.result-badge.done { background: var(--green-dim); color: var(--green); }
+.result-badge.pending { background: rgba(255,255,255,0.06); color: var(--text-muted); }
+
+/* ─── Results Tab ─── */
+.results-section { padding: 12px; }
+.podium { margin-bottom: 16px; }
+.podium-row {
+  display: grid;
+  grid-template-columns: 30px 32px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid rgba(30,48,80,0.3);
+}
+.podium-rank { font-size: 12px; font-weight: 800; text-align: center; }
+.rank-1 { color: #FFD700; }
+.rank-2 { color: #C0C0C0; }
+.rank-3 { color: #CD7F32; }
+
+/* ─── Payout Grid ─── */
+.payout-section { margin-top: 12px; }
+.payout-title {
+  font-size: 13px; font-weight: 700; margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--green);
+}
+.payout-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 11px; border-radius: var(--radius-md); overflow: hidden;
+}
+.payout-table td {
+  padding: 5px 8px; border: 1px solid var(--border);
+  background: var(--bg-card); white-space: nowrap;
+}
+.payout-table .pt-type {
+  font-weight: 700; font-size: 10px; color: #fff;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+  display: inline-block; min-width: 36px; text-align: center;
+}
+.payout-table .pt-combo { color: var(--text-primary); font-weight: 600; }
+.payout-table .pt-amount { color: var(--gold); font-weight: 700; text-align: right; }
+.payout-table .pt-pop { color: var(--text-muted); font-size: 10px; text-align: right; }
+
+/* Category Badges */
+.cat-badges { display: inline-flex; gap: 3px; margin-left: 8px; flex-wrap: wrap; }
+.cat-badge {
+  font-size: 9px; font-weight: 700; padding: 1px 5px;
+  border-radius: 4px; line-height: 1.4; letter-spacing: -0.3px;
+}
+.cat-badge.rank-s { background: rgba(212,168,67,0.25); color: #D4A843; }
+.cat-badge.rank-a { background: rgba(52,211,153,0.2); color: #34D399; }
+.cat-badge.rank-b { background: rgba(59,130,246,0.2); color: #60A5FA; }
+.cat-badge.rank-c { background: rgba(100,116,139,0.2); color: #94A3B8; }
+.cat-badge.rank-d { background: rgba(239,68,68,0.15); color: #F87171; }
+.cat-badge.rank-unknown { background: rgba(100,116,139,0.1); color: #64748B; font-size: 0.6rem; }  /* #169: 能 = データなし */
+@media (max-width: 480px) {
+  .cat-badges { margin-left: 0; margin-top: 3px; display: flex; }
+}
+
+/* Confidence Filter */
+.conf-filter {
+  display: none; padding: 6px 16px; gap: 6px;
+  justify-content: center; flex-wrap: wrap;
+}
+.conf-filter.visible { display: flex; }
+.conf-filter-btn {
+  padding: 4px 14px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 700;
+  cursor: pointer; border: 1px solid var(--border); background: var(--bg-card); color: var(--text-secondary);
+  transition: all 0.2s;
+}
+.conf-filter-btn:hover { border-color: var(--gold); }
+.conf-filter-btn.active { background: var(--gold); color: #000; border-color: var(--gold); }
+.conf-filter-btn .filter-count { font-weight: 400; opacity: 0.7; margin-left: 3px; }
+
+/* ─── Loading ─── */
+.loading-overlay {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(11,20,38,0.85);
+  backdrop-filter: blur(8px);
+  z-index: 1000;
+  flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 16px;
+}
+.loading-overlay.visible { display: flex; }
+.spinner {
+  width: 40px; height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { font-size: 13px; color: var(--text-secondary); }
+.loading-progress { font-size: 11px; color: var(--text-muted); }
+
+/* ─── Empty State ─── */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+}
+.empty-icon { font-size: 48px; margin-bottom: 12px; }
+.empty-title { font-size: 16px; font-weight: 700; color: var(--text-secondary); }
+.empty-desc { font-size: 12px; margin-top: 8px; }
+
+/* ─── Responsive: Desktop ─── */
+@media (min-width: 769px) {
+  .main { max-width: 900px; }
+  .payout-grid { grid-template-columns: 1fr 1fr 1fr; }
+  .summary-strip { grid-template-columns: repeat(5, 1fr); }
+}
+@keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+
+/* ─── Responsive: Mobile (up to 600px) ─── */
+@media (max-width: 600px) {
+  html { font-size: 14px; }
+
+  /* Header: 2段レイアウトに */
+  .header { padding: 10px 12px; }
+  .header-top {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .logo { font-size: 14px; flex-shrink: 0; }
+  .header-controls {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    align-items: center;
+    gap: 6px;
+  }
+  .input-date {
+    grid-column: 1 / -1;
+    width: 100%;
+    font-size: 15px;
+    padding: 10px 10px;
+  }
+  .budget-label { font-size: 12px; }
+  .input-budget {
+    width: 80px;
+    font-size: 15px;
+    padding: 10px 8px;
+  }
+  .budget-unit { font-size: 12px; }
+  .btn-predict {
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  /* Bet selector (header 内に配置なので top 指定不要) */
+  .bet-selector {
+    padding: 6px 0 0;
+    gap: 6px;
+  }
+  .bet-chip {
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+
+  /* Summary strip */
+  .summary-strip {
+    margin: 8px 10px;
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .summary-item { padding: 10px 4px; }
+  .summary-value { font-size: 16px; }
+  .summary-label { font-size: 9px; }
+
+  /* Venue tabs */
+  .venue-tabs { margin: 0 10px 8px; }
+  .venue-tab { padding: 7px 8px; font-size: 11px; }
+
+  /* Main content area */
+  .main { padding: 0 8px 100px; }
+
+  /* Race card */
+  .race-card { margin-bottom: 8px; }
+  .race-header { padding: 10px 10px; }
+  .race-left { gap: 8px; }
+  .race-num { width: 28px; height: 28px; font-size: 11px; }
+  .race-name-line { font-size: 12px; }
+  .race-meta { font-size: 9px; gap: 5px; }
+  .conf-badge { padding: 2px 8px; font-size: 10px; }
+
+  /* Horse list - tighter grid */
+  .horse-list { padding: 6px 8px; }
+  .horse-row {
+    grid-template-columns: 20px 24px 1fr auto;
+    gap: 6px;
+    padding: 7px 2px;
+  }
+  .horse-mark { font-size: 13px; }
+  .horse-number { width: 24px; height: 24px; font-size: 10px; }
+  .horse-name { font-size: 12px; }
+  .horse-jockey { font-size: 9px; }
+  .horse-stats { gap: 4px; }
+  .stat { font-size: 9px; }
+  .prob-value { font-size: 13px; }
+  .prob-label { font-size: 8px; }
+  .rank-bar { width: 40px; }
+  .horse-reasons { padding: 3px 0 0 50px; }
+  .reason-tag { font-size: 9px; padding: 2px 6px; }
+
+  /* Bets section */
+  .bets-section { padding: 8px; }
+  .bet-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 8px 10px;
+  }
+  .bet-card > div:first-child {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+  }
+  .bet-detail-text { font-size: 12px; margin-left: 6px; }
+  .bet-amount { font-size: 13px; }
+
+  /* Payout table: scrollable */
+  .payout-section { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .payout-table { font-size: 10px; min-width: 300px; }
+  .payout-table td { padding: 4px 6px; }
+
+  /* Results podium */
+  .podium-row {
+    grid-template-columns: 24px 28px 1fr auto auto;
+    gap: 6px;
+    padding: 5px 2px;
+    font-size: 11px;
+  }
+
+  /* Tab bar inside race */
+  .tab-btn { padding: 8px 4px; font-size: 11px; }
+
+  /* Confidence filter */
+  .conf-filter { padding: 4px 10px; gap: 4px; }
+  .conf-filter-btn { padding: 4px 10px; font-size: 10px; }
+
+  /* Myomi badges */
+  .myomi-badge { font-size: 10px; padding: 1px 6px; }
+}
+
+/* ─── Responsive: Small phone (〜380px) ─── */
+@media (max-width: 380px) {
+  html { font-size: 13px; }
+  .header-controls { flex-wrap: wrap; }
+  .input-date { width: 100%; }
+  .input-budget { width: 65px; }
+  .btn-predict { width: 100%; margin-top: 4px; }
+  .summary-strip { grid-template-columns: repeat(2, 1fr); }
+  .horse-row {
+    grid-template-columns: 18px 22px 1fr auto;
+    gap: 4px;
+  }
+  .horse-name { font-size: 11px; }
+  .prob-value { font-size: 12px; }
+  .rank-bar { width: 32px; }
+  .bet-chip { padding: 6px 10px; font-size: 11px; }
+}
+
+/* #144: 「なぜこの印か」パネル */
+.why-toggle {
+  width: 100%; margin: 6px 0 2px; padding: 7px 10px; cursor: pointer;
+  background: rgba(212,168,67,0.10); border: 1px solid rgba(212,168,67,0.28);
+  border-radius: 8px; color: #D4A843; font-size: 0.78rem; font-weight: 600;
+  text-align: left; transition: background .15s;
+}
+.why-toggle:hover { background: rgba(212,168,67,0.18); }
+.why-panel { padding: 8px 2px 4px; }
+.why-block { margin-bottom: 12px; }
+.why-title { font-size: 0.74rem; color: #94A3B8; font-weight: 600; margin-bottom: 5px; }
+/* viewBox だけだと height:auto で潰れるブラウザがあるので aspect-ratio で固定 */
+.why-svg { width: 100%; max-width: 420px; aspect-ratio: 320 / 200; height: auto; display: block; }
+.why-note { font-size: 0.68rem; color: #64748B; line-height: 1.5; margin-top: 4px; }
+.why-horse { margin-bottom: 9px; }
+.why-horse-head { display: flex; align-items: center; gap: 6px; font-size: 0.76rem; margin-bottom: 3px; }
+.why-mark { font-weight: 700; color: #D4A843; width: 1.1em; }
+.why-num {
+  background: rgba(148,163,184,0.18); border-radius: 4px;
+  padding: 0 5px; font-size: 0.7rem; color: #CBD5E1;
+}
+.why-name { color: #E2E8F0; font-weight: 600; }
+.why-odds { color: #f0c040; font-size: 0.7rem; margin-left: auto; }
+.why-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+.why-bar-row { display: flex; align-items: center; gap: 5px; }
+.why-bar-label { font-size: 0.66rem; color: #94A3B8; width: 3.4em; flex-shrink: 0;
+                 white-space: nowrap; }
+.why-bar-track {
+  flex: 1; height: 6px; background: rgba(148,163,184,0.14);
+  border-radius: 3px; overflow: hidden;
+}
+.why-bar-fill { display: block; height: 100%; background: #60A5FA; border-radius: 3px; }
+.why-bar-fill.hi { background: linear-gradient(90deg,#D4A843,#F0C040); }
+.why-bar-fill.lo { background: rgba(148,163,184,0.45); }
+@media (max-width: 480px) {
+  .why-bars { grid-template-columns: 1fr; }
+  .why-bar-label { width: 3.4em; }
+
+/* #149: 点数表の内訳 */
+.why-pts { margin-left:auto; color:var(--gold,#D4A843); font-weight:700; font-size:0.78rem; }
+.why-rows { display:grid; gap:3px; }
+.why-row { display:grid; grid-template-columns:11em 1fr 2.6em; gap:6px; align-items:center; }  /* #169: 「近10走の複勝率 3着内なし(5走)」等が切れない幅 */
+.why-row-l { font-size:0.68rem; color:#94A3B8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.why-row-l i { font-style:normal; color:#5A6273; margin-left:3px; }
+.why-row-b { height:6px; background:rgba(148,163,184,.14); border-radius:3px; overflow:hidden; }
+.why-row-f { display:block; height:100%; background:#D4A843; border-radius:3px; }
+.why-row-f.minus { background:rgba(148,163,184,.5); }
+.why-row-v { font-size:0.7rem; color:#E2E8F0; text-align:right; font-variant-numeric:tabular-nums; }
+.why-row-v.minus { color:#94A3B8; }
+@media (max-width:480px){ .why-row { grid-template-columns:10.5em 1fr 2.4em; } }
+</style>
+
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <div class="header-top">
+    <div class="logo">🏇 AI KEIBA</div>
+    <div class="header-controls">
+      <input type="date" id="dateInput" class="input-date" value="">
+      <span class="budget-label">予算</span>
+      <input type="number" id="budgetInput" class="input-budget" value="1000" min="100" max="100000" step="100">
+      <span class="budget-unit">円</span>
+      <button id="predictBtn" class="btn-predict" onclick="loadPredictions()">予想実行</button>
+    </div>
+  </div>
+  <!-- Venue Tabs (header 内で sticky 固定) -->
+  <div class="venue-tabs" id="venueTabs" style="display:none;"></div>
+  <!-- Bet Type Selector (header 内で sticky 固定、スマホでもズレない) -->
+  <div class="bet-selector" id="betSelector">
+    <div class="bet-chip active" data-type="単勝" onclick="selectBetType(this)">単勝</div>
+    <div class="bet-chip" data-type="複勝" onclick="selectBetType(this)">複勝</div>
+    <div class="bet-chip" data-type="ワイド" onclick="selectBetType(this)">ワイド</div>
+    <div class="bet-chip" data-type="馬連" onclick="selectBetType(this)">馬連</div>
+    <div class="bet-chip" data-type="三連複" onclick="selectBetType(this)">三連複</div>
+    <div class="bet-chip" data-type="三連単" onclick="selectBetType(this)">三連単</div>
+  </div>
+</header>
+
+<!-- Lock Banner -->
+<div class="lock-banner" id="lockBanner">🔒 9:30に予想確定済み</div>
+
+<!-- Summary Strip -->
+<div class="summary-strip" id="summaryStrip" style="display:none;">
+  <div class="summary-item"><div class="summary-value" id="sumRaces">0</div><div class="summary-label">レース数</div></div>
+  <div class="summary-item clickable" id="sumBetsItem" onclick="toggleBetsFilter()"><div class="summary-value" id="sumBets">0</div><div class="summary-label">推奨数 ▼</div></div>
+  <div class="summary-item"><div class="summary-value" id="sumAmount">¥0</div><div class="summary-label">合計投資</div></div>
+  <div class="summary-item"><div class="summary-value" id="sumROI">-</div><div class="summary-label">ROI</div></div>
+</div>
+
+<!-- #163: 期待値のバッジ・一覧・フィルタはユーザー判断で撤去 (期待値の説明はいらない) -->
+
+<!-- Main -->
+<div class="main" id="mainContent">
+  <div class="empty-state">
+    <div class="empty-icon">🏇</div>
+    <div class="empty-title">AI競馬予想</div>
+    <div class="empty-desc">日付を選択して「予想実行」をタップ</div>
+  </div>
+</div>
+
+<!-- Loading -->
+<div class="loading-overlay" id="loading">
+  <div class="spinner"></div>
+  <div class="loading-text">AI予想を実行中...</div>
+  <div class="loading-progress" id="loadingProgress"></div>
+</div>
+
+<script src="bet_notation.js"></script>
+<script>
+// ─── State Management ───
+const state = {
+  allData: null,           // 全APIレスポンス
+  activeBetType: '単勝',   // 選択中の券種
+  activeVenue: null,        // 選択中の会場
+  budget: 1000,             // 予算
+  isLocked: false,
+  filterBetsOnly: false,
+  confFilter: 'ALL',  // ALL, S, A, B, C   // 推奨ありのみ表示
+};
+
+function toggleBetsFilter() {
+  state.filterBetsOnly = !state.filterBetsOnly;
+  document.getElementById('sumBetsItem').classList.toggle('active', state.filterBetsOnly);
+  if (state.allData) renderAllPreservingOpenState();
+}
+
+const BET_COLORS = {
+  '単勝': 'var(--bet-tansho)', '複勝': 'var(--bet-fukusho)',
+  'ワイド': 'var(--bet-wide)', '馬連': 'var(--bet-umaren)',
+  '三連複': 'var(--bet-sanrenpuku)', '三連単': 'var(--bet-sanrentan)',
+};
+const CONF_ICONS = { S: '🔥', A: '★', B: '📊', C: '△', D: '—' };
+
+// ─── 開いているレースカードを記憶→再描画→復元 ───
+// 券種/予算変更で renderAll() が走ると DOM が作り直されて .open クラスが消える。
+// ユーザー指摘「買い目を変更すると開いてた予想欄が閉じる」への対応。
+function renderAllPreservingOpenState() {
+  const openIds = Array.from(document.querySelectorAll('.race-card.open'))
+    .map(c => c.id.replace('race-', ''));
+  // 選択中タブも記憶 (pred/result)
+  const activeTabs = {};
+  document.querySelectorAll('.race-card').forEach(card => {
+    const raceId = card.id.replace('race-', '');
+    const activeBtn = card.querySelector('.tab-btn.active');
+    if (activeBtn) {
+      const m = (activeBtn.getAttribute('onclick') || '').match(/'(pred|result)'/);
+      if (m) activeTabs[raceId] = m[1];
+    }
+  });
+
+  renderAll();
+
+  // 復元: 開閉状態
+  openIds.forEach(id => {
+    const card = document.getElementById('race-' + id);
+    if (card) card.classList.add('open');
+  });
+  // 復元: タブ選択
+  Object.entries(activeTabs).forEach(([raceId, tab]) => {
+    const card = document.getElementById('race-' + raceId);
+    if (!card) return;
+    const btn = card.querySelector(`.tab-btn[onclick*="'${tab}'"]`);
+    if (btn && !btn.classList.contains('active')) btn.click();
+  });
+}
+
+// ─── Bet Type Selector (Instant, no API call) ───
+function selectBetType(chip) {
+  document.querySelectorAll('.bet-chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  state.activeBetType = chip.dataset.type;
+  if (state.allData) renderAllPreservingOpenState();
+}
+
+// ─── Budget Change (Instant recalc) ───
+document.getElementById('budgetInput').addEventListener('input', function() {
+  state.budget = Math.max(100, Math.min(parseInt(this.value) || 1000, 100000));
+  if (state.allData) renderAllPreservingOpenState();
+});
+
+
+// ─── Load Predictions ───
+async function loadPredictions() {
+  const dateInput = document.getElementById('dateInput');
+  const dateStr = dateInput.value.replace(/[-\/]/g, '');
+  state.budget = parseInt(document.getElementById('budgetInput').value) || 1000;
+
+  const btn = document.getElementById('predictBtn');
+  btn.disabled = true;
+  btn.textContent = '読込中...';
+
+  document.getElementById('loading').classList.add('visible');
+
+  try {
+    const url = `/api/predict-date/${dateStr}?budget=${state.budget}`;
+    const res = await fetch(url);
+    const data = markFinishedScratches(await res.json());
+
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+
+    state.allData = data;
+    state.isLocked = data.is_locked || false;
+
+    // Set first venue as active
+    const venueNames = Object.keys(data.venues || {});
+    state.activeVenue = venueNames[0] || null;
+
+    renderAll();
+  } catch (e) {
+    alert('予想の取得に失敗しました: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '予想実行';
+    document.getElementById('loading').classList.remove('visible');
+  }
+}
+
+// ─── Render All ───
+function renderAll() {
+  const data = state.allData;
+  if (!data) return;
+
+  // Lock banner
+  const lockBanner = document.getElementById('lockBanner');
+  lockBanner.classList.toggle('visible', state.isLocked);
+
+  // Venue tabs
+  renderVenueTabs(data.venues);
+
+  // Summary
+  renderSummary(data);
+
+  // Race cards
+  renderRaceCards();
+}
+
+function renderVenueTabs(venues) {
+  const container = document.getElementById('venueTabs');
+  const names = Object.keys(venues || {});
+  if (names.length === 0) { container.style.display = 'none'; return; }
+
+  container.style.display = 'flex';
+  container.innerHTML = names.map(v => {
+    const count = venues[v].length;
+    const cls = v === state.activeVenue ? 'active' : '';
+    return `<div class="venue-tab ${cls}" onclick="switchVenue('${v}')">${v} ${count}R</div>`;
+  }).join('');
+}
+
+function switchVenue(venue) {
+  state.activeVenue = venue;
+  renderAll();
+}
+
+function renderSummary(data) {
+  const strip = document.getElementById('summaryStrip');
+  strip.style.display = 'grid';
+
+  const allRaces = [];
+  Object.values(data.venues || {}).forEach(vr => allRaces.push(...vr));
+
+  const bt = state.activeBetType;
+  let totalBets = 0, totalAmount = 0, totalPayout = 0;
+  let hasAnyResults = false;
+  let provRaces = 0;   // #170
+
+  allRaces.forEach(race => {
+    const bets = (race.all_bets || {})[bt] || [];
+    const scaledBets = scaleBets(bets, state.budget);
+    // #170: 枠順確定前 (仮馬番) のレースはカードで買い目を出さないので、推奨数・投資額・払戻にも数えない。
+    // 推奨のあったレース数だけ「+NR 枠順確定後」と添える (数字が0になる理由が分かるように)
+    if (race.numbers_confirmed === false) {
+      if (scaledBets.some(b => b.amount > 0)) provRaces++;
+      return;
+    }
+    // #169: 「推奨数」は金額の乗った買い目だけ (0円 = 見送り(参考) は数えない)
+    totalBets += scaledBets.filter(b => b.amount > 0).length;
+    scaledBets.forEach(b => {
+      totalAmount += b.amount;
+      if (race.has_results) {
+        hasAnyResults = true;
+        const result = checkBetHit(b, race);
+        totalPayout += result.payout;
+      }
+    });
+  });
+
+  document.getElementById('sumRaces').textContent = allRaces.length;
+  if (provRaces > 0) {
+    document.getElementById('sumBets').innerHTML = `${totalBets}<div style="font-size:9px;font-weight:600;color:var(--text-muted);line-height:1.3">+${provRaces}R 枠順確定後</div>`;
+  } else {
+    document.getElementById('sumBets').textContent = totalBets;
+  }
+  document.getElementById('sumAmount').textContent = `¥${totalAmount.toLocaleString()}`;
+
+  const roiEl = document.getElementById('sumROI');
+  if (hasAnyResults && totalAmount > 0) {
+    const roi = Math.round(totalPayout / totalAmount * 100);
+    roiEl.textContent = `${roi}%`;
+    roiEl.className = 'summary-value ' + (roi >= 100 ? 'roi-positive' : 'roi-negative');
+  } else {
+    roiEl.textContent = '-';
+    roiEl.className = 'summary-value';
+  }
+}
+
+// ─── Scale bets to budget ───
+function scaleBets(bets, budget) {
+  if (!bets || bets.length === 0) return [];
+  // #169: amount=0 は sb=0 ゼロ化ガード (#95) の結果 (参考表示)。旧実装は
+  // `b.amount || 100` で 0 を100円に復活させ、見送りレースに投資額を表示していた
+  // (index.html は #95 追補で直っていたがこちらに残っていた)。
+  const base = (b) => (typeof b.amount === 'number' ? b.amount : 100);
+  const originalTotal = bets.reduce((s, b) => s + base(b), 0);
+  if (originalTotal === 0) return bets.map(b => ({ ...b, amount: 0 }));
+
+  const ratio = budget / originalTotal;
+  return bets.map(b => {
+    const a = base(b);
+    if (a === 0) return { ...b, amount: 0 };
+    return { ...b, amount: Math.max(100, Math.round(a * ratio / 100) * 100) };
+  });
+}
+
+// ─── #169: レース単位の投資状態 (index.html と同じ) ───
+// should_bet=0 でも trio-focus band (#95) は三連複/ワイドの主力買い目に金額が残る。
+function investStatusHtml(race) {
+  if (race.should_bet || race.should_bet === undefined) return '';
+  const all = race.all_bets || {};
+  const lines = Object.values(all).flat();
+  if (lines.length === 0) return '';
+  const funded = lines.some(b => (b.amount || 0) > 0);
+  const reason = String(race.bet_reason || '');
+  // band かどうかは「金額がある」でなく理由文で判定する (新旧どちらの文面も "trio-focus band" を含む)。
+  // #95 の sb=0 ゼロ化 (2026-07-02) より前の日は、見送り判定でも金額が残っていたので
+  // 「金額がある = band」とすると旧データの非 band レース (未勝利等) に🎯が付く。
+  const isBand = /trio-focus band/.test(reason);
+  const esc = s => String(s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const why = t => t ? `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">${esc(t)}</div>` : '';
+  const head = (color, t) => `<div style="font-size:11px;font-weight:700;color:${color};margin-bottom:8px">${t}`;
+  if (funded && isBand) {
+    // band の理由文から「上書きした見送り判定」だけを取り出す (新旧どちらの文面でも)
+    const gate = reason
+      .replace(/^trio-focus band で三連複\/ワイドのみ投資 \(通常の判定なら見送り: (.*)\)$/, '$1')
+      .replace(/ \(trio-focus band: 三連複\/ワイドのみ投資\)$/, '');
+    return head('var(--gold)', '🎯 三連複/ワイドのみ投資 (trio-focus band)') + why('通常の判定なら見送り: ' + gate) + '</div>';
+  }
+  if (funded) {
+    // #95 以前の旧仕様の日: 見送り判定でも金額が残っていた (実際にそう記録された買い目)
+    return head('var(--text-muted)', 'ℹ️ 見送り判定 — この日は旧仕様 (2026-07 以前) で金額が残っています') + why(reason) + '</div>';
+  }
+  return head('var(--text-muted)', '⏭️ 投資見送り — 買い目は参考表示') + why(reason) + '</div>';
+}
+
+// ─── Check if bet hit ───
+function checkBetHit(bet, race) {
+  const NO_HIT = { hit: false, payout: 0, source: 'none' };
+  if (!race.has_results) return NO_HIT;
+
+  const bt = bet.type || bet.bet_type || state.activeBetType;
+  const detail = bet.detail || bet.bet_detail || '';
+  const horses = race.horses || [];
+
+  // --- 1. payouts がある場合: 配当テーブルから正確な払戻金を取得 ---
+  // ※ payouts テーブルは¥100あたりの配当。賭け金に応じて倍率計算
+  // #169: amount=0 (sb=0 ゼロ化の参考表示) は払戻も0 (index.html と同じ)。旧 `bet.amount || 100`
+  // は scaleBets を直した後も0円の買い目を100円として払戻に数え、ROI を水増ししていた。
+  const betMultiplier = (typeof bet.amount === 'number' ? bet.amount : 100) / 100;
+  if (race.payouts && race.payouts.length > 0) {
+    for (const p of race.payouts) {
+      if (p.bet_type === bt) {
+        const combo = String(p.combination).replace(/[→\-]/g, '-');
+        const betCombo = String(detail).replace(/[→\-]/g, '-');
+        // 馬連・ワイド: 順序問わず比較
+        if (bt === '馬連' || bt === 'ワイド' || bt === '三連複') {
+          const comboSorted = combo.split('-').map(Number).sort((a,b)=>a-b).join('-');
+          const betSorted = betCombo.split('-').map(Number).sort((a,b)=>a-b).join('-');
+          if (comboSorted === betSorted) {
+            return { hit: true, payout: Math.round((p.payout || 0) * betMultiplier), source: 'payout' };
+          }
+        } else {
+          if (combo === betCombo) {
+            return { hit: true, payout: Math.round((p.payout || 0) * betMultiplier), source: 'payout' };
+          }
+        }
+      }
+    }
+    return { hit: false, payout: 0, source: 'payout' };
+  }
+
+  // --- 2. payouts がない場合: 着順ベースで判定 (払戻金はオッズから概算) ---
+  const winNums = horses.filter(h => h.finish === 1).map(h => h.horse_number);
+  const top2Nums = horses.filter(h => h.finish >= 1 && h.finish <= 2).map(h => h.horse_number);
+  const top3Nums = horses.filter(h => h.finish >= 1 && h.finish <= 3).map(h => h.horse_number);
+  const betNums = String(detail).replace(/[→]/g, '-').split('-').map(Number).filter(n => n > 0);
+
+  let isHit = false;
+  let estimatedPayout = 0;
+
+  switch (bt) {
+    case '単勝':
+      isHit = betNums.length === 1 && winNums.includes(betNums[0]);
+      if (isHit) {
+        const h = horses.find(x => x.horse_number === betNums[0]);
+        estimatedPayout = bet.amount * (h?.actual_odds || bet.odds || 1);
+      }
+      break;
+    case '複勝':
+      isHit = betNums.length === 1 && top3Nums.includes(betNums[0]);
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 1.5);
+      break;
+    case 'ワイド':
+      isHit = betNums.length === 2 && betNums.every(n => top3Nums.includes(n));
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 2);
+      break;
+    case '馬連':
+      isHit = betNums.length === 2 && betNums.every(n => top2Nums.includes(n));
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 5);
+      break;
+    case '三連複':
+      isHit = betNums.length === 3 && betNums.every(n => top3Nums.includes(n));
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 10);
+      break;
+    case '三連単':
+      if (betNums.length === 3) {
+        const sorted1 = [...top3Nums].sort((a,b) => {
+          const ha = horses.find(x => x.horse_number === a);
+          const hb = horses.find(x => x.horse_number === b);
+          return (ha?.finish || 99) - (hb?.finish || 99);
+        });
+        isHit = betNums[0] === sorted1[0] && betNums[1] === sorted1[1] && betNums[2] === sorted1[2];
+      }
+      if (isHit) estimatedPayout = bet.amount * (bet.odds || 30);
+      break;
+  }
+
+  return { hit: isHit, payout: Math.round(estimatedPayout), source: 'estimate' };
+}
+
+// ─── Render Race Cards ───
+function renderRaceCards() {
+  const container = document.getElementById('mainContent');
+  const venues = state.allData.venues || {};
+  let races = venues[state.activeVenue] || [];
+
+  // 推奨フィルター
+  if (state.filterBetsOnly) {
+    const bt = state.activeBetType;
+    races = races.filter(race => {
+      // #170: 枠順確定前のレースはカードに買い目が出ないので「推奨あり」にしない (推奨数と同じ母集団)
+      if (race.numbers_confirmed === false) return false;
+      const bets = (race.all_bets || {})[bt] || [];
+      // #169: 推奨数と同じ基準 (0円の参考買い目だけのレースは「推奨あり」にしない)
+      return bets.some(b => typeof b.amount !== 'number' || b.amount > 0);
+    });
+  }
+
+  if (races.length === 0) {
+    const msg = state.filterBetsOnly ? '推奨ありのレースがありません（フィルター解除: 推奨数をタップ）' : 'レースがありません';
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-title">${msg}</div></div>`;
+    return;
+  }
+
+  container.innerHTML = races.map(race => createRaceCard(race)).join('');
+}
+
+function createRaceCard(race) {
+  const confClass = race.confidence || 'C';
+  const confIcon = CONF_ICONS[confClass] || '';
+  const hasResults = race.has_results;
+  const isLocked = race.prediction_locked;
+
+  let badges = '';
+  if (hasResults) badges += `<span class="result-badge">✅ 確定</span>`;
+
+  return `
+    <div class="race-card" id="race-${race.race_id}">
+      <div class="race-header" onclick="toggleRace('${race.race_id}')">
+        <div class="race-left">
+          <div class="race-num">${race.race_number}R</div>
+          <div class="race-info">
+            <div class="race-name-line">${race.race_name || '未定'} ${badges}</div>
+            <div class="race-meta">
+              ${race.start_time ? `<span style="color:#f0c040;font-weight:600">🕐${race.start_time}</span>` : ''}
+              <span>${race.surface || ''}</span>
+              <span>${race.distance || 0}m</span>
+              <span>${race.horse_count || 0}頭</span>
+              <span>${race.track_condition || ''}</span>
+              ${race.race_tendency ? `<span style="color:var(--text-secondary)">│ ${race.race_tendency}</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="race-right">
+          <span class="result-badge ${race.has_results ? 'done' : 'pending'}">${race.has_results ? '確定' : '未確定'}</span>
+          <span class="toggle-icon">▼</span>
+        </div>
+      </div>
+      <div class="race-body">
+        <div class="tab-bar">
+          <button class="tab-btn active" onclick="switchTab(this,'${race.race_id}','pred')">📊 予想</button>
+          ${hasResults ? `<button class="tab-btn" onclick="switchTab(this,'${race.race_id}','result')">✅ 結果</button>` : ''}
+        </div>
+        <div class="tab-content" id="tab-pred-${race.race_id}">${renderPredTab(race)}</div>
+        <div class="tab-content" id="tab-result-${race.race_id}" style="display:none;">${hasResults ? renderResultTab(race) : ''}</div>
+      </div>
+    </div>`;
+}
+
+function toggleRace(raceId) {
+  document.getElementById('race-' + raceId).classList.toggle('open');
+}
+
+function switchTab(btn, raceId, tab) {
+  const card = document.getElementById('race-' + raceId);
+  card.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  card.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+  document.getElementById(`tab-${tab}-${raceId}`).style.display = 'block';
+}
+
+// #169: 画面の「SI」と「能」バッジは点数表の内訳 (平均スピード指数 N位) と同じ指数で出す。
+// 点数表が馬場差補正指数 (V2d) を読んだレースは JSON に si_avg_v がある (キーがある = V2d)。
+// 旧指数 si_avg のままだと、印馬の4割強で内訳の区分と画面の SI の順位が食い違っていた。
+function siDisp(h) {
+  if (h && Object.prototype.hasOwnProperty.call(h, 'si_avg_v')) return h.si_avg_v || 0;
+  return (h && h.si_avg) || 0;
+}
+// #169 手直し: si_avg_v は丸めない値 (点数表と同じ順位を出すため)。画面に出す時だけ小数1桁
+function siText(h) { return Math.round(siDisp(h) * 10) / 10; }
+// #169: 枠順確定前の予測 (export の numbers_confirmed=false) は馬番が仮 (五十音順) なので出さない。
+// 予想タブだけが対象 (結果タブは確定後にしか出ない)。X/Threads 側の #27/#150 ガードと同じ扱い
+function numText(h) { return h._provisional ? '–' : h.horse_number; }
+// #170: 取消馬。export が付ける scratched に加え、古い JSON でも拾えるよう
+// 番兵 (負のオッズ・9999人気) でも判定する (X/Threads の race_utils.is_scratched_horse と同じ式)
+function isScratched(h) {
+  // #170: 確定着順のある馬は走っている (999.9倍で実際に走った大穴もいる)。
+  // export の「着順のある馬は取消にしない」・結果タブの finish>0 と同じ基準。scratched===false は見ない
+  // (#169 以降の cache は取消でない馬全般に false が入り、「走った」の証拠にならない)
+  if (h && (h.finish || 0) > 0) return false;
+  // #171: 999.9倍だけでは取消にしない (前日発売の直後は票の少ない走る馬も 999.9倍になり、
+  // 11/06 の前夜予想で 94頭を誤って取消表示した)。発走前は export の scratched と番兵 (負のオッズ・
+  // 9999人気) で判定し、着順が出たレースの古い JSON は markFinishedScratches が scratched を補う。
+  return !!(h && (h.scratched || (h.odds_win || 0) < 0 || (h.popularity || 0) >= 999));
+}
+
+// #171: 確定したレース (1着がいる) で、着順の無い 999.9倍の馬は取消 (#171 より前の取消馬はこの値で入っている)。
+// export の race_finished と同じ基準。発走前のレースには何もしない。
+function markFinishedScratches(data) {
+  try {
+    Object.values((data && data.venues) || {}).forEach(v => {
+      const races = Array.isArray(v) ? v : ((v && v.races) || []);
+      races.forEach(r => {
+        // 1着がいる = 確定 (結果タブの #150e と同じ基準。部分取得の間は取消にしない)
+        if (!r || !r.has_results || !(r.horses || []).some(h => h && h.finish === 1)) return;
+        (r.horses || []).forEach(h => {
+          if (h && !((h.finish || 0) > 0) && !h.dnf && !h.excluded && (h.odds_win || 0) >= 999.9) h.scratched = true;
+        });
+      });
+    });
+  } catch (e) { /* 表示の補助だけ。失敗しても描画は続ける */ }
+  return data;
+}
+
+// #173: 確定したレースで着順の無い馬の表示 [着順欄, 説明]。index.html の unplacedLabel と同じ。
+// 着順0 は「走っていない (取消・除外 = 返還)」と「走った (競走中止・失格 = 外れ)」の両方を含む。
+// export が通過順のある馬 (= 走った) に dnf を、そのうち失格の馬には dq も立てる
+// (取消の目印を先に見るので scratched とは排他)
+function unplacedLabel(h) {
+  if (h && h.dq) return ['失格', '失格（外れ）'];
+  if (h && h.dnf) return ['中止', '競走中止（外れ）'];
+  if (h && h.excluded) return ['除外', '競走除外（返還）'];
+  if (isScratched(h)) return ['取消', '出走取消・除外（返還）'];
+  return ['―', '競走除外か競走中止'];
+}
+
+// ─── Prediction Tab ───
+function renderPredTab(race) {
+  const horses = race.horses || [];
+  // Sort by mark order: ◎→○→▲→△→×→注→(no mark by pred_win)
+  const MARK_ORDER = {'◎': 0, '○': 1, '▲': 2, '△': 3, '☆': 4, '×': 5, '注': 6};
+  const _byMark = (a, b) => {
+    const ma = a.mark in MARK_ORDER ? MARK_ORDER[a.mark] : 100;
+    const mb = b.mark in MARK_ORDER ? MARK_ORDER[b.mark] : 100;
+    if (ma !== mb) return ma - mb;
+    return (b.pred_win_pct || 0) - (a.pred_win_pct || 0);  // #150: JSON は pred_win_pct (pred_win は存在せず常に NaN 比較だった)
+  };
+  const sorted = [...horses].sort((a, b) => {
+    const xa = isScratched(a), xb = isScratched(b);   // #170: 取消馬は印の有無によらず末尾
+    if (xa !== xb) return xa ? 1 : -1;
+    return _byMark(a, b);
+  });
+  const provisional = race.numbers_confirmed === false;   // #169
+  sorted.forEach(h => { h._provisional = provisional; });
+  // #170: 相対評価 (能/血/騎/場/績/天) の母集団から取消馬を外す (出走しない馬が順位を押し下げる)
+  const runners = sorted.filter(h => !isScratched(h));
+
+  // Compute category rankings (S/A/B/C/D) within race
+  const CAT_KEYS = ['cat_ability','cat_pedigree','cat_jockey','cat_track','cat_record','cat_weather'];
+  const CAT_LABELS = ['能','血','騎','場','績','天'];
+  CAT_KEYS.forEach((key, idx) => {
+    // #169: 「能」は内訳と同じ指数 (cat_ability は旧指数 si_avg)
+    const _v = h => (key === 'cat_ability' ? siDisp(h) : h[key]) || 0;
+    // #169 手直し: 「能」は点数表 (_rel_rank) と同じく 0 (データなし) を順位の母集団に入れず、
+    // 0 の馬は「-」(旧実装は 0 を負の V2d より上に数え、全頭 0 の新馬戦では全頭「能S」だった)
+    const _na = key === 'cat_ability';
+    const vals = runners.map(_v).filter(x => !(_na && x === 0)).sort((a,b) => b - a);   // #170: 取消馬を除いた母集団
+    const n = vals.length;
+    sorted.forEach(h => {
+      if (isScratched(h)) {   // #170: 母集団の外なので順位なし
+        if (!h._catGrades) h._catGrades = [];
+        h._catGrades[idx] = { label: CAT_LABELS[idx], grade: '-', str: null };
+        return;
+      }
+      const v = _v(h);
+      const rank = vals.indexOf(v);
+      const pct = n > 1 ? rank / (n - 1) : 0.5;
+      let grade;
+      if (_na && v === 0) grade = '-';
+      else if (pct <= 0.1) grade = 'S';
+      else if (pct <= 0.25) grade = 'A';
+      else if (pct <= 0.5) grade = 'B';
+      else if (pct <= 0.75) grade = 'C';
+      else grade = 'D';
+      if (!h._catGrades) h._catGrades = [];
+      // #144: バー描画用に「レース内での強さ (0-100)」も保存
+      h._catGrades[idx] = { label: CAT_LABELS[idx], grade,
+                            str: v === 0 ? null : Math.round((1 - pct) * 100) };
+    });
+  });
+
+  const top3 = sorted.slice(0, 3);
+  const rest = sorted.slice(3);
+  const bt = state.activeBetType;
+  const bets = scaleBets((race.all_bets || {})[bt] || [], state.budget);
+
+  let html = '<div class="horse-list">';
+  top3.forEach(h => { html += renderHorseRow(h, true); });
+  if (rest.length > 0) {
+    html += `<div id="rest-${race.race_id}" style="display:none;">`;
+    rest.forEach(h => { html += renderHorseRow(h, false); });
+    html += '</div>';
+    html += `<button class="show-all-btn" onclick="toggleRestHorses('${race.race_id}', this)">▼ 全${horses.length}頭を表示</button>`;
+  }
+  html += '</div>';
+
+  // #144: 「なぜこの印か」
+  // #170: 内訳の「印5頭」は取消を末尾に寄せない印の順で取る (取消の印馬を押し出して ☆/注 で穴埋めしない)
+  html += renderWhyPanel(race, sorted, [...horses].sort(_byMark));
+
+  // Bets section
+  html += '<div class="bets-section">';
+  html += `<div class="bets-title">💰 ${bt}の推奨買い目</div>`;
+  // #170: 仮馬番の時は投資状態 (見送り/band) も出さない (「買い目は参考表示」と「確定後に表示」が並んで矛盾する)
+  if (!provisional) html += investStatusHtml(race);   // #169
+
+  if (provisional) {
+    // #169: 仮馬番の買い目は、確定後の馬番と別の馬を指すので出さない
+    html += '<div class="no-bets">枠順確定前のため、馬番と買い目は確定後に表示します</div>';
+  } else if (bets.length === 0) {
+    html += '<div class="no-bets">この券種の推奨はありません</div>';
+  } else {
+    // #176: 1点ずつでなく、まとめた表記で出す (例 2-4 / 2-5 → 2-4,5)。表記は docs/bet_notation.js。
+    // まとめるのは同じ金額・同じ扱い (主力か) の点だけ。的中の判定・払戻は従来どおり1点ずつ。
+    let totalIn = 0, totalOut = 0;
+    const _groups = (window.BetNotation ? window.BetNotation.groupBetLines(bets, bt)
+      : bets.map(x => ({ text: x.detail || x.bet_detail || '', points: 1, amount: x.amount, honor: !!x.honor, lines: [x] })));
+    _groups.forEach(g => {
+      const res = g.lines.map(x => race.has_results ? checkBetHit(x, race) : { hit: false, payout: 0, source: 'none' });
+      const hits = g.lines.filter((x, i) => res[i].hit);
+      const isHit = hits.length > 0;
+      const hitPayout = res.reduce((s, r) => s + (r.hit ? r.payout : 0), 0);
+      const isEstimate = res.some(r => r.hit && r.source === 'estimate');
+      const cls = race.has_results ? (isHit ? 'hit' : 'miss') : '';
+      const amountSum = g.lines.reduce((s, x) => s + (x.amount || 0), 0);
+      totalIn += amountSum;
+      if (isHit) totalOut += hitPayout;
+
+      const payoutLabel = (isHit && hitPayout > 0)   // #169: 0円の参考買い目は払戻を出さない
+        ? (isEstimate ? `→ 約¥${hitPayout.toLocaleString()} (概算)` : `→ ¥${hitPayout.toLocaleString()}`)
+        : '';
+      const hitWhich = (isHit && g.points > 1) ? ' ' + hits.map(x => x.detail || x.bet_detail || '').join(' / ') : '';
+      const hitLabel = isHit ? `✅ 的中${hitWhich}` : '❌ 不的中';
+      const honorClass = '', honorLabel = '';
+      const one = g.points === 1 ? g.lines[0] : null;
+      const amountHtml = g.amount > 0
+        ? (g.points > 1
+            ? `<span style="font-size:10px;color:var(--text-muted)">各¥${g.amount.toLocaleString()} × ${g.points}点</span><br>¥${amountSum.toLocaleString()}`
+            : '¥' + g.amount.toLocaleString())
+        : `<span style="font-size:10px;color:var(--text-muted)">見送り(参考)${g.points > 1 ? ' ' + g.points + '点' : ''}</span>`;
+      html += `<div class="bet-card ${cls}${honorClass}">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span class="bet-type-label" style="background:${BET_COLORS[bt]}">${bt}</span>
+          ${honorLabel}
+          <span class="bet-detail-text">${g.text}</span>
+          ${one && one.horse_name ? `<span style="font-size:10px;color:var(--text-muted)">${one.horse_name}</span>` : ''}
+        </div>
+        <div style="text-align:right;">
+          <div class="bet-amount">${amountHtml}</div>
+          ${race.has_results ? `<span class="bet-hit-label ${isHit?'hit':'miss'}">${hitLabel}</span>` : ''}
+          ${payoutLabel ? `<div class="bet-payout">${payoutLabel}</div>` : ''}
+        </div>
+      </div>`;
+    });
+
+    if (race.has_results && totalIn > 0) {
+      const roi = Math.round(totalOut / totalIn * 100);
+      html += `<div class="bets-roi ${roi >= 100 ? 'roi-positive' : 'roi-negative'}">
+        投資 ¥${totalIn.toLocaleString()} → 払戻 ¥${totalOut.toLocaleString()} (ROI: ${roi}%)
+      </div>`;
+    }
+  }
+  html += '</div>';
+  return html;
+}
+
+// ─── #144: 「なぜこの印か」の可視化 ───────────────────────────
+// ユーザー要望「なぜこの馬が本命なのかを視覚的にわかるようにしたい」。
+// 用途は「印を見て自分で買い目を組む」ことなので、AIの結論だけでなく
+// 『何を評価したのか』と『市場とどこがズレているか』を出す。
+const WHY_CAT_FULL = { 能:'能力', 騎:'騎手', 場:'コース', 血:'血統', 績:'戦績', 天:'馬場' };
+const WHY_CAT_TIP  = { 能:'能力', 騎:'騎手', 場:'コース適性', 血:'血統', 績:'戦績', 天:'馬場' };
+
+function whyScatter(horses, raceId) {
+  // AI複勝率 (縦) × オッズ (横・対数) の散布図。
+  // 右上 = AIは来ると見ているのに市場は評価していない (AI高評価×人気薄)
+  // 左下 = 市場は人気なのにAIは低評価 = 危険な人気馬
+  // #170: 取消馬は描かない (999.9倍の点が横軸を引き伸ばし、出走しない馬が「人気薄」に見える)
+  const pts = horses.filter(h => !isScratched(h) && (h.odds_win || 0) > 0 && h.pred_top3_pct != null);
+  if (pts.length < 4) return '';
+  const W = 320, H = 200, PL = 34, PR = 10, PT = 14, PB = 26;
+  const lx = v => Math.log10(Math.max(1.05, v));
+  const xs = pts.map(h => lx(h.odds_win)), ys = pts.map(h => h.pred_top3_pct);
+  // 端の馬が枠線に重ならないよう、両端に少し余白を取る
+  const xm = (Math.max(...xs) - Math.min(...xs)) * 0.08 || 0.05;
+  const x0 = Math.min(...xs) - xm, x1 = Math.max(...xs) + xm;
+  const y0 = 0, y1 = (Math.max(...ys) * 1.22) || 1;
+  const px = v => PL + (lx(v) - x0) / ((x1 - x0) || 1) * (W - PL - PR);
+  const py = v => H - PB - (v - y0) / ((y1 - y0) || 1) * (H - PT - PB);
+  // 分割線 = レース内の中央値 (レースごとに基準が動くので絶対値でなく相対)
+  const med = a => { const b = [...a].sort((m, n) => m - n); return b[Math.floor(b.length / 2)]; };
+  const mx = med(pts.map(h => h.odds_win)), my = med(ys);
+  let sv = `<svg viewBox="0 0 ${W} ${H}" class="why-svg" role="img" aria-label="AI評価と市場評価の散布図">`;
+  sv += `<rect x="${PL}" y="${PT}" width="${W-PL-PR}" height="${H-PT-PB}" fill="rgba(148,163,184,0.05)" rx="4"/>`;
+  sv += `<line x1="${px(mx)}" y1="${PT}" x2="${px(mx)}" y2="${H-PB}" stroke="rgba(148,163,184,0.28)" stroke-dasharray="3 3"/>`;
+  sv += `<line x1="${PL}" y1="${py(my)}" x2="${W-PR}" y2="${py(my)}" stroke="rgba(148,163,184,0.28)" stroke-dasharray="3 3"/>`;
+  sv += `<text x="${W-PR-3}" y="${PT+11}" text-anchor="end" font-size="8" fill="#34D399">AI高評価×人気薄</text>`;
+  sv += `<text x="${PL+3}" y="${H-PB-4}" font-size="8" fill="#F87171">危険な人気馬</text>`;
+  // 軸ラベル
+  [1, 3, 10, 30, 100].filter(v => lx(v) >= x0 - 0.05 && lx(v) <= x1 + 0.05).forEach(v => {
+    sv += `<text x="${px(v)}" y="${H-8}" text-anchor="middle" font-size="8" fill="#64748B">${v}倍</text>`;
+  });
+  sv += `<text x="4" y="${PT+8}" font-size="8" fill="#64748B">AI複勝</text>`;
+  sv += `<text x="4" y="${py(0)}" font-size="8" fill="#64748B">0%</text>`;
+  pts.forEach(h => {
+    const marked = !!h.mark;
+    const col = h.mark === '◎' ? '#D4A843' : h.mark === '☆' ? '#34D399'
+      : h.mark === '注' ? '#F472B6' : marked ? '#60A5FA' : 'rgba(148,163,184,0.45)';
+    const r = marked ? 8 : 4;
+    sv += `<circle cx="${px(h.odds_win)}" cy="${py(h.pred_top3_pct)}" r="${r}" fill="${col}"`
+       + `${marked ? ' stroke="rgba(255,255,255,0.55)" stroke-width="1"' : ''}>`
+       + `<title>${h.mark || ''} ${numText(h)} ${h.horse_name || ''} / ${h.odds_win}倍 / AI複勝${h.pred_top3_pct}%</title></circle>`;
+    if (marked) sv += `<text x="${px(h.odds_win)}" y="${py(h.pred_top3_pct)+3}" text-anchor="middle" font-size="8" font-weight="700" fill="#0B1220">${numText(h)}</text>`;
+  });
+  sv += '</svg>';
+  return sv;
+}
+
+function whyBars(h) {
+  // #149: ◎ を実際に決めた「点数表」の内訳を出す。
+  // これ以前は cat_ability/cat_jockey/... の6軸を描いていたが、その6項目は
+  // 人気の影響を除くと寄与がほぼゼロで、しかも #147 以降◎はそれで選ばれていない。
+  // = 選定に使っていない値を「なぜこの印か」として見せていた。
+  const rs = (h.sc_reasons || []).filter(r => r && r.points);
+  // #170: 取消の印馬は内訳に残し (投稿で凍結した印の根拠)、「取消」と札を付ける
+  const scrTag = isScratched(h) ? '<span style="color:#888;font-size:0.68rem">取消</span>' : '';
+  if (rs.length) {
+    const max = Math.max(...rs.map(r => Math.abs(r.points))) || 1;
+    return `<div class="why-horse">
+      <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
+        <span class="why-num">${numText(h)}</span>
+        <span class="why-name">${h.horse_name || ''}</span>${scrTag}
+        <span class="why-pts">${h.sc_points > 0 ? '+' : ''}${h.sc_points}点</span></div>
+      <div class="why-rows">${rs.map(r => {
+        const w = Math.round(Math.abs(r.points) / max * 100);
+        const minus = r.points < 0;
+        // #169: 内部表記の区分 ("5/5") は出さない (#169 より前に書き出した JSON の救済)。
+        // 新しい JSON は点数表側で区分境界から名前を作るので出てこない
+        const bin = /^\d+\/\d+$/.test(r.bin || '') ? '' : (r.bin || '');
+        return `<div class="why-row">
+          <span class="why-row-l" title="${r.label} ${bin}">${r.label}<i>${bin}</i></span>
+          <span class="why-row-b"><span class="why-row-f${minus ? ' minus' : ''}" style="width:${w}%"></span></span>
+          <span class="why-row-v${minus ? ' minus' : ''}">${r.points > 0 ? '+' : ''}${r.points}</span>
+        </div>`;
+      }).join('')}</div>
+    </div>`;
+  }
+  // 点数表が無い日 (旧データ) は従来の6軸に落とす
+  const gs = (h._catGrades || []).filter(g => g && g.str != null);
+  if (!gs.length) {
+    // #170: 取消馬は6軸の母集団の外 (順位なし) なので、印と「取消」の1行だけ残す
+    if (!scrTag) return '';
+    return `<div class="why-horse">
+    <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
+      <span class="why-num">${numText(h)}</span>
+      <span class="why-name">${h.horse_name || ''}</span>${scrTag}</div>
+  </div>`;
+  }
+  const top = [...gs].sort((a, b) => b.str - a.str);
+  return `<div class="why-horse">
+    <div class="why-horse-head"><span class="why-mark">${h.mark}</span>
+      <span class="why-num">${numText(h)}</span>
+      <span class="why-name">${h.horse_name || ''}</span>${scrTag}
+      <span class="why-odds">${!scrTag && h.odds_win ? h.odds_win + '倍' : ''}</span></div>
+    <div class="why-bars">${top.map(g => `
+      <div class="why-bar-row" title="${WHY_CAT_TIP[g.label] || g.label}: レース内で上位${100 - g.str}%">
+        <span class="why-bar-label">${WHY_CAT_FULL[g.label] || g.label}</span>
+        <span class="why-bar-track"><span class="why-bar-fill${g.str >= 75 ? ' hi' : g.str <= 30 ? ' lo' : ''}" style="width:${g.str}%"></span></span>
+      </div>`).join('')}</div>
+  </div>`;
+}
+function renderWhyPanel(race, sorted, byMark) {
+  // #170: 印5頭は印の順 (byMark) で取る。sorted は取消馬を末尾に寄せてあるので、
+  // そこから取ると取消の◎/○が押し出され、捕捉外の ☆/注 が繰り上がる
+  const marked = (byMark || sorted).filter(h => h.mark);
+  if (!marked.length) return '';
+  const id = 'why-' + race.race_id;
+  const sc = whyScatter(sorted, race.race_id);
+  const bars = marked.slice(0, 5).map(whyBars).join('');   // 印5頭 (#143)
+  if (!sc && !bars) return '';
+  return `<button class="why-toggle" onclick="const e=document.getElementById('${id}');
+      const o=e.style.display==='none'; e.style.display=o?'block':'none';
+      this.textContent=o?'▲ 根拠を閉じる':'🔍 なぜこの印か（評価の内訳）';">🔍 なぜこの印か（評価の内訳）</button>
+    <div id="${id}" class="why-panel" style="display:none">
+      ${sc ? `<div class="why-block"><div class="why-title">AIの評価 × 市場の評価</div>${sc}
+        <div class="why-note">右へ行くほど人気薄、上へ行くほどAIが「3着以内に来る」と見ている馬。
+        右上に印があれば、市場が軽視している馬をAIが拾っている。</div></div>` : ''}
+      ${bars ? `<div class="why-block"><div class="why-title">◎を決めた点数の内訳</div>
+        <div class="why-note" style="margin-bottom:6px">オッズを使わない23項目の足し算。合計が最も高い馬が◎</div>
+        ${bars}</div>` : ''}
+    </div>`;
+}
+
+
+function renderHorseRow(h, showReasons) {
+  const markClass = h.mark === '◎' ? 'mark-honmei' : h.mark === '○' ? 'mark-taikou' : h.mark === '▲' ? 'mark-tanana' : h.mark === '注' ? 'mark-chuui' : 'mark-renshita';
+  // #170: 取消馬は「取消」と出し、オッズ・人気・AI複勝・勝率予想は出さない (出走しない馬の確率を見せない)。
+  // isScratched が偽の馬 (着順あり) は従来の分岐のまま (番兵オッズの旧「取消」表示も残す)
+  const scr = isScratched(h);
+
+  // Rank bar width (normalize rank_score to 0-100%)
+  const rankScore = h.rank_score || 0;
+  const rankPct = scr ? 0 : Math.max(0, Math.min(100, (rankScore + 2) * 25)); // map ~[-2, +2] to [0, 100]
+
+  // Win rate / Top3 rate color coding
+  const wr = h.win_rate || 0;
+  const t3r = h.top3_rate || 0;
+  const wrClass = wr >= 20 ? 'hot' : '';
+  const t3rClass = t3r >= 40 ? 'hot' : '';
+
+  let html = `<div class="horse-row">
+    <div class="horse-mark ${markClass}">${h.mark || ''}</div>
+    <div class="horse-number">${numText(h)}</div>
+    <div class="horse-detail">
+      <div class="horse-name-row">
+        <span class="horse-name">${h.horse_name || '不明'}</span>
+        <span class="horse-jockey">${h.jockey_name || ''}</span>
+        ${h._catGrades ? `<span class="cat-badges">${h._catGrades.map(g => `<span class="cat-badge rank-${g.grade === '-' ? 'unknown' : g.grade.toLowerCase()}">${g.label}${g.grade}</span>`).join('')}</span>` : ''}
+      </div>
+      <div class="horse-stats">
+        ${scr ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">取消</span></span>` : (h.odds_win > 0 && h.popularity > 0 && h.popularity < 999) ? `<span class="stat"><span class="stat-val" style="color:#f0c040;font-weight:700">${h.odds_win}倍</span>${h.popularity ? `<span class="stat-val" style="${h.popularity <= 3 ? 'background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;margin-left:4px' : 'margin-left:4px'}">${h.popularity}人気</span>` : ''}</span>` : ((h.odds_win > 0) ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">推定${h.odds_win}倍</span></span>` : ((h.popularity >= 999 || h.odds_win < 0) ? `<span class="stat"><span class="stat-val" style="color:#888;font-size:11px">取消</span></span>` : ''))}
+        <span class="stat">SI <span class="stat-val">${siText(h)}</span></span>
+        <span class="stat">AI複勝 <span class="stat-val">${scr ? '–' : (h.pred_top3 || 0) + '%'}</span></span>
+        <span class="stat">過去勝率 <span class="stat-val ${wrClass}">${wr}%</span></span>
+        <span class="stat">過去連対 <span class="stat-val ${t3rClass}">${t3r}%</span></span>
+      </div>
+    </div>
+    <div class="horse-prob">
+      <div class="prob-value">${scr ? '–' : (h.pred_win_display_pct || h.pred_win_display || h.pred_win || 0) + '%'}</div>
+      <div class="prob-label">勝率予想</div>
+      <div class="rank-bar"><div class="rank-bar-fill" style="width:${rankPct}%"></div></div>
+    </div>
+  </div>`;
+
+  return html;
+}
+
+function toggleRestHorses(raceId, btn) {
+  const rest = document.getElementById('rest-' + raceId);
+  if (rest.style.display === 'none') {
+    rest.style.display = 'block';
+    btn.textContent = '▲ 上位3頭のみ表示';
+  } else {
+    rest.style.display = 'none';
+    const card = document.getElementById('race-' + raceId);
+    const total = card.querySelectorAll('.horse-row').length;
+    btn.textContent = `▼ 全${total}頭を表示`;
+  }
+}
+
+// ─── Results Tab ───
+function renderResultTab(race) {
+  if (!race.has_results) return '';
+  const horses = [...(race.horses || [])].filter(h => h.finish > 0).sort((a, b) => a.finish - b.finish);
+  // #173: 着順の無い印馬 (「◎はどうなったのか」) を index.html と同じく別行で出す。
+  // 理由を断定してよいのはレースが確定している (1着がいる) 時だけ (#150e)
+  const _confirmed = (race.horses || []).some(h => h.finish === 1);
+  const unplaced = _confirmed
+    ? (race.horses || []).filter(h => !(h.finish > 0) && h.mark)
+    : [];
+
+  let html = '<div class="results-section">';
+
+  // Podium with prediction marks
+  html += '<div class="podium">';
+  horses.slice(0, 5).forEach(h => {
+    const rankClass = h.finish <= 3 ? `rank-${h.finish}` : '';
+    const mark = h.mark || '';
+    const markClass = mark === '◎' ? 'mark-honmei' : mark === '○' ? 'mark-taikou' : mark === '▲' ? 'mark-tanana' : 'mark-renshita';
+    html += `<div class="podium-row">
+      <div class="podium-rank ${rankClass}">${h.finish}着</div>
+      <div class="horse-number">${h.horse_number}</div>
+      <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;">
+        ${mark ? `<span class="horse-mark ${markClass}" style="font-size:14px;">${mark}</span>` : ''}
+        ${h.horse_name || ''}
+      </div>
+      <div style="font-size:11px;color:var(--text-secondary);">${h.time || ''}</div>
+      <div style="font-size:11px;color:var(--text-muted);">${h.actual_odds || ''}倍</div>
+    </div>`;
+  });
+  unplaced.forEach(h => {
+    const [rankLabel, detail] = unplacedLabel(h);
+    html += `<div class="podium-row" style="opacity:.6">
+      <div class="podium-rank">${rankLabel}</div>
+      <div class="horse-number">${h.horse_number}</div>
+      <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;">
+        <span class="horse-mark mark-renshita" style="font-size:14px;">${h.mark}</span>
+        ${h.horse_name || ''}
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);">${detail}</div>
+    </div>`;
+  });
+  html += '</div>';
+
+  // Payout Table (netkeiba style)
+  if (race.payouts && race.payouts.length > 0) {
+    html += '<div class="payout-section"><div class="payout-title">💰 払戻金</div>';
+
+    // Group payouts into 3 columns: left, center, right
+    const colL = ['単勝', '複勝'];
+    const colC = ['枠連', 'ワイド'];
+    const colR = ['馬連', '馬単', '三連複', '三連単'];
+
+    const grouped = {};
+    race.payouts.forEach(p => {
+      if (!grouped[p.bet_type]) grouped[p.bet_type] = [];
+      grouped[p.bet_type].push(p);
+    });
+
+    const getCol = (types) => {
+      const rows = [];
+      types.forEach(t => {
+        if (grouped[t]) {
+          grouped[t].forEach((p, i) => {
+            rows.push({ type: i === 0 ? t : '', ...p });
+          });
+        }
+      });
+      return rows;
+    };
+
+    const left = getCol(colL);
+    const center = getCol(colC);
+    const right = getCol(colR);
+    const maxRows = Math.max(left.length, center.length, right.length);
+
+    html += '<table class="payout-table">';
+    for (let i = 0; i < maxRows; i++) {
+      html += '<tr>';
+      [left[i], center[i], right[i]].forEach(p => {
+        if (p) {
+          const bg = BET_COLORS[p.bet_type] || 'var(--text-muted)';
+          const typeLabel = p.type ? `<span class="pt-type" style="background:${bg}">${p.type}</span>` : '';
+          html += `<td>${typeLabel}</td><td class="pt-combo">${p.combination}</td><td class="pt-amount">${p.payout.toLocaleString()}円</td><td class="pt-pop">${p.popularity}人気</td>`;
+        } else {
+          html += '<td></td><td></td><td></td><td></td>';
+        }
+      });
+      html += '</tr>';
+    }
+    html += '</table></div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// ─── Init ───
+document.addEventListener('DOMContentLoaded', () => {
+  const dateInput = document.getElementById('dateInput');
+  if (!dateInput.value) {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    dateInput.value = `${yyyy}-${mm}-${dd}`;
+  }
+});
+</script>
+</body>
+</html>

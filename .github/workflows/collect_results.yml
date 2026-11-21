@@ -1,0 +1,190 @@
+name: 📊 Collect Race Results
+
+on:
+  schedule:
+    # #59 (2026-06-10): 日中の毎時 cron (10:00-17:00, 19:00) を削除。
+    # 日中の結果収集は race_day_runner (8:30-19:00 の10分間隔 loop) に一本化した。
+    # 本 workflow は runner 終了後の「夜間最終スイープ」のみを担う
+    # (取りこぼし結果 + 遅出し配当の回収)。
+    # 土日 20:00 JST (UTC 11:00) - runner 終了後の最終回収
+    - cron: '0 11 * * 6,0'
+    # 土日 22:00 JST (UTC 13:00) - 最終確認
+    - cron: '0 13 * * 6,0'
+    # #164: 月曜 20:00 JST (UTC 11:00) - 日曜分の通過順を拾い直す。
+    # 通過順 (コーナー通過順) は当日夜の時点ではまだ結果ページに出ておらず、翌日以降に載る。
+    # 土曜分は日曜夜の回で、日曜分はこの回で、下の「通過順が欠けた開催日」として取り直す。
+    - cron: '0 11 * * 1'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 YYYYMMDD (カンマ区切りで複数可)。空なら「今日 + 直近10日で着順が欠けている開催日 + 直近21日で天候・馬場が欠けている開催日(最大2日)」'
+        required: false
+        default: ''
+
+concurrency:
+  group: keiba-db-accum          # #70 part1: 蓄積系writerを直列化しgz clobberを防ぐ
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore keiba.db from cache
+        uses: actions/cache@v4
+        id: db-cache
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_number }}
+          restore-keys: |
+            keiba-db-
+
+      # 🛡 git を source of truth に強制 (cache 古さの事故防止 - 2026-05-24)
+      - name: Force git DB (override stale cache)
+        run: |
+          # 🆕 #61: checkout SHA は run 作成時点で固定されるため、ほぼ同時 dispatch の
+          # 先行 run が push した posted_slots lock が見えない (stale checkout)。
+          # fetch + reset で「真の origin/main 最新」に進めてから DB を採用する。
+          git fetch origin "${GITHUB_REF_NAME:-main}" --depth 1
+          git reset --hard "origin/${GITHUB_REF_NAME:-main}"
+          git checkout HEAD -- keiba.db.gz
+          bash scripts/db_unpack.sh
+          echo "✅ keiba.db を git HEAD に復元"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Init DB
+        run: python -c "from database import init_db; init_db()"
+
+      # 🏇 #161 (2026-09-26): 対象日を「今日」固定から「今日 + 直近で着順が欠けた開催日」に拡張。
+      # 旧版は日付を受け取れず、月曜は前日(日曜)を対象にハードコードしていたため、
+      # 月曜・祝日開催 (2026-09-21 阪神) の取りこぼしを原理的に拾えなかった。実害:
+      # 9/21 の 10R/11R(神戸新聞杯G2)/12R は runner が6時間上限で 15:08 に止まった後
+      # 誰も収集せず、5日間 DB とダッシュボードから欠落していた。
+      # 取りこぼしは「翌晩以降の夜間スイープが自動で拾う」形にして、人が気づく必要を無くす。
+      - name: Determine race dates
+        id: date
+        run: |
+          # 「今日」= 6時間前の JST 日付。22:00 の cron は実測で毎週翌 0〜2時台に発火するので、
+          # 0時を過ぎても前日 (= 開催日) を対象にする (旧版の「月曜なら前日」を一般化したもの)。
+          TODAY=$(TZ=Asia/Tokyo date -d '6 hours ago' +%Y%m%d 2>/dev/null \
+                  || TZ=Asia/Tokyo date -v-6H +%Y%m%d)
+          INPUT="${{ inputs.date }}"
+          BACKFILL=$(python3 - <<'PYEOF'
+          import datetime as dt
+          from database import get_db
+          jst = dt.timezone(dt.timedelta(hours=9))
+          today = (dt.datetime.now(jst) - dt.timedelta(hours=6)).date()
+          lo = (today - dt.timedelta(days=10)).isoformat()
+          with get_db() as c:
+              rows = c.execute("""
+                  SELECT g.race_date,
+                         -- 1着が無い、または 1着はあるが配当が1件も無い (遅れて出る配当・部分取得)
+                  SUM(CASE WHEN EXISTS (SELECT 1 FROM results w
+                                        WHERE w.race_id = g.race_id AND w.finish_position = 1)
+                            AND EXISTS (SELECT 1 FROM payouts p WHERE p.race_id = g.race_id)
+                           THEN 0 ELSE 1 END) AS missing,
+                         -- #164: 着順はあるのに通過順が空の馬 (当日夜はまだページに載っていない)
+                  (SELECT COUNT(*) FROM results x JOIN races y ON y.race_id = x.race_id
+                    WHERE y.race_date = g.race_date AND x.finish_position > 0
+                      AND COALESCE(x.passing_order, '') = '') AS no_passing,
+                  (SELECT COUNT(*) FROM results x JOIN races y ON y.race_id = x.race_id
+                    WHERE y.race_date = g.race_date AND x.finish_position > 0) AS finished
+                  FROM races g
+                  WHERE g.race_date >= ? AND g.race_date < ?
+                    AND CAST(substr(g.race_id, 5, 2) AS INT) BETWEEN 1 AND 10   -- JRA のみ
+                    AND EXISTS (SELECT 1 FROM results r WHERE r.race_id = g.race_id)
+                  GROUP BY g.race_date
+                  HAVING missing > 0 OR (finished > 0 AND no_passing > 0.2 * finished)
+                  ORDER BY g.race_date
+              """, (lo, today.isoformat())).fetchall()
+          dates = [r[0] for r in rows]
+          # #169: 天候・馬場の充足率が 90% 未満の開催日も取り直す (窓は直近21日)。
+          # 10/26 前後に netkeiba の書式が変わり、天候は全レース・稍重/不良も空で保存されていた
+          # (10/24・10/25 は当日正しかった値を 10/26 の取り直しが空で上書き)。パーサーを直した後、
+          # 取り直せば埋まる。netkeiba への取得が過大にならないよう、この基準で足すのは
+          # 1回の実行で最大2日 (1日 = 一覧1 + 結果ページ 24〜36 + 配当)。パーサーが再び
+          # 壊れても毎回2日ずつしか増えず、日次の完了検査 (check_raceday_completeness) が Issue で知らせる。
+          # 選び方は「新しい順 + 実行ごとに位置をずらす輪番」(race_meta.pick_meta_refetch_dates)。
+          # 取り直しても埋まらない日が先頭に居座って古い日を後回しにしないため (#169 レビュー)。
+          import sys
+          try:
+              from race_meta import low_meta_fill_dates, pick_meta_refetch_dates
+              lo21 = (today - dt.timedelta(days=21)).isoformat()
+              with get_db() as c:
+                  low = low_meta_fill_dates(c, lo21, today.isoformat())
+              for r in low:
+                  print(f"🌦 {r['race_date']}: 天候 {r['weather']:.0%} / 馬場 {r['track']:.0%} "
+                        f"({r['n']}R)", file=sys.stderr)
+              dates += pick_meta_refetch_dates(low, exclude=dates)
+          except Exception as e:
+              print(f"⚠️ 天候・馬場の充足率を調べられない: {e}", file=sys.stderr)
+          print(" ".join(sorted(d.replace("-", "") for d in dates)))
+          PYEOF
+          ) || BACKFILL=""
+          if [ -n "$INPUT" ]; then
+            BASE=$(echo "$INPUT" | tr ',' ' ')
+            echo "📅 指定日: $BASE"
+          else
+            # #164: 月曜の回など、今日が開催日でなければ「今日」は対象にしない
+            # (非開催日に preflight の auto-fix を走らせない)
+            HAS=$(python3 -c "
+          from database import get_db
+          d='$TODAY'; iso=f'{d[:4]}-{d[4:6]}-{d[6:]}'
+          with get_db() as c: print(c.execute('SELECT COUNT(*) FROM races WHERE race_date=?',(iso,)).fetchone()[0])
+          " 2>/dev/null || echo 1)
+            if [ "${HAS:-0}" -gt 0 ]; then BASE="$TODAY"; else BASE=""; echo "📅 今日 ($TODAY) は開催日でない"; fi
+          fi
+          # 日付指定の時も欠け日の回収は必ず行う (平日開催が2日続いた時に1日目を取り残さない)
+          DATES="$BASE $BACKFILL"
+          [ -n "$BACKFILL" ] && echo "🩹 着順・配当・通過順・天候/馬場 (#169) が欠けた過去の開催日を回収: $BACKFILL"
+          echo "dates=$(echo $DATES | xargs -n1 | sort -u | xargs)" >> $GITHUB_OUTPUT
+          echo "today=$TODAY" >> $GITHUB_OUTPUT
+
+      - name: Collect results / payouts / export
+        run: |
+          TODAY="${{ steps.date.outputs.today }}"
+          for DATE in ${{ steps.date.outputs.dates }}; do
+            echo "════════ ${DATE} ════════"
+            python predict.py collect --date "$DATE" || echo "⚠️ collect エラー(継続)"
+            python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')" || true
+            python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集スキップ"
+            # 🛡 Pre-flight は **今日だけ**。auto-fix は予測を再生成しうるので、
+            # 過去日に走らせると確定済みの印を後出しで作り直す (#99 の look-ahead)。
+            if [ "$DATE" = "$TODAY" ]; then
+              python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || \
+                echo "⚠️ Pre-flight 警告 (collect なので JSON 更新は続行)"
+            fi
+            python export_predictions.py "$DATE" || echo "⚠️ export エラー"
+          done
+
+      - name: Save keiba.db to cache
+        uses: actions/cache/save@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_number }}
+
+      - name: Deploy to GitHub Pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # docs/data/ + keiba.db を一緒にcommit (永続データ蓄積)
+          bash scripts/db_pack.sh || true
+          git add docs/data/ keiba.db.gz 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "📋 変更なし"
+          else
+            git commit -m "📊 Auto collect results + DB $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+            for i in 1 2 3; do
+              git pull --rebase --autostash -X theirs origin "${GITHUB_REF_NAME:-main}" || true
+              if git push origin "HEAD:${GITHUB_REF_NAME:-main}"; then echo "✅ pushed (試行$i)"; break; fi
+              echo "⚠️ push失敗→リトライ($i)"; sleep 5
+            done
+          fi

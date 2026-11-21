@@ -1,0 +1,353 @@
+{
+ "generated_at": "2026-11-21T09:06:18.214171+09:00",
+ "capture": {
+  "groups": {
+   "flat": {
+    "buckets": [
+     {
+      "label": "10頭以下",
+      "min": 0,
+      "max": 10,
+      "n": 147,
+      "cap5": 0.4422,
+      "cap7": 0.6122,
+      "avg_captured": 2.327
+     },
+     {
+      "label": "11-12頭",
+      "min": 11,
+      "max": 12,
+      "n": 174,
+      "cap5": 0.2759,
+      "cap7": 0.3966,
+      "avg_captured": 2.052
+     },
+     {
+      "label": "13-14頭",
+      "min": 13,
+      "max": 14,
+      "n": 161,
+      "cap5": 0.205,
+      "cap7": 0.2981,
+      "avg_captured": 1.932
+     },
+     {
+      "label": "15-16頭",
+      "min": 15,
+      "max": 16,
+      "n": 310,
+      "cap5": 0.1742,
+      "cap7": 0.229,
+      "avg_captured": 1.732
+     },
+     {
+      "label": "17頭以上",
+      "min": 17,
+      "max": 99,
+      "n": 73,
+      "cap5": 0.0959,
+      "cap7": 0.1918,
+      "avg_captured": 1.507
+     }
+    ]
+   },
+   "maiden": {
+    "buckets": [
+     {
+      "label": "10頭以下",
+      "min": 0,
+      "max": 10,
+      "n": 173,
+      "cap5": 0.5838,
+      "cap7": 0.7572,
+      "avg_captured": 2.497
+     },
+     {
+      "label": "11-12頭",
+      "min": 11,
+      "max": 12,
+      "n": 147,
+      "cap5": 0.3333,
+      "cap7": 0.483,
+      "avg_captured": 2.184
+     },
+     {
+      "label": "13-14頭",
+      "min": 13,
+      "max": 14,
+      "n": 137,
+      "cap5": 0.3066,
+      "cap7": 0.4307,
+      "avg_captured": 2.066
+     },
+     {
+      "label": "15-16頭",
+      "min": 15,
+      "max": 16,
+      "n": 274,
+      "cap5": 0.3102,
+      "cap7": 0.3832,
+      "avg_captured": 1.978
+     },
+     {
+      "label": "17頭以上",
+      "min": 17,
+      "max": 99,
+      "n": 65,
+      "cap5": 0.1846,
+      "cap7": 0.2462,
+      "avg_captured": 1.769
+     }
+    ]
+   }
+  },
+  "period": "2026-05-10〜2026-11-15",
+  "excluded_post_start": 126,
+  "source": "predictions_cache に残る各レースの予測の印 (発走前に作られたものだけ。配信していないレースも含む) × 確定着順 (平場 / 未勝利・新馬・障害 を分けて集計)"
+ },
+ "payout": {
+  "groups": {
+   "flat": {
+    "buckets": [
+     {
+      "label": "10頭以下",
+      "min": 0,
+      "max": 10,
+      "n": 2334,
+      "trio_median": 1740,
+      "trio_over10k": 0.1028
+     },
+     {
+      "label": "11-12頭",
+      "min": 11,
+      "max": 12,
+      "n": 2096,
+      "trio_median": 4010,
+      "trio_over10k": 0.2529
+     },
+     {
+      "label": "13-14頭",
+      "min": 13,
+      "max": 14,
+      "n": 2336,
+      "trio_median": 6210,
+      "trio_over10k": 0.3669
+     },
+     {
+      "label": "15-16頭",
+      "min": 15,
+      "max": 16,
+      "n": 5235,
+      "trio_median": 9130,
+      "trio_over10k": 0.4762
+     },
+     {
+      "label": "17頭以上",
+      "min": 17,
+      "max": 99,
+      "n": 922,
+      "trio_median": 12460,
+      "trio_over10k": 0.5607
+     }
+    ]
+   },
+   "maiden": {
+    "buckets": [
+     {
+      "label": "10頭以下",
+      "min": 0,
+      "max": 10,
+      "n": 1454,
+      "trio_median": 1390,
+      "trio_over10k": 0.0942
+     },
+     {
+      "label": "11-12頭",
+      "min": 11,
+      "max": 12,
+      "n": 1560,
+      "trio_median": 2980,
+      "trio_over10k": 0.1987
+     },
+     {
+      "label": "13-14頭",
+      "min": 13,
+      "max": 14,
+      "n": 1947,
+      "trio_median": 4370,
+      "trio_over10k": 0.2799
+     },
+     {
+      "label": "15-16頭",
+      "min": 15,
+      "max": 16,
+      "n": 4847,
+      "trio_median": 5110,
+      "trio_over10k": 0.3322
+     },
+     {
+      "label": "17頭以上",
+      "min": 17,
+      "max": 99,
+      "n": 1119,
+      "trio_median": 7340,
+      "trio_over10k": 0.4164
+     }
+    ]
+   }
+  },
+  "period": "2020-01-05〜2026-11-15",
+  "source": "確定配当 (全レース、平場 / 未勝利・新馬・障害 を分けて集計)"
+ },
+ "confidence": {
+  "available": true,
+  "n": 395,
+  "sample": "点数表 roi の◎ (印として付いた◎ 14件 + 過去を roi で選び直した◎ 381件)",
+  "scorecard": "roi",
+  "sample_period": "2026-09-05〜2026-11-22",
+  "target_mix": {
+   "S": 0.18,
+   "A": 0.24,
+   "B": 0.29,
+   "C": 0.18,
+   "D": 0.11
+  },
+  "thresholds": {
+   "S": 33.1,
+   "A": 20.0,
+   "B": 12.2,
+   "C": 7.3
+  },
+  "calibrated_on": "補正後 (confidence.post_adjust 込み) の最終構成比",
+  "mix_before_adjust": {
+   "S": 0.119,
+   "A": 0.2481,
+   "B": 0.3443,
+   "C": 0.1772,
+   "D": 0.1114
+  },
+  "mix_after_adjust": {
+   "S": 0.1797,
+   "A": 0.2405,
+   "B": 0.2911,
+   "C": 0.1772,
+   "D": 0.1114
+  },
+  "adjusted_share": 0.1139,
+  "realized_mix": {
+   "S": 0.2857,
+   "A": 0.2143,
+   "B": 0.2143,
+   "C": 0.2857,
+   "D": 0.0
+  },
+  "realized_n": 14,
+  "realized_note": "各予測の時点の閾値・補正で付いた信頼度 (predictions_cache.confidence)",
+  "realized_new_logic_since": "2026-11-07",
+  "realized_new_logic_mix": {
+   "S": 0.2857,
+   "A": 0.2143,
+   "B": 0.2143,
+   "C": 0.2857,
+   "D": 0.0
+  },
+  "realized_new_logic_n": 14,
+  "by_scorecard": {
+   "roi": {
+    "available": true,
+    "thresholds": {
+     "S": 33.1,
+     "A": 20.0,
+     "B": 12.2,
+     "C": 7.3
+    },
+    "n": 395,
+    "sample": "点数表 roi の◎ (印として付いた◎ 14件 + 過去を roi で選び直した◎ 381件)",
+    "sample_period": "2026-09-05〜2026-11-22"
+   },
+   "base": {
+    "available": true,
+    "thresholds": {
+     "S": 38.1,
+     "A": 22.6,
+     "B": 13.7,
+     "C": 9.3
+    },
+    "n": 395,
+    "sample": "点数表 base の◎ (影の印の◎ 14件 + #175 より前の◎ 381件)",
+    "sample_period": "2026-09-05〜2026-11-22"
+   }
+  },
+  "keep_reason": "週末の途中 (土曜の最後の作り直し (9:00) 以降)",
+  "if_rebuilt": {
+   "thresholds": {
+    "S": 32.3,
+    "A": 20.0,
+    "B": 12.2,
+    "C": 6.8
+   },
+   "n": 382,
+   "sample_period": "2026-09-05〜2026-11-22"
+  }
+ },
+ "bet_gate": {
+  "available": true,
+  "n": 54,
+  "target_block_rate": {
+   "top_prob": 0.3,
+   "top3_sum": 0.25
+  },
+  "model_deployed_at": "2026-11-16 19:53:16",
+  "window_matches_model": false,
+  "model_retrained_uncommitted": false,
+  "thresholds": {
+   "top_prob": 0.1484,
+   "top3_sum": 0.3796
+  },
+  "window_rule": "since_prev_model",
+  "n_current": 14,
+  "n_older": 40,
+  "sd_median_current": 0.8008,
+  "sd_median_older": 0.7128,
+  "dispersion_ratio": 1.124,
+  "dispersion_ratio_limit": 1.4,
+  "prev_model_deployed_at": "2026-11-09 20:13:31",
+  "keep_reason": "週末の途中 (土曜の最後の作り直し (9:00) 以降)",
+  "sunday_check": {
+   "available": false,
+   "n": 1,
+   "model_deployed_at": "2026-11-16 19:53:16",
+   "note": "現モデルだけの窓の使えるレースが 1 件 (< 30) → 比較しない"
+  }
+ },
+ "confidence_adjust_watch": {
+  "since": "2026-11-07",
+  "band_odds": [
+   5.0,
+   8.0
+  ],
+  "population": "新しい補正で信頼度が付き、1円以上張った平場の確定レース (実額)",
+  "band": {
+   "n": 7,
+   "spend": 8400,
+   "ret": 3570,
+   "roi": 0.425
+  },
+  "rest": {
+   "n": 27,
+   "spend": 44900,
+   "ret": 42250,
+   "roi": 0.941
+  },
+  "rule": "帯の n≥30 かつ (帯−残り) の95%CI上端<0 で要レビュー",
+  "diff": {
+   "est": -0.516,
+   "ci95": [
+    -1.3476,
+    0.2569
+   ],
+   "top_day_share_of_band_return": 0.7031
+  },
+  "status": "サンプル不足 (帯 n=7 < 30)"
+ }
+}

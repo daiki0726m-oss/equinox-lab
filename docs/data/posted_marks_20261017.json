@@ -1,0 +1,713 @@
+{
+ "date": "20261017",
+ "posted_at": "2026-10-17T10:27:21.731496+09:00",
+ "races": {
+  "202608040611": [
+   {
+    "mark": "◎",
+    "horse_number": 12,
+    "horse_name": "プリンセッサ",
+    "odds_win_at_post": 11.4,
+    "popularity_at_post": 7
+   },
+   {
+    "mark": "○",
+    "horse_number": 9,
+    "horse_name": "エアトベーレ",
+    "odds_win_at_post": 9.2,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "▲",
+    "horse_number": 6,
+    "horse_name": "エルフストラック",
+    "odds_win_at_post": 6.1,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 14,
+    "horse_name": "メイショウコマチ",
+    "odds_win_at_post": 4.6,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "△",
+    "horse_number": 2,
+    "horse_name": "コンドゥイア",
+    "odds_win_at_post": 14.2,
+    "popularity_at_post": 8
+   },
+   {
+    "mark": "☆",
+    "horse_number": 10,
+    "horse_name": "マジックローズ",
+    "odds_win_at_post": 9.3,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "注",
+    "horse_number": 8,
+    "horse_name": "スマートケープ",
+    "odds_win_at_post": 18.9,
+    "popularity_at_post": 9
+   }
+  ],
+  "202604040111": [
+   {
+    "mark": "◎",
+    "horse_number": 17,
+    "horse_name": "ポッドロワール",
+    "odds_win_at_post": 11.4,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "○",
+    "horse_number": 15,
+    "horse_name": "サトノワーグナー",
+    "odds_win_at_post": 5.8,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "▲",
+    "horse_number": 5,
+    "horse_name": "メイショウピース",
+    "odds_win_at_post": 22.9,
+    "popularity_at_post": 11
+   },
+   {
+    "mark": "△",
+    "horse_number": 8,
+    "horse_name": "ハッピーエンジェル",
+    "odds_win_at_post": 6.8,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 12,
+    "horse_name": "シカゴスティング",
+    "odds_win_at_post": 8.8,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "☆",
+    "horse_number": 14,
+    "horse_name": "メイショウセイロウ",
+    "odds_win_at_post": 18.8,
+    "popularity_at_post": 9
+   },
+   {
+    "mark": "注",
+    "horse_number": 10,
+    "horse_name": "ヴェサリウス",
+    "odds_win_at_post": 26.8,
+    "popularity_at_post": 12
+   }
+  ],
+  "202605040611": [
+   {
+    "mark": "◎",
+    "horse_number": 10,
+    "horse_name": "アンパドゥ",
+    "odds_win_at_post": 3.5,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "○",
+    "horse_number": 1,
+    "horse_name": "ファンダム",
+    "odds_win_at_post": 14.3,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "▲",
+    "horse_number": 4,
+    "horse_name": "トロヴァトーレ",
+    "odds_win_at_post": 3.4,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "△",
+    "horse_number": 5,
+    "horse_name": "アドマイヤズーム",
+    "odds_win_at_post": 5.7,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 11,
+    "horse_name": "ファーヴェント",
+    "odds_win_at_post": 29.7,
+    "popularity_at_post": 10
+   },
+   {
+    "mark": "☆",
+    "horse_number": 8,
+    "horse_name": "マジックサンズ",
+    "odds_win_at_post": 13.9,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "注",
+    "horse_number": 12,
+    "horse_name": "エンペラーズソード",
+    "odds_win_at_post": 28.9,
+    "popularity_at_post": 9
+   }
+  ],
+  "202608040608": [
+   {
+    "mark": "◎",
+    "horse_number": 3,
+    "horse_name": "アンムート",
+    "odds_win_at_post": 5.7,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "○",
+    "horse_number": 6,
+    "horse_name": "カレンハウ",
+    "odds_win_at_post": 3.6,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "▲",
+    "horse_number": 1,
+    "horse_name": "ノヴァーリス",
+    "odds_win_at_post": 8.0,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "△",
+    "horse_number": 7,
+    "horse_name": "ロンドンガーズ",
+    "odds_win_at_post": 1.8,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "△",
+    "horse_number": 2,
+    "horse_name": "リュウトウコヤク",
+    "odds_win_at_post": 13.8,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "注",
+    "horse_number": 5,
+    "horse_name": "メモリーブック",
+    "odds_win_at_post": 23.9,
+    "popularity_at_post": 6
+   }
+  ],
+  "202608040610": [
+   {
+    "mark": "◎",
+    "horse_number": 6,
+    "horse_name": "チェルヴァーラ",
+    "odds_win_at_post": 1.4,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 7,
+    "horse_name": "トリニティ",
+    "odds_win_at_post": 7.2,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "▲",
+    "horse_number": 2,
+    "horse_name": "エイシンビーコン",
+    "odds_win_at_post": 10.9,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "△",
+    "horse_number": 9,
+    "horse_name": "セイキュート",
+    "odds_win_at_post": 13.0,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "△",
+    "horse_number": 8,
+    "horse_name": "エアビッグマム",
+    "odds_win_at_post": 25.1,
+    "popularity_at_post": 7
+   },
+   {
+    "mark": "☆",
+    "horse_number": 3,
+    "horse_name": "メイショウナルカミ",
+    "odds_win_at_post": 8.1,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "注",
+    "horse_number": 5,
+    "horse_name": "アットアブラスト",
+    "odds_win_at_post": 23.7,
+    "popularity_at_post": 6
+   }
+  ],
+  "202604040109": [
+   {
+    "mark": "◎",
+    "horse_number": 1,
+    "horse_name": "ディアアズール",
+    "odds_win_at_post": 5.3,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "○",
+    "horse_number": 3,
+    "horse_name": "サイモンシャリオ",
+    "odds_win_at_post": 3.2,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "▲",
+    "horse_number": 5,
+    "horse_name": "コスモナエマ",
+    "odds_win_at_post": 7.4,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 4,
+    "horse_name": "ヴィジョンメーカー",
+    "odds_win_at_post": 9.3,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "△",
+    "horse_number": 11,
+    "horse_name": "マイファミリー",
+    "odds_win_at_post": 18.8,
+    "popularity_at_post": 9
+   },
+   {
+    "mark": "☆",
+    "horse_number": 13,
+    "horse_name": "スクランプシャス",
+    "odds_win_at_post": 19.7,
+    "popularity_at_post": 10
+   },
+   {
+    "mark": "注",
+    "horse_number": 7,
+    "horse_name": "テイキットイージー",
+    "odds_win_at_post": 19.8,
+    "popularity_at_post": 11
+   }
+  ],
+  "202604040110": [
+   {
+    "mark": "◎",
+    "horse_number": 2,
+    "horse_name": "リッキースタイル",
+    "odds_win_at_post": 16.4,
+    "popularity_at_post": 8
+   },
+   {
+    "mark": "○",
+    "horse_number": 5,
+    "horse_name": "シルフズミスチーフ",
+    "odds_win_at_post": 5.2,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "▲",
+    "horse_number": 11,
+    "horse_name": "ルイステソーロ",
+    "odds_win_at_post": 8.5,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "△",
+    "horse_number": 3,
+    "horse_name": "ダノンモンテローザ",
+    "odds_win_at_post": 7.7,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "△",
+    "horse_number": 14,
+    "horse_name": "ロイヤルスパイア",
+    "odds_win_at_post": 10.2,
+    "popularity_at_post": 7
+   },
+   {
+    "mark": "☆",
+    "horse_number": 4,
+    "horse_name": "ダズリングダンス",
+    "odds_win_at_post": 7.7,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "注",
+    "horse_number": 7,
+    "horse_name": "レイワサンサン",
+    "odds_win_at_post": 36.9,
+    "popularity_at_post": 12
+   }
+  ],
+  "202605040609": [
+   {
+    "mark": "◎",
+    "horse_number": 12,
+    "horse_name": "コラリオン",
+    "odds_win_at_post": 2.3,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 11,
+    "horse_name": "トップレイアー",
+    "odds_win_at_post": 6.1,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "▲",
+    "horse_number": 4,
+    "horse_name": "ホウオウモノポリー",
+    "odds_win_at_post": 13.6,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "△",
+    "horse_number": 3,
+    "horse_name": "ルナパッショーネ",
+    "odds_win_at_post": 6.1,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "△",
+    "horse_number": 7,
+    "horse_name": "キャピタルストーン",
+    "odds_win_at_post": 30.0,
+    "popularity_at_post": 10
+   },
+   {
+    "mark": "☆",
+    "horse_number": 1,
+    "horse_name": "フルーツバスケット",
+    "odds_win_at_post": 10.9,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "注",
+    "horse_number": 6,
+    "horse_name": "ノドゥス",
+    "odds_win_at_post": 26.5,
+    "popularity_at_post": 9
+   }
+  ],
+  "202605040610": [
+   {
+    "mark": "◎",
+    "horse_number": 4,
+    "horse_name": "ライノ",
+    "odds_win_at_post": 11.4,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "○",
+    "horse_number": 3,
+    "horse_name": "ビービーアジャイル",
+    "odds_win_at_post": 3.3,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "▲",
+    "horse_number": 5,
+    "horse_name": "ヴァンドーム",
+    "odds_win_at_post": 4.8,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 1,
+    "horse_name": "インペリアルライン",
+    "odds_win_at_post": 16.6,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "△",
+    "horse_number": 13,
+    "horse_name": "タイセイカイザー",
+    "odds_win_at_post": 26.8,
+    "popularity_at_post": 9
+   },
+   {
+    "mark": "☆",
+    "horse_number": 12,
+    "horse_name": "ロードブレイズ",
+    "odds_win_at_post": 19.3,
+    "popularity_at_post": 7
+   },
+   {
+    "mark": "注",
+    "horse_number": 8,
+    "horse_name": "ヴァナルガンド",
+    "odds_win_at_post": 25.2,
+    "popularity_at_post": 8
+   }
+  ],
+  "202605040608": [
+   {
+    "mark": "◎",
+    "horse_number": 4,
+    "horse_name": "リポサンテ",
+    "odds_win_at_post": 4.0,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "○",
+    "horse_number": 3,
+    "horse_name": "モートンアイランド",
+    "odds_win_at_post": 2.5,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "▲",
+    "horse_number": 5,
+    "horse_name": "エースフライト",
+    "odds_win_at_post": 6.2,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 6,
+    "horse_name": "スピンザブラッド",
+    "odds_win_at_post": 24.2,
+    "popularity_at_post": 8
+   },
+   {
+    "mark": "△",
+    "horse_number": 8,
+    "horse_name": "マイネルアレス",
+    "odds_win_at_post": 32.0,
+    "popularity_at_post": 9
+   },
+   {
+    "mark": "☆",
+    "horse_number": 1,
+    "horse_name": "タガノヘラクレス",
+    "odds_win_at_post": 14.2,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "注",
+    "horse_number": 9,
+    "horse_name": "アッカン",
+    "odds_win_at_post": 16.0,
+    "popularity_at_post": 7
+   }
+  ],
+  "202608040609": [
+   {
+    "mark": "◎",
+    "horse_number": 11,
+    "horse_name": "ルビドゥソレイユ",
+    "odds_win_at_post": 4.1,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "○",
+    "horse_number": 5,
+    "horse_name": "ワイズギャング",
+    "odds_win_at_post": 7.4,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "▲",
+    "horse_number": 9,
+    "horse_name": "ランスオブセヘル",
+    "odds_win_at_post": 9.6,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "△",
+    "horse_number": 7,
+    "horse_name": "ジャンヌドゥレーヴ",
+    "odds_win_at_post": 4.1,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "△",
+    "horse_number": 16,
+    "horse_name": "ラヴオントップ",
+    "odds_win_at_post": 13.7,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "☆",
+    "horse_number": 3,
+    "horse_name": "マヴィ",
+    "odds_win_at_post": 22.8,
+    "popularity_at_post": 10
+   },
+   {
+    "mark": "注",
+    "horse_number": 6,
+    "horse_name": "メイショウリリー",
+    "odds_win_at_post": 20.9,
+    "popularity_at_post": 8
+   }
+  ],
+  "202604040103": [
+   {
+    "mark": "◎",
+    "horse_number": 12,
+    "horse_name": "マリリンバローズ",
+    "odds_win_at_post": 4.0,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 3,
+    "horse_name": "スイーヴル",
+    "odds_win_at_post": 14.0,
+    "popularity_at_post": 7
+   },
+   {
+    "mark": "▲",
+    "horse_number": 1,
+    "horse_name": "ミライハーモニー",
+    "odds_win_at_post": 10.9,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "△",
+    "horse_number": 2,
+    "horse_name": "ラベンダーヘイズ",
+    "odds_win_at_post": 5.2,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 7,
+    "horse_name": "スピニンググローブ",
+    "odds_win_at_post": 12.3,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "☆",
+    "horse_number": 11,
+    "horse_name": "ブリングライト",
+    "odds_win_at_post": 17.2,
+    "popularity_at_post": 8
+   },
+   {
+    "mark": "注",
+    "horse_number": 14,
+    "horse_name": "ガルディーノ",
+    "odds_win_at_post": 28.1,
+    "popularity_at_post": 12
+   }
+  ],
+  "202605040607": [
+   {
+    "mark": "◎",
+    "horse_number": 11,
+    "horse_name": "モノポリオ",
+    "odds_win_at_post": 3.1,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "○",
+    "horse_number": 10,
+    "horse_name": "ヤングアメリカンズ",
+    "odds_win_at_post": 6.1,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "▲",
+    "horse_number": 5,
+    "horse_name": "タイセイリアル",
+    "odds_win_at_post": 2.8,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "△",
+    "horse_number": 9,
+    "horse_name": "アトラステソーロ",
+    "odds_win_at_post": 8.6,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "△",
+    "horse_number": 3,
+    "horse_name": "リアライズオーラム",
+    "odds_win_at_post": 9.8,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "☆",
+    "horse_number": 4,
+    "horse_name": "アデルフィー",
+    "odds_win_at_post": 18.0,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "注",
+    "horse_number": 6,
+    "horse_name": "スティールヴォーグ",
+    "odds_win_at_post": 31.2,
+    "popularity_at_post": 9
+   }
+  ],
+  "202608040607": [
+   {
+    "mark": "◎",
+    "horse_number": 4,
+    "horse_name": "ココロヅヨサ",
+    "odds_win_at_post": 3.3,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "○",
+    "horse_number": 8,
+    "horse_name": "ビービーバザーク",
+    "odds_win_at_post": 8.5,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "▲",
+    "horse_number": 1,
+    "horse_name": "アミラル",
+    "odds_win_at_post": 4.6,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 2,
+    "horse_name": "ビズロード",
+    "odds_win_at_post": 9.0,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "△",
+    "horse_number": 9,
+    "horse_name": "ディニテ",
+    "odds_win_at_post": 24.9,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "☆",
+    "horse_number": 7,
+    "horse_name": "ゼンカイナダル",
+    "odds_win_at_post": 2.5,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "注",
+    "horse_number": 5,
+    "horse_name": "スコーピオンイメル",
+    "odds_win_at_post": 41.6,
+    "popularity_at_post": 8
+   }
+  ]
+ }
+}

@@ -1,0 +1,14 @@
+{
+ "slots": {
+  "morning": {
+   "posted_at": "2026-11-16 09:04:55",
+   "run_id": "43778170898",
+   "event": "workflow_dispatch"
+  },
+  "weekday": {
+   "posted_at": "2026-11-16 12:35:46",
+   "run_id": "43799039543",
+   "event": "workflow_dispatch"
+  }
+ }
+}

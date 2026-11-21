@@ -1,0 +1,29 @@
+{
+ "slots": {
+  "morning": {
+   "posted_at": "2026-10-12 08:18:41",
+   "run_id": "38183760954",
+   "event": "workflow_dispatch"
+  },
+  "odds_flash": {
+   "posted_at": "2026-10-12 09:42:26",
+   "run_id": "38188620884",
+   "event": "workflow_dispatch"
+  },
+  "post_predict": {
+   "posted_at": "2026-10-12 10:26:20",
+   "run_id": "38191837463",
+   "event": "workflow_dispatch"
+  },
+  "weekday": {
+   "posted_at": "2026-10-12 12:34:51",
+   "run_id": "38200260832",
+   "event": "workflow_dispatch"
+  },
+  "results": {
+   "posted_at": "2026-10-12 17:39:40",
+   "run_id": "38224755561",
+   "event": "workflow_dispatch"
+  }
+ }
+}

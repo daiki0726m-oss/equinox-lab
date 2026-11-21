@@ -1,0 +1,54 @@
+{
+  "year": 2025,
+  "n_races": 3434,
+  "modes": {
+    "baseline": {
+      "単勝◎": {
+        "spend": 57200,
+        "return": 55410,
+        "hits": 203,
+        "races": 572,
+        "roi": 96.9
+      },
+      "三連複◎軸": {
+        "spend": 571600,
+        "return": 246180,
+        "hits": 165,
+        "races": 572,
+        "roi": 43.1
+      }
+    },
+    "alpha": {
+      "単勝◎": {
+        "spend": 63900,
+        "return": 59440,
+        "hits": 209,
+        "races": 639,
+        "roi": 93.0
+      },
+      "三連複◎軸": {
+        "spend": 638600,
+        "return": 292270,
+        "hits": 180,
+        "races": 639,
+        "roi": 45.8
+      }
+    },
+    "whitelist": {
+      "単勝◎": {
+        "spend": 8300,
+        "return": 9410,
+        "hits": 34,
+        "races": 83,
+        "roi": 113.4
+      },
+      "三連複◎軸": {
+        "spend": 83000,
+        "return": 25080,
+        "hits": 13,
+        "races": 83,
+        "roi": 30.2
+      }
+    }
+  }
+}

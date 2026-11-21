@@ -1,0 +1,328 @@
+name: 🧠 Weekly Model Retrain
+
+on:
+  # 毎週月曜 3:00 UTC (= JST 12:00) に自動実行
+  schedule:
+    - cron: '0 3 * * 1'
+    # #169 レビュー: 火・水の予備 (JST 12:00)。月曜が開催日 (祝日・順延) で延期した週と、
+    # 月曜の cron が GitHub 側で飛ばされた週 (#36/#62) だけ再学習と週次レポートをやる。
+    # 普通の週は「今週は再学習済み」で何もしない (scripts/retrain_decision.py の run=false、commit もしない)。
+    # 水曜は 2026-09-21(月)・22(火) のように月火とも開催の週の取りこぼし防止 (火曜だけだと、その週は再学習なし)。
+    - cron: '0 3 * * 2'
+    - cron: '0 3 * * 3'
+  # 手動実行も可能
+  workflow_dispatch:
+
+concurrency:
+  group: keiba-db-accum          # #70 part1: 蓄積系writerを直列化しgz clobberを防ぐ
+  cancel-in-progress: false
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Unpack DB (gz → raw)
+        run: bash scripts/db_unpack.sh
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
+
+      # #95 (2026-07-02): 旧実装は models/*.pkl の mtime で経過日数を判定していたが、
+      # actions/checkout は mtime を保存しない (常に checkout 時刻 = 経過0日) ため、
+      # scheduled 実行では retrain が永遠にスキップされ、モデルが 2026-05-17 のまま
+      # 6週間以上サイレント停止していた。GitHub API の最終コミット日時で判定する
+      # (fetch-depth:0 のフル履歴 fetch は重いのでAPI照会、レビュー指摘)。
+      - name: Check model age (last commit via API, not mtime)
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LAST_ISO=$(gh api "repos/$GITHUB_REPOSITORY/commits?path=models/model_rank.pkl&per_page=1" \
+            --jq '.[0].commit.committer.date' 2>/dev/null || echo "")
+          # #169: 旧判定は経過日数を整数に切り捨てて「7日以上」を見ていたため、commit が run 開始の
+          # 約27分後に入る分だけ翌週は 6.9日→6日 になり、7/20 以降の定期実行16回のうち再学習は
+          # 8回だけ (= 隔週) だった。ISO 週 (JST) で「今週まだ再学習していないか」を判定する
+          # (詳細と境界ケースは scripts/retrain_decision.py)。最終再学習の時刻は #95 のとおり API。
+          # #169 レビュー: 定期実行で JST の今日が開催日なら run=false (延期)。開催日の判定は展開済みの keiba.db
+          if python3 scripts/retrain_decision.py --last-commit "$LAST_ISO" \
+              --event "$GITHUB_EVENT_NAME" --db keiba.db > /tmp/retrain_decision.txt; then
+            cat /tmp/retrain_decision.txt >> "$GITHUB_OUTPUT"
+          else
+            # 判定スクリプト自体が壊れた時は再学習する側に倒す (#95: 沈黙停止の方が害が大きい)
+            echo "⚠️ 判定スクリプトが失敗 → 安全側で再学習"
+            printf 'run=true\nretrain=true\nage=999\nage_hours=\napi_ok=false\nreason=判定スクリプトの失敗\n' >> "$GITHUB_OUTPUT"
+          fi
+          cat /tmp/retrain_decision.txt || true
+
+      # #169 レビュー: 後続 step (基準表・ROI 監視・要降格通知・commit・停滞通知) の実行条件は
+      # 旧来の「判定が成立した (age != '')」から「この run で何かする (run == 'true')」に変えた。
+      # run=false は (a) 開催日で延期した日 と (b) 今週は済んでいる火・水の予備 cron。
+      # どちらも commit しないので、keiba.db.gz を余計に push しない (#153)。
+
+      # #95: 旧 `collect --months 3` は predict.py collect に存在しない引数で常に
+      # エラー終了し `|| echo` で握り潰されていた。そもそも学習データ (keiba.db) は
+      # 日次の fetch/race_day_runner/results 系 workflow が常時最新化して git に
+      # push しており、retrain 前の一括再収集は冗長 (実際、collect が一度も成功して
+      # いない期間も学習は正常だった)。毎週 ~1000R のフルスクレイプは 60分 timeout
+      # 超過とブロックの温床 (レビュー指摘) のため、collect ステップは廃止した。
+
+      - name: Retrain model
+        # #169: 判定 (手動実行は常に true) は Check model age の retrain に一本化
+        if: steps.check.outputs.retrain == 'true'
+        run: |
+          echo "🧠 モデル再学習開始..."
+          python predict.py train
+          echo "✅ モデル再学習完了"
+
+      # #95: 週次 ROI モニタ (segments 監視: trio-focus band / whitelist / 注) を配線。
+      # これまでどの workflow からも呼ばれておらず降格 flag が発火し得なかった (レビュー指摘)。
+      # #151: レース条件別の実測値 (印の捕捉率・三連複配当) と、
+      # 現行の印ロジックの分布から引いた信頼度の閾値を毎週更新する。
+      # 固定閾値は印ロジックやモデルが変わるたびに陳腐化する (#36/#120/#147 で三度再発)
+      # ので、週末が終わるたびに実分布から引き直す。
+      - name: Rebuild race baseline (#151)
+        if: always() && steps.check.outputs.run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # #161: モデルの本当の配備時刻を API で引く
+        run: |
+          python3 scripts/build_race_baseline.py || echo "⚠️ 基準表の更新に失敗 (既存の値を使い続ける)"
+
+      - name: ROI weekly monitor
+        id: roimon
+        if: always() && steps.check.outputs.run == 'true'
+        run: |
+          python3 scripts/roi_weekly_monitor.py --weeks 12 --output docs/data/roi_weekly.json > /tmp/roi_report.md || true
+          tail -30 /tmp/roi_report.md || true
+          # #142: 実測トラッカー — 凍結した投稿印 × 確定着順 × 実払戻だけの集計。
+          # バックテストが5回連続で幻を掴んだ (#73/#99/#100/#109/#141) ため、
+          # 判断材料はこちらを正とする。
+          echo '===== 印の実測トラッカー (#142) ====='
+          python3 scripts/mark_tracker.py --json docs/data/mark_tracker.json || true
+          FLAGS=$(python3 -c "
+          import json
+          try:
+              d = json.load(open('docs/data/roi_weekly.json'))
+              segs = d.get('segments') or {}
+              flags = [k for k, s in segs.items() if s.get('flag')]
+              print(','.join(flags))
+          except Exception:
+              print('')
+          ")
+          echo "flags=$FLAGS" >> $GITHUB_OUTPUT
+          if [ -n "$FLAGS" ]; then echo "🔻 segment flag: $FLAGS"; fi
+
+      # #169: 上の flags は失敗/停滞 Issue の本文にしか使われず、run が成功した週は
+      # 「🔻 要降格レビュー」が8週以上連続で立っても誰にも届いていなかった。
+      # 2週続いたら Issue を1本だけ作り、以降は同じ Issue にコメントで更新する
+      # (#161 の「開催日のやり残し」と同じ集約方式)。連続の記録は
+      # docs/data/roi_flag_history.json (この step の導入時点から数え始める)。
+      # 降格するかどうかはユーザーが判断する (自動では降格しない)。
+      - name: 🔻 要降格フラグの連続を通知 (#169)
+        if: always() && steps.check.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="🔻 ROI監視: 要降格フラグが連続しています"
+          # 検索は部分一致なので、タイトルの完全一致で絞る (別の Issue にコメントしないため)
+          OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty" 2>/dev/null || true)
+          # #169 レビュー: 開いている Issue が無い時は、ユーザーが「降格しない」と判断して閉じた
+          # 可能性がある。閉じた時刻を渡し、それより前に通知済みの連続は判断済みとして黙らせる
+          # (渡さないと、フラグが残る限り毎週新しい Issue が作られる)。
+          CLOSED_AT=""
+          if [ -z "$OPEN" ]; then
+            CLOSED_AT=$(gh issue list --state closed --search "\"$TITLE\" in:title" --json title,closedAt \
+              --jq "map(select(.title == \"$TITLE\") | .closedAt) | max // empty" 2>/dev/null || true)
+          fi
+          set +e
+          python3 scripts/roi_flag_alert.py --roi docs/data/roi_weekly.json \
+            --history docs/data/roi_flag_history.json --min-streak 2 --report /tmp/roi_demote.md \
+            ${CLOSED_AT:+--issue-closed-at "$CLOSED_AT"}
+          CODE=$?
+          set -e
+          echo "要降格フラグ検知の終了コード: $CODE (0=通知なし 1=通知 3=解消 2=判定不能)"
+          if { [ "$CODE" = "1" ] || [ "$CODE" = "3" ]; } && [ -s /tmp/roi_demote.md ]; then
+            BODY="$(cat /tmp/roi_demote.md)
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          _weekly_retrain が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_"
+            if [ -n "$OPEN" ]; then
+              gh issue comment "$OPEN" --body "$BODY" || echo "⚠️ Issue コメント失敗"
+            elif [ "$CODE" = "1" ]; then
+              gh issue create --title "$TITLE" --body "$BODY" || echo "⚠️ Issue 作成失敗"
+            else
+              echo "ℹ️ フラグは外れたが、開いている Issue が無い → 何もしない"
+            fi
+          fi
+
+      # #175: 印を回収型の点数表に切り替えた (2026-11-18)。使わなかった方の点数表の印 (影の印) と
+      # 同じレースの回収率を毎週並べ、戻す基準 (7種平均の差の95%上限<0、300R以上) に当たったら
+      # Issue にする (印を戻すのは人が config/prediction_flags.yml を base にする)。
+      - name: 🔁 回収型の点数表 vs 旧点数表 (#175)
+        if: always() && steps.check.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          python3 scripts/scorecard_shadow_report.py --output docs/data/scorecard_shadow.json > /tmp/shadow.md 2>&1
+          CODE=$?
+          set -e
+          cat /tmp/shadow.md || true
+          echo "比較の終了コード: $CODE (0=継続/保留/材料なし 10=戻す基準に該当 11=影の印が欠けている それ以外=失敗)"
+          case "$CODE" in
+            0) exit 0 ;;
+            10) TITLE="🔻 回収型の点数表: 戻す基準に該当 (#175)" ;;
+            11) TITLE="⚠️ 回収型の比較: 影の印が欠けている (#175)" ;;
+            *) TITLE="⚠️ 回収型の比較スクリプトが失敗 (#175)" ;;
+          esac
+          BODY="$(cat /tmp/shadow.md)
+
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty" 2>/dev/null || true)
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" --body "$BODY" || echo "⚠️ Issue コメント失敗"
+            exit 0
+          fi
+          # 人が「戻さない」と判断して閉じた Issue は8週間は作り直さない (#169 と同じ考え方)
+          RECENT=$(gh issue list --state closed --search "\"$TITLE\" in:title" --json title,closedAt \
+            --jq "map(select(.title == \"$TITLE\") | .closedAt) | max // empty" 2>/dev/null || true)
+          if [ -n "$RECENT" ] && [ "$(python3 -c "import datetime as d,sys; t=d.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00')); print(int((d.datetime.now(d.timezone.utc)-t).days < 56))" "$RECENT")" = "1" ]; then
+            echo "ℹ️ 同じ Issue が $RECENT に閉じられている (8週間以内) → 作り直さない"
+            exit 0
+          fi
+          gh issue create --title "$TITLE" --body "$BODY" || echo "⚠️ Issue 作成失敗"
+
+      # #114: retrain スキップ週も ROI レポートは毎週公開する (7/13 に retrain skip →
+      # roi_weekly.json が 11日 stale = #111「週次ROI報告」の結線切れが実発生)
+      # #135 (2026-09-01): 出荷前ゲート。#134 で model_rank が **木3本** で出荷され
+      # 買い目が停止していた事故 (should_bet 13/36 → 0/36) の再発防止。
+      # モデルの木の本数・特徴量数を検査し、異常なら commit させない。
+      - name: Model health gate (#135)
+        id: gate
+        if: steps.check.outputs.retrain == 'true'
+        run: |
+          python3 scripts/verify_feature_parity.py --models-only
+          echo "✅ モデル健全性ゲート通過"
+
+      - name: Commit updated model + monitor
+        id: commit
+        # #150: 旧条件は always() だけで、直前の Model health gate が失敗しても
+        # commit が走ってしまい **ゲートがゲートになっていなかった**
+        # (#134 の「木3本モデルを出荷して買い目が停止」を止められない)。
+        # ゲートが落ちた時だけ commit を止める (ゲートが skip された週は従来どおり通す)。
+        if: always() && steps.check.outputs.run == 'true' && steps.gate.outcome != 'failure'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          bash scripts/db_pack.sh
+          git add models/ keiba.db.gz docs/data/roi_weekly.json docs/data/mark_tracker.json models/train_boundary.json docs/data/race_baseline.json docs/data/roi_flag_history.json
+          # #175: 比較の結果 (スクリプトが落ちて書かれなかった週に pathspec エラーで commit 全体を止めない)
+          [ -f docs/data/scorecard_shadow.json ] && git add docs/data/scorecard_shadow.json || true
+          if git diff --staged --quiet; then
+            echo "📭 変更なし"
+            echo "model_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            # #169: 再学習を飛ばした週も「Weekly model retrain」で commit していたため、
+            # git log からは隔週になっていることに気づけなかった。モデル本体 (*.pkl) が
+            # 実際に変わった時だけその名前にする。(grep -c は入力を最後まで読むので
+            # pipefail 下でも git diff が SIGPIPE で落ちない)
+            N_PKL=$(git diff --staged --name-only -- models/ | grep -c '\.pkl$' || true)
+            if [ "${N_PKL:-0}" != "0" ]; then
+              MODEL_CHANGED=true
+              git commit -m "🧠 Weekly model retrain $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+            else
+              MODEL_CHANGED=false
+              git commit -m "📊 Weekly reports (no retrain) $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+            fi
+            # 作業ブランチ (workflow_dispatch で --ref 指定された場合) でも動くよう
+            # GITHUB_REF_NAME を rebase 対象に。デフォルトは main。
+            BRANCH="${GITHUB_REF_NAME:-main}"
+            # 他workflowが先にpushしている可能性に備え、rebaseしてからpush(最大3回リトライ)
+            PUSHED=0
+            for i in 1 2 3; do
+              git pull --rebase --autostash -X theirs origin "$BRANCH" || true
+              if git push origin "HEAD:$BRANCH"; then
+                echo "🚀 モデルをデプロイ完了 (試行$i, branch=$BRANCH)"
+                PUSHED=1
+                break
+              fi
+              echo "⚠️ push失敗 → rebaseしてリトライ ($i, branch=$BRANCH)"
+              sleep 5
+            done
+            # #95: push 全滅を握り潰さない (旧実装は成功扱いで沈黙、レビュー指摘)
+            if [ "$PUSHED" != "1" ]; then
+              echo "❌ push が3回とも失敗 — モデルは origin に届いていない"
+              exit 1
+            fi
+            # #169: 停滞通知は「今回モデルを届けなかった回」だけに出す (下の Notify step)
+            echo "model_changed=$MODEL_CHANGED" >> "$GITHUB_OUTPUT"
+          fi
+
+      # #95: retrain の沈黙停止を二度と起こさないための可視化 (#34 SLO 思想の retrain 適用)。
+      # (a) job 失敗 (timeout の cancelled 含む、レビュー指摘) → Issue
+      # (b) schedule 実行で「retrain 条件を満たさないのにモデルが14日以上古い」= 判定系の
+      #     再故障 (mtime バグの再来など) → Issue (コメントだけで未実装だった、レビュー指摘)
+      # #169: 旧条件は再学習**前**に測った age >= 14 だけを見ていたため、成立するのは必ず
+      #   再学習を実行する回 = 通知は構造的に毎回誤報だった (#116 はモデル配備の5秒後に作成)。
+      #   「今回モデルを届けなかった (model_changed != true) かつ 最終再学習から14日以上」に限る。
+      #   停滞は週をまたいで続く状態なので、日付を入れない1本の Issue に集約し、続く間はコメントで更新する。
+      #   開催日で延期した run (run=false) では出さない (翌日の予備 cron が再学習する)。
+      # #170: 失敗も週単位の1本に集約する。旧タイトルは日付入り (失敗 YYYY-MM-DD) で同じ日付しか探さず、
+      #   月曜の失敗が commit されないと火・水の予備 cron が同じ原因で落ちて、週に3本立っていた。
+      #   タイトルは ISO 週 (JST、check の this_week。check より前の step で落ちて空なら date で同じ形式に)、
+      #   既存の Issue はタイトルの完全一致で探し、あれば失敗でもコメントで追記する。
+      - name: 🔔 Notify on failure / cancelled / stale
+        if: failure() || cancelled() || (github.event_name == 'schedule' && steps.check.outputs.run == 'true' && steps.check.outputs.api_ok == 'true' && steps.check.outputs.age >= 14 && steps.commit.outputs.model_changed != 'true')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THIS_WEEK: ${{ steps.check.outputs.this_week }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            KIND="stale"
+            TITLE="🧠 weekly_retrain 停滞疑い (モデルが14日以上更新されていない)"
+          else
+            KIND="failure"
+            WEEK="$THIS_WEEK"
+            [ -z "$WEEK" ] && WEEK=$(TZ=Asia/Tokyo date '+%G-W%V')
+            TITLE="🧠 weekly_retrain 失敗 $WEEK"
+          fi
+          BODY=$(printf '%s\n' \
+            "weekly_retrain の $KIND を検知しました。モデルが陳腐化すると予測劣化が silent に進行します (#95 で6週間停止の前科あり)。" \
+            "" \
+            "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "モデル経過日数 (最終再学習から): ${{ steps.check.outputs.age }}日" \
+            "今回の判定: retrain=${{ steps.check.outputs.retrain }} (${{ steps.check.outputs.reason }}) / モデル更新=${{ steps.commit.outputs.model_changed }}" \
+            "segment flags: ${{ steps.roimon.outputs.flags }}" \
+            "" \
+            "確認事項: train のエラー / push の競合 / age 判定 (API) の失敗" \
+            "" \
+            "_weekly_retrain が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出 (${{ github.event_name }})_")
+          # 検索は部分一致なので、タイトルの完全一致で絞る (別の Issue にコメントしないため)
+          EXISTING=$(gh issue list --search "\"$TITLE\" in:title" --state open --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty" 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            # #170: 失敗も同じ週の Issue に追記する (何日目も失敗しているかが1本で追える)
+            gh issue comment "$EXISTING" --body "$BODY" || echo "⚠️ Issue コメント失敗"
+            exit 0
+          fi
+          gh issue create --title "$TITLE" --body "$BODY" --label "slo-violation" 2>&1 || \
+            gh issue create --title "$TITLE" --body "$BODY" 2>&1 || \
+            echo "⚠️ Issue 作成失敗"

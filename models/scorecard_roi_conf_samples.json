@@ -1,0 +1,3064 @@
+{
+"model": "roi",
+"model_sha1": "4434ccb656f13f39bffe941b3736c4babe017ab4",
+"model_version": "scorecard_v3_f2_roi",
+"lin_fit_until": "2026-11-15",
+"n": 381,
+"fidelity_base_axis_match": 1.0,
+"same_axis_as_cached": 0.622,
+"period": [
+"2026-09-05",
+"2026-11-15"
+],
+"w_median": 16.0,
+"samples": [
+{
+"race_id": "202603030412",
+"race_date": "2026-11-15",
+"horse_number": 7,
+"w": 8.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030411",
+"race_date": "2026-11-15",
+"horse_number": 1,
+"w": 13.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030410",
+"race_date": "2026-11-15",
+"horse_number": 12,
+"w": 13.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030409",
+"race_date": "2026-11-15",
+"horse_number": 4,
+"w": 34.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030408",
+"race_date": "2026-11-15",
+"horse_number": 13,
+"w": 16.2,
+"jt": -1,
+"same_as_cached": true
+},
+{
+"race_id": "202603030407",
+"race_date": "2026-11-15",
+"horse_number": 6,
+"w": 12.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030403",
+"race_date": "2026-11-15",
+"horse_number": 3,
+"w": 20.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050412",
+"race_date": "2026-11-15",
+"horse_number": 7,
+"w": 20.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050411",
+"race_date": "2026-11-15",
+"horse_number": 9,
+"w": 12.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608050410",
+"race_date": "2026-11-15",
+"horse_number": 9,
+"w": 31.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050409",
+"race_date": "2026-11-15",
+"horse_number": 5,
+"w": 7.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608050408",
+"race_date": "2026-11-15",
+"horse_number": 1,
+"w": 13.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050407",
+"race_date": "2026-11-15",
+"horse_number": 5,
+"w": 13.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050406",
+"race_date": "2026-11-15",
+"horse_number": 2,
+"w": 16.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050412",
+"race_date": "2026-11-15",
+"horse_number": 1,
+"w": 31.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050411",
+"race_date": "2026-11-15",
+"horse_number": 18,
+"w": 8.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050410",
+"race_date": "2026-11-15",
+"horse_number": 11,
+"w": 28.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050409",
+"race_date": "2026-11-15",
+"horse_number": 3,
+"w": 3.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605050408",
+"race_date": "2026-11-15",
+"horse_number": 3,
+"w": 15.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050407",
+"race_date": "2026-11-15",
+"horse_number": 13,
+"w": 18.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605050406",
+"race_date": "2026-11-15",
+"horse_number": 4,
+"w": 31.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202603030312",
+"race_date": "2026-11-14",
+"horse_number": 5,
+"w": 15.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030311",
+"race_date": "2026-11-14",
+"horse_number": 10,
+"w": 11.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030310",
+"race_date": "2026-11-14",
+"horse_number": 13,
+"w": 4.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202603030309",
+"race_date": "2026-11-14",
+"horse_number": 11,
+"w": 12.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030308",
+"race_date": "2026-11-14",
+"horse_number": 16,
+"w": 10.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030307",
+"race_date": "2026-11-14",
+"horse_number": 10,
+"w": 15.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030306",
+"race_date": "2026-11-14",
+"horse_number": 1,
+"w": 11.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202603030304",
+"race_date": "2026-11-14",
+"horse_number": 9,
+"w": 18.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050312",
+"race_date": "2026-11-14",
+"horse_number": 13,
+"w": 12.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050311",
+"race_date": "2026-11-14",
+"horse_number": 5,
+"w": 15.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608050310",
+"race_date": "2026-11-14",
+"horse_number": 7,
+"w": 13.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050309",
+"race_date": "2026-11-14",
+"horse_number": 4,
+"w": 19.5,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608050308",
+"race_date": "2026-11-14",
+"horse_number": 8,
+"w": 22.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608050307",
+"race_date": "2026-11-14",
+"horse_number": 4,
+"w": 14.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605050312",
+"race_date": "2026-11-14",
+"horse_number": 1,
+"w": 20.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050311",
+"race_date": "2026-11-14",
+"horse_number": 8,
+"w": 5.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050310",
+"race_date": "2026-11-14",
+"horse_number": 6,
+"w": 14.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605050309",
+"race_date": "2026-11-14",
+"horse_number": 13,
+"w": 20.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050307",
+"race_date": "2026-11-14",
+"horse_number": 3,
+"w": 45.3,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202603030212",
+"race_date": "2026-11-08",
+"horse_number": 6,
+"w": 14.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030211",
+"race_date": "2026-11-08",
+"horse_number": 13,
+"w": 1.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030210",
+"race_date": "2026-11-08",
+"horse_number": 1,
+"w": 15.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030209",
+"race_date": "2026-11-08",
+"horse_number": 7,
+"w": 6.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030208",
+"race_date": "2026-11-08",
+"horse_number": 6,
+"w": 11.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030207",
+"race_date": "2026-11-08",
+"horse_number": 9,
+"w": 26.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030203",
+"race_date": "2026-11-08",
+"horse_number": 15,
+"w": 11.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050212",
+"race_date": "2026-11-08",
+"horse_number": 7,
+"w": 3.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050211",
+"race_date": "2026-11-08",
+"horse_number": 11,
+"w": 14.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050210",
+"race_date": "2026-11-08",
+"horse_number": 8,
+"w": 21.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608050209",
+"race_date": "2026-11-08",
+"horse_number": 3,
+"w": 14.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050208",
+"race_date": "2026-11-08",
+"horse_number": 8,
+"w": 39.7,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608050207",
+"race_date": "2026-11-08",
+"horse_number": 4,
+"w": 19.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608050204",
+"race_date": "2026-11-08",
+"horse_number": 9,
+"w": 16.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050212",
+"race_date": "2026-11-08",
+"horse_number": 4,
+"w": 21.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050211",
+"race_date": "2026-11-08",
+"horse_number": 5,
+"w": 17.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050210",
+"race_date": "2026-11-08",
+"horse_number": 10,
+"w": 25.6,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605050209",
+"race_date": "2026-11-08",
+"horse_number": 6,
+"w": 36.3,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605050208",
+"race_date": "2026-11-08",
+"horse_number": 5,
+"w": 21.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050207",
+"race_date": "2026-11-08",
+"horse_number": 14,
+"w": 45.7,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605050206",
+"race_date": "2026-11-08",
+"horse_number": 15,
+"w": 16.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030112",
+"race_date": "2026-11-07",
+"horse_number": 5,
+"w": 21.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030111",
+"race_date": "2026-11-07",
+"horse_number": 6,
+"w": 17.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030110",
+"race_date": "2026-11-07",
+"horse_number": 15,
+"w": 9.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030109",
+"race_date": "2026-11-07",
+"horse_number": 12,
+"w": 10.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030108",
+"race_date": "2026-11-07",
+"horse_number": 9,
+"w": 23.5,
+"jt": -2,
+"same_as_cached": true
+},
+{
+"race_id": "202603030107",
+"race_date": "2026-11-07",
+"horse_number": 9,
+"w": 30.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030106",
+"race_date": "2026-11-07",
+"horse_number": 16,
+"w": 13.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202603030104",
+"race_date": "2026-11-07",
+"horse_number": 6,
+"w": 9.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608050112",
+"race_date": "2026-11-07",
+"horse_number": 2,
+"w": 12.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608050111",
+"race_date": "2026-11-07",
+"horse_number": 11,
+"w": 6.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608050110",
+"race_date": "2026-11-07",
+"horse_number": 5,
+"w": 19.5,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608050109",
+"race_date": "2026-11-07",
+"horse_number": 9,
+"w": 13.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608050107",
+"race_date": "2026-11-07",
+"horse_number": 1,
+"w": 6.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605050112",
+"race_date": "2026-11-07",
+"horse_number": 12,
+"w": 31.0,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605050111",
+"race_date": "2026-11-07",
+"horse_number": 8,
+"w": 6.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605050110",
+"race_date": "2026-11-07",
+"horse_number": 10,
+"w": 33.7,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605050109",
+"race_date": "2026-11-07",
+"horse_number": 13,
+"w": 9.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605050108",
+"race_date": "2026-11-07",
+"horse_number": 7,
+"w": 33.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605050105",
+"race_date": "2026-11-07",
+"horse_number": 8,
+"w": 15.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608041112",
+"race_date": "2026-11-01",
+"horse_number": 6,
+"w": 22.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608041111",
+"race_date": "2026-11-01",
+"horse_number": 13,
+"w": 10.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608041110",
+"race_date": "2026-11-01",
+"horse_number": 3,
+"w": 3.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608041109",
+"race_date": "2026-11-01",
+"horse_number": 8,
+"w": 20.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608041108",
+"race_date": "2026-11-01",
+"horse_number": 10,
+"w": 26.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608041107",
+"race_date": "2026-11-01",
+"horse_number": 15,
+"w": 13.5,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605041112",
+"race_date": "2026-11-01",
+"horse_number": 13,
+"w": 19.6,
+"jt": 2,
+"same_as_cached": false
+},
+{
+"race_id": "202605041111",
+"race_date": "2026-11-01",
+"horse_number": 7,
+"w": 19.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605041110",
+"race_date": "2026-11-01",
+"horse_number": 9,
+"w": 33.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605041109",
+"race_date": "2026-11-01",
+"horse_number": 4,
+"w": 10.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605041108",
+"race_date": "2026-11-01",
+"horse_number": 2,
+"w": 24.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605041107",
+"race_date": "2026-11-01",
+"horse_number": 4,
+"w": 22.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605041106",
+"race_date": "2026-11-01",
+"horse_number": 11,
+"w": 6.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608041012",
+"race_date": "2026-10-31",
+"horse_number": 6,
+"w": 14.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608041011",
+"race_date": "2026-10-31",
+"horse_number": 6,
+"w": 17.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608041010",
+"race_date": "2026-10-31",
+"horse_number": 11,
+"w": 14.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608041009",
+"race_date": "2026-10-31",
+"horse_number": 4,
+"w": 11.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608041008",
+"race_date": "2026-10-31",
+"horse_number": 10,
+"w": 13.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608041007",
+"race_date": "2026-10-31",
+"horse_number": 12,
+"w": 9.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605041012",
+"race_date": "2026-10-31",
+"horse_number": 10,
+"w": 18.6,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605041011",
+"race_date": "2026-10-31",
+"horse_number": 12,
+"w": 11.5,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605041010",
+"race_date": "2026-10-31",
+"horse_number": 4,
+"w": 17.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605041009",
+"race_date": "2026-10-31",
+"horse_number": 4,
+"w": 33.1,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605041008",
+"race_date": "2026-10-31",
+"horse_number": 7,
+"w": 35.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605041007",
+"race_date": "2026-10-31",
+"horse_number": 2,
+"w": 8.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605041006",
+"race_date": "2026-10-31",
+"horse_number": 12,
+"w": 5.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040412",
+"race_date": "2026-10-25",
+"horse_number": 2,
+"w": 8.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040411",
+"race_date": "2026-10-25",
+"horse_number": 14,
+"w": 26.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040410",
+"race_date": "2026-10-25",
+"horse_number": 12,
+"w": 31.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040409",
+"race_date": "2026-10-25",
+"horse_number": 2,
+"w": 17.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040408",
+"race_date": "2026-10-25",
+"horse_number": 13,
+"w": 35.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040407",
+"race_date": "2026-10-25",
+"horse_number": 6,
+"w": 6.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040406",
+"race_date": "2026-10-25",
+"horse_number": 9,
+"w": 15.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040404",
+"race_date": "2026-10-25",
+"horse_number": 4,
+"w": 21.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040912",
+"race_date": "2026-10-25",
+"horse_number": 11,
+"w": 20.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040911",
+"race_date": "2026-10-25",
+"horse_number": 8,
+"w": 35.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040910",
+"race_date": "2026-10-25",
+"horse_number": 13,
+"w": 16.2,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040909",
+"race_date": "2026-10-25",
+"horse_number": 5,
+"w": 6.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040908",
+"race_date": "2026-10-25",
+"horse_number": 3,
+"w": 37.0,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040907",
+"race_date": "2026-10-25",
+"horse_number": 3,
+"w": 32.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040906",
+"race_date": "2026-10-25",
+"horse_number": 11,
+"w": 22.0,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040912",
+"race_date": "2026-10-25",
+"horse_number": 2,
+"w": 17.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040911",
+"race_date": "2026-10-25",
+"horse_number": 2,
+"w": 11.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040910",
+"race_date": "2026-10-25",
+"horse_number": 1,
+"w": 19.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040909",
+"race_date": "2026-10-25",
+"horse_number": 7,
+"w": 17.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040908",
+"race_date": "2026-10-25",
+"horse_number": 6,
+"w": 12.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040907",
+"race_date": "2026-10-25",
+"horse_number": 6,
+"w": 16.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040312",
+"race_date": "2026-10-24",
+"horse_number": 1,
+"w": 9.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040311",
+"race_date": "2026-10-24",
+"horse_number": 10,
+"w": 19.6,
+"jt": -1,
+"same_as_cached": true
+},
+{
+"race_id": "202604040310",
+"race_date": "2026-10-24",
+"horse_number": 15,
+"w": 23.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040309",
+"race_date": "2026-10-24",
+"horse_number": 13,
+"w": 39.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040308",
+"race_date": "2026-10-24",
+"horse_number": 7,
+"w": 9.5,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040307",
+"race_date": "2026-10-24",
+"horse_number": 4,
+"w": 9.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040306",
+"race_date": "2026-10-24",
+"horse_number": 7,
+"w": 25.2,
+"jt": -1,
+"same_as_cached": false
+},
+{
+"race_id": "202604040304",
+"race_date": "2026-10-24",
+"horse_number": 11,
+"w": 12.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040812",
+"race_date": "2026-10-24",
+"horse_number": 6,
+"w": 40.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040811",
+"race_date": "2026-10-24",
+"horse_number": 11,
+"w": 17.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040810",
+"race_date": "2026-10-24",
+"horse_number": 10,
+"w": 17.2,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040809",
+"race_date": "2026-10-24",
+"horse_number": 2,
+"w": 9.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040808",
+"race_date": "2026-10-24",
+"horse_number": 4,
+"w": 41.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040807",
+"race_date": "2026-10-24",
+"horse_number": 10,
+"w": 25.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040806",
+"race_date": "2026-10-24",
+"horse_number": 1,
+"w": 18.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040812",
+"race_date": "2026-10-24",
+"horse_number": 3,
+"w": 11.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040811",
+"race_date": "2026-10-24",
+"horse_number": 9,
+"w": 18.1,
+"jt": 2,
+"same_as_cached": false
+},
+{
+"race_id": "202605040810",
+"race_date": "2026-10-24",
+"horse_number": 12,
+"w": 18.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040809",
+"race_date": "2026-10-24",
+"horse_number": 6,
+"w": 11.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040808",
+"race_date": "2026-10-24",
+"horse_number": 10,
+"w": 22.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040807",
+"race_date": "2026-10-24",
+"horse_number": 9,
+"w": 15.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040212",
+"race_date": "2026-10-18",
+"horse_number": 9,
+"w": 6.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040211",
+"race_date": "2026-10-18",
+"horse_number": 9,
+"w": 6.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040210",
+"race_date": "2026-10-18",
+"horse_number": 17,
+"w": 7.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040209",
+"race_date": "2026-10-18",
+"horse_number": 6,
+"w": 19.1,
+"jt": -1,
+"same_as_cached": false
+},
+{
+"race_id": "202604040208",
+"race_date": "2026-10-18",
+"horse_number": 6,
+"w": 22.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040207",
+"race_date": "2026-10-18",
+"horse_number": 16,
+"w": 15.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040206",
+"race_date": "2026-10-18",
+"horse_number": 15,
+"w": 21.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040204",
+"race_date": "2026-10-18",
+"horse_number": 4,
+"w": 26.9,
+"jt": -1,
+"same_as_cached": true
+},
+{
+"race_id": "202608040712",
+"race_date": "2026-10-18",
+"horse_number": 3,
+"w": 4.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040711",
+"race_date": "2026-10-18",
+"horse_number": 8,
+"w": 45.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040710",
+"race_date": "2026-10-18",
+"horse_number": 9,
+"w": 27.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040709",
+"race_date": "2026-10-18",
+"horse_number": 8,
+"w": 32.0,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040708",
+"race_date": "2026-10-18",
+"horse_number": 6,
+"w": 6.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040707",
+"race_date": "2026-10-18",
+"horse_number": 4,
+"w": 6.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040704",
+"race_date": "2026-10-18",
+"horse_number": 7,
+"w": 32.3,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040712",
+"race_date": "2026-10-18",
+"horse_number": 14,
+"w": 9.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040711",
+"race_date": "2026-10-18",
+"horse_number": 9,
+"w": 12.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040710",
+"race_date": "2026-10-18",
+"horse_number": 7,
+"w": 25.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040708",
+"race_date": "2026-10-18",
+"horse_number": 6,
+"w": 3.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040707",
+"race_date": "2026-10-18",
+"horse_number": 8,
+"w": 5.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040706",
+"race_date": "2026-10-18",
+"horse_number": 7,
+"w": 37.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040112",
+"race_date": "2026-10-17",
+"horse_number": 17,
+"w": 14.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040111",
+"race_date": "2026-10-17",
+"horse_number": 15,
+"w": 16.2,
+"jt": -1,
+"same_as_cached": false
+},
+{
+"race_id": "202604040110",
+"race_date": "2026-10-17",
+"horse_number": 5,
+"w": 10.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040109",
+"race_date": "2026-10-17",
+"horse_number": 1,
+"w": 14.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040108",
+"race_date": "2026-10-17",
+"horse_number": 7,
+"w": 10.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040107",
+"race_date": "2026-10-17",
+"horse_number": 3,
+"w": 5.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040106",
+"race_date": "2026-10-17",
+"horse_number": 10,
+"w": 3.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202604040104",
+"race_date": "2026-10-17",
+"horse_number": 11,
+"w": 17.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202604040103",
+"race_date": "2026-10-17",
+"horse_number": 12,
+"w": 14.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040612",
+"race_date": "2026-10-17",
+"horse_number": 6,
+"w": 8.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040611",
+"race_date": "2026-10-17",
+"horse_number": 12,
+"w": 8.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040610",
+"race_date": "2026-10-17",
+"horse_number": 6,
+"w": 42.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040609",
+"race_date": "2026-10-17",
+"horse_number": 11,
+"w": 20.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040608",
+"race_date": "2026-10-17",
+"horse_number": 3,
+"w": 22.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040607",
+"race_date": "2026-10-17",
+"horse_number": 4,
+"w": 22.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040612",
+"race_date": "2026-10-17",
+"horse_number": 2,
+"w": 14.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040611",
+"race_date": "2026-10-17",
+"horse_number": 10,
+"w": 21.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040610",
+"race_date": "2026-10-17",
+"horse_number": 4,
+"w": 7.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040609",
+"race_date": "2026-10-17",
+"horse_number": 3,
+"w": 16.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040608",
+"race_date": "2026-10-17",
+"horse_number": 4,
+"w": 27.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040607",
+"race_date": "2026-10-17",
+"horse_number": 11,
+"w": 25.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040606",
+"race_date": "2026-10-17",
+"horse_number": 7,
+"w": 13.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040512",
+"race_date": "2026-10-12",
+"horse_number": 8,
+"w": 9.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040511",
+"race_date": "2026-10-12",
+"horse_number": 18,
+"w": 16.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040510",
+"race_date": "2026-10-12",
+"horse_number": 5,
+"w": 24.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040509",
+"race_date": "2026-10-12",
+"horse_number": 7,
+"w": 5.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040508",
+"race_date": "2026-10-12",
+"horse_number": 11,
+"w": 6.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040507",
+"race_date": "2026-10-12",
+"horse_number": 12,
+"w": 14.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040512",
+"race_date": "2026-10-12",
+"horse_number": 8,
+"w": 17.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040511",
+"race_date": "2026-10-12",
+"horse_number": 16,
+"w": 3.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040510",
+"race_date": "2026-10-12",
+"horse_number": 11,
+"w": 28.1,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040509",
+"race_date": "2026-10-12",
+"horse_number": 8,
+"w": 33.4,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040508",
+"race_date": "2026-10-12",
+"horse_number": 5,
+"w": 52.7,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040507",
+"race_date": "2026-10-12",
+"horse_number": 8,
+"w": 8.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040412",
+"race_date": "2026-10-11",
+"horse_number": 3,
+"w": 12.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040411",
+"race_date": "2026-10-11",
+"horse_number": 5,
+"w": 11.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040410",
+"race_date": "2026-10-11",
+"horse_number": 4,
+"w": 41.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040409",
+"race_date": "2026-10-11",
+"horse_number": 7,
+"w": 36.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040408",
+"race_date": "2026-10-11",
+"horse_number": 2,
+"w": 40.5,
+"jt": -1,
+"same_as_cached": true
+},
+{
+"race_id": "202608040407",
+"race_date": "2026-10-11",
+"horse_number": 6,
+"w": 41.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040406",
+"race_date": "2026-10-11",
+"horse_number": 2,
+"w": 27.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040412",
+"race_date": "2026-10-11",
+"horse_number": 12,
+"w": 4.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040411",
+"race_date": "2026-10-11",
+"horse_number": 16,
+"w": 14.5,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040410",
+"race_date": "2026-10-11",
+"horse_number": 2,
+"w": 4.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040409",
+"race_date": "2026-10-11",
+"horse_number": 4,
+"w": 11.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040408",
+"race_date": "2026-10-11",
+"horse_number": 9,
+"w": 13.1,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040407",
+"race_date": "2026-10-11",
+"horse_number": 2,
+"w": 14.3,
+"jt": 2,
+"same_as_cached": false
+},
+{
+"race_id": "202605040406",
+"race_date": "2026-10-11",
+"horse_number": 7,
+"w": 14.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040312",
+"race_date": "2026-10-10",
+"horse_number": 8,
+"w": 29.0,
+"jt": 2,
+"same_as_cached": false
+},
+{
+"race_id": "202608040311",
+"race_date": "2026-10-10",
+"horse_number": 5,
+"w": 13.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040310",
+"race_date": "2026-10-10",
+"horse_number": 11,
+"w": 20.9,
+"jt": 1,
+"same_as_cached": true
+},
+{
+"race_id": "202608040309",
+"race_date": "2026-10-10",
+"horse_number": 2,
+"w": 14.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040308",
+"race_date": "2026-10-10",
+"horse_number": 6,
+"w": 63.7,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040307",
+"race_date": "2026-10-10",
+"horse_number": 14,
+"w": 24.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040312",
+"race_date": "2026-10-10",
+"horse_number": 3,
+"w": 10.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040311",
+"race_date": "2026-10-10",
+"horse_number": 5,
+"w": 28.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040310",
+"race_date": "2026-10-10",
+"horse_number": 7,
+"w": 13.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040309",
+"race_date": "2026-10-10",
+"horse_number": 2,
+"w": 47.2,
+"jt": 2,
+"same_as_cached": false
+},
+{
+"race_id": "202605040308",
+"race_date": "2026-10-10",
+"horse_number": 6,
+"w": 24.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040307",
+"race_date": "2026-10-10",
+"horse_number": 2,
+"w": 21.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040212",
+"race_date": "2026-10-04",
+"horse_number": 11,
+"w": 19.8,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040211",
+"race_date": "2026-10-04",
+"horse_number": 18,
+"w": 12.8,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040210",
+"race_date": "2026-10-04",
+"horse_number": 8,
+"w": 15.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040209",
+"race_date": "2026-10-04",
+"horse_number": 18,
+"w": 49.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040208",
+"race_date": "2026-10-04",
+"horse_number": 10,
+"w": 10.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040207",
+"race_date": "2026-10-04",
+"horse_number": 14,
+"w": 16.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040206",
+"race_date": "2026-10-04",
+"horse_number": 4,
+"w": 11.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040212",
+"race_date": "2026-10-04",
+"horse_number": 4,
+"w": 4.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040211",
+"race_date": "2026-10-04",
+"horse_number": 2,
+"w": 16.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040210",
+"race_date": "2026-10-04",
+"horse_number": 15,
+"w": 3.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040209",
+"race_date": "2026-10-04",
+"horse_number": 9,
+"w": 15.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040208",
+"race_date": "2026-10-04",
+"horse_number": 12,
+"w": 30.4,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040207",
+"race_date": "2026-10-04",
+"horse_number": 5,
+"w": 8.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040112",
+"race_date": "2026-10-03",
+"horse_number": 9,
+"w": 19.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040111",
+"race_date": "2026-10-03",
+"horse_number": 18,
+"w": 14.0,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040110",
+"race_date": "2026-10-03",
+"horse_number": 14,
+"w": 13.4,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202608040109",
+"race_date": "2026-10-03",
+"horse_number": 7,
+"w": 39.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040108",
+"race_date": "2026-10-03",
+"horse_number": 9,
+"w": 25.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040107",
+"race_date": "2026-10-03",
+"horse_number": 14,
+"w": 19.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202608040106",
+"race_date": "2026-10-03",
+"horse_number": 13,
+"w": 3.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202608040103",
+"race_date": "2026-10-03",
+"horse_number": 1,
+"w": 24.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040112",
+"race_date": "2026-10-03",
+"horse_number": 6,
+"w": 14.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202605040111",
+"race_date": "2026-10-03",
+"horse_number": 5,
+"w": 13.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040110",
+"race_date": "2026-10-03",
+"horse_number": 5,
+"w": 19.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040109",
+"race_date": "2026-10-03",
+"horse_number": 7,
+"w": 8.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040108",
+"race_date": "2026-10-03",
+"horse_number": 2,
+"w": 33.4,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202605040107",
+"race_date": "2026-10-03",
+"horse_number": 14,
+"w": 3.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202605040106",
+"race_date": "2026-10-03",
+"horse_number": 7,
+"w": 25.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040912",
+"race_date": "2026-09-27",
+"horse_number": 9,
+"w": 12.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040911",
+"race_date": "2026-09-27",
+"horse_number": 1,
+"w": 12.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040910",
+"race_date": "2026-09-27",
+"horse_number": 12,
+"w": 4.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040909",
+"race_date": "2026-09-27",
+"horse_number": 2,
+"w": 34.7,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202609040908",
+"race_date": "2026-09-27",
+"horse_number": 2,
+"w": 17.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040907",
+"race_date": "2026-09-27",
+"horse_number": 6,
+"w": 29.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040912",
+"race_date": "2026-09-27",
+"horse_number": 9,
+"w": 21.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040911",
+"race_date": "2026-09-27",
+"horse_number": 6,
+"w": 11.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040910",
+"race_date": "2026-09-27",
+"horse_number": 7,
+"w": 15.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040909",
+"race_date": "2026-09-27",
+"horse_number": 7,
+"w": 56.3,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040908",
+"race_date": "2026-09-27",
+"horse_number": 15,
+"w": 20.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040907",
+"race_date": "2026-09-27",
+"horse_number": 6,
+"w": 14.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040906",
+"race_date": "2026-09-27",
+"horse_number": 16,
+"w": 27.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040812",
+"race_date": "2026-09-26",
+"horse_number": 8,
+"w": 5.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040811",
+"race_date": "2026-09-26",
+"horse_number": 13,
+"w": 12.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040810",
+"race_date": "2026-09-26",
+"horse_number": 1,
+"w": 25.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040809",
+"race_date": "2026-09-26",
+"horse_number": 2,
+"w": 26.7,
+"jt": 2,
+"same_as_cached": false
+},
+{
+"race_id": "202609040808",
+"race_date": "2026-09-26",
+"horse_number": 4,
+"w": 33.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040807",
+"race_date": "2026-09-26",
+"horse_number": 8,
+"w": 15.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040806",
+"race_date": "2026-09-26",
+"horse_number": 8,
+"w": 20.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040812",
+"race_date": "2026-09-26",
+"horse_number": 10,
+"w": 7.8,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040811",
+"race_date": "2026-09-26",
+"horse_number": 1,
+"w": 3.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040810",
+"race_date": "2026-09-26",
+"horse_number": 1,
+"w": 8.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040809",
+"race_date": "2026-09-26",
+"horse_number": 8,
+"w": 22.8,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040808",
+"race_date": "2026-09-26",
+"horse_number": 12,
+"w": 38.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040807",
+"race_date": "2026-09-26",
+"horse_number": 6,
+"w": 34.1,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040806",
+"race_date": "2026-09-26",
+"horse_number": 5,
+"w": 6.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040712",
+"race_date": "2026-09-22",
+"horse_number": 13,
+"w": 21.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040711",
+"race_date": "2026-09-22",
+"horse_number": 3,
+"w": 14.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040710",
+"race_date": "2026-09-22",
+"horse_number": 11,
+"w": 14.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040709",
+"race_date": "2026-09-22",
+"horse_number": 3,
+"w": 16.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040708",
+"race_date": "2026-09-22",
+"horse_number": 16,
+"w": 10.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040707",
+"race_date": "2026-09-22",
+"horse_number": 3,
+"w": 9.0,
+"jt": -1,
+"same_as_cached": false
+},
+{
+"race_id": "202609040712",
+"race_date": "2026-09-21",
+"horse_number": 10,
+"w": 14.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040711",
+"race_date": "2026-09-21",
+"horse_number": 1,
+"w": 32.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040710",
+"race_date": "2026-09-21",
+"horse_number": 8,
+"w": 23.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040709",
+"race_date": "2026-09-21",
+"horse_number": 3,
+"w": 16.3,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202609040708",
+"race_date": "2026-09-21",
+"horse_number": 4,
+"w": 8.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040707",
+"race_date": "2026-09-21",
+"horse_number": 2,
+"w": 20.5,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040706",
+"race_date": "2026-09-21",
+"horse_number": 11,
+"w": 17.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040612",
+"race_date": "2026-09-20",
+"horse_number": 3,
+"w": 48.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040611",
+"race_date": "2026-09-20",
+"horse_number": 9,
+"w": 15.5,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040610",
+"race_date": "2026-09-20",
+"horse_number": 5,
+"w": 17.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040609",
+"race_date": "2026-09-20",
+"horse_number": 4,
+"w": 33.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040608",
+"race_date": "2026-09-20",
+"horse_number": 10,
+"w": 9.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040607",
+"race_date": "2026-09-20",
+"horse_number": 12,
+"w": 2.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040606",
+"race_date": "2026-09-20",
+"horse_number": 4,
+"w": 20.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040612",
+"race_date": "2026-09-20",
+"horse_number": 12,
+"w": 16.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040611",
+"race_date": "2026-09-20",
+"horse_number": 13,
+"w": 9.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040610",
+"race_date": "2026-09-20",
+"horse_number": 8,
+"w": 34.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040609",
+"race_date": "2026-09-20",
+"horse_number": 10,
+"w": 17.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040608",
+"race_date": "2026-09-20",
+"horse_number": 4,
+"w": 21.0,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040607",
+"race_date": "2026-09-20",
+"horse_number": 8,
+"w": 3.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040606",
+"race_date": "2026-09-20",
+"horse_number": 8,
+"w": 29.1,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040512",
+"race_date": "2026-09-19",
+"horse_number": 16,
+"w": 8.5,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040511",
+"race_date": "2026-09-19",
+"horse_number": 15,
+"w": 28.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040510",
+"race_date": "2026-09-19",
+"horse_number": 5,
+"w": 7.5,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040509",
+"race_date": "2026-09-19",
+"horse_number": 14,
+"w": 47.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040508",
+"race_date": "2026-09-19",
+"horse_number": 1,
+"w": 12.5,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040507",
+"race_date": "2026-09-19",
+"horse_number": 2,
+"w": 30.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040512",
+"race_date": "2026-09-19",
+"horse_number": 5,
+"w": 20.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040511",
+"race_date": "2026-09-19",
+"horse_number": 13,
+"w": 25.9,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040510",
+"race_date": "2026-09-19",
+"horse_number": 9,
+"w": 32.6,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040509",
+"race_date": "2026-09-19",
+"horse_number": 4,
+"w": 4.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040508",
+"race_date": "2026-09-19",
+"horse_number": 6,
+"w": 24.5,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040507",
+"race_date": "2026-09-19",
+"horse_number": 5,
+"w": 13.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040412",
+"race_date": "2026-09-13",
+"horse_number": 1,
+"w": 3.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040411",
+"race_date": "2026-09-13",
+"horse_number": 2,
+"w": 16.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040410",
+"race_date": "2026-09-13",
+"horse_number": 15,
+"w": 6.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040409",
+"race_date": "2026-09-13",
+"horse_number": 10,
+"w": 16.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040408",
+"race_date": "2026-09-13",
+"horse_number": 2,
+"w": 16.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040407",
+"race_date": "2026-09-13",
+"horse_number": 5,
+"w": 14.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040412",
+"race_date": "2026-09-13",
+"horse_number": 7,
+"w": 23.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040411",
+"race_date": "2026-09-13",
+"horse_number": 8,
+"w": 11.5,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040410",
+"race_date": "2026-09-13",
+"horse_number": 2,
+"w": 13.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040409",
+"race_date": "2026-09-13",
+"horse_number": 1,
+"w": 22.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040408",
+"race_date": "2026-09-13",
+"horse_number": 10,
+"w": 15.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040407",
+"race_date": "2026-09-13",
+"horse_number": 15,
+"w": 12.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040312",
+"race_date": "2026-09-12",
+"horse_number": 14,
+"w": 6.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040311",
+"race_date": "2026-09-12",
+"horse_number": 13,
+"w": 4.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040310",
+"race_date": "2026-09-12",
+"horse_number": 5,
+"w": 22.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040309",
+"race_date": "2026-09-12",
+"horse_number": 12,
+"w": 13.7,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040308",
+"race_date": "2026-09-12",
+"horse_number": 6,
+"w": 14.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040312",
+"race_date": "2026-09-12",
+"horse_number": 14,
+"w": 13.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040311",
+"race_date": "2026-09-12",
+"horse_number": 5,
+"w": 13.5,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040310",
+"race_date": "2026-09-12",
+"horse_number": 1,
+"w": 12.7,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040309",
+"race_date": "2026-09-12",
+"horse_number": 12,
+"w": 23.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040308",
+"race_date": "2026-09-12",
+"horse_number": 1,
+"w": 15.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202601020612",
+"race_date": "2026-09-06",
+"horse_number": 8,
+"w": 7.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202601020611",
+"race_date": "2026-09-06",
+"horse_number": 1,
+"w": 18.2,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202601020610",
+"race_date": "2026-09-06",
+"horse_number": 9,
+"w": 22.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202601020609",
+"race_date": "2026-09-06",
+"horse_number": 10,
+"w": 27.6,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202601020608",
+"race_date": "2026-09-06",
+"horse_number": 11,
+"w": 20.9,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202601020607",
+"race_date": "2026-09-06",
+"horse_number": 8,
+"w": 14.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202601020606",
+"race_date": "2026-09-06",
+"horse_number": 11,
+"w": 23.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040212",
+"race_date": "2026-09-06",
+"horse_number": 4,
+"w": 10.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040211",
+"race_date": "2026-09-06",
+"horse_number": 3,
+"w": 13.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040210",
+"race_date": "2026-09-06",
+"horse_number": 4,
+"w": 8.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040209",
+"race_date": "2026-09-06",
+"horse_number": 14,
+"w": 9.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040208",
+"race_date": "2026-09-06",
+"horse_number": 6,
+"w": 60.9,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040207",
+"race_date": "2026-09-06",
+"horse_number": 1,
+"w": 35.3,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040206",
+"race_date": "2026-09-06",
+"horse_number": 9,
+"w": 52.2,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040212",
+"race_date": "2026-09-06",
+"horse_number": 3,
+"w": 14.0,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040211",
+"race_date": "2026-09-06",
+"horse_number": 9,
+"w": 24.8,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202606040210",
+"race_date": "2026-09-06",
+"horse_number": 5,
+"w": 13.1,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040209",
+"race_date": "2026-09-06",
+"horse_number": 6,
+"w": 8.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040208",
+"race_date": "2026-09-06",
+"horse_number": 13,
+"w": 8.7,
+"jt": 2,
+"same_as_cached": false
+},
+{
+"race_id": "202601020512",
+"race_date": "2026-09-05",
+"horse_number": 3,
+"w": 20.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202601020511",
+"race_date": "2026-09-05",
+"horse_number": 2,
+"w": 48.5,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202601020510",
+"race_date": "2026-09-05",
+"horse_number": 5,
+"w": 42.6,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202601020509",
+"race_date": "2026-09-05",
+"horse_number": 6,
+"w": 8.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202601020508",
+"race_date": "2026-09-05",
+"horse_number": 3,
+"w": 14.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202601020507",
+"race_date": "2026-09-05",
+"horse_number": 6,
+"w": 23.0,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040112",
+"race_date": "2026-09-05",
+"horse_number": 12,
+"w": 28.8,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202609040111",
+"race_date": "2026-09-05",
+"horse_number": 4,
+"w": 9.0,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040110",
+"race_date": "2026-09-05",
+"horse_number": 7,
+"w": 59.8,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202609040109",
+"race_date": "2026-09-05",
+"horse_number": 6,
+"w": 28.3,
+"jt": 2,
+"same_as_cached": true
+},
+{
+"race_id": "202609040108",
+"race_date": "2026-09-05",
+"horse_number": 7,
+"w": 11.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202609040107",
+"race_date": "2026-09-05",
+"horse_number": 4,
+"w": 14.4,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040112",
+"race_date": "2026-09-05",
+"horse_number": 12,
+"w": 9.8,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040111",
+"race_date": "2026-09-05",
+"horse_number": 11,
+"w": 5.4,
+"jt": 0,
+"same_as_cached": false
+},
+{
+"race_id": "202606040110",
+"race_date": "2026-09-05",
+"horse_number": 5,
+"w": 27.1,
+"jt": 2,
+"same_as_cached": false
+},
+{
+"race_id": "202606040109",
+"race_date": "2026-09-05",
+"horse_number": 14,
+"w": 17.3,
+"jt": 0,
+"same_as_cached": true
+},
+{
+"race_id": "202606040108",
+"race_date": "2026-09-05",
+"horse_number": 6,
+"w": 12.8,
+"jt": 0,
+"same_as_cached": false
+}
+]
+}

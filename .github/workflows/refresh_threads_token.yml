@@ -1,0 +1,66 @@
+name: 🔄 Refresh Threads Token
+
+# Threads (Meta) の long-lived アクセストークンは60日で失効する。
+# refresh_access_token を「失効前 (24h経過後〜60日以内)」に呼ぶと約60日延長される。
+# 週次で呼び続ければ実質無期限に維持でき、#38 のような「token 失効で投稿停止」を防ぐ。
+#
+# ⚠️ 前提 (1回だけユーザー設定が必要):
+#   1. GitHub Secrets の THREADS_ACCESS_TOKEN に有効な long-lived token が入っていること
+#      (失効済みなら Meta for Developers で再発行 → Secrets 更新)
+#   2. Secrets を自動更新するため THREADS_TOKEN_PAT (Secrets: read/write 権限の
+#      fine-grained PAT) を Secrets に登録すること。未登録なら refresh は実行するが
+#      自動更新はスキップ (手動更新を促す)。
+
+on:
+  schedule:
+    # 毎週日曜 03:00 UTC = 12:00 JST。60日有効なので週次で十分な安全マージン。
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Refresh & update Threads token
+        env:
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ secrets.THREADS_TOKEN_PAT }}
+        run: |
+          # 新トークンは stdout(1行)、メッセージは stderr。step 内ローカル変数に留め
+          # ログ・output には一切出さない (token 露出防止)。
+          NEW_TOKEN=$(python3 scripts/refresh_threads_token.py 2>/tmp/refresh.log) || true
+          cat /tmp/refresh.log
+          if [ -z "$NEW_TOKEN" ]; then
+            echo "❌ refresh 失敗。トークン失効の可能性 → Meta for Developers で"
+            echo "   long-lived token を再発行し THREADS_ACCESS_TOKEN を手動更新してください。"
+            exit 1
+          fi
+          if [ -z "$GH_TOKEN" ]; then
+            echo "⚠️ THREADS_TOKEN_PAT 未設定のため Secret 自動更新をスキップしました。"
+            echo "   refresh 自体は成功 (約60日延長)。PAT を設定すると全自動になります。"
+            exit 0
+          fi
+          printf '%s' "$NEW_TOKEN" | gh secret set THREADS_ACCESS_TOKEN
+          echo "✅ THREADS_ACCESS_TOKEN を自動更新しました (約60日延長)"
+
+      - name: Notify failure (Issue)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="🔴 Threads token refresh 失敗 $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+          BODY=$'Threads アクセストークンの自動更新に失敗しました。\n\n'
+          BODY+=$'失効している場合は https://developers.facebook.com で long-lived token を\n'
+          BODY+=$'再発行し、GitHub Secrets の THREADS_ACCESS_TOKEN を更新してください。\n'
+          BODY+=$'(失効前の週次 refresh で本来は自動延長されます)'
+          gh issue create --title "$TITLE" --body "$BODY" 2>/dev/null \
+            || echo "issue 作成スキップ (権限/重複)"

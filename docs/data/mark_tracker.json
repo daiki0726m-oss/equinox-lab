@@ -1,0 +1,169 @@
+{
+ "days": 41,
+ "races": 496,
+ "per_mark": {
+  "◎": {
+   "n": 496,
+   "top3": 290,
+   "win": 133,
+   "ret_win": 36690,
+   "ret_place": 41860,
+   "pop_sum": 923,
+   "pop_n": 496,
+   "odds_sum": 2175.399999999999
+  },
+  "○": {
+   "n": 496,
+   "top3": 175,
+   "win": 55,
+   "ret_win": 33230,
+   "ret_place": 40250,
+   "pop_sum": 2267,
+   "pop_n": 496,
+   "odds_sum": 5236.900000000003
+  },
+  "▲": {
+   "n": 496,
+   "top3": 194,
+   "win": 71,
+   "ret_win": 39530,
+   "ret_place": 39150,
+   "pop_sum": 1730,
+   "pop_n": 496,
+   "odds_sum": 4090.2
+  },
+  "△": {
+   "n": 773,
+   "top3": 232,
+   "win": 82,
+   "ret_win": 71560,
+   "ret_place": 60960,
+   "pop_sum": 3791,
+   "pop_n": 773,
+   "odds_sum": 9148.200000000008
+  },
+  "☆": {
+   "n": 269,
+   "top3": 51,
+   "win": 16,
+   "ret_win": 16070,
+   "ret_place": 19610,
+   "pop_sum": 1862,
+   "pop_n": 269,
+   "odds_sum": 4066.9000000000015
+  },
+  "×": {
+   "n": 219,
+   "top3": 73,
+   "win": 17,
+   "ret_win": 13690,
+   "ret_place": 18480,
+   "pop_sum": 1008,
+   "pop_n": 219,
+   "odds_sum": 2433.5
+  },
+  "注": {
+   "n": 495,
+   "top3": 59,
+   "win": 13,
+   "ret_win": 37070,
+   "ret_place": 38440,
+   "pop_sum": 4378,
+   "pop_n": 495,
+   "odds_sum": 11968.2
+  }
+ },
+ "bets": {
+  "単勝◎": {
+   "races": 496,
+   "points": 496,
+   "spend": 49600,
+   "return": 36690,
+   "hits": 133,
+   "roi_pct": 74.0,
+   "best_payout": 770,
+   "best_day": "20261018"
+  },
+  "複勝◎": {
+   "races": 496,
+   "points": 496,
+   "spend": 49600,
+   "return": 41860,
+   "hits": 289,
+   "roi_pct": 84.4,
+   "best_payout": 580,
+   "best_day": "20260919"
+  },
+  "ワイド◎軸": {
+   "races": 496,
+   "points": 1984,
+   "spend": 198400,
+   "return": 151270,
+   "hits": 353,
+   "roi_pct": 76.2,
+   "best_payout": 3160,
+   "best_day": "20260726"
+  },
+  "馬連◎軸": {
+   "races": 496,
+   "points": 1984,
+   "spend": 198400,
+   "return": 154360,
+   "hits": 146,
+   "roi_pct": 77.8,
+   "best_payout": 5300,
+   "best_day": "20260920"
+  },
+  "三連複◎軸": {
+   "races": 496,
+   "points": 2976,
+   "spend": 297600,
+   "return": 209020,
+   "hits": 103,
+   "roi_pct": 70.2,
+   "best_payout": 12970,
+   "best_day": "20261107"
+  },
+  "三連複 印5頭BOX": {
+   "races": 496,
+   "points": 4960,
+   "spend": 496000,
+   "return": 346100,
+   "hits": 128,
+   "roi_pct": 69.8,
+   "best_payout": 16060,
+   "best_day": "20260718"
+  },
+  "三連複◎軸+注": {
+   "races": 495,
+   "points": 2970,
+   "spend": 297000,
+   "return": 257660,
+   "hits": 87,
+   "roi_pct": 86.8,
+   "best_payout": 36510,
+   "best_day": "20260919"
+  },
+  "ワイド ◎-妙味": {
+   "races": 496,
+   "points": 496,
+   "spend": 49600,
+   "return": 41310,
+   "hits": 60,
+   "roi_pct": 83.3,
+   "best_payout": 3160,
+   "best_day": "20260726"
+  },
+  "単勝 注": {
+   "races": 495,
+   "points": 495,
+   "spend": 49500,
+   "return": 37070,
+   "hits": 13,
+   "roi_pct": 74.9,
+   "best_payout": 8260,
+   "best_day": "20260718"
+  }
+ },
+ "note": "凍結した投稿印 × 確定着順 × 実払戻のみ。バックテスト・推定オッズ・モデル出力は一切含まない (#142)"
+}

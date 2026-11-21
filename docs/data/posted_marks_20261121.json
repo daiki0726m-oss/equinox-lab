@@ -1,0 +1,696 @@
+{
+ "date": "20261121",
+ "posted_at": "2026-11-21T09:39:12.443658+09:00",
+ "races": {
+  "202608050511": [
+   {
+    "mark": "◎",
+    "horse_number": 12,
+    "horse_name": "メルカントゥール",
+    "odds_win_at_post": 5.7,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "○",
+    "horse_number": 3,
+    "horse_name": "メリークリスマス",
+    "odds_win_at_post": 10.6,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "▲",
+    "horse_number": 1,
+    "horse_name": "ヒルノハンブルク",
+    "odds_win_at_post": 14.8,
+    "popularity_at_post": 9
+   },
+   {
+    "mark": "△",
+    "horse_number": 14,
+    "horse_name": "チェリヴェント",
+    "odds_win_at_post": 6.1,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 16,
+    "horse_name": "サイモンシュバリエ",
+    "odds_win_at_post": 14.9,
+    "popularity_at_post": 10
+   },
+   {
+    "mark": "☆",
+    "horse_number": 2,
+    "horse_name": "ゼットリアン",
+    "odds_win_at_post": 11.2,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "注",
+    "horse_number": 9,
+    "horse_name": "レッドプロフェシー",
+    "odds_win_at_post": 19.0,
+    "popularity_at_post": 12
+   }
+  ],
+  "202603030511": [
+   {
+    "mark": "◎",
+    "horse_number": 13,
+    "horse_name": "マリアイリダータ",
+    "odds_win_at_post": 3.8,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 14,
+    "horse_name": "サヴォーナ",
+    "odds_win_at_post": 14.3,
+    "popularity_at_post": 7
+   },
+   {
+    "mark": "▲",
+    "horse_number": 16,
+    "horse_name": "レイニング",
+    "odds_win_at_post": 10.4,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "△",
+    "horse_number": 1,
+    "horse_name": "カラマティアノス",
+    "odds_win_at_post": 8.2,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "△",
+    "horse_number": 5,
+    "horse_name": "フィーリウス",
+    "odds_win_at_post": 37.9,
+    "popularity_at_post": 12
+   },
+   {
+    "mark": "☆",
+    "horse_number": 2,
+    "horse_name": "ヴィスマール",
+    "odds_win_at_post": 16.3,
+    "popularity_at_post": 9
+   },
+   {
+    "mark": "注",
+    "horse_number": 7,
+    "horse_name": "シリウスコルト",
+    "odds_win_at_post": 25.0,
+    "popularity_at_post": 10
+   }
+  ],
+  "202608050509": [
+   {
+    "mark": "◎",
+    "horse_number": 3,
+    "horse_name": "アンムート",
+    "odds_win_at_post": 2.3,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 7,
+    "horse_name": "カレンハウ",
+    "odds_win_at_post": 3.2,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "▲",
+    "horse_number": 4,
+    "horse_name": "サンタンジェロ",
+    "odds_win_at_post": 3.7,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 1,
+    "horse_name": "ミハテヌユメ",
+    "odds_win_at_post": 10.7,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "△",
+    "horse_number": 6,
+    "horse_name": "ジャスパーレーブ",
+    "odds_win_at_post": 9.2,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "注",
+    "horse_number": 2,
+    "horse_name": "タナコクシテンホウ",
+    "odds_win_at_post": 29.6,
+    "popularity_at_post": 6
+   }
+  ],
+  "202608050510": [
+   {
+    "mark": "◎",
+    "horse_number": 7,
+    "horse_name": "ロードフィレール",
+    "odds_win_at_post": 3.7,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 5,
+    "horse_name": "ベトルス",
+    "odds_win_at_post": 4.9,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "▲",
+    "horse_number": 15,
+    "horse_name": "クルミナーレ",
+    "odds_win_at_post": 6.0,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 2,
+    "horse_name": "サトノパトリオット",
+    "odds_win_at_post": 9.7,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "△",
+    "horse_number": 13,
+    "horse_name": "ウインデイジー",
+    "odds_win_at_post": 10.0,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "☆",
+    "horse_number": 6,
+    "horse_name": "ロードガレリア",
+    "odds_win_at_post": 11.9,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "注",
+    "horse_number": 1,
+    "horse_name": "アットアブラスト",
+    "odds_win_at_post": 29.9,
+    "popularity_at_post": 9
+   }
+  ],
+  "202603030509": [
+   {
+    "mark": "◎",
+    "horse_number": 2,
+    "horse_name": "ディバインウインド",
+    "odds_win_at_post": 2.4,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 12,
+    "horse_name": "ホールドザデイ",
+    "odds_win_at_post": 6.8,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "▲",
+    "horse_number": 15,
+    "horse_name": "バンオンタイム",
+    "odds_win_at_post": 10.5,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "△",
+    "horse_number": 8,
+    "horse_name": "エタンセル",
+    "odds_win_at_post": 22.1,
+    "popularity_at_post": 9
+   },
+   {
+    "mark": "△",
+    "horse_number": 16,
+    "horse_name": "メリザンド",
+    "odds_win_at_post": 23.1,
+    "popularity_at_post": 12
+   },
+   {
+    "mark": "☆",
+    "horse_number": 9,
+    "horse_name": "タイキルッジェーロ",
+    "odds_win_at_post": 17.3,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "注",
+    "horse_number": 5,
+    "horse_name": "クイーンズワーフ",
+    "odds_win_at_post": 22.7,
+    "popularity_at_post": 11
+   }
+  ],
+  "202603030510": [
+   {
+    "mark": "◎",
+    "horse_number": 1,
+    "horse_name": "ソニックブレイカー",
+    "odds_win_at_post": 5.8,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "○",
+    "horse_number": 11,
+    "horse_name": "クインズポラリス",
+    "odds_win_at_post": 9.6,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "▲",
+    "horse_number": 14,
+    "horse_name": "ゼファーテソーロ",
+    "odds_win_at_post": 11.6,
+    "popularity_at_post": 7
+   },
+   {
+    "mark": "△",
+    "horse_number": 16,
+    "horse_name": "ナムラモモ",
+    "odds_win_at_post": 23.6,
+    "popularity_at_post": 10
+   },
+   {
+    "mark": "△",
+    "horse_number": 4,
+    "horse_name": "インディゴアスール",
+    "odds_win_at_post": 31.0,
+    "popularity_at_post": 11
+   },
+   {
+    "mark": "☆",
+    "horse_number": 5,
+    "horse_name": "ニシノラヴァンダ",
+    "odds_win_at_post": 12.4,
+    "popularity_at_post": 8
+   },
+   {
+    "mark": "注",
+    "horse_number": 13,
+    "horse_name": "ビーグラッド",
+    "odds_win_at_post": 15.6,
+    "popularity_at_post": 9
+   }
+  ],
+  "202608050508": [
+   {
+    "mark": "◎",
+    "horse_number": 13,
+    "horse_name": "ポートデラメール",
+    "odds_win_at_post": 2.7,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 14,
+    "horse_name": "ホットシート",
+    "odds_win_at_post": 14.7,
+    "popularity_at_post": 7
+   },
+   {
+    "mark": "▲",
+    "horse_number": 5,
+    "horse_name": "ブロンテス",
+    "odds_win_at_post": 11.5,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "△",
+    "horse_number": 7,
+    "horse_name": "ジューンアゲイン",
+    "odds_win_at_post": 6.3,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "△",
+    "horse_number": 6,
+    "horse_name": "ワイズギャング",
+    "odds_win_at_post": 7.9,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "☆",
+    "horse_number": 10,
+    "horse_name": "レーティッシュ",
+    "odds_win_at_post": 13.4,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "注",
+    "horse_number": 15,
+    "horse_name": "マイティマイティー",
+    "odds_win_at_post": 19.0,
+    "popularity_at_post": 10
+   }
+  ],
+  "202608050507": [
+   {
+    "mark": "◎",
+    "horse_number": 15,
+    "horse_name": "ヤエギリ",
+    "odds_win_at_post": 2.7,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 2,
+    "horse_name": "タマモランプ",
+    "odds_win_at_post": 8.9,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "▲",
+    "horse_number": 7,
+    "horse_name": "ショコラプリン",
+    "odds_win_at_post": 10.6,
+    "popularity_at_post": 4
+   },
+   {
+    "mark": "△",
+    "horse_number": 3,
+    "horse_name": "フランキーバローズ",
+    "odds_win_at_post": 7.3,
+    "popularity_at_post": 2
+   },
+   {
+    "mark": "△",
+    "horse_number": 6,
+    "horse_name": "ケイアイアマゾン",
+    "odds_win_at_post": 11.6,
+    "popularity_at_post": 5
+   },
+   {
+    "mark": "☆",
+    "horse_number": 12,
+    "horse_name": "アメリカンスタイル",
+    "odds_win_at_post": 11.7,
+    "popularity_at_post": 6
+   },
+   {
+    "mark": "注",
+    "horse_number": 5,
+    "horse_name": "アミラル",
+    "odds_win_at_post": 20.7,
+    "popularity_at_post": 8
+   }
+  ],
+  "202603030508": [
+   {
+    "mark": "◎",
+    "horse_number": 3,
+    "horse_name": "ピカキウイ",
+    "odds_win_at_post": 4.6,
+    "popularity_at_post": 1
+   },
+   {
+    "mark": "○",
+    "horse_number": 16,
+    "horse_name": "ムーンストラック",
+    "odds_win_at_post": 15.4,
+    "popularity_at_post": 8
+   },
+   {
+    "mark": "▲",
+    "horse_number": 12,
+    "horse_name": "ソングオブザバード",
+    "odds_win_at_post": 8.1,
+    "popularity_at_post": 3
+   },
+   {
+    "mark": "△",
+    "horse_number": 4,
+    "horse_name": "ウアーシュプルング",
+    "odds_win_at_post": 18.9,
+    "popularity_at_post": 11
+   },
+   {
+    "mark": "△",
+    "horse_number": 15,
+    "horse_name": "フジサン",
+    "odds_win_at_post": 20.5,
+    "popularity_at_post": 12
+   },
+   {
+    "mark": "☆",
+    "horse_number": 10,
+    "horse_name": "カリーン",
+    "odds_win_at_post": 14.4,
+    "popularity_at_post": 7
+   },
+   {
+    "mark": "注",
+    "horse_number": 14,
+    "horse_name": "サフランルージュ",
+    "odds_win_at_post": 29.6,
+    "popularity_at_post": 14
+   }
+  ]
+ },
+ "pred_created_at": {
+  "202608050511": "2026-11-21 00:37:39",
+  "202603030511": "2026-11-21 00:34:56",
+  "202608050509": "2026-11-21 00:37:14",
+  "202608050510": "2026-11-21 00:37:26",
+  "202603030509": "2026-11-21 00:34:25",
+  "202603030510": "2026-11-21 00:34:41",
+  "202608050508": "2026-11-21 00:37:07",
+  "202608050507": "2026-11-21 00:36:53",
+  "202603030508": "2026-11-21 00:34:11"
+ },
+ "shadow": {
+  "202608050511": {
+   "sc_model": "roi",
+   "marks": [
+    {
+     "mark": "△",
+     "horse_number": 14
+    },
+    {
+     "mark": "▲",
+     "horse_number": 10
+    },
+    {
+     "mark": "◎",
+     "horse_number": 12
+    },
+    {
+     "mark": "○",
+     "horse_number": 3
+    },
+    {
+     "mark": "△",
+     "horse_number": 9
+    }
+   ]
+  },
+  "202603030511": {
+   "sc_model": "roi",
+   "marks": [
+    {
+     "mark": "△",
+     "horse_number": 16
+    },
+    {
+     "mark": "○",
+     "horse_number": 1
+    },
+    {
+     "mark": "◎",
+     "horse_number": 13
+    },
+    {
+     "mark": "▲",
+     "horse_number": 11
+    },
+    {
+     "mark": "△",
+     "horse_number": 14
+    }
+   ]
+  },
+  "202608050509": {
+   "sc_model": "roi",
+   "marks": [
+    {
+     "mark": "◎",
+     "horse_number": 3
+    },
+    {
+     "mark": "○",
+     "horse_number": 7
+    },
+    {
+     "mark": "▲",
+     "horse_number": 4
+    },
+    {
+     "mark": "△",
+     "horse_number": 6
+    },
+    {
+     "mark": "△",
+     "horse_number": 1
+    }
+   ]
+  },
+  "202608050510": {
+   "sc_model": "roi",
+   "marks": [
+    {
+     "mark": "○",
+     "horse_number": 7
+    },
+    {
+     "mark": "◎",
+     "horse_number": 5
+    },
+    {
+     "mark": "▲",
+     "horse_number": 15
+    },
+    {
+     "mark": "△",
+     "horse_number": 2
+    },
+    {
+     "mark": "△",
+     "horse_number": 6
+    }
+   ]
+  },
+  "202603030509": {
+   "sc_model": "roi",
+   "marks": [
+    {
+     "mark": "◎",
+     "horse_number": 2
+    },
+    {
+     "mark": "▲",
+     "horse_number": 12
+    },
+    {
+     "mark": "○",
+     "horse_number": 15
+    },
+    {
+     "mark": "△",
+     "horse_number": 8
+    },
+    {
+     "mark": "△",
+     "horse_number": 16
+    }
+   ]
+  },
+  "202603030510": {
+   "sc_model": "roi",
+   "marks": [
+    {
+     "mark": "◎",
+     "horse_number": 1
+    },
+    {
+     "mark": "▲",
+     "horse_number": 11
+    },
+    {
+     "mark": "△",
+     "horse_number": 7
+    },
+    {
+     "mark": "○",
+     "horse_number": 14
+    },
+    {
+     "mark": "△",
+     "horse_number": 16
+    }
+   ]
+  },
+  "202608050508": {
+   "sc_model": "roi",
+   "marks": [
+    {
+     "mark": "◎",
+     "horse_number": 13
+    },
+    {
+     "mark": "▲",
+     "horse_number": 7
+    },
+    {
+     "mark": "△",
+     "horse_number": 5
+    },
+    {
+     "mark": "○",
+     "horse_number": 14
+    },
+    {
+     "mark": "△",
+     "horse_number": 4
+    }
+   ]
+  },
+  "202608050507": {
+   "sc_model": "roi",
+   "marks": [
+    {
+     "mark": "◎",
+     "horse_number": 15
+    },
+    {
+     "mark": "△",
+     "horse_number": 2
+    },
+    {
+     "mark": "○",
+     "horse_number": 3
+    },
+    {
+     "mark": "▲",
+     "horse_number": 7
+    },
+    {
+     "mark": "△",
+     "horse_number": 1
+    }
+   ]
+  },
+  "202603030508": {
+   "sc_model": "roi",
+   "marks": [
+    {
+     "mark": "◎",
+     "horse_number": 3
+    },
+    {
+     "mark": "△",
+     "horse_number": 12
+    },
+    {
+     "mark": "▲",
+     "horse_number": 11
+    },
+    {
+     "mark": "○",
+     "horse_number": 16
+    },
+    {
+     "mark": "△",
+     "horse_number": 1
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,1104 @@
+"""
+馬券戦略エンジン v2
+回収率最大化を目指す期待値ベース戦略
+- 厳格なレース見送り判定
+- EV上位馬券への集中投資
+- ケリー基準 (ハーフケリー) で攻めた資金配分
+"""
+
+import math
+import os
+from itertools import combinations
+import sys as _sys150, os as _os150
+_sys150.path.insert(0, _os150.path.dirname(_os150.path.dirname(_os150.path.abspath(__file__))))
+import flags   # #150: 買い目フラグの単一情報源 (env > config/prediction_flags.yml)
+from race_utils import is_scratched_horse as _is_scratched_horse   # #170: 取消の判定 (印と共通)
+
+
+def _bet_sig(bet_type, horse_numbers):
+    """買い目の同一性キー。#134: 三連単は着順が意味を持つので順序を保存する。
+
+    #113 で add() だけ順序保存にしたが、generate_bets 末尾と honor_signatures は
+    `tuple(sorted(...))` のままだったため、**三連単フォーメーション24点が最終段で
+    14点に潰れ「◎1着固定」に退化**していた (実データ 81/81レースで24点は0件)。
+    #112 の測定では ◎1着固定は全18構成中**最悪の 73.2%** であり、最良のD構造
+    (94.2%) を実行しているつもりで最悪構成を買っていたことになる。
+    """
+    hns = list(horse_numbers or [])
+    return (bet_type, tuple(hns) if bet_type == "三連単" else tuple(sorted(hns)))
+
+
+def band_trio_mult():
+    """#177: trio_focus band の三連複の単価の倍率 (config の BET_BAND_TRIO_MULT、既定 1 = 等額)。
+    #95 で2倍にしたが、根拠の「帯内 trio ROI 200%」は撤回済みで、#176 の監査でも band は他の投資
+    レースと区別できなかった。ユーザー判断 (2026-11-18「戻す」) で等額に戻した。2 にすると旧挙動。"""
+    try:
+        m = flags.as_float("BET_BAND_TRIO_MULT", "1")
+    except Exception:
+        m = 1.0
+    return m if m >= 1 else 1.0
+
+
+class BettingStrategy:
+    """
+    馬券戦略 (2026-05-27 entertainment モード)
+
+    方針:
+    1. 期待値 > MIN_EV (=0.8、夢ロマンモード) の馬券を購入。買い目は多めに提示
+    2. 信頼度が低いレースは should_bet=0 (見送りバッジ)、ただし印・買い目は出す
+    3. ケリー基準（ハーフケリー）で賭け金を算出
+    4. honor_bets (印通り買い目) は EV 制限なしで全提示
+    5. USE_WHITELIST=1 で投資特化モード (S×2勝中距離 / 函館ダート 単勝のみ)
+    """
+
+    MAX_BET_PER_RACE = 1000  # 1レースの上限(円)
+    MIN_EV = 0.8             # 最低期待値 (2026-05-27: 1.2 → 0.8 entertainment モード)
+                             # 旧 1.2 は 100% 超 ROI 投資ガチ運用向け。0.8 は「夢とロマン」
+                             # スタンスで買い目多めに提示する設定。X 投稿には買い目 detail
+                             # は出ないので、内部のみ影響 (entertainment 寄りに調整)。
+    # ── MAX_EV band-pass (#95 2026-07-02 ROI監査) ──
+    # 「宣言 EV が高いほど実現 ROI が低い」逆相関を実測 (5-6月両月再現):
+    #   EV>=2.0 line の実 ROI = 5月 23.8% / 6月 16.4% (確率過大推定の穴馬に偏る)
+    #   EV<2.0 に band-pass するだけで全体 ROI +12〜13pt。
+    # EV フィルタ買い目は MIN_EV <= ev < MAX_EV のみ通す (honor bets は対象外)。
+    MAX_EV = 2.0
+    MIN_BET = 100            # 最低賭け金(円)
+    KELLY_FRACTION = 0.5     # ハーフケリー（旧0.25→攻めに変更）
+
+    # 全券種を有効化
+    ALL_BET_TYPES = ["単勝", "複勝", "ワイド", "馬連", "三連複", "三連単"]
+
+    # ── Phase α (2026-05-27): Whitelist specialization ──
+    # 6 年 walk-forward 検証で「全 6 年 ROI ≥ 100%」を維持できた segment は
+    # 存在しなかったが、5/6 年以上で安定して 100%+ の 2 segments のみ実用化:
+    #   1. 単勝 × confidence=S × 2勝クラス × 中距離 (avg ROI 117.5%)
+    #   2. 単勝 × 函館 × ダート (avg ROI 106.5%)
+    # WHITELIST_MODE=True で「これ以外の race は全 skip」する specialization 戦略。
+    #
+    # Format: (segment_name, predicate(race_info, confidence) → bool, allowed_bet_types)
+    WHITELIST_SEGMENTS = [
+        (
+            "S/2勝/中距離 単勝",
+            lambda ri, conf: (
+                conf == "S"
+                and "2勝" in (ri.get("race_name", "") or "")
+                and 1800 <= (ri.get("distance", 0) or 0) <= 2199
+            ),
+            ["単勝"],
+        ),
+        (
+            "函館/ダート 単勝",
+            lambda ri, conf: (
+                (ri.get("venue", "") or "") == "函館"
+                and (ri.get("surface", "") or "") == "ダート"
+            ),
+            ["単勝"],
+        ),
+    ]
+
+    def get_whitelist_match(self, race_info, confidence):
+        """Whitelist segments のうち該当するものを返す (なければ None)。"""
+        if not race_info:
+            return None
+        for seg_name, pred, bet_types in self.WHITELIST_SEGMENTS:
+            try:
+                if pred(race_info, confidence):
+                    return (seg_name, bet_types)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def get_axis_horse(predictions, sorted_preds=None):
+        """買い目の軸馬 = 表示上の ◎ (mark)。無ければ pred_win 1位にフォールバック。
+
+        #95 (2026-07-02 ROI監査): 旧実装は軸 = pred_win 1位で、印 v5 の ◎
+        (pred_top3 1位) と乖離し、◎相当馬が相手プールに混ざって「馬連 7-7」等の
+        同一馬ペア無効買い目が本番 cache に混入していた。軸は常に表示 ◎ と一致させる。
+        """
+        for p in predictions or []:
+            if p.get('mark') == '◎':
+                return p
+        if sorted_preds:
+            return sorted_preds[0]
+        if predictions:
+            return max(predictions, key=lambda x: x.get('pred_win', 0))
+        return None
+
+    def trio_focus_band(self, predictions, confidence, race_info=None):
+        """trio-focus band 判定 (#95 2026-07-02 ROI監査)。
+
+        ◎ 単勝オッズ 2.0-2.9倍 × confidence S/A/B は、三連複◎軸ながし (印相手) が
+        ROI 200% (n=100、5月182%/6月205%、単日除外でも161-163%) の検証済み利益層。
+        ワイド◎ながしも 119%。一方この帯の馬連◎ながしは 83% の損失層。
+        → 該当時: 馬連 honor を生成せず、三連複 honor を2倍額に、ワイドは維持。
+        (#177: 2倍額は撤回済みの数字が根拠だったので、既定は等額 — BET_BAND_TRIO_MULT)
+        実オッズがある場合のみ発火 (推定オッズは自己予測由来で循環参照になるため)。
+        この alpha は印相手 (穴馬スコア系) に由来 — 相手を人気順に替えると 200%→108%
+        に消えることを counterfactual で確認済み。印ロジック変更時は要再検証。
+
+        ★逆張りレビュー指摘 (#95 追補): band は should_bet=0 でも投資対象として残る
+        例外経路なので、should_bet_race の損失層ガード (未勝利/新馬 #28、障害 ML圏外)
+        を race_name で自前に再チェックする。これが無いと「4歳以上障害未勝利 ◎2.5倍
+        conf B」のような ML 圏外レースに trio 2倍額が残る (band 候補の47%が該当した)。
+        """
+        if confidence not in ("S", "A", "B"):
+            return False
+        race_name = (race_info or {}).get("race_name", "") if race_info else ""
+        from race_utils import is_ml_out_of_domain as _ood   # #123
+        if race_name and _ood(race_name):
+            return False
+        axis = self.get_axis_horse(predictions)
+        if not axis or not axis.get('_has_real_odds'):
+            return False
+        odds = axis.get('odds_win') or 0
+        return 2.0 <= odds < 3.0
+
+    def kelly_criterion(self, prob, odds):
+        """ケリー基準で最適賭け比率を計算"""
+        if prob <= 0 or odds <= 1:
+            return 0
+        b = odds - 1
+        f = (prob * (b + 1) - 1) / b
+        if f <= 0:
+            return 0
+        return f * self.KELLY_FRACTION
+
+    def calculate_bet_amount(self, prob, odds, bankroll=None):
+        """賭け金を計算（100円単位）"""
+        budget = bankroll or self.MAX_BET_PER_RACE
+        kelly = self.kelly_criterion(prob, odds)
+        if kelly <= 0:
+            return 0
+        amount = budget * kelly
+        amount = max(self.MIN_BET, math.floor(amount / 100) * 100)
+        amount = min(amount, self.MAX_BET_PER_RACE)
+        return int(amount)
+
+    def should_bet_race(self, predictions, confidence=None, race_info=None, strict_whitelist=False):
+        """
+        レース見送り判定（厳格版）
+
+        回収率を上げるため、以下のレースを見送る:
+        - 上位馬が見当たらない（予測が拡散）
+        - 最大勝率が低すぎる
+        - 本命が堅すぎてオッズに妙味なし
+        - 1勝戦×妙味中間オッズ (2.5-3.9倍) は loss layer (2026-05-27 #30)
+
+        strict_whitelist=True の場合: WHITELIST_SEGMENTS に該当しない race を全 skip。
+            walk-forward で 100%+ 確認できた niche segments のみで投資する specialization 戦略。
+        """
+        if not predictions:
+            return False, "予測データなし"
+
+        # Phase α (2026-05-27): Whitelist specialization mode
+        # 6 年 walk-forward で 5/6 年以上 100%+ の 2 segments だけ通過させる
+        if strict_whitelist:
+            match = self.get_whitelist_match(race_info, confidence)
+            if not match:
+                return False, "Whitelist 該当なし (specialization mode)"
+            # match した場合は他の判定を skip して直接 OK
+            return True, f"Whitelist hit: {match[0]}"
+
+        # ❌ v12 (2026-05-26 ROI最大化): 信頼度 C/D は明示的に見送り
+        # 5/9-5/24 backtest: C 三連複 ROI 75% / 馬連 45% / ワイド 80%
+        # confidence が明示できる場合は暗黙的判定でなく明示的にスキップ
+        if confidence in ("C", "D"):
+            return False, f"信頼度{confidence}は損失層 (backtest ROI 75-80%)"
+
+        # 🆕 2026-05-30: 未勝利・新馬は should_bet で見送り (旧は confidence 降格で実現)
+        # #28: ML が unknown horse を学習できず未勝利戦の予測 ROI が不安定。
+        # confidence は予測自信度 (◎勝率) のまま、投資回避はここで明示。
+        race_name = (race_info or {}).get("race_name", "") if race_info else ""
+        if race_name and ("未勝利" in race_name or "新馬" in race_name):
+            return False, "未勝利・新馬は ML 信頼度低のため投資見送り (印・予想は表示)"
+
+        # 🆕 #95 (2026-07-02 ROI監査): 障害・ジャンプレースは投資見送り
+        # ML は平地レースで学習しており障害は学習データ外。6月に障害レース
+        # (京都ハイジャンプ等) へ S が付与され S=2.0x で最大額が張られた結果、
+        # S 層全体の ROI が 44.6% に汚染された (S<B<A の序列逆転 #10 の再来)。
+        # #123: 文字列 "障害/ジャンプ" だけでは "新潟JS" 等のジャンプS 73レースが素通り
+        # していた。共通判定 race_utils.is_jump_race に集約。
+        from race_utils import is_jump_race as _is_jump
+        if race_name and _is_jump(race_name):
+            return False, "障害レースは ML 学習データ外のため投資見送り (印・予想は表示)"
+
+        top_prob = max(p["pred_win"] for p in predictions)
+        sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
+
+        # 混戦すぎるレースを弾く判定。
+        # v11 (2026-05-24): 8%→12% / 23%→30% に厳格化 (#16/#25 の感度分析)。
+        #
+        # 🎚 #156 (2026-09-15): **閾値を分位ベースに変更**。
+        # この 0.12 / 0.30 は意思決定チャネル `pred_win_norm` に対する絶対値だが、
+        # そのチャネルは生 softmax のまま (#120 は表示チャネルだけ z-score 化した) で、
+        # rank_score のレース内 sd が再学習のたびに動く。実キャッシュの実測:
+        #   2026-05 sd 0.493 → 遮断 30.7%   2026-06 sd 0.219 → 67.8%
+        #   2026-07 sd 0.347 → 29.2%        2026-08 sd 0.115 → **70.1%**
+        #   2026-09 sd 0.869 → **1.7%**
+        # = 「いくら投資するか」が予測の中身でなく再学習の引きで決まっていた。
+        # #36/#120/#147 が三度書いた「閾値と分布はペア」の、投資ゲートでの4度目。
+        # 基準表 (race_baseline.json) が 2026-05 と同じ遮断率になる分位を毎週引き直す。
+        # ROI を上げる変更ではない — 週で投資額が7倍動くのを止める変更 (#140)。
+        # BET_GATE_FIXED=1 で旧来の固定値に戻せる。
+        _gate = {"top_prob": 0.12, "top3_sum": 0.30}
+        try:
+            import flags as _fl
+            if not _fl.is_on('BET_GATE_FIXED'):
+                import race_baseline as _rb
+                _gate = _rb.bet_gate_thresholds()
+        except Exception:
+            pass
+
+        if top_prob < _gate["top_prob"]:
+            return False, f"予測確率が低い (最大{top_prob:.1%})"
+
+        top3_sum = sum(p["pred_win"] for p in sorted_preds[:3])
+        if top3_sum < _gate["top3_sum"]:
+            return False, f"上位3頭の合計勝率{top3_sum:.1%}で混戦"
+
+        # 本命が堅すぎてオッズに旨味なし
+        # #95 (2026-07-02): オッズ帯の判定は「表示上の ◎」(mark) で行う。
+        # 旧実装は pred_win 1位で判定しており、印 v5 の ◎ (pred_top3 1位) と乖離していた。
+        top_horse = self.get_axis_horse(predictions, sorted_preds) or sorted_preds[0]
+        top_odds = top_horse.get("odds_win", 1) or 1
+        if top_prob > 0.6 and top_odds < 1.5:
+            return False, "本命が堅すぎてオッズに旨味なし"
+
+        # 🆕 v12 (ROI最大化施策): ◎の単勝オッズ妙味バンド外は見送り
+        # #95 (2026-07-02): 上限 30.0 → 8.0 に引き締め。
+        # 実測 (5/10-6/28): ◎8.0倍以上 (n=17) は単勝/馬連/ワイド/三連複の全券種で
+        # ROI 0% (的中ゼロが2ヶ月連続)。5.0-7.9倍帯の confidence -1 降格 (過信帯) は
+        # #169 で撤去 (点数表の◎では ◎3着内率・回収とも差を示せず。confidence.post_adjust 参照)。
+        # ★オッズ帯チェックは実オッズがある場合のみ (#95 レビュー追補)。
+        # 推定オッズ = 0.8/pred_win は温度1で本命≈8.4倍となり、木金の事前予測が
+        # 一律「8倍以上」で誤遮断される (自己予測由来の循環参照)。実オッズ確定後の
+        # 土曜朝 predict で正しく再判定される。
+        axis_has_real_odds = bool(top_horse.get("_has_real_odds"))
+        if top_odds > 0 and axis_has_real_odds:
+            if top_odds < 2.0:
+                return False, f"◎オッズ{top_odds:.1f}倍は配当妙味なし"
+            if top_odds >= 8.0:
+                return False, f"◎オッズ{top_odds:.1f}倍は◎信頼度が低すぎ (8倍以上は全券種ROI 0%)"
+
+        # 🆕 v13 (2026-05-27 #30): 1勝戦の妙味中間オッズ帯は loss layer
+        # analyze_a_tier_loss.py の結果: 1勝×A の ◎ オッズ別 ROI:
+        #   1.x-2.4倍: 28.3% (n=102) / 2.5-3.9倍: 11.5% (n=26) ← 最底
+        # 「やや本命だが堅くもない」中間帯が ROI 最悪。1勝戦で 2.5-3.9倍は見送り。
+        #
+        # ⚖️ #169 (2026-11-05): **band (trio_focus_band, #95) がこの見送りより優先する**。
+        # band (◎2.0-2.9倍 × S/A/B × 平場) は should_bet=0 でも三連複/ワイドの honor に
+        # 金額を残す例外経路 (predict.py の sb=0 ゼロ化) なので、2.5-2.9倍の1勝戦は
+        # ここで見送りと判定された後に band が投資する。実効的にはこのガードは
+        # 「1勝戦×◎3.0-3.9倍の見送り」として働く (9/05〜11/01 の保存値で band が上書きしたのは
+        # 15R・31,200円 → 回収21,450円。うち 9/05 の2Rは #150d 前でワイド600円のみ、
+        # 三連複まで入ったのは 9/12 以降の 13R・30,000円 → 回収20,070円)。
+        # どちらの根拠も #141 の検出力の下限 (+5pt に約9,000R) に届かないので、
+        # 現状の実効挙動 (band 優先) を変えずに優先順位だけ明文化した → docs/BETTING_SPEC.md。
+        # 名前判定 ("1勝" in race_name) は「オキザリス賞」等の1勝クラス特別戦を拾わない
+        # (grade=１勝クラスの13.8%) — 判定を races.grade に寄せるかは #30 の再検証とセットで決める。
+        race_name = (race_info or {}).get("race_name", "") if race_info else ""
+        if race_name and "1勝" in race_name and axis_has_real_odds:
+            if 2.5 <= top_odds < 4.0:
+                return False, f"1勝戦×◎オッズ{top_odds:.1f}倍は妙味中間帯 (loss layer 11.5%)"
+
+        # 最大EVチェック（オッズがある場合）
+        max_ev = 0
+        for p in predictions:
+            odds = p.get("odds_win", 0)
+            if odds > 0:
+                ev = p["pred_win"] * odds
+                max_ev = max(max_ev, ev)
+        if max_ev > 0 and max_ev < 0.9:
+            return False, f"期待値が低い (最大EV: {max_ev:.2f})"
+
+        return True, "OK"
+
+    @staticmethod
+    def band_override_reason(gate_reason):
+        """#169: should_bet=0 のまま band (#95) が三連複/ワイドに金額を残すレースの理由文。
+
+        旧実装は `f"{reason} (trio-focus band: 三連複/ワイドのみ投資)"` で、理由欄の先頭が
+        見送りの理由 (例: 「1勝戦×◎オッズ2.8倍は妙味中間帯 (loss layer 11.5%)」) のまま
+        2,400円が入っていた = 表示と実際の金額が逆に読める。投資している事実を先に書き、
+        上書きした見送り判定は括弧で残す (なぜ他の券種が0円なのかの説明として要る)。
+        """
+        return f"trio-focus band で三連複/ワイドのみ投資 (通常の判定なら見送り: {gate_reason})"
+
+    def _honor_bets(self, sorted_preds, enabled, budget, predictions=None, line_amount=None,
+                    trio_focus=False):
+        """印通り保証買い目 (honor) を生成する。仕様の正本は docs/BETTING_SPEC.md (#169)。
+
+        相手 (partners) = ☆(妙味枠) を先頭に ○▲△△注 の最大6頭 (#141/#146/#149)。
+        実オッズがあり BET_STRUCTURE_ADAPTIVE=1 なら構造を切り替える (#113/#150d):
+          - G    (◎1倍台): 三連複2頭軸(◎+☆)→4点 + ワイド6点。**金額は乗らない** (#152)
+          - D    (◎2倍台×11頭+、band不成立時): 三連単F 24点 + ワイド6点。**金額は乗らない** (#169)
+          - band (◎2倍台×S/A/B×平場、11頭+): 三連複◎軸 ☆○▲△△ 10点 (単価は BET_BAND_TRIO_MULT 倍、
+                 既定1 = 等額 #177) + ワイド6点
+          - A    (上記以外の実オッズ有り / band の10頭以下): 三連複◎軸×LGB複勝上位4頭 6点
+                 (band の10頭以下も同じ相手で 6点、単価は band と同じ倍率) + ワイド6点。相手は印でなくモデル順 (#121)
+          - 実オッズ無し (木金の事前予測): 馬連6点+ワイド4点 で予算1,000円の上限に当たる
+        構造が決まったレースは「設計どおりの全点」を買う (#169: 予算は実際の点数から決める)。
+
+        v3 (2026-05-27): line_amount を指定可能 (指定が無ければ MIN_BET=100円)。
+        #140 以降は信頼度によらず 100円 (CONFIDENCE_SIZING=1 で旧倍率)。
+        """
+        bets = []
+        if len(sorted_preds) < 1:
+            return bets, 0
+
+        amt = line_amount or self.MIN_BET
+        spent = 0
+        signatures = set()
+        # #169 (2026-11-05): 「全部の点を計画してから、予算を当てて買う」の2段にする。
+        # 旧実装は add() の中で予算を見ており、構造ごとの予算を固定の式
+        # (band: amt×25 / D: amt×29 / A・G: amt×11) で先に決めていた。これは
+        # **ワイド5点前提**の式で、#146/#149 でワイドを6点に増やした時に直し忘れ、
+        # 構造ごとの最後の1点が予算切れで黙って落ちていた
+        # (A 6→5点、band 10→9点、D 24→23点。9/05〜11/01 の資金の入ったレースで
+        #  A 59R 中 57R、band 11頭以上 41R 中 40R が1点欠け)。
+        # #149 が書いた「同じ値が2箇所にある」の再発なので、点数を式で持つのをやめ、
+        # 計画した点の合計から予算を決める (相手やワイドの点数が変わっても追従する)。
+        planned = []
+
+        def add(t, detail, hns, odds, prob, name, amount=None, band=False):
+            amt_i = amount or amt
+            # 三連単は着順が意味を持つので sig を順序保存 (sorted だと別順序が同一視され欠落)
+            sig = _bet_sig(t, hns)
+            if sig in signatures:
+                return
+            if len(set(hns)) != len(hns):
+                # #95: 同一馬ペア (馬連 7-7 等) の無効買い目を構造的に遮断
+                return
+            # 2026-05-27 entertainment モード: honor_bets は EV 制限なしで全買い目生成
+            # (Phase α では EV>=MIN_EV を強制していたが、夢ロマン路線では妙味少ない印買い目も提示)
+            # 予算はここでは見ない (#169) — 全点を計画した後で末尾の購入ループが当てる。
+            ev_estimated = prob * odds
+            signatures.add(sig)
+            planned.append({
+                "type": t, "detail": detail, "horse_numbers": hns,
+                "amount": amt_i, "odds": round(odds, 1),
+                "ev": round(ev_estimated, 2), "prob": round(prob, 3),
+                "horse_name": name, "honor": True,
+                # #177: band の三連複の印。単価で band を見分けていた週次採点 (#152) が、等額に戻すと
+                # band を構造A に混ぜてしまうので、買い目自体に印を残す
+                **({"band": True} if band else {}),
+            })
+
+        # 軸 = 表示上の ◎ (#95: 旧 pred_win 1位は印 v5 の ◎ と乖離していた)
+        p1 = self.get_axis_horse(predictions, sorted_preds)
+        if p1 is None:
+            return bets, 0
+        center = p1["horse_number"]
+        center_name = p1.get("horse_name", "")
+
+        # 相手 (○▲△×注) の取得 — mark フィールド優先、なければ ML 順
+        partners = []
+        if predictions:
+            # #140: ☆ = 妙味枠 (旧 ○)。記号を実力順に振り直したため優先順も更新。
+            # ○▲△ はモデル上位2-4位、× は妙味枠が無い日のモデル5位、☆ が妙味枠。
+            mark_priority = {'○': 1, '▲': 2, '△': 3, '×': 4, '☆': 5, '注': 6}
+            partner_candidates = [
+                (mark_priority.get(p.get('mark',''), 99), p)
+                for p in predictions
+                if p.get('mark') in ('○','▲','△','×','☆','注')
+            ]
+            partner_candidates.sort(key=lambda x: x[0])
+            # #146: 上限を6に。#143 で △が2頭になり ☆ も加わったため、
+            # 5のままだと候補6つの最後尾 = 注 が押し出される。
+            # 実測: 注が買い目に入るレースが 30/36 → 7/36 に激減していた
+            # (ワイド「◎-注」の高配当枠が78%のレースで消えていた)。
+            partners = [p for _, p in partner_candidates][:6]
+            # #141: G/D 構造の2列目 (partners[0]) は設計上「妙味枠」でなければならない。
+            # #112/#113 で D 69.3% vs モデル2位 36.9% と実測され、L426 のコメントも
+            # 「D/G は妙味○が的中時の高配当を担うため現行維持」と明記している。
+            # ところが #140 で ○ をモデル2位に、妙味枠を ☆ に変えた際、mark_priority が
+            # ○:1 のままだったため partners[0] が silent に「妙味馬 → モデル2位」に変わり、
+            # 買い目構造が壊れていた (実測: ○の単勝中央値 15.35倍 vs モデル2位 4.5倍、
+            # 一致は 2/144レースのみ = 約47%のレースで買い目が別物に)。
+            # 印 (コンテンツ層) の記号変更が ROI層 に波及するのは #111 の役割分担違反。
+            # → 妙味枠を記号でなく「役割」で取得し、先頭に固定する。
+            _value = next((p for p in predictions if p.get('mark') == '☆'), None)
+            if _value is None:   # ☆ 以前のデータ (○が妙味枠だった時代) との互換
+                _value = next((p for p in predictions if p.get('mark') == '○'), None)
+            if _value is not None:
+                partners = [_value] + [p for p in partners
+                                       if p.get('horse_number') != _value.get('horse_number')]
+                partners = partners[:6]
+        if len(partners) < 2:
+            # フォールバック: ML 順 上位5
+            # #170: 取消と分かっている馬は外す (取消が無ければ sorted_preds[1:6] と同じ)
+            partners = [q for q in sorted_preds[1:] if not _is_scratched_horse(q)][:5]
+        # #95: 軸馬が相手プールに混入しないよう明示的に除外 (同一馬ペア防止の二重防御)
+        # #149: 上限は6。#146 で 5→6 に広げたのに**ここだけ 5 のまま**残っており、
+        # 切り詰めで最後尾の注が再び消えていた (☆と注が揃った57レース全部で
+        # 注が買い目から脱落、ワイドが6点→5点)。同じ値が2箇所にあるのが原因。
+        partners = [p for p in partners if p["horse_number"] != center][:6]
+
+        # ── #113 (2026-07-14): レース適応型の買い目構造 (BET_STRUCTURE_ADAPTIVE=1) ──
+        # OOS (2025-03+, 2,823R) の条件付き実測 (#112):
+        #   ◎1倍台: G=三連複2頭軸(◎+○)→(▲△×+注) 143% (上位3的中依存39%だが月別7/10で100%+、
+        #            除外でも87% = 他構造74-89%より一貫優位) / D 74.6% / A 88.6%
+        #   ◎2倍台×11頭+: D=三連単F(1着◎○/2着◎○▲△/3着印5+注) 90.5% / A 82.8 / G 75.0
+        #   少頭数(≤10): D が 68.6% に崩れる → A (85.6%)
+        #   ◎3倍+: A 83.5% が最良 (G/D は 71-81%)
+        # 原則「◎を1着に固定しない」(固定Fは73.2%で最悪、#112)。実オッズ必須 (無ければ従来動作)。
+        structure = None
+        if flags.is_on('BET_STRUCTURE_ADAPTIVE') and p1.get('_has_real_odds'):
+            _ax_od = p1.get('odds_win') or 0
+            _nh = len(sorted_preds)
+            if 0 < _ax_od < 2.0:
+                # ⚠️ #152 (2026-09-10): G は**構造上1円も投資されない**。
+                # should_bet_race は実オッズがある時 `top_odds < 2.0` を必ず見送りにする
+                # (#25 の妙味バンド、下の L250 付近)。G の発火条件はその真部分集合なので、
+                # G判定レースは常に should_bet=0 → 全ライン amount=0 になる。
+                # 実測 (新体制 2026-07-18〜09-06): G判定 22R すべて投資額 0円。
+                # したがって G が変えるのは**ダッシュボードに表示される買い目の形だけ**で、
+                # #112/#113 が記録した「G ROI 143%」も週次採点の「G 155.7%」も
+                # 一度も張られていない買い目の成績 = 投資判断の根拠に使ってはいけない。
+                # 残してあるのは「◎が1倍台のレースにも妥当な表示を出す」ためで、
+                # 投資対象に戻すなら妙味バンドの下限 (2.0倍) を動かす判断が先に要る。
+                structure = 'G'
+            elif 2.0 <= _ax_od < 3.0 and _nh >= 11:
+                # #139: D (三連単F24点) は A (三連複◎軸6点) を **4つの独立再現すべてで下回った**
+                # (69.0 vs 79.8 / 68.9 vs 79.8 / 71.7 vs 77.5 / 76.8 vs 79.4)。
+                # ペアbootstrap でも現行比 Δ=-8.9pt。さらに D 分岐は一撃依存・分散・最大DD が
+                # 全構成中で最悪。BET_KEEP_D=0 で A に寄せられるようにする (既定は現行維持)。
+                # ⚠️ #169: BET_KEEP_D=0 は資金の乗らない D だけでなく **band(11頭以上) も変える**。
+                # ここで structure='A' になると下の #150d の差し替え (D のときだけ) が働かず、
+                # 三連複の生成で A の分岐が band より先に当たる → ☆○▲△△ 10点×2倍 (2,600円) が
+                # LGB複勝上位4頭 6点×2倍 (+ワイド6点 = 1,800円) になり、外側予算 2,500円の残りが
+                # EV層に回る。資金の入る買い目が変わるので、D だけを寄せたいなら band 成立時を除外すること
+                # (docs/BETTING_SPEC.md §4・§8、scripts/test_bet_structures.py §9)。
+                structure = 'A' if flags.get('BET_KEEP_D', '1') == '0' else 'D'
+            elif _ax_od > 0:
+                structure = 'A'
+        # #150d (2026-09-05): band と 適応型構造D の**条件が完全に重なっていた**。
+        #   band  = ◎2.0-2.9倍 × S/A/B          (#95)
+        #   構造D = ◎2.0-2.9倍 × 11頭以上        (#113)
+        # 三連複は `structure != 'D'` の時しか生成されないため、両方成立すると
+        # band が謳う「三連複◎軸2倍額」が **1点も作られず**、代わりに三連単が並ぶ。
+        # さらに band レースは should_bet=0 のことが多く、その三連単は金額0に潰されるので、
+        # 実際に残るのはワイドだけ = 「三連複/ワイドのみ投資」という説明と実態が食い違う
+        # (2026-09-05 の中山12R・阪神12R で実発生)。
+        # #139 で D は全構成中の最下位 (69.0 vs A 79.8) と実証済みなので、
+        # 重なった時は band (三連複) を優先する。
+        if trio_focus and structure == 'D':
+            print("  ↩️ trio-focus band と構造D が競合 → band (三連複) を優先 (#150d)")
+            structure = None
+        # #169: 旧来ここにあった構造別の予算式 (D: amt×29 / A・G: amt×11) は廃止。
+        # 予算は末尾で「計画した点の合計」から決める。
+        #
+        # ⚠️ #169: **D も G と同じく資金が乗る経路が無い**。D の条件 (◎2.0-2.9倍×11頭以上) で
+        # should_bet=1 になり得るのは S/A/B かつ平場のレースだけで、それは必ず band の条件も
+        # 満たすので上の行で structure=None (band) に差し替わる。残る D は信頼度C/D (買い目自体が
+        # 空) か未勝利・新馬・障害 (sb=0 で全ライン0円) だけ。実測 9/05〜11/01: D形43R・資金0R。
+        # したがって BET_D_NO_CHU (#139) も ON にしてから一度も金額を動かしていない。
+
+        # 優先順は ROI 最大化観点で「馬連 → ワイド → 三連複」
+        # データから: 馬連207% > 三連複174% > ワイド150% だが、
+        # 馬連・ワイドは1人気軸で的中率が高くROIが安定 → 先に確保
+        # (いずれも #95 以前の in-sample 値。#141 の OOS 規律以降の検証ではない)
+
+        # ─── 主力1: 馬連 ◎-相手 流し (最大6点) ───
+        # 構造が決まらない時 (実オッズ無し) だけ生成。trio_focus band 中も生成しない
+        # (帯内 馬連 ROI 83%、#95)。予算1,000円の上限で 馬連6点+ワイド4点 になる。
+        if "馬連" in enabled and not trio_focus and structure is None:
+            for partner in partners[:6]:
+                nums = sorted([center, partner["horse_number"]])
+                ow1 = p1.get("odds_win", 3) or 3
+                ow2 = partner.get("odds_win", 5) or 5
+                est_odds = max(3.0, ow1 * ow2 * 0.45)
+                est_prob = (p1.get("pred_win", 0) + partner.get("pred_win", 0)) * 0.4
+                names = f"{center_name}-{partner.get('horse_name','')}"
+                add("馬連", f"{nums[0]}-{nums[1]}", nums, est_odds, est_prob, names)
+
+        # ─── 主力2: ワイド ◎-相手 流し (相手6頭 = 最大6点、全構造共通) ───
+        # #146/#149 で相手を5→6頭にしたので6点 (注も入る)。band の sb=0 例外でも金額が残る。
+        if "ワイド" in enabled:
+            for partner in partners[:6]:
+                nums = sorted([center, partner["horse_number"]])
+                ow1 = p1.get("odds_win", 3) or 3
+                ow2 = partner.get("odds_win", 5) or 5
+                est_odds = max(1.5, (ow1 + ow2) * 0.25)
+                est_prob = min(p1.get("pred_top3", 0.2) * 3, 0.85) * \
+                           min(partner.get("pred_top3", 0.15) * 3, 0.7) * 0.85
+                names = f"{center_name}-{partner.get('horse_name','')}"
+                add("ワイド", f"{nums[0]}-{nums[1]}", nums, est_odds, est_prob, names)
+
+        # ─── 主力3: ◎軸三連複 (構造で点数が変わる: G 4点 / A 6点 / band 10点 / 構造無し 15点) ───
+        # 構造無し (実オッズ無し) の15点は予算1,000円を馬連・ワイドが使い切るので1点も買われない。
+        if "三連複" in enabled and len(partners) >= 2 and structure != 'D':
+            from itertools import combinations
+            if structure == 'G' and len(partners) >= 2:
+                # 2頭軸 (◎+○) → 残り相手ながし (~4点)
+                pairs = [(partners[0], x) for x in partners[1:5]]
+            elif structure == 'A':
+                # ⚠️ #169: band の10頭以下もこの分岐に来る (構造A が band より先に判定されるため)。
+                # その時は相手が「☆○▲△△ 10点」でなく「LGB複勝上位4頭 6点」になる (単価は band の倍率、#177 以降は等額)。
+                # どちらに統一するかは製品判断として未決 (docs/BETTING_SPEC.md)。
+                #
+                # #121 (2026-08-24): A の相手は「印4頭」でなく「モデル複勝率上位4頭」。
+                # ⚠️ #169: #121 の前提 (○=妙味枠で弱い) は #140 (○=実力2位・妙味は☆) と
+                # #147 (○▲△△=点数表2-5位) で既に崩れている。今の A の相手は「読者に見える
+                # 印とは別の、LGB の人気寄りの4頭」で、9/05〜11/01 の平場の A 形101R中75R (74%)
+                # に無印馬が入る。資金の入った A 54R (9/12〜11/01) で現行 (LGB) 91.3% vs
+                # 印○▲△△ 58.0% は差の95%CI [-91,+26]pt で区別できない → 相手は現行維持。
+                # #112 の A 設計値 84-86% は ○=モデル2位 時代の実測で、#110 で ○ を
+                # 妙味枠 (複勝率25%の中穴) に替えた後は相手プールが構造的に弱くなっていた。
+                # 実運用111R の反実仮想: 現行(○▲△×) ROI 49.8% vs モデル上位4頭 70.1% (+20.3pt)。
+                # D/G は逆に妙味○が的中時の高配当を担うため現行維持 (D: 69.3% vs 36.9%)。
+                # 印(コンテンツ層)は変えず、買い目(ROI層)だけモデル順に戻す — #111 の役割分担。
+                # #170: 取消と分かっている馬 (印の候補から外した _scratched) は相手にしない。
+                # 印は外れているのに資金の乗る三連複に残る食い違いを塞ぐ (取消が無ければ不変)。
+                _a_pool = sorted((q for q in sorted_preds
+                                  if q["horse_number"] != center
+                                  and not _is_scratched_horse(q)),
+                                 key=lambda q: -(q.get('pred_top3') or 0))[:4]
+                pairs = list(combinations(_a_pool, 2))
+            elif trio_focus:
+                # #150d: band の設計は「◎軸 5頭流し = 10点」(#95 の実測構成)。
+                # 相手上限が 5→6 に広がった (#146/#149) 影響で 15点に膨らむので5頭に切る。
+                # (#169: 旧予算式 amt×25 はワイド5点前提で、ワイド6点だと10点目が落ちていた)
+                pairs = list(combinations(partners[:5], 2))
+            else:
+                pairs = list(combinations(partners[:6], 2))
+            for pair in pairs:
+                nums = sorted([center, pair[0]["horse_number"], pair[1]["horse_number"]])
+                ow1 = p1.get("odds_win", 3) or 3
+                ow2 = pair[0].get("odds_win", 5) or 5
+                ow3 = pair[1].get("odds_win", 8) or 8
+                est_odds = max(8.0, ow1 * ow2 * ow3 * 0.06)
+                est_prob = min(p1.get("pred_top3", 0.2) * 3, 0.85) * \
+                           min(pair[0].get("pred_top3", 0.15) * 3, 0.7) * \
+                           min(pair[1].get("pred_top3", 0.1) * 3, 0.55) * 0.5
+                est_prob = min(est_prob, 0.25)
+                names = f"{center_name}-{pair[0].get('horse_name','')}-{pair[1].get('horse_name','')}"
+                # #177: band の三連複の単価は BET_BAND_TRIO_MULT 倍 (既定 1 = 等額)。#95 の2倍額は
+                # 「帯内 trio ROI 200%/165%」が根拠だったが撤回済み (#112・#139 で 89〜100%)。#176 の
+                # 監査 (回収型の◎、予想時点オッズの再現 696R・学習外 X) でも band は他の投資レースと
+                # 区別できず、ユーザー判断で等額に戻した (回収率はほぼ同じで、band 1レースの損失が減る)
+                _m = band_trio_mult()
+                add("三連複", f"{nums[0]}-{nums[1]}-{nums[2]}", nums, est_odds, est_prob, names,
+                    amount=(int(round(amt * _m / 100.0)) * 100 if trio_focus and _m != 1 else None),
+                    band=trio_focus)
+
+        # ─── #113 D: 三連単フォーメーション 1着{◎☆}/2着{◎☆○▲}/3着{◎+相手} ───
+        # 点数 (#169 実測): 相手6頭 (☆○▲△△注) のとき BET_D_NO_CHU=1 で 2×3×4=24点、
+        # =0 で 2×3×5=30点。☆が居ない日は相手5頭で 18点 / 24点。
+        # ⚠️ #169: D は資金が乗らない (上の structure 判定のコメント参照) — 表示専用の買い目。
+        # #112 の「OOS全体 94.2% で全18構成の最高」は #141 以前の壊れた分割の値で、
+        # #139 では D < A が4つの独立再現すべてで一致している。
+        if structure == 'D' and "三連単" in enabled and len(partners) >= 4:
+            firsts = [p1, partners[0]]
+            seconds = [p1] + partners[:3]
+            # #139 (2026-09-01): 3列目に注 (妙味穴) を入れるのは有害と実証。
+            # 注の配置別ROI: 1着 97-104% / 2着 82% / **3着 65%**。
+            # matched contrast で Δ = -7.6pt (95%CI [-13.2, -1.1]、両期間で負)。
+            # 注は「1着に来た時に配当が跳ねる馬」であり、3着に置くと当たっても安いのに
+            # 点数だけ増える。BET_D_NO_CHU=1 で3列目から外す (相手6頭なら 30 → 24点)。
+            # 導入時は既定 OFF だったが、2026-09-01 に workflow env で本番 ON (#139)、
+            # #150 から config/prediction_flags.yml でも ON。ただし D に金額が乗る経路が
+            # 無いため、ON 以降一度も金額を動かしていない (#169) — 効果測定は成立しない。
+            # #149: 「注を3列目から外す」設定が**位置**で切っていたため、
+            # #143 で印構成が変わった後は注でなく2頭目の△を落としていた
+            # (実測9/9レースで消えたのは△)。役割 (mark=='注') で外す。
+            _d_no_chu = flags.is_on('BET_D_NO_CHU')
+            _th_pool = [p for p in partners
+                        if not (_d_no_chu and p.get('mark') == '注')]
+            # #150: 相手プールは6頭なのに [:5] で切っていたため、
+            # BET_D_NO_CHU=0 のときは **切り詰めが先に注を落とし**、
+            # フラグの ON/OFF で3列目が変わらないレースがあった
+            # (フラグの効果測定が成立しない)。スライスは6に揃え、
+            # 「注を外すかどうか」は役割フィルタだけが決めるようにする。
+            thirds = [p1] + _th_pool[:6]
+            for a in firsts:
+                for b in seconds:
+                    if b["horse_number"] == a["horse_number"]:
+                        continue
+                    for cc in thirds:
+                        if cc["horse_number"] in (a["horse_number"], b["horse_number"]):
+                            continue
+                        hns = [a["horse_number"], b["horse_number"], cc["horse_number"]]
+                        oa = a.get("odds_win", 3) or 3
+                        ob = b.get("odds_win", 5) or 5
+                        oc = cc.get("odds_win", 8) or 8
+                        est_odds = max(20.0, oa * ob * oc * 0.18)
+                        est_prob = min((a.get("pred_win", 0.1) or 0.1) *
+                                       min((b.get("pred_top3", 0.15) or 0.15) * 2, 0.6) *
+                                       min((cc.get("pred_top3", 0.1) or 0.1) * 2, 0.5), 0.08)
+                        names = f'{a.get("horse_name","")}→{b.get("horse_name","")}→{cc.get("horse_name","")}'
+                        add("三連単", f"{hns[0]}-{hns[1]}-{hns[2]}", hns, est_odds, est_prob, names)
+
+        # ── #169: 計画した点に予算を当てて買う ──
+        # 構造 (A/D/G) か band が決まったレースは「設計どおりの全点」を買う = 予算を
+        # 計画した点の合計まで広げる (旧来の固定式 amt×25/29/11 の置き換え)。
+        # 構造が決まらない時 (実オッズ無し) は従来どおり渡された予算 (1,000円) が上限で、
+        # 計画順 (馬連→ワイド→三連複) に入る分だけ買う = 馬連6点+ワイド4点。
+        if structure is not None or trio_focus:
+            budget = max(budget, sum(b["amount"] for b in planned))
+        for b in planned:
+            if spent + b["amount"] > budget:
+                continue
+            spent += b["amount"]
+            bets.append(b)
+        return bets, spent
+
+    # v3 (2026-05-27): confidence 別 bet 額ウェイト
+    # S/A はマイナス層 (#26 単日支配バイアス問題) でも相対的にマシ。
+    # 「線数」(=信頼に応じた合計投資額) と「線単価」(=確信度に応じた1点額) の両方をスケール:
+    #   - budget スケール: 高信頼ほど合計投資額を増やして of  カバー率拡大
+    #   - line_amount スケール: 高信頼ほど 1点 200円 にして payout を大きく
+    # C/D は should_bet=False で既に遮断済。
+    # #140 (2026-09-01): 信頼度による賭け金倍率を **フラット化**。
+    # 導入時 (#27) の根拠は「高信頼レースは捕捉率が高い」だったが、その後の検証で
+    #   - #75: 自信度比例 sizing は全バンドで ROI 79-90% に収束し黒字化しない
+    #   - 実運用7週の三連複◎軸 ROI: S=64.0% / A=86.1% / B=34.0% / C=24.2% / D=61.2%
+    #     = **信頼度は◎複勝率をよく予測する (S83%>A68%>B45%) が ROI は全く予測しない**
+    # 予測できない指標で賭け金を2倍にするのは、期待値を変えずに**分散だけ増やす**行為。
+    # S/A/B を 1.0 に統一する (C/D の 0.0 遮断は #25 で +22pt と実証済みなので維持)。
+    # 倍率を戻す場合は CONFIDENCE_SIZING=1 で旧挙動。
+    CONFIDENCE_MULTIPLIER = {
+        'S': 1.0,
+        'A': 1.0,
+        'B': 1.0,
+        'C': 0.0,  # 損失層 (#25) — 遮断は維持
+        'D': 0.0,
+    }
+    CONFIDENCE_MULTIPLIER_LEGACY = {'S': 2.0, 'A': 1.5, 'B': 1.0, 'C': 0.0, 'D': 0.0}
+
+    def _conf_mult(self):
+        """#140: 既定はフラット。CONFIDENCE_SIZING=1 で旧来の信頼度比例に戻す。"""
+        import os as _os
+        return (self.CONFIDENCE_MULTIPLIER_LEGACY
+                if flags.is_on('CONFIDENCE_SIZING')
+                else self.CONFIDENCE_MULTIPLIER)
+
+    def generate_bets(self, predictions, bankroll=None, bet_types=None, confidence=None,
+                      race_info=None, strict_whitelist=False):
+        """予測結果から推奨馬券を生成（回収率重視版 + honor bets + confidence-aware）
+
+        strict_whitelist=True: WHITELIST_SEGMENTS に該当する場合のみ、許可された
+            bet_types のみを生成 (specialization mode)。
+        """
+        # Phase α: whitelist specialization mode
+        if strict_whitelist:
+            match = self.get_whitelist_match(race_info, confidence)
+            if not match:
+                return {"bets": [], "total_amount": 0, "race_info": {}, "skipped": True,
+                        "skip_reason": "Whitelist 該当なし"}
+            seg_name, allowed_types = match
+            bet_types = allowed_types  # whitelist で指定された券種のみ
+            print(f"  🎯 Whitelist hit: {seg_name} (bet_types={allowed_types})")
+
+        # confidence ウェイトで budget と line_amount をスケール
+        mult = self._conf_mult().get(confidence, 1.0) if confidence else 1.0
+        if mult == 0.0:
+            # C/D 等 (理論上 should_bet=False で遮断されてるはず)
+            return {"bets": [], "total_amount": 0, "race_info": {}, "skipped": True}
+        budget = int((bankroll or self.MAX_BET_PER_RACE) * mult)
+        # line_amount: mult を 100円単位に丸める (S=200, A/B=100)
+        line_amount = max(self.MIN_BET, int(self.MIN_BET * mult / 100) * 100)
+        enabled = set(bet_types) if bet_types else set(self.ALL_BET_TYPES)
+
+        # 勝率順でソート
+        sorted_preds = sorted(predictions, key=lambda x: x["pred_win"], reverse=True)
+
+        # ── trio-focus band 判定 (#95 2026-07-02) ──
+        band = self.trio_focus_band(predictions, confidence, race_info=race_info)
+        if band and band_trio_mult() == 1:
+            # #177: 等額の band は EV層の上限も広げない (= 構造A と同じ扱い)。広げると、三連複を
+            # 等額に戻して浮いた予算が EV層 (単勝・複勝・馬連) に流れ、別の買い目に資金が移る
+            print("  🎯 trio-focus band (◎2.0-2.9倍×S/A/B): 三連複◎軸 (等額) / 馬連なし / ワイド維持")
+        elif band:
+            print(f"  🎯 trio-focus band (◎2.0-2.9倍×S/A/B): 三連複◎軸{band_trio_mult():g}倍額 / 馬連なし / ワイド維持")
+            # 旧来は _honor_bets 内部の band 予算 (25×line_amount) と揃えるための行。
+            # #169 以降 honor の全点確保は _honor_bets が実点数から決めるので、ここは
+            # **EV層の上限**としてだけ働く: band の11頭以上は honor が 26点分を使い切り EV層は0、
+            # 10頭以下 (相手がLGB上位4頭の6点×2倍 = 18点分) は残り7点分が EV層に回る
+            # (現状の挙動を維持。統一するかは製品判断 → docs/BETTING_SPEC.md)。
+            budget = max(budget, line_amount * 25)
+
+        # ── 0. 印通り保証買い目 (EV 関係なく必ず含める) ──
+        # v2 (2026-05-24): バックテスト結果から「最強の買い目」を主力化:
+        #   - ◎軸三連複5頭流し (10点) ROI 174%
+        #   - 馬連 ◎-相手5頭 流し (5点) ROI 207%
+        #   - ワイド ◎-相手5頭 流し (5点) ROI 150%
+        # 旧 honor (◎単勝・◎複勝) は ROI 90%前後で実質マイナスのため廃止。
+        # v3 (2026-05-27): line_amount を confidence で重み付け
+        honor_list, honor_spent = self._honor_bets(sorted_preds, enabled, budget,
+                                                    predictions=predictions,
+                                                    line_amount=line_amount,
+                                                    trio_focus=band)
+        bets = list(honor_list)
+        total_amount = honor_spent
+        # #169: honor の全点確保で予算を広げた分 (A: ワイド6+三連複6 = 1,200円 等) を外側の
+        # 予算にも反映する。これが無いと total_amount > budget のまま remaining が負になる
+        # (旧来も A は 1,100円 > 1,000円 で負だった)。EV層の上限は広げない = 残りは0。
+        budget = max(budget, honor_spent)
+        # honor で既に bet した signature を以後の EV bets で重複させない
+        honor_signatures = {_bet_sig(b["type"], b["horse_numbers"]) for b in honor_list}
+
+        # 複勝率8%以上（÷3済み値で判定、実質24%以上）の上位馬
+        top_horses = [p for p in sorted_preds if p["pred_top3"] >= 0.08][:4]
+
+        # ── 1. 単勝（EVがプラスの馬）──
+        # Phase α: EV >= MIN_EV (1.2) で厳格化 (2026-05-27 Phase α)
+        if "単勝" in enabled:
+            for p in sorted_preds:
+                ev = p["pred_win"] * p["odds_win"]
+                if self.MIN_EV <= ev < self.MAX_EV and p["odds_win"] >= 2.0 and p["pred_win"] >= 0.08:
+                    amount = self.calculate_bet_amount(p["pred_win"], p["odds_win"], budget)
+                    if amount > 0 and total_amount + amount <= budget:
+                        bets.append({
+                            "type": "単勝",
+                            "detail": f"{p['horse_number']}",
+                            "horse_numbers": [p["horse_number"]],
+                            "amount": amount,
+                            "odds": p["odds_win"],
+                            "ev": round(ev, 2),
+                            "prob": round(p["pred_win"], 3),
+                            "horse_name": p.get("horse_name", ""),
+                        })
+                        total_amount += amount
+
+        # ── 2. 複勝（安定的に回収率を上げる柱）──
+        # 2026-05-27: entertainment モード MIN_EV=0.8 で統一
+        if "複勝" in enabled:
+            for p in sorted_preds:
+                odds_place = p.get("odds_place", 1.5)
+                ev = p["pred_top3"] * odds_place
+                if self.MIN_EV <= ev < self.MAX_EV and p["pred_top3"] >= 0.12:
+                    amount = self.calculate_bet_amount(
+                        p["pred_top3"], odds_place, budget - total_amount
+                    )
+                    if amount > 0 and total_amount + amount <= budget:
+                        bets.append({
+                            "type": "複勝",
+                            "detail": f"{p['horse_number']}",
+                            "horse_numbers": [p["horse_number"]],
+                            "amount": amount,
+                            "odds": odds_place,
+                            "ev": round(ev, 2),
+                            "prob": round(p["pred_top3"], 3),
+                            "horse_name": p.get("horse_name", ""),
+                        })
+                        total_amount += amount
+
+        # ── 3. ワイド ──
+        if "ワイド" in enabled and len(top_horses) >= 2:
+            for h1, h2 in combinations(top_horses[:3], 2):
+                # ワイド確率: 両馬がtop3に入る確率（pred_top3は÷3済みなので×3で戻す）
+                t3_1 = min(h1["pred_top3"] * 3, 0.9)
+                t3_2 = min(h2["pred_top3"] * 3, 0.9)
+                wide_prob = t3_1 * t3_2 * 0.8
+                wide_prob = min(wide_prob, 0.5)
+                wide_odds = max(
+                    (h1.get("odds_win", 5) + h2.get("odds_win", 5)) * 0.3, 1.5
+                )
+                ev = wide_prob * wide_odds
+                # Phase α: ワイド MIN_EV 厳格化 0.8 → 1.2 / #95: MAX_EV band-pass
+                if self.MIN_EV <= ev < self.MAX_EV:
+                    amount = self.calculate_bet_amount(wide_prob, wide_odds, budget - total_amount)
+                    if amount > 0 and total_amount + amount <= budget:
+                        bets.append({
+                            "type": "ワイド",
+                            "detail": f"{h1['horse_number']}-{h2['horse_number']}",
+                            "horse_numbers": [h1["horse_number"], h2["horse_number"]],
+                            "amount": amount,
+                            "odds": round(wide_odds, 1),
+                            "ev": round(ev, 2),
+                            "prob": round(wide_prob, 3),
+                            "horse_name": f"{h1.get('horse_name', '')}-{h2.get('horse_name', '')}",
+                        })
+                        total_amount += amount
+
+        # ── 4. 馬連 ──
+        if "馬連" in enabled and len(top_horses) >= 2:
+            for h1, h2 in combinations(top_horses[:3], 2):
+                t3_1 = min(h1["pred_top3"] * 3, 0.9)
+                t3_2 = min(h2["pred_top3"] * 3, 0.9)
+                umaren_prob = (h1["pred_win"] * t3_2 +
+                               h2["pred_win"] * t3_1) * 0.6
+                umaren_odds = max(h1.get("odds_win", 5) * h2.get("odds_win", 5) * 0.4, 3.0)
+                ev = umaren_prob * umaren_odds
+                # Phase α: 馬連 MIN_EV 厳格化 0.5 → 1.2 / #95: MAX_EV band-pass
+                if self.MIN_EV <= ev < self.MAX_EV:
+                    amount = self.calculate_bet_amount(umaren_prob, umaren_odds, budget - total_amount)
+                    if amount > 0 and total_amount + amount <= budget:
+                        bets.append({
+                            "type": "馬連",
+                            "detail": f"{h1['horse_number']}-{h2['horse_number']}",
+                            "horse_numbers": [h1["horse_number"], h2["horse_number"]],
+                            "amount": amount,
+                            "odds": round(umaren_odds, 1),
+                            "ev": round(ev, 2),
+                            "prob": round(umaren_prob, 3),
+                            "horse_name": f"{h1.get('horse_name', '')}-{h2.get('horse_name', '')}",
+                        })
+                        total_amount += amount
+
+        # ── 5. 三連複 ──
+        if "三連複" in enabled and len(sorted_preds) >= 5 and len(top_horses) >= 2:
+            top_horse_nums = {h["horse_number"] for h in top_horses[:2]}
+            dark_horses = [p for p in sorted_preds
+                          if p["pred_top3"] >= 0.06
+                          and p.get("odds_win", 1) >= 5
+                          and p["horse_number"] not in top_horse_nums][:3]
+            for dh in dark_horses:
+                for h1, h2 in combinations(top_horses[:2], 2):
+                    t3_1 = min(h1["pred_top3"] * 3, 0.9)
+                    t3_2 = min(h2["pred_top3"] * 3, 0.9)
+                    t3_d = min(dh["pred_top3"] * 3, 0.9)
+                    trio_prob = t3_1 * t3_2 * t3_d * 2
+                    trio_prob = min(trio_prob, 0.3)
+                    trio_odds = max(
+                        h1.get("odds_win", 3) * h2.get("odds_win", 3) * dh.get("odds_win", 10) * 0.02,
+                        5.0
+                    )
+                    ev = trio_prob * trio_odds
+                    # Phase α: 三連複 MIN_EV 厳格化 0.8 → 1.2 / #95: MAX_EV band-pass
+                    if self.MIN_EV <= ev < self.MAX_EV:
+                        amount = min(self.MIN_BET, budget - total_amount)
+                        if amount >= self.MIN_BET and total_amount + amount <= budget:
+                            bets.append({
+                                "type": "三連複",
+                                "detail": f"{h1['horse_number']}-{h2['horse_number']}-{dh['horse_number']}",
+                                "horse_numbers": sorted([h1["horse_number"], h2["horse_number"], dh["horse_number"]]),
+                                "amount": amount,
+                                "odds": round(trio_odds, 1),
+                                "ev": round(ev, 2),
+                                "prob": round(trio_prob, 3),
+                                "horse_name": f"{h1.get('horse_name', '')}-{h2.get('horse_name', '')}-{dh.get('horse_name', '')}",
+                            })
+                            total_amount += amount
+                            break
+                if total_amount >= budget:
+                    break
+
+        # ── 6. 三連単 (フォーメーション) ──
+        if "三連単" in enabled and len(sorted_preds) >= 5:
+            first_cands = sorted_preds[:2]
+            second_cands = sorted_preds[:3]
+            third_cands = sorted_preds[:5]
+
+            sanrentan_bets = []
+            for h1 in first_cands:
+                for h2 in second_cands:
+                    if h2["horse_number"] == h1["horse_number"]:
+                        continue
+                    for h3 in third_cands:
+                        if h3["horse_number"] in (h1["horse_number"], h2["horse_number"]):
+                            continue
+                        prob = h1["pred_win"] * h2["pred_top3"] * h3["pred_top3"] * 0.5
+                        prob = min(prob, 0.3)
+                        odds = max(
+                            h1.get("odds_win", 3) * h2.get("odds_win", 3) * h3.get("odds_win", 5) * 0.3,
+                            30.0
+                        )
+                        ev = prob * odds
+                        # Phase α: 三連単 MIN_EV 厳格化 0.3 → 1.2 / #95: MAX_EV band-pass
+                        if self.MIN_EV <= ev < self.MAX_EV:
+                            sanrentan_bets.append({
+                                "type": "三連単",
+                                "detail": f"{h1['horse_number']}→{h2['horse_number']}→{h3['horse_number']}",
+                                "horse_numbers": [h1["horse_number"], h2["horse_number"], h3["horse_number"]],
+                                "amount": self.MIN_BET,
+                                "odds": round(odds, 1),
+                                "ev": round(ev, 2),
+                                "prob": round(prob, 3),
+                                "horse_name": f"{h1.get('horse_name', '')}→{h2.get('horse_name', '')}→{h3.get('horse_name', '')}",
+                            })
+            sanrentan_bets.sort(key=lambda x: x["ev"], reverse=True)
+            for bet in sanrentan_bets[:3]:
+                if total_amount + bet["amount"] <= budget:
+                    bets.append(bet)
+                    total_amount += bet["amount"]
+
+        # ── 券種別フォールバック（推奨が0の券種に確率ベースで追加）──
+        if predictions and len(sorted_preds) >= 2:
+            existing_types = {b["type"] for b in bets}
+            top = sorted_preds[0]
+            top2 = sorted_preds[1]
+            top3 = sorted_preds[2] if len(sorted_preds) >= 3 else top2
+
+            # 単勝フォールバック
+            # #95: remaining >= 100 ガード追加 (他のフォールバックには元からあるのに
+            # 単勝だけ欠けており、予算超過時に負額 bet を生んでいた)
+            if "単勝" in enabled and "単勝" not in existing_types and top["pred_win"] >= 0.08 \
+                    and budget - total_amount >= 100:
+                bets.append({
+                    "type": "単勝", "detail": f"{top['horse_number']}",
+                    "horse_numbers": [top["horse_number"]],
+                    "amount": min(300, budget - total_amount),
+                    "odds": top.get("odds_win", 3.0),
+                    "ev": round(top["pred_win"] * top.get("odds_win", 3.0), 2),
+                    "prob": round(top["pred_win"], 3),
+                    "horse_name": top.get("horse_name", ""),
+                })
+                total_amount += bets[-1]["amount"]
+
+            # 複勝フォールバック
+            if "複勝" in enabled and "複勝" not in existing_types:
+                for p in sorted_preds[:2]:
+                    remaining = budget - total_amount
+                    if remaining >= 100 and p["pred_top3"] >= 0.05:
+                        odds_place = p.get("odds_place", 1.5)
+                        bets.append({
+                            "type": "複勝", "detail": f"{p['horse_number']}",
+                            "horse_numbers": [p["horse_number"]],
+                            "amount": min(200, remaining),
+                            "odds": odds_place,
+                            "ev": round(min(p["pred_top3"] * 3, 0.9) * odds_place, 2),
+                            "prob": round(p["pred_top3"], 3),
+                            "horse_name": p.get("horse_name", ""),
+                        })
+                        total_amount += bets[-1]["amount"]
+
+            # ワイドフォールバック（上位2頭の組み合わせ）
+            if "ワイド" in enabled and "ワイド" not in existing_types:
+                t3_1 = min(top["pred_top3"] * 3, 0.9)
+                t3_2 = min(top2["pred_top3"] * 3, 0.9)
+                wide_odds = max((top.get("odds_win", 5) + top2.get("odds_win", 5)) * 0.3, 1.5)
+                remaining = budget - total_amount
+                if remaining >= 100:
+                    bets.append({
+                        "type": "ワイド",
+                        "detail": f"{top['horse_number']}-{top2['horse_number']}",
+                        "horse_numbers": [top["horse_number"], top2["horse_number"]],
+                        "amount": min(200, remaining),
+                        "odds": round(wide_odds, 1),
+                        "ev": round(t3_1 * t3_2 * 0.8 * wide_odds, 2),
+                        "prob": round(t3_1 * t3_2 * 0.8, 3),
+                        "horse_name": f"{top.get('horse_name', '')}-{top2.get('horse_name', '')}",
+                    })
+                    total_amount += bets[-1]["amount"]
+
+            # 馬連フォールバック
+            if "馬連" in enabled and "馬連" not in existing_types:
+                t3_1 = min(top["pred_top3"] * 3, 0.9)
+                t3_2 = min(top2["pred_top3"] * 3, 0.9)
+                umaren_odds = max(top.get("odds_win", 5) * top2.get("odds_win", 5) * 0.4, 3.0)
+                umaren_prob = (top["pred_win"] * t3_2 + top2["pred_win"] * t3_1) * 0.6
+                remaining = budget - total_amount
+                if remaining >= 100:
+                    bets.append({
+                        "type": "馬連",
+                        "detail": f"{top['horse_number']}-{top2['horse_number']}",
+                        "horse_numbers": [top["horse_number"], top2["horse_number"]],
+                        "amount": min(200, remaining),
+                        "odds": round(umaren_odds, 1),
+                        "ev": round(umaren_prob * umaren_odds, 2),
+                        "prob": round(umaren_prob, 3),
+                        "horse_name": f"{top.get('horse_name', '')}-{top2.get('horse_name', '')}",
+                    })
+                    total_amount += bets[-1]["amount"]
+
+            # 三連複フォールバック（上位3頭、馬番重複チェック付き）
+            if "三連複" in enabled and "三連複" not in existing_types and len(sorted_preds) >= 3:
+                # top3が重複しないように選ぶ
+                trio_cands = [top, top2]
+                for p in sorted_preds[2:]:
+                    if p["horse_number"] not in (top["horse_number"], top2["horse_number"]):
+                        trio_cands.append(p)
+                        break
+                if len(trio_cands) == 3:
+                    t3_1 = min(trio_cands[0]["pred_top3"] * 3, 0.9)
+                    t3_2 = min(trio_cands[1]["pred_top3"] * 3, 0.9)
+                    t3_3 = min(trio_cands[2]["pred_top3"] * 3, 0.9)
+                    trio_odds = max(trio_cands[0].get("odds_win", 3) * trio_cands[1].get("odds_win", 3) * trio_cands[2].get("odds_win", 5) * 0.03, 5.0)
+                    trio_prob = t3_1 * t3_2 * t3_3 * 2
+                    remaining = budget - total_amount
+                    if remaining >= 100:
+                        bets.append({
+                            "type": "三連複",
+                            "detail": f"{trio_cands[0]['horse_number']}-{trio_cands[1]['horse_number']}-{trio_cands[2]['horse_number']}",
+                            "horse_numbers": sorted([trio_cands[0]["horse_number"], trio_cands[1]["horse_number"], trio_cands[2]["horse_number"]]),
+                            "amount": min(100, remaining),
+                            "odds": round(trio_odds, 1),
+                            "ev": round(trio_prob * trio_odds, 2),
+                            "prob": round(trio_prob, 3),
+                            "horse_name": f"{trio_cands[0].get('horse_name', '')}-{trio_cands[1].get('horse_name', '')}-{trio_cands[2].get('horse_name', '')}",
+                        })
+                        total_amount += bets[-1]["amount"]
+
+            # 三連単フォールバック（1位→2位→3位、馬番重複チェック付き）
+            if "三連単" in enabled and "三連単" not in existing_types and len(sorted_preds) >= 3:
+                stan_cands = [top, top2]
+                for p in sorted_preds[2:]:
+                    if p["horse_number"] not in (top["horse_number"], top2["horse_number"]):
+                        stan_cands.append(p)
+                        break
+                if len(stan_cands) == 3:
+                    stan_prob = stan_cands[0]["pred_win"] * stan_cands[1]["pred_top3"] * 3 * stan_cands[2]["pred_top3"] * 3 * 0.3
+                    stan_odds = max(stan_cands[0].get("odds_win", 3) * stan_cands[1].get("odds_win", 3) * stan_cands[2].get("odds_win", 5) * 0.5, 30.0)
+                    remaining = budget - total_amount
+                    if remaining >= 100:
+                        bets.append({
+                            "type": "三連単",
+                            "detail": f"{stan_cands[0]['horse_number']}→{stan_cands[1]['horse_number']}→{stan_cands[2]['horse_number']}",
+                            "horse_numbers": [stan_cands[0]["horse_number"], stan_cands[1]["horse_number"], stan_cands[2]["horse_number"]],
+                            "amount": min(100, remaining),
+                            "odds": round(stan_odds, 1),
+                            "ev": round(stan_prob * stan_odds, 2),
+                            "prob": round(stan_prob, 3),
+                            "horse_name": f"{stan_cands[0].get('horse_name', '')}→{stan_cands[1].get('horse_name', '')}→{stan_cands[2].get('horse_name', '')}",
+                        })
+                        total_amount += bets[-1]["amount"]
+
+        # ── 重複除去 (honor bet と同じ組合せの EV bet は除外) ──
+        # honor bet を優先的に残し、EV bet で同じ印通り組合せを重複させない。
+        deduped = []
+        seen = set()
+        for b in bets:
+            sig = _bet_sig(b["type"], b.get("horse_numbers", []))
+            if sig in seen:
+                # 重複 → honor を残すために、後出を捨てる
+                continue
+            seen.add(sig)
+            deduped.append(b)
+        bets = deduped
+
+        # ── ソート: honor bet を上に、その下を EV 降順 ──
+        bets.sort(key=lambda x: (-1 if x.get("honor") else 0, -x["ev"]))
+
+        # total_amount を実態(deduped 後)に再計算
+        total_amount = sum(b["amount"] for b in bets)
+
+        return {
+            "bets": bets,
+            "total_amount": total_amount,
+            "budget": budget,
+            "remaining": budget - total_amount,
+            "bet_count": len(bets),
+            # #95: trio-focus band 該当フラグ (sb=0 ゼロ化の例外判定と ROI モニタ用)
+            "trio_focus_band": band,
+        }
+
+    def format_recommendation(self, bets_result, race_info=None):
+        """推奨馬券を整形して出力"""
+        lines = []
+
+        if race_info:
+            lines.append(f"{'='*50}")
+            lines.append(f"🏇 {race_info.get('race_name', '')} ({race_info.get('venue', '')} {race_info.get('race_number', '')}R)")
+            lines.append(f"   {race_info.get('surface', '')} {race_info.get('distance', '')}m / {race_info.get('track_condition', '')}")
+            lines.append(f"{'='*50}")
+
+        lines.append(f"\n💰 予算: ¥{bets_result['budget']:,} / 合計: ¥{bets_result['total_amount']:,}")
+        lines.append(f"📋 買い目: {bets_result['bet_count']}点\n")
+
+        for i, bet in enumerate(bets_result["bets"], 1):
+            ev_emoji = "🔥" if bet["ev"] >= 2.0 else "⭐" if bet["ev"] >= 1.5 else "✅"
+            lines.append(
+                f"  {ev_emoji} {i}. 【{bet['type']}】{bet['detail']} "
+                f"¥{bet['amount']:,} (EV:{bet['ev']:.2f} | "
+                f"確率:{bet['prob']:.1%} | オッズ:{bet['odds']})"
+            )
+            if bet.get("horse_name"):
+                lines.append(f"     ({bet['horse_name']})")
+
+        if not bets_result["bets"]:
+            lines.append("  ❌ このレースは見送りが推奨されます")
+
+        return "\n".join(lines)

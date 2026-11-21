@@ -1,0 +1,281 @@
+name: 🔬 Feature Parity Check
+
+# #135 (2026-09-01): 学習側 (fast_train.py) と推論側 (ml/features.py) で
+# 54特徴量の値が一致するかを毎日検査する。
+# 両者を二重実装しているのに中身の一致を照合する仕組みが無く、同型のバグが
+# 繰り返し発生していた: #128 (dist_top3_rate)、#133 (前走がデビュー戦)、
+# #134 (通過順の列名改称で4か月欠落)。いずれもこの検査で初日に検出できた。
+on:
+  schedule:
+    - cron: '0 20 * * *'      # 毎日 5:00 JST (週末の予測生成より前)
+  workflow_dispatch:
+
+concurrency:
+  group: feature-parity
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write   # #160: race_calendar.json を commit
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack DB
+        run: bash scripts/db_unpack.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install lightgbm pandas numpy scikit-learn requests beautifulsoup4 lxml
+      - name: Parity check
+        id: parity
+        run: |
+          set +e
+          # #141: `| tee` を挟むと $? は tee の終了コード(常に0)になり、
+          # 検知しても通知が永久に発火しなかった。pipefail でパイプ内の失敗を拾う。
+          set -o pipefail
+          python3 scripts/verify_feature_parity.py --races 4 | tee /tmp/parity.txt
+          CODE=${PIPESTATUS[0]}
+          [ -z "$CODE" ] && CODE=$?
+          echo "検査の終了コード: $CODE"
+          echo "code=$CODE" >> $GITHUB_OUTPUT
+      # ── #160: 開催カレンダーを毎日 DB から作り直す ──
+      # 曜日ガードは JRA の月曜・祝日・順延開催を取りこぼす (2026-09-21 月/祝 阪神、
+      # 2026-09-22 火 中山=台風順延)。posting_watchdog の開催日セーフティネットは
+      # このファイルを唯一の判定材料にするので、毎日必ず更新して commit する。
+      - name: 📅 開催カレンダーを更新 (#160)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -e
+          python3 scripts/build_race_calendar.py
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/race_calendar.json
+          if git diff --cached --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "calendar: 開催日カレンダーを更新 (#160)"
+            for i in 1 2 3; do
+              git pull --rebase --autostash -X theirs origin main || git rebase --abort || true
+              git push origin HEAD:main && break || sleep 5
+            done
+          fi
+
+      # ── #169: 予測 JSON の公開履歴を取る (巻き戻し・仮馬番の点検用) ──
+      # この job の checkout は shallow (depth 1) で履歴が無い。かといって job 本体の作業ツリーを
+      # 深くすると、後段の rebase/push が shallow graft の上で動く (#107: 古代 commit を replay して
+      # main を巻き戻した前科)。そこで読み取り専用の部分クローンを別に作る:
+      #   --filter=blob:none … commit と tree だけ。blob は点検が読む docs/data の予測 JSON だけを
+      #                        後から取る (keiba.db.gz の過去版は一切取らない — #119 で .git が
+      #                        数十GBに膨れてディスクが溢れた前科)
+      #   --shallow-since    … 直近16日 (点検する週末 + その朝の race_baseline.json)
+      # 時間制限: ネットワーク待ちで止まると、continue-on-error では救えず (止まった処理は失敗に
+      # ならない) job の timeout まで後続の起動層の生存確認 (#155/#161) が走らなくなる。
+      - name: 📜 予測 JSON の履歴を取得 (#169)
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SINCE=$(date -u -d '16 days ago' +%Y-%m-%d)
+          git clone --quiet --filter=blob:none --no-checkout --single-branch --branch main \
+            --shallow-since="$SINCE" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" /tmp/hist
+          echo "履歴: $(git -C /tmp/hist rev-list --count HEAD) commits (since $SINCE)"
+
+      # ── #161: 前日までの開催が「最後まで終わったか」を毎朝確かめる ──
+      # 9/21 は着順3R の取りこぼしと結果報告の未配信が、5日間誰にも知られなかった。
+      # 各層は自分の担当時刻しか見ておらず、「その日が完了したか」を見る者がいなかった。
+      # #169: 同じ検査で、直近3日の開催日の予測そのもの (a) 9時台の再予測の巻き戻しと投稿印の一致
+      # (b) 確定版と馬番がずれた予測 JSON の公開時間 (c) 投資ゲートの遮断率 も見る。
+      # 「週末明けに確かめる」と約束して仕組みを作らなかった反省 (11/05) の再発防止。
+      # 3日 = 土曜の開催を日・月・火の朝に見る (schedule が2回続けて飛んでも点検が抜けない)。
+      # 同じ内容を毎朝 Issue に書き込まないよう、既に Issue に出た行は書かない (#170: 行ごと。下の注記)。
+      - name: 🔎 開催日の完了検査 (#161・#169)
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPLETENESS_REPORT: /tmp/raceday_gaps.md
+          QUALITY_REPORT: /tmp/raceday_quality.md
+          RACEDAY_HISTORY_REPO: /tmp/hist
+          PRED_HISTORY_PREFETCH: '1'
+        run: |
+          set +e
+          python3 scripts/check_raceday_completeness.py --days 7 --quality-days 3
+          CODE=$?
+          set -e
+          if [ -s /tmp/raceday_quality.md ]; then
+            QTITLE="🔎 週末の予測の点検で異常 (巻き戻し・仮馬番・投資ゲート)"
+            # #170: 重複は報告全体のハッシュでなく行ごとに省く。旧版は open の Issue の本文だけを見ていたので、
+            # 閉じた翌朝に同じ内容で立ち直り、水曜 (土曜分が対象から外れ、月曜の報告の部分集合になる) は
+            # ハッシュが変わってまた立っていた。同じタイトルの Issue (open と、直近14日に閉じたもの) の本文・
+            # コメントを集め、まだどこにも出ていない行だけを書く (各行に <!-- qline:… --> の印を埋める)。
+            #   開催日つきの行 … 同じ行が出ていれば省く (印の無い旧形式の行も本文の一致で既出とみなす)
+            #   複数日の集計行 (投資ゲート遮断率) … 含む日付がすべて同じ見出しで出ていれば省く (部分集合)
+            #   日付の無い行 (履歴が読めず・例外) … 今日の日付を混ぜた印で、1日1回だけ出す
+            # 集め損ねた時 (gh の失敗) は書く側に倒す (黙らせすぎより重複の方が害が小さい)。
+            QCUT=$(python3 -c 'import datetime as d; print((d.datetime.now(d.timezone.utc) - d.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ"))')
+            QLIST=$(gh issue list --state all --limit 30 --search "\"$QTITLE\" in:title" \
+              --json number,title,state,closedAt \
+              --jq "map(select(.title == \"$QTITLE\" and (.state == \"OPEN\" or (.closedAt // \"\") >= \"$QCUT\"))) | .[] | \"\(.number) \(.state)\"" \
+              2>/dev/null || true)
+            QOPEN=$(printf '%s\n' "$QLIST" | awk '$2 == "OPEN" {print $1; exit}')
+            : > /tmp/raceday_quality_seen.txt
+            for N in $(printf '%s\n' "$QLIST" | awk 'NF {print $1}'); do
+              gh issue view "$N" --json body,comments --jq '[.body] + [.comments[].body] | join("\n")' \
+                >> /tmp/raceday_quality_seen.txt 2>/dev/null || echo "⚠️ Issue #$N の本文を読めない (その分は未記載として扱う)"
+            done
+            if ! python3 - /tmp/raceday_quality.md /tmp/raceday_quality_seen.txt "$(TZ=Asia/Tokyo date +%Y-%m-%d)" \
+                > /tmp/raceday_quality_new.md <<'PY'
+          import hashlib, re, sys
+          rep, seen_path, today = sys.argv[1:4]
+          DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+          key = lambda s: hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
+          seen = open(seen_path, encoding="utf-8", errors="replace").read()
+          keys = set(re.findall(r"qline:([0-9a-f]{12})", seen))
+          old, agg = set(), set()
+          for s in seen.splitlines():
+              s = re.sub(r"\s*<!--.*?-->", "", s).strip()
+              if not s.startswith("- "):
+                  continue
+              s = s[2:]
+              old.add(s)
+              ds = DATE.findall(s)
+              if ds and not DATE.match(s):
+                  agg.update((s.split(ds[0], 1)[0], d) for d in ds)
+          out, n = [], 0
+          for raw in open(rep, encoding="utf-8"):
+              s = raw.strip()
+              if not s:
+                  continue
+              s = s[2:] if s.startswith("- ") else s
+              n += 1
+              ds = DATE.findall(s)
+              if DATE.match(s):
+                  k = key(s)
+                  if k in keys or s in old:
+                      continue
+              elif ds:
+                  k = key(s)
+                  if all((s.split(ds[0], 1)[0], d) in agg for d in ds):
+                      continue
+              else:
+                  k = key(today + "|" + s)
+                  if k in keys:
+                      continue
+              out.append(f"- {s} <!-- qline:{k} -->")
+          print(f"点検の行 {n}件のうち {n - len(out)}件は記載済み → {len(out)}件を書く", file=sys.stderr)
+          if out:
+              print("\n".join(out))
+          PY
+            then
+              echo "⚠️ 既出の行の判定に失敗 → 点検結果をそのまま書く"
+              cp /tmp/raceday_quality.md /tmp/raceday_quality_new.md
+            fi
+            QBODY="$(cat /tmp/raceday_quality_new.md)
+
+          見方 (#169):
+          - 予測の巻き戻し: 新しい予測 (9時台のオッズ反映など) が出た後に、公開 JSON が古い予測内容へ戻った。race_day_runner が起動時の DB を書き戻す #70 型の上書きが疑わしい。
+          - 投稿印の一致: 投稿した印が「投稿前に作られた最新の予測」と違えば、古い予測で投稿している。
+          - 馬番のずれ: 確定した出走表と馬番↔馬名が合わない予測 JSON が公開されていた時間 (11/01 は 00:35〜06:53)。
+          - 投資ゲート: 平場の遮断率が目標 (top_prob 30% / top3_sum 25%) から統計的に外れた (#156)。
+          - 投資ゲートは異常でなくても数字を CI のログに出している。1週末の標本で検出できる差は約±23pt。
+          材料は公開した予測 JSON の git 履歴 (scripts/pred_history.py)。手元での再点検: PRED_HISTORY_PREFETCH=1 python3 scripts/check_raceday_completeness.py --dates YYYY-MM-DD (部分クローンでは blob を自動で一括取得する。PRED_HISTORY_PREFETCH=1 で常に一括取得)
+
+          _feature_parity.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_"
+            if [ ! -s /tmp/raceday_quality_new.md ]; then
+              echo "ℹ️ 点検結果はすべて同じタイトルの Issue (open・直近14日に閉じたもの) に記載済み → 書き込まない"
+            elif [ -z "$QOPEN" ]; then
+              gh issue create --title "$QTITLE" --body "$QBODY" || echo "⚠️ Issue 作成失敗"
+            else
+              gh issue comment "$QOPEN" --body "$QBODY" || true
+            fi
+          fi
+          if [ "$CODE" = "1" ] && [ -s /tmp/raceday_gaps.md ]; then
+            TITLE="🏇 開催日のやり残し (着順の未収集・結果報告の未配信)"
+            OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            BODY="$(cat /tmp/raceday_gaps.md)
+
+          着順の未収集は collect_results の夜間スイープが直近10日分を自動で拾い直す。ここに残るのはそれでも拾えなかったもの。
+          天候・馬場の充足率 (#169) は collect_results の夜間スイープが直近21日分を1回2日ずつ自動で取り直す。急ぐ時は collect_results を date=YYYYMMDD (カンマ区切り可) で手動実行。
+          結果報告の遅れ配信は自動では行わない — 出す場合は auto_post_x を mode=results・date_override=YYYYMMDD で手動実行。
+
+          _feature_parity.yml が $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M') に検出_"
+            if [ -z "$OPEN" ]; then
+              gh issue create --title "$TITLE" --body "$BODY" || echo "⚠️ Issue 作成失敗"
+            else
+              gh issue comment "$OPEN" --body "$BODY" || true
+            fi
+          fi
+
+      # ── #155: 起動層 (GitHub スケジューラから独立した層) の生存確認 ──
+      # GAS が 2026-09-08 に PAT 失効で停止し 7日間誰も気づかなかった。
+      # GitHub cron が生きている限り配信は続くので、外部層の死は障害が起きるまで
+      # 潜伏する (#57 でも同型: 「GAS がメイン」と yml に書きながら実際は死んでいた)。
+      - name: 🛰 起動層の生存確認
+        id: layers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          set -o pipefail
+          python3 scripts/check_trigger_layers.py --days 3 | tee /tmp/layers.txt
+          CODE=${PIPESTATUS[0]}
+          [ -z "$CODE" ] && CODE=$?
+          echo "起動層チェックの終了コード: $CODE"
+          echo "code=$CODE" >> $GITHUB_OUTPUT
+      - name: 🔔 Notify on dead external layer
+        # 2 = API 到達不能 (判定不能) なので通知しない。1 = 沈黙を検知。
+        if: steps.layers.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="🛰 外部の起動層 (GAS) が沈黙しています"
+          EXISTING=$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+          [ "$EXISTING" != "0" ] && exit 0
+          gh issue create --title "$TITLE" \
+            --body "$(printf '%s\n' \
+              "GitHub スケジューラから故障モードが独立した唯一の層 (GAS) が沈黙しています。" "" \
+              "この状態でも GitHub cron が生きている限り配信は続くため、**次にスケジューラが落ちた日まで障害は表に出ません**。" "" \
+              "前例 (2026-09-08): Fine-grained PAT の失効。Apps Script の実行ログで 401 を確認し、PAT を再発行して Script Properties の GITHUB_TOKEN を更新してください (docs/GAS_SETUP.md)。" "" \
+              "GAS を復旧した日は、翌日の2回目の発火で「生存」と判定されるまでこの警報が続きます (手動 dispatch と区別するため)。" "" \
+              "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" "" \
+              '```' "$(cat /tmp/layers.txt | tail -22)" '```')" 2>&1 || echo "Issue作成失敗"
+
+      - name: 🔔 Notify on new mismatch
+        # #150: KNOWN_SKEW を空にしたので「警告(1)」も実質的な不一致を意味する。
+        # 0 以外はすべて通知する (免除リストで沈黙させない)。
+        if: steps.parity.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="🔬 学習↔推論の特徴量が食い違っています $(TZ=Asia/Tokyo date '+%Y-%m-%d')"
+          EXISTING=$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+          [ "$EXISTING" != "0" ] && exit 0
+          gh issue create --title "$TITLE" \
+            --body "$(printf '%s\n' "パリティ検査が新規の不一致を検出しました (#135)。" "" \
+              "同じ特徴量名に学習と推論で別の値が入っている状態です。放置すると予測が静かに劣化します。" "" \
+              "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" "" \
+              '```' "$(cat /tmp/parity.txt | tail -20)" '```')" 2>&1 || echo "Issue作成失敗"
+
+      # #161: #155 で「常時可視化」と書いた trigger_health.json は一度も commit されていなかった。
+      - name: 📝 trigger_health.json を commit
+        if: always()
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/trigger_health.json 2>/dev/null || true
+          if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
+          git commit -m "watchdog: 起動層の生存状況 (#155/#161)"
+          for i in 1 2 3; do
+            git pull --rebase --autostash -X theirs origin main || git rebase --abort || true
+            git push origin HEAD:main && break || sleep 5
+          done

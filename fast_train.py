@@ -1,0 +1,1490 @@
+"""
+高速モデル学習スクリプト
+- 全データを一括でメモリにロード（個別クエリを排除）
+- プリコンパイル済み特徴量をキャッシュ
+- 学習 → バックテストまで一気に実行
+"""
+
+import sys
+import bisect
+import os
+import time
+import numpy as np
+import pandas as pd
+import lightgbm as lgb
+from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(__file__))
+from database import init_db, get_db
+# 着差の読み方・格・近5走の連続項目は推論側 (ml/features.py) と **同じ関数** を使う。
+# 2か所に書くと中身がずれる (#128/#133/#134/#136) ため、定義は ml/features.py の1か所だけ。
+from ml.features import (margin_stats, class_level, recent_form_features,  # noqa: E402
+                         winner_times)
+# 点数表専用の馬場差補正スピード指数 (V2d) と芝ダ替わりの項目 (#168)。
+# 推論側 (ml/features.FeatureBuilder) と **同じ関数** を呼ぶ。LGB の特徴量には入れない。
+from ml import speed_variant as _sv  # noqa: E402
+from race_utils import is_jump_race as _is_jump_race  # noqa: E402
+# #169: LGB の si_* の馬場補正表 (旧表=稍・不は補正なし / 正しいキーの表)。どちらで学習したかは
+# models/train_boundary.json の si_track_adj に残し、推論側 (ml/features) はそれに従う。
+from analyzers.speed_index import si_track_adjust, train_si_track_mode  # noqa: E402
+
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+
+
+def load_all_data():
+    """全データをメモリに一括ロード"""
+    print("📦 全データをメモリにロード中...")
+    t0 = time.time()
+
+    with get_db() as conn:
+        races_df = pd.read_sql("SELECT * FROM races WHERE race_date IS NOT NULL ORDER BY race_date", conn)
+        results_df = pd.read_sql("""
+            SELECT r.*, h.horse_name, h.sire, h.damsire, h.birth_year
+            FROM results r
+            LEFT JOIN horses h ON r.horse_id = h.horse_id
+            ORDER BY r.race_id, r.horse_number
+        """, conn)
+        payouts_df = pd.read_sql("SELECT * FROM payouts", conn)
+
+    elapsed = time.time() - t0
+    print(f"  ✅ {len(races_df)}レース, {len(results_df)}件のデータをロード ({elapsed:.1f}秒)")
+    return races_df, results_df, payouts_df
+
+
+def build_horse_history(results_df, races_df):
+    """馬ごとの過去レース履歴をプリコンパイル。
+    v5: venue/surface/distance/grade/track_condition も merge して
+        same_course / graded_exp などの新 feature 計算に必要なフィールドを揃える。
+    """
+    print("🔧 馬の履歴データを構築中...")
+    t0 = time.time()
+
+    # race info を results に merge (v5 新 features 用)
+    needed_race_cols = ["race_id", "race_date", "venue", "surface", "distance",
+                        "grade", "track_condition", "horse_count"]
+    avail = [c for c in needed_race_cols if c in races_df.columns]
+    res = results_df.merge(races_df[avail], on="race_id", how="left", suffixes=("", "_r"))
+    # 点数表の連続項目 (recent_form_features) 用: 各走の格と、そのレースの勝ち馬のタイム。
+    # 推論側 (ml/features.FeatureBuilder._get_recent_form) と **同じ関数** を呼ぶ:
+    #   格 = class_level(grade, race_name) / 勝ち馬のタイム = winner_times (1着馬のタイム。
+    #   1着の行が無い・1着のタイムが欠けたレースは NaN = タイム差の計算から除く)。
+    _lvl = {rid: class_level(g, n) for rid, g, n in zip(
+        races_df["race_id"], races_df.get("grade", pd.Series([""] * len(races_df))),
+        races_df.get("race_name", pd.Series([""] * len(races_df))))}
+    res["class_level"] = res["race_id"].map(_lvl)
+    # 芝ダ替わりの項目 (speed_variant.surface_switch_features) 用: その走が障害か
+    _jump = {rid: _is_jump_race(n if isinstance(n, str) else "") for rid, n in zip(
+        races_df["race_id"], races_df.get("race_name", pd.Series([""] * len(races_df))))}
+    res["is_jump"] = res["race_id"].map(_jump).fillna(False)
+    if "finish_time_seconds" in results_df.columns:
+        _wt = winner_times(zip(results_df["race_id"], results_df["finish_position"],
+                               results_df["finish_time_seconds"]))
+        res["win_time"] = res["race_id"].map(_wt)
+    else:
+        res["win_time"] = np.nan
+    res = res.sort_values(["horse_id", "race_date"])
+
+    # 馬ごとのデータをグループ化
+    history = {}
+    for horse_id, group in res.groupby("horse_id"):
+        history[horse_id] = group.to_dict("records")
+
+    elapsed = time.time() - t0
+    print(f"  ✅ {len(history)}頭の履歴を構築 ({elapsed:.1f}秒)")
+    return history
+
+
+# 騎手・調教師の時系列累積の末尾に置く番兵の日付 (どの実在の race_date よりも後)
+_STAT_SENTINEL_DATE = "9999-12-31"
+
+
+def build_jockey_trainer_stats(results_df, races_df):
+    """騎手・調教師の成績統計をプリコンパイル (temporal-safe, v6)。
+
+    ⚠️ v5 までは全期間集計で temporal leakage が発生していた:
+        2020年のレースに対する combo_top3 が、2020-2025年の全データから
+        計算され、未来のデータがモデル学習に漏れていた。
+
+    v6 では、各 (jockey, trainer) について時系列順に累積カウントを保持し、
+    実行時に「対象 race_date 直前の累積値」を取り出すことで leakage を排除。
+
+    Returns:
+        jockey_stats: {jid: [(race_date, win_cum, top3_cum, total_cum), ...]}
+        trainer_stats: {tid: [(race_date, top3_cum, total_cum), ...]}
+        combo_stats: {(jid, tid): [(race_date, top3_cum, total_cum), ...]}
+
+    feature 計算時は `lookup_stat_at()` で対象 race_date より前の最新値を取る。
+    """
+    print("🔧 騎手・調教師統計を構築中(temporal-safe v6)...")
+    t0 = time.time()
+
+    needed_cols = ["venue", "distance", "surface", "track_condition", "race_date"]
+    avail = [c for c in needed_cols if c in races_df.columns]
+    # race_date が results_df に無い場合は必ず merge する(temporal累積に必須)
+    if "race_date" not in results_df.columns:
+        res = results_df.merge(races_df[["race_id"] + avail], on="race_id", how="left")
+    elif all(c in results_df.columns for c in needed_cols):
+        res = results_df.copy()
+    else:
+        # race_date はあるが他が無い場合のみ merge
+        missing = [c for c in avail if c not in results_df.columns]
+        if missing:
+            res = results_df.merge(races_df[["race_id"] + missing], on="race_id", how="left")
+        else:
+            res = results_df.copy()
+    confirmed = res[res["finish_position"] > 0].copy()
+    if "race_date" not in confirmed.columns:
+        raise RuntimeError("temporal-safe stat build には race_date が必須")
+    confirmed = confirmed.sort_values("race_date")
+
+    # 騎手別: 時系列累積
+    jockey_stats = {}
+    for jid, g in confirmed.groupby("jockey_id"):
+        if not jid:
+            continue
+        win_cum = 0
+        top3_cum = 0
+        total_cum = 0
+        records = []
+        for _, row in g.iterrows():
+            # NOTE: ここで「行の値を見る前」に records.append すると、
+            # その行はまだ未確定 = race_date 当日まで「行を見ない」状態の累積になる
+            records.append((row["race_date"], win_cum, top3_cum, total_cum))
+            # この行を反映
+            total_cum += 1
+            if row["finish_position"] == 1:
+                win_cum += 1
+            if row["finish_position"] <= 3:
+                top3_cum += 1
+        # 末尾の番兵 = 「全走を含む」累積。records[i] は i 番目の走を含まない累積なので、
+        # 番兵が無いと最後の走より後の日付 (= 本番の予測 = 発走前のレース) で
+        # _lookup_at が records[-1] を返し、**最後の1走を落としていた**
+        # (推論側 FeatureBuilder は race_date より前の全確定走を数える → 発走前の照合で
+        #  jockey_cond_top3 / trainer_cond_top3 / combo_top3 が一致しなかった)。
+        # 学習データ (確定レース) では対象レース自身の行が records にあるので値は変わらない。
+        records.append((_STAT_SENTINEL_DATE, win_cum, top3_cum, total_cum))
+        jockey_stats[jid] = records
+
+    # 調教師別
+    trainer_stats = {}
+    for tid, g in confirmed.groupby("trainer_id"):
+        if not tid:
+            continue
+        top3_cum = 0
+        total_cum = 0
+        records = []
+        for _, row in g.iterrows():
+            records.append((row["race_date"], top3_cum, total_cum))
+            total_cum += 1
+            if row["finish_position"] <= 3:
+                top3_cum += 1
+        records.append((_STAT_SENTINEL_DATE, top3_cum, total_cum))   # 番兵 (騎手と同じ理由)
+        trainer_stats[tid] = records
+
+    # 騎手×調教師コンビ
+    combo_stats = {}
+    for (jid, tid), g in confirmed.groupby(["jockey_id", "trainer_id"]):
+        if not jid or not tid:
+            continue
+        top3_cum = 0
+        total_cum = 0
+        records = []
+        for _, row in g.iterrows():
+            records.append((row["race_date"], top3_cum, total_cum))
+            total_cum += 1
+            if row["finish_position"] <= 3:
+                top3_cum += 1
+        records.append((_STAT_SENTINEL_DATE, top3_cum, total_cum))   # 番兵 (騎手と同じ理由)
+        combo_stats[(jid, tid)] = records
+
+    elapsed = time.time() - t0
+    print(f"  ✅ 騎手{len(jockey_stats)}, 調教師{len(trainer_stats)}, "
+          f"コンビ{len(combo_stats)} (temporal累積, {elapsed:.1f}秒)")
+    return jockey_stats, trainer_stats, combo_stats
+
+
+def _lookup_at(records, target_date, kind):
+    """records (時系列累積) から target_date 直前の累積値を取り出す。
+
+    Args:
+        records: jockey_stats[jid] or trainer_stats[tid] or combo_stats[(jid,tid)]
+        target_date: 対象レースの race_date (str 'YYYY-MM-DD')
+        kind: 'jockey'|'trainer'|'combo'
+    Returns:
+        dict like {'win_rate':..., 'top3_rate':..., 'total':...} (kind に応じて)
+    """
+    import bisect
+    if not records or not target_date:
+        return _empty_stat(kind)
+    # records is list of tuples, first element = race_date
+    # bisect で target_date 未満の最後のインデックスを探す
+    dates = [r[0] for r in records]
+    idx = bisect.bisect_left(dates, target_date)
+    if idx == 0:
+        return _empty_stat(kind)
+    # #136 (2026-09-01): records[i] は「i 番目のレースを**含まない**」累積のため、
+    # records[idx-1] だと target_date 直前の1走を取りこぼしていた
+    # (実測 n=2576 → 2575、率の差 0.011pt)。数値的には無害だが推論側と厳密一致せず
+    # パリティ検査に残り続けるので、取りこぼし分を補正する。
+    # records[idx] があり、その日付が target_date 以降なら、その累積が
+    # 「target_date 直前までの全レース」を含む正しい値。
+    rec = records[idx] if idx < len(records) else None
+    if rec is None or rec[0] < target_date:
+        rec = records[idx - 1]
+    if kind == 'jockey':
+        _, win_cum, top3_cum, total_cum = rec
+        if total_cum < 5:
+            return {'win_rate': 0, 'top3_rate': 0, 'total': total_cum}
+        return {'win_rate': win_cum / total_cum, 'top3_rate': top3_cum / total_cum, 'total': total_cum}
+    elif kind == 'trainer':
+        _, top3_cum, total_cum = rec
+        if total_cum < 5:
+            return {'top3_rate': 0, 'total': total_cum}
+        return {'top3_rate': top3_cum / total_cum, 'total': total_cum}
+    else:  # combo
+        _, top3_cum, total_cum = rec
+        if total_cum < 3:
+            return {'top3_rate': 0, 'total': total_cum}
+        return {'top3_rate': top3_cum / total_cum, 'total': total_cum}
+
+
+def _empty_stat(kind):
+    if kind == 'jockey':
+        return {'win_rate': 0, 'top3_rate': 0, 'total': 0}
+    if kind == 'trainer':
+        return {'top3_rate': 0, 'total': 0}
+    return {'top3_rate': 0, 'total': 0}
+
+
+def dist_band(d):
+    """距離帯 (#127): 0=~1400 / 1=~1800 / 2=~2200 / 3=2200+。
+    血統の距離適性を「厳密距離」でなく帯で見るためのキー。厳密距離キーは
+    非ゼロ率 81.5% (2024年以降実測) だが、帯キーなら 97.2% まで回復する。
+    ml/features.py の同名関数と**必ず同一定義**に保つこと。"""
+    d = d or 0
+    if d <= 1400:
+        return 0
+    if d <= 1800:
+        return 1
+    if d <= 2200:
+        return 2
+    return 3
+
+
+def build_pedigree_cross_stats(results_df, races_df):
+    """v7: 血統 × コース cross 集計 (temporal-safe)
+
+    旧 sire_top3_rate は「全期間全コースの sire 通算」だったので
+    ノイズで重要度0だった。v7 では:
+
+      - sire × (venue, surface, distance) — 最も具体的(その馬の種牡馬は
+        このコースで何頭走って何頭3着内?)
+      - sire × surface — 芝/ダ別の汎適性(サンプル多め)
+      - damsire 同様 2軸
+
+    すべて temporal cumulative (race_date 直前の累積のみ参照)。
+
+    Returns: dict of 4 lookup tables
+    """
+    print("🔧 血統cross統計を構築中(v7 temporal-safe)...")
+    t0 = time.time()
+
+    needed = ["race_date", "venue", "surface", "distance"]
+    avail = [c for c in needed if c in races_df.columns]
+    if "race_date" not in results_df.columns:
+        df = results_df.merge(races_df[["race_id"] + avail], on="race_id", how="left")
+    else:
+        df = results_df.copy()
+
+    df = df[(df["finish_position"] > 0) & (df["sire"].notna() | df["damsire"].notna())]
+    df = df.sort_values("race_date")
+
+    sire_course = {}    # key=(sire, venue, surface, distance) → [(date, t3_cum, total_cum), ...]
+    sire_surface = {}   # key=(sire, surface)
+    damsire_course = {} # key=(damsire, venue, surface, distance)
+    damsire_surface = {}# key=(damsire, surface)
+    # #127 追加: 距離帯キー (厳密距離だと距離替わり馬で母数ゼロになる問題の回復)
+    sire_distband = {}      # key=(sire, surface, band)
+    damsire_distband = {}   # key=(damsire, surface, band)
+    # #127 追加: 父の距離適性 — 相対着順 (着順-1)/(頭数-1) の帯別平均。
+    # 相対着順なので産駒の質レベルが自己相殺され、「短距離向きか長距離向きか」だけが残る。
+    sire_band_rel = {}      # key=(sire, band) → [(date, rel_sum, count), ...]
+
+    def _push_rel(d, key, race_date, rel):
+        """相対着順の累積 (temporal-safe)。"""
+        if key not in d:
+            d[key] = [(race_date, 0.0, 0)]
+            prev = (0.0, 0)
+        else:
+            prev = (d[key][-1][1], d[key][-1][2])
+            d[key].append((race_date, prev[0], prev[1]))
+        d[key][-1] = (race_date, prev[0] + rel, prev[1] + 1)
+
+    def _push(d, key, race_date, finish):
+        if key not in d:
+            d[key] = [(race_date, 0, 0)]
+            prev = (0, 0)
+        else:
+            prev = (d[key][-1][1], d[key][-1][2])
+            d[key].append((race_date, prev[0], prev[1]))
+        # 当該行を反映 (次の検索で見える累積)
+        d[key][-1] = (race_date, prev[0] + (1 if finish <= 3 else 0), prev[1] + 1)
+
+    for row in df.itertuples():
+        sire = getattr(row, 'sire', None) or ''
+        damsire = getattr(row, 'damsire', None) or ''
+        venue = getattr(row, 'venue', None) or ''
+        surface = getattr(row, 'surface', None) or ''
+        distance = getattr(row, 'distance', None) or 0
+        rd = row.race_date
+        fp = row.finish_position
+
+        band = dist_band(distance)
+        hc = getattr(row, 'horse_count', None) or 0
+        rel = ((fp - 1) / (hc - 1)) if hc > 1 else None
+        if sire:
+            _push(sire_course, (sire, venue, surface, distance), rd, fp)
+            _push(sire_surface, (sire, surface), rd, fp)
+            _push(sire_distband, (sire, surface, band), rd, fp)
+            if rel is not None:
+                _push_rel(sire_band_rel, (sire, band), rd, rel)
+        if damsire:
+            _push(damsire_course, (damsire, venue, surface, distance), rd, fp)
+            _push(damsire_surface, (damsire, surface), rd, fp)
+            _push(damsire_distband, (damsire, surface, band), rd, fp)
+
+    elapsed = time.time() - t0
+    print(f"  ✅ sire_course{len(sire_course)}, sire_surface{len(sire_surface)}, "
+          f"damsire_course{len(damsire_course)}, damsire_surface{len(damsire_surface)} "
+          f"({elapsed:.1f}秒)")
+    return (sire_course, sire_surface, damsire_course, damsire_surface,
+            sire_distband, damsire_distband, sire_band_rel)
+
+
+def _lookup_rel(records, target_date, min_runs=40):
+    """相対着順累積から target_date 直前の平均相対着順を返す (無ければ None)。"""
+    import bisect
+    if not records:
+        return None
+    dates = [r[0] for r in records]
+    idx = bisect.bisect_left(dates, target_date)
+    if idx == 0:
+        return None
+    _, rel_sum, cnt = records[idx - 1]
+    if cnt < min_runs:
+        return None
+    return rel_sum / cnt
+
+
+def sire_distance_edge(sire_band_rel, sire, target_date, min_runs=40):
+    """父の距離適性 (#127): 正なら短距離向き、負なら長距離向き。
+
+    (長距離帯の平均相対着順) − (短距離帯の平均相対着順)。相対着順は小さいほど good
+    なので、短距離帯で good (小) なら差は正になる。片側しかデータが無ければ 0。
+    検証 (2021-2026): 父の距離短縮適性 +0.768pt/1sd (t=+4.94, 6/6年で正)。
+    効くのは短縮側のみで、大幅延長の不利は血統で救えない (#127)。
+    """
+    if not sire:
+        return 0.0
+    short = [sire_band_rel.get((sire, b)) for b in (0, 1)]
+    long_ = [sire_band_rel.get((sire, b)) for b in (2, 3)]
+
+    def _agg(recs):
+        tot_sum = 0.0
+        tot_cnt = 0
+        import bisect
+        for r in recs:
+            if not r:
+                continue
+            dates = [x[0] for x in r]
+            idx = bisect.bisect_left(dates, target_date)
+            if idx == 0:
+                continue
+            _, rel_sum, cnt = r[idx - 1]
+            tot_sum += rel_sum
+            tot_cnt += cnt
+        return (tot_sum / tot_cnt) if tot_cnt >= min_runs else None
+
+    s_rel, l_rel = _agg(short), _agg(long_)
+    if s_rel is None or l_rel is None:
+        return 0.0
+    return l_rel - s_rel
+
+
+def _lookup_pedigree(records, target_date, min_runs=5):
+    """血統 cross 累積から target_date 直前の top3 率を取得。
+    サンプル数 < min_runs なら 0 を返す(信頼度なし)。
+    """
+    import bisect
+    if not records:
+        return 0.0
+    dates = [r[0] for r in records]
+    idx = bisect.bisect_left(dates, target_date)
+    if idx == 0:
+        return 0.0
+    _, t3_cum, total_cum = records[idx - 1]
+    # 当該位置は「その行までを含む累積」だが target_date より前のものなので使ってOK
+    if total_cum < min_runs:
+        return 0.0
+    return t3_cum / total_cum
+
+
+class _SpeedIndexCache(dict):
+    """horse_id → その馬の走破記録のリスト (新しい順)。
+
+    #165: 基準タイムを「予想するレースの日付より前」のデータだけで作る。
+    旧版は DB 全期間 (未来のレースを含む) の上位5着平均で基準タイムを1回だけ作り、
+    学習用の特徴量に未来の情報が混ざっていた (印への影響は最大 0.16pt と小さいが誤り)。
+    規則は推論側 analyzers/speed_index.SpeedIndexCalculator._get_base_time と同じ:
+      ① 場×距離×芝ダ×馬場 の上位5着平均 (5件以上) → ② 場×距離×芝ダ (3件以上)
+      → ③ 距離×芝ダ → ④ 距離×0.06。馬場が空なら「良」として引く。
+    """
+
+    # #169: キーが「稍重/不良」で DB の「稍/不」と一致しない旧表 (稍・不は補正なし、重 -3.0 だけ効く)。
+    # 点数表の V2d の穴埋め (scorecard_extra_features) は常にこの旧表を使う
+    # (ml.speed_variant.legacy_si と同じ。点数表は旧表で当てはめ済み)。
+    # LGB の si_* だけ、si(..., track_adj=) で学習時の方式 (train_si_track_mode) の表を渡す。
+    TRACK_ADJ = {"良": 0, "稍重": -1.5, "重": -3.0, "不良": -5.0}
+
+    def __init__(self, top5):
+        super().__init__()
+        self._levels = []
+        for keys in (["venue", "distance", "surface", "track_condition"],
+                     ["venue", "distance", "surface"],
+                     ["distance", "surface"]):
+            store = {}
+            for k, g in top5.groupby(keys, sort=False):
+                g = g.sort_values("race_date", kind="mergesort")
+                cs = np.concatenate([[0.0], np.cumsum(g["finish_time_seconds"].to_numpy(dtype=float))])
+                store[k if isinstance(k, tuple) else (k,)] = (g["race_date"].tolist(), cs)
+            self._levels.append(store)
+        self._bt_cache = {}
+
+    def _avg(self, level, key, before):
+        ent = self._levels[level].get(key)
+        if not ent:
+            return None, 0
+        dates, cs = ent
+        n = bisect.bisect_left(dates, before)
+        return (cs[n] / n, n) if n else (None, 0)
+
+    def base_time(self, venue, distance, surface, tc, before):
+        ck = (venue, distance, surface, tc, before)
+        if ck in self._bt_cache:
+            return self._bt_cache[ck]
+        avg, n = self._avg(0, (venue, distance, surface, tc), before)
+        if avg is not None and n >= 5:
+            bt = avg
+        else:
+            avg2, n2 = self._avg(1, (venue, distance, surface), before)
+            if avg2 is not None and n2 >= 3:
+                bt = avg2
+            else:
+                avg3, _ = self._avg(2, (distance, surface), before)
+                bt = avg3 if avg3 else distance * 0.06
+        self._bt_cache[ck] = bt
+        return bt
+
+    @staticmethod
+    def _dist_factor(d):
+        if d < 1200: return 15.0
+        elif d < 1600: return 12.0
+        elif d < 2000: return 10.0
+        elif d < 2500: return 8.5
+        else: return 7.0
+
+    def si(self, run, before, track_adj=None):
+        """走破記録 run のスピード指数を、before より前のデータで作った基準タイムで出す。
+        track_adj: 馬場補正表 (#169)。None は旧表 (TRACK_ADJ)。"""
+        bt = self.base_time(run["venue"], run["distance"], run["surface"], run["tc"], before)
+        if not bt or bt <= 0:
+            return 0
+        adj = self.TRACK_ADJ if track_adj is None else track_adj
+        v = 80 + (bt - run["t"]) * self._dist_factor(run["distance"]) + adj.get(run["tc"], 0)
+        return round(v, 1)
+
+
+def build_speed_index_cache(results_df, races_df):
+    """スピード指数の材料をプリコンパイル (#165: 指数そのものは予想する日付ごとに出す)"""
+    print("🔧 スピード指数を計算中...")
+    t0 = time.time()
+
+    # results_dfにはmain()でrace_infoカラムが追加済みの場合がある
+    needed_cols = ["venue", "distance", "surface", "track_condition"]
+    if all(c in results_df.columns for c in needed_cols):
+        res = results_df.copy()
+    else:
+        res = results_df.merge(
+            races_df[["race_id"] + needed_cols],
+            on="race_id", how="left"
+        )
+    if "race_date" not in res.columns:
+        res = res.merge(races_df[["race_id", "race_date"]], on="race_id", how="left")
+    res = res[res["finish_time_seconds"] > 0].copy()
+
+    # 基準タイムの材料: 上位5着 (推論側と同じく finish_position 1-5、走破タイムあり)
+    top5 = res[res["finish_position"].between(1, 5)][
+        ["race_date", "venue", "distance", "surface", "track_condition", "finish_time_seconds"]]
+    si_cache = _SpeedIndexCache(top5)
+
+    # 各馬の走破記録 (推論側 get_horse_indices と同じく走破タイム>0 の走)
+    # race_id は点数表専用の V2d (ml/speed_variant) が走を引くために持つ (現行の指数には使わない)
+    for row in res[["horse_id", "race_id", "race_date", "finish_time_seconds", "venue", "distance",
+                    "surface", "track_condition"]].itertuples(index=False):
+        si_cache.setdefault(row.horse_id, []).append({
+            "race_id": row.race_id,
+            "race_date": row.race_date, "t": row.finish_time_seconds,
+            "venue": row.venue, "distance": row.distance, "surface": row.surface,
+            "tc": row.track_condition or "良",
+        })
+
+    # 日付順にソート
+    for hid in si_cache:
+        si_cache[hid].sort(key=lambda x: x["race_date"], reverse=True)
+
+    elapsed = time.time() - t0
+    print(f"  ✅ {len(si_cache)}頭の走破記録を準備 ({elapsed:.1f}秒)")
+    return si_cache
+
+
+def scorecard_extra_features(horse_id, race, past_races, si_runs, si_cache, si_variant):
+    """点数表専用の列 (#168)。compute_features_fast と augment_scorecard_columns が同じ関数を呼ぶ。
+
+    si_runs    : 予想日より前の走 (走破タイム>0) を新しい順に最大5走 (= 現行 si_avg と同じ走)
+    past_races : race_date より前の確定走 (着順>0) を新しい順に
+    si_variant : ml.speed_variant.TrainSiVariant (None なら V2d の列を作らない)
+    """
+    f = {}
+    race_date = race["race_date"]
+    if si_variant is not None:
+        # V2d (作れない走は現行の指数で埋める)
+        f.update(si_variant.row_features(
+            horse_id, si_runs, lambda s, _d=race_date: si_cache.si(s, _d)))
+    # 芝ダ替わり (race_date より前の確定平地走だけ。推論側と同じ関数)
+    _rn = race.get("race_name")
+    f.update(_sv.surface_switch_features(
+        past_races, race.get("surface", ""), _is_jump_race(_rn if isinstance(_rn, str) else "")))
+    return f
+
+
+def compute_features_fast(race, race_results, horse_history, jockey_stats,
+                          trainer_stats, combo_stats, si_cache,
+                          sire_course=None, sire_surface=None,
+                          damsire_course=None, damsire_surface=None,
+                          sire_distband=None, damsire_distband=None,
+                          sire_band_rel=None, si_variant=None, si_track_mode=None):
+    """1レース分の特徴量を高速計算
+
+    v7: pedigree_cross 引数を追加(temporal-safe 血統 cross stats)。
+    後方互換のため省略可。
+    si_variant: ml.speed_variant.TrainSiVariant (#168)。渡すと点数表専用の
+        si_avg_v / si_latest_v / si_v_nfb を足す (無ければ列を作らない)。
+        芝ダ替わりの sf_first_switch / sf_other_share5 は常に足す。どれも LGB には入らない。
+    si_track_mode: LGB の si_* の馬場補正の方式 (#169、"legacy"/"canonical")。None は
+        学習側の既定 (train_si_track_mode)。パリティ検査は出荷中モデルの方式を渡す。
+    """
+    rows = []
+    _si_adj = si_track_adjust(si_track_mode or train_si_track_mode())
+    race_date = race["race_date"]
+    hc = race["horse_count"] or len(race_results)
+    # race-level info (cross 集計の lookup キー)
+    venue = race.get("venue", "")
+    surface = race.get("surface", "")
+    distance = race.get("distance", 0) or 0
+
+    for r in race_results:
+        f = {}
+        horse_id = r["horse_id"]
+        jockey_id = r.get("jockey_id", "")
+        trainer_id = r.get("trainer_id", "")
+
+        # --- 過去レースをフィルタ（未来リーク防止）---
+        past_races = []
+        if horse_id in horse_history:
+            past_races = [h for h in horse_history[horse_id]
+                         if h.get("race_date", "") < race_date
+                         and h.get("finish_position", 0) > 0]
+            # 🚨 #133 (2026-08-31): **新しい順に並べ替える**。
+            # build_horse_history は race_date **昇順** で格納しているため、旧実装の
+            # past_races[0] は「前走」ではなく **デビュー戦** を指していた。
+            # 実データ例 (馬2010101988): distance_diff が 学習側+200m(延長) に対し
+            # 真の前走比は -200m(短縮) で **符号が逆**、rest_days は 293日 vs 実際6日。
+            # 影響を受けていた特徴量: distance_diff / rest_days / jockey_change /
+            # avg_finish_5r / win_rate_10r / top3_rate_10r / finish_trend / front_rate /
+            # weight_trend / impost_diff。推論側 (ml/features.py) は ORDER BY race_date
+            # DESC で正しく前走を見ており、**同じ特徴量名に学習と推論で別物が入っていた**
+            # (train/serve skew)。#128 で直した dist_top3_rate の skew と同型だが影響は桁違い。
+            past_races = past_races[::-1]
+
+        # === SI系 (6) ===
+        si_list = []
+        si_runs = []
+        if horse_id in si_cache:
+            # #165: 基準タイムもこのレースの日付より前のデータだけで作る (推論側と同じ)
+            si_runs = [s for s in si_cache[horse_id] if s["race_date"] < race_date][:5]
+            si_list = [si_cache.si(s, race_date, _si_adj) for s in si_runs]
+        # #168: 点数表専用の馬場差補正指数 V2d / 芝ダ替わり (LGB には入れない)
+        f.update(scorecard_extra_features(horse_id, race, past_races, si_runs, si_cache, si_variant))
+
+        f["si_avg"] = np.mean(si_list) if si_list else 0
+        f["si_max"] = max(si_list) if si_list else 0
+        f["si_min"] = min(si_list) if si_list else 0
+        f["si_std"] = np.std(si_list) if len(si_list) > 1 else 0
+        f["si_latest"] = si_list[0] if si_list else 0
+        f["si_count"] = len(si_list)
+
+        # === 血統系 (3) ===
+        f["pedigree_score"] = 50
+        f["sire_top3_rate"] = 0
+        f["sire_sample_size"] = 0
+
+        # === 騎手・調教師系 (5) — v6 temporal-safe ===
+        # ⚠️ race_date より前の累積のみを使う(leakage 防止)
+        js = _lookup_at(jockey_stats.get(jockey_id, []), race_date, 'jockey')
+        ts = _lookup_at(trainer_stats.get(trainer_id, []), race_date, 'trainer')
+        cs = _lookup_at(combo_stats.get((jockey_id, trainer_id), []), race_date, 'combo')
+
+        jt_score = 50
+        if js.get("total", 0) >= 30:
+            jt_score += (js["top3_rate"] * 100 - 25) * 0.3
+        if ts.get("total", 0) >= 20:
+            jt_score += (ts["top3_rate"] * 100 - 25) * 0.15
+        jt_score = max(0, min(100, jt_score))
+
+        f["jt_score"] = jt_score
+        f["jockey_cond_top3"] = js.get("top3_rate", 0) * 100
+        f["jockey_cond_win"] = js.get("win_rate", 0) * 100
+        f["trainer_cond_top3"] = ts.get("top3_rate", 0) * 100
+        f["combo_top3"] = cs.get("top3_rate", 0) * 100
+
+        # === 馬場バイアス系 (2) ===
+        f["bias_score"] = 50
+        hn = r.get("horse_number", 1)
+        f["post_position_ratio"] = hn / max(hc, 1)
+
+        # === ペース系 (3) ===
+        # 過去レースの通過順から脚質推定
+        front_count = 0
+        pos_ratios = []
+        last_3fs = []
+        for pr in past_races[:5]:
+            po = pr.get("passing_order", "")
+            if po:
+                try:
+                    positions = [int(p) for p in po.replace("-", ",").split(",") if p.strip().isdigit()]
+                    if positions:
+                        ratio = positions[0] / max(pr.get("horse_count", 14) or 14, 1)
+                        pos_ratios.append(ratio)
+                        if ratio <= 0.35:
+                            front_count += 1
+                except ValueError:
+                    pass
+            if pr.get("last_3f", 0) and pr["last_3f"] > 0:
+                last_3fs.append(pr["last_3f"])
+
+        n_past = min(len(past_races[:5]), 1)  # avoid div by 0
+        f["front_rate"] = front_count / max(len(past_races[:5]), 1)
+        f["avg_pos_ratio"] = np.mean(pos_ratios) if pos_ratios else 0.5
+        f["avg_last_3f"] = np.mean(last_3fs) if last_3fs else 0
+
+        # === 馬情報 (7) ===
+        f["horse_count"] = hc
+        f["weight"] = (r.get("weight", 0) or 0) / 500
+        f["weight_change"] = (r.get("weight_change", 0) or 0) / 20
+        f["impost"] = r.get("impost", 0) or 0
+        dist = race.get("distance", 1600) or 1600
+        f["distance_cat"] = (0 if dist < 1400 else 1 if dist < 1800 else
+                             2 if dist < 2200 else 3 if dist < 2800 else 4)
+        f["surface_turf"] = 1 if race.get("surface") == "芝" else 0
+
+        # 休養日数
+        if past_races:
+            try:
+                from datetime import datetime
+                d1 = datetime.strptime(race_date, "%Y-%m-%d")
+                d2 = datetime.strptime(past_races[0]["race_date"], "%Y-%m-%d")
+                rest = (d1 - d2).days
+                f["rest_days"] = min(rest, 365) / 365
+            except (ValueError, TypeError):
+                f["rest_days"] = 0.5
+        else:
+            f["rest_days"] = 0.5
+
+        # === 過去成績系 (5) ===
+        positions = [pr["finish_position"] for pr in past_races[:10]]
+        last5 = positions[:5]
+        total_past = len(positions) if positions else 1
+
+        f["avg_finish_5r"] = (sum(last5) / len(last5) / 18) if last5 else 0
+        f["win_rate_10r"] = sum(1 for p in positions if p == 1) / total_past if positions else 0
+        f["top3_rate_10r"] = sum(1 for p in positions if p <= 3) / total_past if positions else 0
+
+        trend = 0
+        if len(last5) >= 3:
+            trend = (last5[0] - last5[2]) / 2
+        f["finish_trend"] = np.clip(trend / 10, -1, 1)
+        f["race_experience"] = min(len(positions), 10) / 10
+
+        # === コンテキスト系 (5) ===
+        if past_races:
+            prev = past_races[0]
+            prev_dist = prev.get("distance", dist) or dist
+            f["distance_diff"] = (dist - prev_dist) / 400
+            f["jockey_change"] = 1 if prev.get("jockey_id") != jockey_id else 0
+        else:
+            f["distance_diff"] = 0
+            f["jockey_change"] = 0
+
+        f["last_3f_best"] = (min(last_3fs) / 40) if last_3fs else 0
+
+        # 同コース成績
+        surface = race.get("surface", "")
+        venue = race.get("venue", "")
+        course_past = [pr for pr in past_races
+                      if pr.get("venue") == venue
+                      and pr.get("surface") == surface
+                      and abs((pr.get("distance", 0) or 0) - dist) <= 200]
+        if course_past:
+            f["course_top3_rate"] = sum(1 for p in course_past if p["finish_position"] <= 3) / len(course_past)
+        else:
+            f["course_top3_rate"] = 0
+
+        # 馬体重推移
+        weights = [pr.get("weight", 0) for pr in past_races[:3] if pr.get("weight", 0) > 0]
+        f["weight_trend"] = ((weights[0] - weights[-1]) / 20) if len(weights) >= 2 else 0
+
+        # === 天候・馬場系 (5) ===
+        tc = race.get("track_condition", "") or ""
+        weather = race.get("weather", "") or ""
+        tc_map = {"良": 0, "稍": 1, "稍重": 1, "重": 2, "不": 3, "不良": 3}
+        wt_map = {"晴": 0, "曇": 1, "小雨": 2, "雨": 2, "小雪": 3, "雪": 3}
+        f["track_cond_code"] = tc_map.get(tc, 0)
+        f["weather_code"] = wt_map.get(weather, 0)
+        f["is_heavy_track"] = 1 if tc in ("重", "不", "不良") else 0
+
+        # 該当馬の重馬場時パフォーマンス
+        wet_races = [pr for pr in past_races if pr.get("track_condition", "") in ("重", "不", "不良")]
+        if wet_races:
+            f["horse_wet_win_rate"] = sum(1 for p in wet_races if p["finish_position"] == 1) / len(wet_races)
+            f["horse_wet_top3_rate"] = sum(1 for p in wet_races if p["finish_position"] <= 3) / len(wet_races)
+        else:
+            f["horse_wet_win_rate"] = 0
+            f["horse_wet_top3_rate"] = 0
+
+        # === 年齢系 (2) ===
+        birth_year = r.get("birth_year", 0) or 0
+        if birth_year and race_date:
+            try:
+                race_year = int(race_date[:4])
+                f["horse_age"] = race_year - birth_year
+                f["is_peak_age"] = 1 if 3 <= (race_year - birth_year) <= 5 else 0
+            except (ValueError, TypeError):
+                f["horse_age"] = 0
+                f["is_peak_age"] = 0
+        else:
+            f["horse_age"] = 0
+            f["is_peak_age"] = 0
+
+        # === 枠順コース別成績 (2) ===
+        same_post_past = [pr for pr in past_races
+                          if pr.get("venue") == venue
+                          and pr.get("surface") == surface
+                          and abs((pr.get("horse_number", 0) or 0) - hn) <= 2]
+        if same_post_past:
+            f["post_win_rate_course"] = sum(1 for p in same_post_past if p["finish_position"] == 1) / len(same_post_past)
+            f["post_top3_rate_course"] = sum(1 for p in same_post_past if p["finish_position"] <= 3) / len(same_post_past)
+        else:
+            f["post_win_rate_course"] = 0
+            f["post_top3_rate_course"] = 0
+
+        # === 年齢×クラス (1) ===
+        age = f["horse_age"]
+        age_class_past = [pr for pr in past_races
+                          if abs((pr.get("distance", 0) or 0) - dist) <= 400]
+        if age_class_past and age > 0:
+            f["age_class_top3_rate"] = sum(1 for p in age_class_past if p["finish_position"] <= 3) / len(age_class_past)
+        else:
+            f["age_class_top3_rate"] = 0
+
+        # === 距離別成績 (2) ===
+        # #127: 旧実装は ±200m のみを母数とし、該当0走なら 0.0 を返していた。
+        # これは「その距離で走ったが一度も3着内なし」と区別できず、200m以上の
+        # 距離替わり (延長200m+の20.0% / 短縮200m+の9.2%) で特徴量が盲目になっていた。
+        # → 経験の有無フラグを分離し、±200m が空なら ±400m へフォールバックする。
+        dist_past = [pr for pr in past_races
+                     if abs((pr.get("distance", 0) or 0) - dist) <= 200]
+        f["has_dist_experience"] = 1 if dist_past else 0
+        if dist_past:
+            f["dist_scope"] = 0
+        else:
+            dist_past = [pr for pr in past_races
+                         if abs((pr.get("distance", 0) or 0) - dist) <= 400]
+            f["dist_scope"] = 1 if dist_past else 2
+        if dist_past:
+            f["dist_win_rate"] = sum(1 for p in dist_past if p["finish_position"] == 1) / len(dist_past)
+            f["dist_top3_rate"] = sum(1 for p in dist_past if p["finish_position"] <= 3) / len(dist_past)
+        else:
+            f["dist_win_rate"] = 0
+            f["dist_top3_rate"] = 0
+
+        # ── v5新規: 着差 (margin) ──
+        # 読み方は ml.features.parse_margin / margin_stats (推論側と同じ関数)。
+        # 旧実装は '1.1/4' (=1と1/4馬身) を 1.1÷4=0.275 と読み、'大'(大差) を捨て、
+        # 1着の走 (着差欄が空) も捨てていたため、勝ち続けた馬ほど最悪値 5.0 になっていた。
+        f["margin_avg"], f["margin_best"] = margin_stats(
+            [(pr["finish_position"], pr.get("margin")) for pr in past_races[:5]])
+
+        # ── 点数表の連続項目 (LGB の get_feature_columns には入れない) ──
+        # 格を考慮した近5走の着順 / 勝ち馬とのタイム差の最小 / 過去走の有無。
+        f.update(recent_form_features(
+            past_races, class_level(race.get("grade"), race.get("race_name"))))
+
+        # ── v5新規: 同コース過去成績 (course familiarity) ──
+        same_course_past = [pr for pr in past_races
+                            if pr.get('venue') == venue
+                            and pr.get('surface') == surface
+                            and (pr.get('distance') or 0) == dist]
+        if same_course_past:
+            f["same_course_top3_rate"] = sum(1 for p in same_course_past if p["finish_position"] <= 3) / len(same_course_past)
+            f["same_course_runs"] = min(len(same_course_past), 10) / 10
+        else:
+            f["same_course_top3_rate"] = 0.0
+            f["same_course_runs"] = 0.0
+
+        # ── v5新規: 斤量変化 (前走比) ──
+        # 今回の斤量が未発表 (0) の時は「変化なし」= 0。推論側 (FeatureBuilder._get_impost_diff)
+        # と同じ。旧実装は 57kg で代用しており、発走前 (斤量発表前) の照合で学習と推論が
+        # 食い違っていた (確定走で斤量0の行は無いので、学習データの値は変わらない)。
+        current_impost = f.get("impost") or 0.0
+        try:
+            prev_impost = float(past_races[0].get("impost") or 0) if past_races else 0
+        except (TypeError, ValueError):
+            prev_impost = 0
+        f["impost_diff"] = ((current_impost - prev_impost)
+                            if (prev_impost > 0 and current_impost > 0) else 0.0)
+
+        # ── v5新規: 重賞経験 + 重賞複勝率 ──
+        graded_past = [pr for pr in past_races if pr.get('grade') in ('G1','G2','G3')]
+        f["graded_exp"] = min(len(graded_past), 10) / 10
+        if graded_past:
+            f["graded_top3_rate"] = sum(1 for p in graded_past if p["finish_position"] <= 3) / len(graded_past)
+        else:
+            f["graded_top3_rate"] = 0.0
+
+        # ── v6新規: 市場シグナル (オッズ・人気) ──
+        # 過去6年 1人気の複勝率 65% は実勢でモデル外せない強力シグナル
+        try:
+            odds_val = float(r.get("odds", 0) or 0)
+        except (TypeError, ValueError):
+            odds_val = 0.0
+        try:
+            pop_val = int(r.get("popularity", 0) or 0)
+        except (TypeError, ValueError):
+            pop_val = 0
+
+        import math
+        if odds_val >= 1.0:
+            f["odds_log"] = math.log(odds_val)
+        else:
+            f["odds_log"] = 2.3
+        # v7: 人気押さえ型 — sqrt 圧縮で上位/下位人気の差を弱める
+        # is_favorite / is_top3_pop は削除 (直接的人気フラグを排除)
+        if pop_val > 0 and hc > 0:
+            f["popularity_norm"] = math.sqrt(pop_val / hc)
+        else:
+            f["popularity_norm"] = 0.7
+
+        # ── v7新規: 血統 × コース cross (temporal-safe) ──
+        # 旧 sire_top3_rate(全期間集計) は重要度0だった。コース×距離×血統の
+        # cross で「東京芝1600m での Lord Kanaloa 産駒」のような具体的 signal に。
+        sire = r.get("sire", "") or ""
+        damsire = r.get("damsire", "") or ""
+        if sire_course is not None and sire:
+            f["sire_course_top3_rate"] = _lookup_pedigree(
+                sire_course.get((sire, venue, surface, distance)), race_date, min_runs=5)
+            f["sire_surface_top3_rate"] = _lookup_pedigree(
+                sire_surface.get((sire, surface)), race_date, min_runs=10)
+        else:
+            f["sire_course_top3_rate"] = 0.0
+            f["sire_surface_top3_rate"] = 0.0
+        if damsire_course is not None and damsire:
+            f["damsire_course_top3_rate"] = _lookup_pedigree(
+                damsire_course.get((damsire, venue, surface, distance)), race_date, min_runs=5)
+            f["damsire_surface_top3_rate"] = _lookup_pedigree(
+                damsire_surface.get((damsire, surface)), race_date, min_runs=10)
+        else:
+            f["damsire_course_top3_rate"] = 0.0
+            f["damsire_surface_top3_rate"] = 0.0
+
+        # ── #127新規: 距離帯キーの血統 (厳密距離だと距離替わり馬で母数ゼロ) ──
+        _band = dist_band(distance)
+        f["sire_distband_top3_rate"] = (
+            _lookup_pedigree(sire_distband.get((sire, surface, _band)), race_date, min_runs=8)
+            if (sire_distband is not None and sire) else 0.0)
+        f["damsire_distband_top3_rate"] = (
+            _lookup_pedigree(damsire_distband.get((damsire, surface, _band)), race_date, min_runs=8)
+            if (damsire_distband is not None and damsire) else 0.0)
+
+        # ── #127新規: 父の距離適性 と 距離変化との交互作用 ──
+        # 木は distance_diff (gain 0.27%) と血統を自力で掛け合わせられないため、
+        # 積を明示的に特徴量として与える。検証で効くのは短縮側のみだったので
+        # 短縮専用項も併置する (延長側の不利は血統で救えない = #127)。
+        _edge = (sire_distance_edge(sire_band_rel, sire, race_date)
+                 if (sire_band_rel is not None and sire) else 0.0)
+        _ddiff = f.get("distance_diff", 0) or 0
+        f["sire_dist_edge"] = _edge
+        f["dist_edge_x_ddiff"] = _edge * (_ddiff / 1000.0)
+        f["dist_edge_x_shorten"] = _edge * (min(_ddiff, 0) / 1000.0)
+
+        # ── #127新規: 母父は「総合的な質」として効き、しかも経験の浅い馬に限定 ──
+        # (同条件未経験 +1.59pt vs 5戦以上 +0.51pt)。現状は全馬に一律適用されていた。
+        _exp = f.get("race_experience", 0) or 0
+        f["damsire_x_inexp"] = f["damsire_surface_top3_rate"] / (1.0 + _exp)
+
+        # === ターゲット ===
+        fp = r.get("finish_position", 0) or 0
+        f["target_win"] = 1 if fp == 1 else 0
+        f["target_top3"] = 1 if 1 <= fp <= 3 else 0
+        f["finish_position"] = fp
+        f["relevance"] = max(0, hc - fp + 1) if fp > 0 else 0
+        f["race_id"] = race["race_id"]
+        f["horse_id"] = horse_id
+        f["horse_number"] = hn
+        f["odds"] = r.get("odds", 0) or 0
+
+        rows.append(f)
+
+    return rows
+
+
+def get_feature_columns():
+    """特徴量カラム一覧 v5 — ml/features.py と完全一致させること
+
+    v5変更:
+      削除(重要度0): pedigree_score, sire_top3_rate, sire_sample_size,
+                     bias_score, horse_age, is_peak_age, age_class_top3_rate,
+                     is_heavy_track, post_win_rate_course
+      追加: margin_avg, margin_best, same_course_top3_rate, same_course_runs,
+            impost_diff, graded_exp, graded_top3_rate
+    """
+    return [
+        # SI (6)
+        "si_avg", "si_max", "si_min", "si_std", "si_latest", "si_count",
+        # 騎手/調教師 (5) — 最重要群
+        "jt_score", "jockey_cond_top3", "jockey_cond_win",
+        "trainer_cond_top3", "combo_top3",
+        # 枠順 (1)
+        "post_position_ratio",
+        # ペース (3)
+        "front_rate", "avg_pos_ratio", "avg_last_3f",
+        # 馬情報 (7)
+        # #137 (2026-09-01): 馬体重系3特徴 (weight / weight_change / weight_trend) を除外。
+        # **予測時点では馬体重が未発表**で必ず 0 になる一方、学習時は実測値が入るため、
+        # 埋めようのない train/serve skew だった (実測: 未来レース 146頭すべて 0、
+        # 確定済み 479頭中 478頭に実値)。モデルは「体重が入っている前提」で学習し、
+        # 本番では常に 0 を渡されるという最悪の形。ユーザー判断で特徴量から外す。
+        "horse_count",
+        "impost", "distance_cat", "surface_turf", "rest_days",
+        # 過去成績 (5)
+        "avg_finish_5r", "win_rate_10r", "top3_rate_10r",
+        "finish_trend", "race_experience",
+        # コンテキスト (5)
+        "distance_diff", "jockey_change", "course_top3_rate",
+        "last_3f_best",
+        # 天気・馬場 (4)
+        "track_cond_code", "weather_code",
+        "horse_wet_win_rate", "horse_wet_top3_rate",
+        # コース別枠順 (1)
+        "post_top3_rate_course",
+        # 距離別 (2)
+        "dist_win_rate", "dist_top3_rate",
+        # #128: 距離適性の盲目修正のみ残す (2個)。血統×距離の6特徴量は
+        # OOS A/B (学習<2025-03 / 評価2025-03以降) で AUC -0.0002・予測1位複勝率
+        # -0.15pt と**改善なし**だったため撤去した (#127 の「市場が既に織り込んでいる」
+        # という分析通りの結果)。推論側の per-sire 集計クエリのコストも不要になる。
+        "has_dist_experience", "dist_scope",
+        # v5: 着差
+        "margin_avg", "margin_best",
+        # v5: 同コース familiarity
+        "same_course_top3_rate", "same_course_runs",
+        # v5: 斤量変化
+        "impost_diff",
+        # v5: 重賞経験
+        "graded_exp", "graded_top3_rate",
+        # v6: 市場シグナル(オッズ・人気) ※競馬予想で最も強い signal の一つ
+        "odds_log", "popularity_norm",
+        # v7: 血統×コース cross (temporal-safe)
+        "sire_course_top3_rate", "sire_surface_top3_rate",
+        "damsire_course_top3_rate", "damsire_surface_top3_rate",
+    ]
+
+
+def train_models(df, feature_cols, num_boost_round=500, early_stopping_rounds=50):
+    """3モデルを学習"""
+    import pickle
+    import json
+
+    RANK_PARAMS = {
+        "objective": "lambdarank", "metric": "ndcg",
+        "ndcg_eval_at": [1, 3, 5], "boosting_type": "gbdt",
+        "num_leaves": 63, "learning_rate": 0.05,
+        "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 5,
+        "lambda_l1": 0.1, "lambda_l2": 0.1, "min_child_samples": 20,
+        "verbose": -1, "n_jobs": -1, "seed": 42,
+    }
+    BINARY_PARAMS = {
+        "objective": "binary", "metric": "binary_logloss",
+        "boosting_type": "gbdt", "num_leaves": 63, "learning_rate": 0.05,
+        "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 5,
+        "lambda_l1": 0.1, "lambda_l2": 0.1, "min_child_samples": 20,
+        "verbose": -1, "n_jobs": -1, "seed": 42,
+    }
+
+    confirmed = df[df["finish_position"] > 0].copy()
+    # #141: 旧実装は sort_values("race_id")。race_id は「年+場コード+開催回+日+R」なので
+    # ソートしても日付順にならず**場コード順**になり、時系列分割が成立していなかった
+    # (実測: 学習側に 2025-03 以降が 1,114レース混入、学習側の最大日付は 2025-11-24)。
+    # CLAUDE.md #109 が定めた「backtest の評価窓は学習境界以降」という規律が
+    # 導入以来ずっと無効で、全バックテストが静かに in-sample を混ぜていた。
+    confirmed = confirmed.sort_values(["race_date", "race_id"])
+    print(f"\n📊 学習データ: {len(confirmed)}行, {confirmed['race_id'].nunique()}レース")
+
+    X = confirmed[feature_cols].fillna(0)
+    y_top3 = confirmed["target_top3"]
+    y_win = confirmed["target_win"]
+    y_rank = confirmed["relevance"]
+
+    # レースグループ
+    group = confirmed.groupby("race_id").size().values
+
+    # 時系列分割 (80% train / 20% val)
+    race_ids = confirmed["race_id"].unique()
+    split_idx = int(len(race_ids) * 0.8)
+    train_races = set(race_ids[:split_idx])
+    val_races = set(race_ids[split_idx:])
+
+    train_mask = confirmed["race_id"].isin(train_races)
+    val_mask = confirmed["race_id"].isin(val_races)
+
+    X_train, X_val = X[train_mask], X[val_mask]
+    train_group = confirmed[train_mask].groupby("race_id").size().values
+    val_group = confirmed[val_mask].groupby("race_id").size().values
+
+    print(f"  Train: {train_mask.sum()} / Val: {val_mask.sum()}")
+
+    # === LambdaRank ===
+    print("\n🔄 LambdaRank 学習中...")
+    ds_rank_t = lgb.Dataset(X_train, label=y_rank[train_mask], group=train_group)
+    ds_rank_v = lgb.Dataset(X_val, label=y_rank[val_mask], group=val_group, reference=ds_rank_t)
+    # #134 (2026-08-31): early_stopping が ndcg@1/3/5 のうち**最も早く頭打ちした指標**で
+    # 打ち切るため、model_rank が **木3本** で出荷されていた (top3=143 / win=97 に対し)。
+    # 木3本では rank_score の分散が潰れ、意思決定チャネル (pred_win_norm → EV/Kelly/
+    # should_bet) が一様分布に近づく。実害: should_bet が 13/36 → **0/36**、
+    # 賭け金 ¥28,600 → ¥2,000 と買い目が事実上停止していた (印・信頼度は別チャネルなので無事)。
+    # first_metric_only=True で ndcg@1 のみを基準にし、さらに木が極端に少ない場合は
+    # early stopping なしで再学習する (下の健全性ガード)。
+    model_rank = lgb.train(
+        RANK_PARAMS, ds_rank_t, num_boost_round=num_boost_round,
+        valid_sets=[ds_rank_v],
+        callbacks=[lgb.early_stopping(early_stopping_rounds, first_metric_only=True),
+                   lgb.log_evaluation(50)],
+    )
+    if model_rank.num_trees() < 20:
+        print(f"  ⚠️ 木が {model_rank.num_trees()} 本しか育たなかった "
+              f"(best_iter={model_rank.best_iteration}) → early stopping なしで再学習")
+        model_rank = lgb.train(
+            RANK_PARAMS, ds_rank_t, num_boost_round=max(200, num_boost_round // 2),
+            valid_sets=[ds_rank_v], callbacks=[lgb.log_evaluation(100)],
+        )
+    print(f"  Best iteration: {model_rank.best_iteration} / 木の本数: {model_rank.num_trees()}")
+    if model_rank.num_trees() < 20:
+        raise RuntimeError(f"model_rank の木が {model_rank.num_trees()} 本しか無い — "
+                           f"意思決定チャネルが機能しないため出荷を中止 (#134)")
+
+    # === Binary top3 ===
+    print("\n🔄 複勝モデル学習中...")
+    ds_t3_t = lgb.Dataset(X_train, label=y_top3[train_mask])
+    ds_t3_v = lgb.Dataset(X_val, label=y_top3[val_mask], reference=ds_t3_t)
+    model_top3 = lgb.train(
+        BINARY_PARAMS, ds_t3_t, num_boost_round=num_boost_round,
+        valid_sets=[ds_t3_v],
+        callbacks=[lgb.early_stopping(early_stopping_rounds), lgb.log_evaluation(50)],
+    )
+
+    from sklearn.metrics import roc_auc_score
+    pred_t3 = model_top3.predict(X_val)
+    auc_t3 = roc_auc_score(y_top3[val_mask], pred_t3)
+    print(f"  AUC(複勝): {auc_t3:.4f}")
+
+    # === Binary win ===
+    print("\n🔄 単勝モデル学習中...")
+    ds_w_t = lgb.Dataset(X_train, label=y_win[train_mask])
+    ds_w_v = lgb.Dataset(X_val, label=y_win[val_mask], reference=ds_w_t)
+    model_win = lgb.train(
+        BINARY_PARAMS, ds_w_t, num_boost_round=num_boost_round,
+        valid_sets=[ds_w_v],
+        callbacks=[lgb.early_stopping(early_stopping_rounds), lgb.log_evaluation(50)],
+    )
+
+    pred_w = model_win.predict(X_val)
+    auc_w = roc_auc_score(y_win[val_mask], pred_w)
+    print(f"  AUC(単勝): {auc_w:.4f}")
+
+    # 特徴量重要度
+    importance = pd.DataFrame({
+        "feature": feature_cols,
+        "rank_imp": model_rank.feature_importance(importance_type="gain"),
+        "top3_imp": model_top3.feature_importance(importance_type="gain"),
+        "win_imp": model_win.feature_importance(importance_type="gain"),
+    }).sort_values("rank_imp", ascending=False)
+    print("\n📊 特徴量重要度 (Top 15):")
+    print(importance.head(15).to_string(index=False))
+
+    # 保存
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    with open(os.path.join(MODEL_DIR, "model_rank.pkl"), "wb") as f:
+        pickle.dump(model_rank, f)
+    with open(os.path.join(MODEL_DIR, "model_top3.pkl"), "wb") as f:
+        pickle.dump(model_top3, f)
+    # #141: 学習境界をモデルと一緒に保存する。
+    # 境界は再学習のたびに動くので、backtest 側が固定日 ('2025-03-01' 等) を
+    # ハードコードすると必ず陳腐化して in-sample を混ぜる。
+    try:
+        _tr_dates = confirmed.loc[train_mask, "race_date"]
+        _va_dates = confirmed.loc[val_mask, "race_date"]
+        _meta = {
+            "train_max_date": str(_tr_dates.max()),
+            "val_min_date": str(_va_dates.min()),
+            "train_races": int(len(train_races)),
+            "val_races": int(len(val_races)),
+            "feature_count": len(feature_cols),
+            # #169: si_* の馬場補正表。推論側 (ml/features) はこの値に合わせて si_* を作る
+            # (無いモデル = 旧表扱い)。モデルと同じファイルに置くので食い違いが起きない。
+            "si_track_adj": df.attrs.get("si_track_adj") or train_si_track_mode(),
+        }
+        with open(os.path.join(MODEL_DIR, "train_boundary.json"), "w", encoding="utf-8") as f:
+            json.dump(_meta, f, ensure_ascii=False, indent=1)
+        print(f"📅 学習境界を保存: 学習は {_meta['train_max_date']} まで / "
+              f"評価は {_meta['val_min_date']} から (OOS窓はこの日以降)")
+    except Exception as _e:
+        print(f"⚠️ 学習境界の保存に失敗: {_e}")
+    with open(os.path.join(MODEL_DIR, "model_win.pkl"), "wb") as f:
+        pickle.dump(model_win, f)
+    print(f"\n💾 モデル保存完了: {MODEL_DIR}")
+
+    # ── Isotonic Regression 校正子を学習 (val set で fit) ──
+    # 「本命級が +8.6pt 過小評価」されていた問題を補正。
+    # val set (時系列で後ろ20%) は学習時に未使用なので、honest holdout に近い。
+    try:
+        from sklearn.isotonic import IsotonicRegression
+        print("\n🎯 Calibrator 学習中 (isotonic regression)...")
+        iso_win = IsotonicRegression(out_of_bounds='clip', y_min=0.0, y_max=1.0)
+        iso_win.fit(pred_w, y_win[val_mask])
+        iso_t3 = IsotonicRegression(out_of_bounds='clip', y_min=0.0, y_max=1.0)
+        iso_t3.fit(pred_t3, y_top3[val_mask])
+        with open(os.path.join(MODEL_DIR, "calibrator_win.pkl"), "wb") as f:
+            pickle.dump(iso_win, f)
+        with open(os.path.join(MODEL_DIR, "calibrator_top3.pkl"), "wb") as f:
+            pickle.dump(iso_t3, f)
+        # ECE 改善を表示
+        import numpy as np
+        def _ece(y, p, n_bins=10):
+            bins = np.linspace(0, 1, n_bins+1)
+            bi = np.clip(np.digitize(p, bins)-1, 0, n_bins-1)
+            e = 0
+            for b in range(n_bins):
+                m = bi == b
+                if m.sum() == 0: continue
+                e += (m.sum()/len(y)) * abs(p[m].mean() - y[m].mean())
+            return e
+        e_w0 = _ece(y_win[val_mask].values, pred_w)
+        e_w1 = _ece(y_win[val_mask].values, iso_win.predict(pred_w))
+        e_t0 = _ece(y_top3[val_mask].values, pred_t3)
+        e_t1 = _ece(y_top3[val_mask].values, iso_t3.predict(pred_t3))
+        print(f"  ECE(win):  {e_w0*100:.2f}% → {e_w1*100:.2f}%")
+        print(f"  ECE(top3): {e_t0*100:.2f}% → {e_t1*100:.2f}%")
+        print(f"  ✅ Calibrator 保存完了")
+    except Exception as e:
+        print(f"  ⚠️ Calibrator 学習失敗: {e}")
+
+    return model_rank, model_top3, model_win, auc_t3, auc_w
+
+
+def _backtest_window_start():
+    """バックテストの評価窓の開始日 = rank 系の学習境界の翌日 (#141 の単一情報源 oos_window)。
+    train_models が直前に保存した models/train_boundary.json を読む。取れなければ None。"""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+        from oos_window import get_oos_start
+        # 点数表は使わない (rank の softmax と未校正の model_top3 だけで買う) ので rank 系の境界だけ
+        return get_oos_start(include_scorecard=False, warn_empty=False)
+    except Exception as e:
+        print(f"  ⚠️ 学習境界が読めない ({e})")
+        return None
+
+
+def run_backtest(df, models, feature_cols, year=None):
+    """再学習ログに出す簡易バックテスト (単勝 EV>=1.2 / 複勝 EV>=1.1 の旧ルールを 100円ずつ)。
+
+    #169 (2026-11-05): 旧版は「2025年」を固定で採点し、再学習のたびに「回収率 138〜175%
+    🎉 プラス収支達成!」と出していた (11/02 は 162.4%)。この数字は次の3点で水増しされていた。
+      (1) 2025-01〜06-22 は**学習データ** (学習区間だけで 221.8%、検証区間は 115.8%)
+      (2) 複勝の払戻が実払戻でなく**作り値** max(確定単勝オッズ×0.3, 1.1)
+          (実払戻に置き換えると 162.4%→112.4%、検証区間だけでは 78.1% [68.6, 88.2])
+      (3) 買い目を**確定オッズ**で選んでいる (本番は発走の数時間前の薄いオッズ)
+    → 評価窓を「rank 系の学習境界の翌日以降」(oos_window) に限り、払戻は payouts の実払戻にする。
+      ただしこの窓は early stopping (木の本数の決定) に使った検証区間なので、厳密な学習外ではない
+      (現行モデルを学習外で採点できる確定レースは無い)。ログにもそう明記し、「プラス収支達成」の
+      祝辞は出さない。判断材料は凍結印×確定着順×実払戻の mark_tracker (#142) / weekly_scorecard。
+    year は旧呼び出しとの互換のためだけに残す (使わない)。
+    """
+    model_rank, model_top3, model_win = models
+    start = _backtest_window_start()
+    if not start:
+        print("\n📊 バックテスト: 学習境界が分からないので実行しない (学習期間を採点すると水増しになる)")
+        return
+    test = df[(df["finish_position"] > 0) & (df["race_date"] >= start)].copy()
+    if test.empty:
+        print(f"\n📊 バックテスト: 学習境界 ({start}) 以降の確定レースが無い → 実行しない")
+        return
+
+    # 実払戻 (単勝・複勝)。払戻データの無いレースは採点から外す (0円扱いにすると回収率を不当に下げる)
+    rids = list(test["race_id"].unique())
+    pay = {"単勝": {}, "複勝": {}}
+    with get_db() as conn:
+        for i in range(0, len(rids), 500):
+            chunk = rids[i:i + 500]
+            q = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                    f"SELECT race_id, bet_type, combination, payout_amount FROM payouts "
+                    f"WHERE bet_type IN ('単勝','複勝') AND race_id IN ({q})", chunk):
+                pay[r["bet_type"]][(r["race_id"], str(r["combination"]).strip())] = r["payout_amount"]
+    has_pay = {k[0] for k in pay["単勝"]} & {k[0] for k in pay["複勝"]}
+    n_nopay = len(set(rids) - has_pay)
+    test = test[test["race_id"].isin(has_pay)].copy()
+    if test.empty:
+        print(f"\n📊 バックテスト: {start} 以降に払戻データのあるレースが無い → 実行しない")
+        return
+
+    X_test = test[feature_cols].fillna(0)
+    test["rank_score"] = model_rank.predict(X_test)
+    test["pred_top3"] = model_top3.predict(X_test)
+    # 本番の pred_win_norm と同じ「レース内 softmax (温度1)」(旧版と同じ計算)
+    mx = test.groupby("race_id")["rank_score"].transform("max")
+    ex = np.exp(test["rank_score"] - mx)
+    test["win_prob"] = ex / ex.groupby(test["race_id"]).transform("sum")
+
+    valid = test["odds"] > 0
+    place_odds = np.maximum(test["odds"] * 0.3, 1.1)   # 複勝の「見込み」(買うかどうかの判定だけに使う)
+    sel = {
+        "単勝": valid & (test["win_prob"] * test["odds"] >= 1.2) & (test["win_prob"] >= 0.08),
+        "複勝": valid & (test["pred_top3"] * place_odds >= 1.1) & (test["pred_top3"] >= 0.20),
+    }
+    hn = test["horse_number"].fillna(0).astype(int).astype(str)
+    bets = []
+    n_missing = 0
+    for bt, mask in sel.items():
+        sub = test[mask]
+        for rid, h, fp in zip(sub["race_id"], hn[mask], sub["finish_position"]):
+            # 的中 = 払戻行があること。旧版は複勝を「3着以内」で数えていたが、7頭立て以下の
+            # 3着は複勝の対象外 (払戻は2着まで) なので、それも作り値で的中にしていた。
+            ret = pay[bt].get((rid, h))
+            if ret is None:
+                ret = 0
+                if (bt == "単勝" and fp == 1) or (bt == "複勝" and fp <= 2):
+                    n_missing += 1       # 必ず払戻がある着順なのに行が無い = データ欠損
+            bets.append((rid, bt, 100, ret, ret > 0))
+    if not bets:
+        print(f"\n📊 バックテスト ({start}〜): 買い目0点")
+        return
+    b = pd.DataFrame(bets, columns=["race_id", "bt", "bet", "ret", "hit"])
+
+    def _roi_ci(x):
+        per = x.groupby("race_id")[["bet", "ret"]].sum()
+        roi = per["ret"].sum() / per["bet"].sum() * 100
+        rng = np.random.default_rng(0)
+        idx = rng.integers(0, len(per), size=(1000, len(per)))
+        bs = per["ret"].values[idx].sum(axis=1) / per["bet"].values[idx].sum(axis=1) * 100
+        return roi, np.percentile(bs, 2.5), np.percentile(bs, 97.5), len(per)
+
+    roi, lo, hi, n_r = _roi_ci(b)
+    end = test["race_date"].max()
+    print(f"\n{'='*50}")
+    print(f"📊 簡易バックテスト ({start}〜{end}): {test['race_id'].nunique()}レース")
+    print(f"{'='*50}")
+    print("  ⚠️ 学習外の成績ではない: この区間は木の本数の決定 (early stopping) に使った検証区間")
+    print("  ⚠️ 買い目は確定オッズで選んでいる (本番は朝の薄いオッズ)。払戻は payouts の実払戻")
+    print(f"  購入点数:  {len(b)} ({n_r}レース)  的中 {int(b['hit'].sum())} ({b['hit'].mean()*100:.1f}%)")
+    print(f"  総賭け金:  ¥{int(b['bet'].sum()):,}  総払戻金: ¥{int(b['ret'].sum()):,}")
+    print(f"  回収率:    {roi:.1f}% [レース単位ブートストラップ95%区間 {lo:.1f}, {hi:.1f}]")
+    for bt in ("単勝", "複勝"):
+        x = b[b["bt"] == bt]
+        if len(x):
+            r_, l_, h_, _ = _roi_ci(x)
+            print(f"  [{bt}] {len(x)}点 / 的中{int(x['hit'].sum())}({x['hit'].mean()*100:.1f}%) / "
+                  f"回収率 {r_:.1f}% [{l_:.1f}, {h_:.1f}]")
+    if n_nopay or n_missing:
+        print(f"  (払戻データの無い {n_nopay}レースは除外 / 的中したのに払戻行が無い {n_missing}点は0円で計上)")
+    print(f"{'='*50}")
+    print("  判断材料には使わない — 投稿時点の凍結印×確定着順×実払戻の mark_tracker (#142) を正とする")
+
+
+def build_si_variant(races_df, results_df, table_path=None):
+    """点数表専用の馬場差補正指数 V2d (#168) の学習側の部品。基準表 (models/si_variant_table.json)
+    が無ければ None (= si_avg_v 等の列を作らない。点数表がその列を要求していれば
+    predict/_attach_scorecard と verify_feature_parity が大きく警告する)。"""
+    try:
+        table = _sv.load_table(table_path)
+    except Exception as e:
+        print(f"  ⚠️ V2d の基準表が読めない ({e}) → si_avg_v 等を作らない")
+        return None
+    if table is None:
+        print("  ℹ️ V2d の基準表 (models/si_variant_table.json) が無い → si_avg_v 等を作らない")
+        return None
+    t0 = time.time()
+    sv = _sv.TrainSiVariant(races_df, results_df, table)
+    print(f"  ✅ V2d (基準表 {table['cutoff']} c={table['dirt_shift_c']:+g} "
+          f"指紋 {table['table_hash']}): {len(sv.lookup)}走 ({time.time() - t0:.1f}秒)")
+    return sv
+
+
+def augment_scorecard_columns(df, table_path=None):
+    """既存の特徴量テーブル (build_feature_table の出力のキャッシュ) に点数表専用の列 (#168:
+    si_avg_v / si_latest_v / si_v_nfb / sf_first_switch / sf_other_share5) を足す。
+    特徴量テーブルの作り直し (約2時間) をせずに済ませるため。値は compute_features_fast と
+    **同じ関数** (scorecard_extra_features) で、同じ材料 (horse_history / si_cache) から作る。
+    df.attrs["si_variant_table_hash"] に基準表の指紋を残す (train_scorecard が照合する)。"""
+    races_df, results_df, _ = load_all_data()
+    cols = ["race_date", "venue", "distance", "surface", "track_condition", "weather", "horse_count"]
+    race_info = races_df.set_index("race_id")[cols].to_dict("index")
+    for col in cols:
+        results_df[col] = results_df["race_id"].map(lambda rid, c=col: race_info.get(rid, {}).get(c, ""))
+    horse_history = build_horse_history(results_df, races_df)
+    si_cache = build_speed_index_cache(results_df, races_df)
+    si_variant = build_si_variant(races_df, results_df, table_path)
+    race_by_id = races_df.set_index("race_id", drop=False).to_dict("index")
+    t0 = time.time()
+    out = []
+    for rid, hid in zip(df["race_id"].values, df["horse_id"].values):
+        race = race_by_id.get(rid)
+        if race is None:
+            out.append({})
+            continue
+        race_date = race["race_date"]
+        past = []
+        if hid in horse_history:
+            past = [h for h in horse_history[hid]
+                    if h.get("race_date", "") < race_date and h.get("finish_position", 0) > 0][::-1]
+        si_runs = [s for s in si_cache.get(hid, []) if s["race_date"] < race_date][:5]
+        out.append(scorecard_extra_features(hid, race, past, si_runs, si_cache, si_variant))
+    add = pd.DataFrame(out, index=df.index)
+    df = df.copy()
+    for c in add.columns:
+        df[c] = add[c].values
+    df.attrs["si_variant_table_hash"] = (si_variant.table["table_hash"] if si_variant else None)
+    print(f"  ✅ 点数表専用の列を追加 {list(add.columns)} ({time.time() - t0:.1f}秒)")
+    return df
+
+
+def build_feature_table(start_date=None):
+    """Step 1-3 (データロード → プリコンパイル → 全レース特徴量計算) を実行して
+    特徴量 DataFrame を返す。
+
+    #57: main() からの切り出し。scripts/train_ability_model.py (odds 非依存の
+    能力モデル学習) からも同一の特徴量テーブルを再利用するための共通化。
+
+    start_date: 指定すると race_date >= start_date のレースだけ特徴量を計算する
+                (履歴・騎手/血統の累積は全期間から作るので値は全期間版と同じ)。
+                点数表の当てはめ (scripts/train_scorecard.py --mode lin) 用。
+    """
+    races_df, results_df, payouts_df = load_all_data()
+
+    # race_date をresults_dfに追加（horse_historyビルド用）
+    race_info = races_df.set_index("race_id")[["race_date", "venue", "distance",
+                                                "surface", "track_condition",
+                                                "weather", "horse_count"]].to_dict("index")
+
+    for col in ["race_date", "venue", "distance", "surface", "track_condition", "weather", "horse_count"]:
+        results_df[col] = results_df["race_id"].map(
+            lambda rid, c=col: race_info.get(rid, {}).get(c, "")
+        )
+
+    # Step 2: プリコンパイル
+    horse_history = build_horse_history(results_df, races_df)
+    jockey_stats, trainer_stats, combo_stats = build_jockey_trainer_stats(results_df, races_df)
+    si_cache = build_speed_index_cache(results_df, races_df)
+    si_variant = build_si_variant(races_df, results_df)
+    # v7: 血統 cross stats (temporal-safe)
+    (sire_course, sire_surface, damsire_course, damsire_surface,
+     sire_distband, damsire_distband, sire_band_rel) = \
+        build_pedigree_cross_stats(results_df, races_df)
+
+    # Step 3: 特徴量一括計算
+    print("\n🔧 全レースの特徴量を一括計算中...")
+    t0 = time.time()
+    all_rows = []
+    total_races = len(races_df)
+
+    for i, race in races_df.iterrows():
+        if start_date and str(race.get("race_date") or "") < start_date:
+            continue
+        if (i + 1) % 500 == 0:
+            elapsed = time.time() - t0
+            speed = (i + 1) / elapsed
+            remaining = (total_races - i - 1) / speed if speed > 0 else 0
+            print(f"  [{i+1}/{total_races}] {elapsed:.0f}秒経過, 残り約{remaining:.0f}秒")
+
+        race_results = results_df[results_df["race_id"] == race["race_id"]]
+        if race_results.empty:
+            continue
+
+        race_dict = race.to_dict()
+        results_list = race_results.to_dict("records")
+
+        rows = compute_features_fast(
+            race_dict, results_list, horse_history,
+            jockey_stats, trainer_stats, combo_stats, si_cache,
+            sire_course=sire_course, sire_surface=sire_surface,
+            damsire_course=damsire_course, damsire_surface=damsire_surface,
+            sire_distband=sire_distband, damsire_distband=damsire_distband,
+            sire_band_rel=sire_band_rel, si_variant=si_variant,
+        )
+        all_rows.extend(rows)
+
+    df = pd.DataFrame(all_rows)
+    df["race_date"] = df["race_id"].map(lambda rid: race_info.get(rid, {}).get("race_date", ""))
+    # #168: どの基準表で si_avg_v を作ったか (train_scorecard が点数表の基準表と照合する)
+    df.attrs["si_variant_table_hash"] = (si_variant.table["table_hash"] if si_variant else None)
+    # #169: LGB の si_* をどちらの馬場補正表で作ったか (train_models が train_boundary.json に残す)
+    df.attrs["si_track_adj"] = train_si_track_mode()
+
+    elapsed = time.time() - t0
+    print(f"  ✅ 特徴量計算完了: {len(df)}行 ({elapsed:.1f}秒)")
+    return df
+
+
+def main():
+    init_db()
+    t_start = time.time()
+
+    # Step 1-3: 特徴量テーブル構築
+    df = build_feature_table()
+
+    # Step 4: 学習
+    feature_cols = get_feature_columns()
+    models = train_models(df, feature_cols)
+    model_rank, model_top3, model_win, auc_t3, auc_w = models
+
+    # Step 5: バックテスト (#169: 学習境界の翌日以降・実払戻。モデルは保存済みなので、
+    # ここで落ちても再学習の成果 (models/*.pkl) を道連れにしない)
+    try:
+        run_backtest(df, (model_rank, model_top3, model_win), feature_cols)
+    except Exception as e:
+        print(f"⚠️ バックテストに失敗 (モデルは保存済み): {e}")
+
+    total_elapsed = time.time() - t_start
+    print(f"\n⏱️ 総実行時間: {total_elapsed:.0f}秒 ({total_elapsed/60:.1f}分)")
+
+
+if __name__ == "__main__":
+    main()

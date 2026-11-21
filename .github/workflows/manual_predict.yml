@@ -1,0 +1,158 @@
+name: 🧪 Manual Predict (test/debug)
+
+# 任意日付の予測を手動実行するためのワークフロー。
+# 通常の auto_post_x.yml は日付固定+予想の確定ロック (9:30 #172) があるため、
+# テスト/デバッグ用にここで実行可能にする。
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 (YYYYMMDD)'
+        required: true
+        type: string
+      force:
+        description: '予想の確定ロック (9:30 #172) を無視して再予測する'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore keiba.db from cache
+        uses: actions/cache@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_number }}
+          restore-keys: |
+            keiba-db-
+
+
+      # 🛡 git を source of truth に強制 (cache 古さの事故防止 - 2026-05-24)
+      - name: Force git DB (override stale cache)
+        run: |
+          git checkout HEAD -- keiba.db.gz
+          bash scripts/db_unpack.sh
+          echo "✅ keiba.db を git HEAD に復元"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Init DB
+        run: python -c "from database import init_db; init_db()"
+
+      - name: DB status
+        run: |
+          DATE="${{ inputs.date }}"
+          DATE_HYPHEN="${DATE:0:4}-${DATE:4:2}-${DATE:6:2}"
+          SIZE=$(du -h keiba.db | cut -f1)
+          echo "📂 keiba.db: $SIZE"
+          python3 - <<PYEOF
+          from database import get_db
+          with get_db() as conn:
+              total = conn.execute("SELECT COUNT(*) FROM races").fetchone()[0]
+              today = conn.execute("SELECT COUNT(*) FROM races WHERE race_date = ? OR race_date = ?", ("${DATE}", "${DATE_HYPHEN}")).fetchone()[0]
+              cache = conn.execute("SELECT COUNT(*) FROM predictions_cache").fetchone()[0]
+              print(f"📊 total races: {total}")
+              print(f"📊 ${DATE} races: {today}")
+              print(f"📊 cache entries: {cache}")
+          PYEOF
+
+      - name: Collect race entries (if missing)
+        run: |
+          DATE="${{ inputs.date }}"
+          python predict.py collect --date "$DATE" || true
+
+      # 🛡 Pre-flight check: races/runners/predictions 完整性確認 (#18 教訓)
+      - name: Pre-flight check
+        run: |
+          DATE="${{ inputs.date }}"
+          python3 scripts/preflight_check.py "$DATE" --auto-fix --quiet || echo "⚠️ Pre-flight 警告(続行)"
+
+      - name: Run prediction
+        run: |
+          DATE="${{ inputs.date }}"
+          FORCE="${{ inputs.force }}"
+          # #169: 予測の直前に確定馬番を取り直し、失敗したら予測しない (他の予測経路と同じ判定)。
+          # collect は INSERT OR IGNORE で馬番を直さないので、ここを通らないと仮馬番のまま予測する
+          if ! timeout 420 python refresh_entries.py --date "$DATE"; then
+            echo "❌ 確定馬番を取り直せない → 予測しない (仮馬番のまま予測すると馬番と馬名がズレる)"
+            exit 1
+          fi
+          echo "🧠 予測実行: $DATE (force=$FORCE)"
+          if [ "$FORCE" = "true" ]; then
+            python predict.py predict --date "$DATE" --force
+          else
+            python predict.py predict --date "$DATE"
+          fi
+
+      - name: Sync race_id (handle day-shift)
+        run: |
+          DATE="${{ inputs.date }}"
+          python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')"
+
+      - name: Export predictions JSON
+        run: |
+          DATE="${{ inputs.date }}"
+          python export_predictions.py "$DATE" || true
+
+      - name: Save DB cache
+        uses: actions/cache/save@v4
+        with:
+          path: keiba.db
+          key: keiba-db-${{ github.run_number }}
+
+      - name: Commit and push JSON
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 🆕 #68 audit: debug 用のため意図的に docs/data/ のみ commit (DB変更は破棄される)。
+          # 本番 predict は auto_post_x.yml を使うこと。
+          git add docs/data/predictions_*.json docs/data/index.json 2>/dev/null || true
+          # 📸 #169: 公開した予測の予測時点スナップショット (DB と違い残す。別コマンドで add)
+          git add docs/data/snapshots/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no JSON changes to commit"
+          else
+            git commit -m "🧪 Manual predict ${{ inputs.date }} ($(TZ=Asia/Tokyo date '+%H:%M JST'))"
+            # 作業ブランチ (workflow_dispatch で --ref 指定) でも動くよう
+            # GITHUB_REF_NAME を rebase/push 対象に。デフォルトは main。
+            BRANCH="${GITHUB_REF_NAME:-main}"
+            # 並行workflow対策: rebase+retry
+            for i in 1 2 3; do
+              git pull --rebase --autostash -X theirs origin "$BRANCH" || true
+              if git push origin "HEAD:$BRANCH"; then echo "✅ pushed (試行$i, branch=$BRANCH)"; break; fi
+              echo "⚠️ push失敗→リトライ($i, branch=$BRANCH)"; sleep 5
+            done
+          fi
+
+      - name: Summary
+        run: |
+          DATE="${{ inputs.date }}"
+          python3 - <<PYEOF
+          import json, os
+          path = f"docs/data/predictions_${DATE}.json"
+          if os.path.exists(path):
+              with open(path) as f:
+                  d = json.load(f)
+              print(f"✅ JSON生成: {path}")
+              print(f"   total_races: {d.get('total_races')}")
+              print(f"   venues: {list(d.get('venues',{}).keys())}")
+              for v, races in d.get('venues',{}).items():
+                  graded = [r for r in races if r.get('grade') in ('G1','G2','G3') and r.get('race_number')==11]
+                  for r in graded:
+                      print(f"   {v} 11R {r.get('race_name')} ({r.get('grade')}) horses={len(r.get('horses',[]))}")
+          else:
+              print(f"⚠️ JSONなし: {path}")
+          PYEOF

@@ -1,0 +1,2013 @@
+"""
+競馬予測メインスクリプト
+データ収集 → 分析 → 予測 → 推奨馬券出力 の全フローを実行
+"""
+
+import argparse
+import json
+import sys
+import os
+from datetime import datetime, timezone, timedelta
+
+# プロジェクトルートをパスに追加
+sys.path.insert(0, os.path.dirname(__file__))
+
+import flags   # #150: 予測フラグの単一情報源 (env > config/prediction_flags.yml)
+from database import init_db, get_db
+from scraper import NetkeibaScraper
+from ml.model import KeibaModel
+from ml.features import FeatureBuilder
+from strategy.betting import BettingStrategy
+from analyzers.speed_index import SpeedIndexCalculator
+from analyzers.odds_value import OddsValueAnalyzer
+
+# APIオッズキャッシュ（レースIDごとに1回だけAPI呼び出しするため）
+_api_odds_cache = {}
+
+# ── 能力モデル (オッズ非依存) ローダー (#72) ──
+# 2020-2025 backtest で「能力◎」単勝ROI 112% (現◎ 92% / +20pt, 全6年100%超) を実証。
+# 各馬の「市場を見ない実力評価」を attach し、◎ の2軸化 + ★妙味 + ⚠️危険な人気 に使う。
+_ABILITY_MODEL = None  # (model, calibrator, feature_cols) or False(=ロード失敗)
+
+
+def _load_ability_model():
+    """能力モデルを一度だけロード (失敗時は False を返し以後 skip)。"""
+    global _ABILITY_MODEL
+    if _ABILITY_MODEL is not None:
+        return _ABILITY_MODEL
+    try:
+        import pickle
+        from fast_train import get_feature_columns
+        mdir = os.path.join(os.path.dirname(__file__), "models")
+        with open(os.path.join(mdir, "model_ability_win.pkl"), "rb") as f:
+            model = pickle.load(f)
+        with open(os.path.join(mdir, "calibrator_ability_win.pkl"), "rb") as f:
+            calib = pickle.load(f)
+        # #134 (2026-08-31): 旧実装は現行の get_feature_columns() から毎回導出していたため、
+        # 特徴量を1つでも増やすと 学習済み能力モデル (50列) と食い違い LightGBMError →
+        # except で握られて ability_score=0 → **MARKS_ABILITY_W=0.5「人気を弱くして」が
+        # silent に無効化**されていた (8/29-30 の全72レースで能力ブレンドが効いていない)。
+        # モデル自身が保持する特徴量名を正とする。
+        try:
+            _b = getattr(model, "booster_", model)
+            cols = list(_b.feature_name())
+        except Exception:
+            cols = [c for c in get_feature_columns() if c not in ("odds_log", "popularity_norm")]
+        _ABILITY_MODEL = (model, calib, cols)
+    except Exception as e:
+        print(f"  ⚠️ 能力モデル未ロード ({e}) → ability_score=0 で継続")
+        _ABILITY_MODEL = False
+    return _ABILITY_MODEL
+
+
+def _attach_ability_score(pred_df):
+    """pred_df に _ability_score 列 (レース内正規化済み勝率) を付与。
+    特徴量列が揃っていれば計算、失敗時は 0。純加算なので既存挙動は不変。"""
+    am = _load_ability_model()
+    if not am:
+        pred_df["_ability_score"] = 0.0
+        return pred_df
+    model, calib, cols = am
+    try:
+        missing = [c for c in cols if c not in pred_df.columns]
+        if missing:
+            # #150: 旧実装は無警告で 0 にしていた — #134 で MARKS_ABILITY_W=0.5 が
+            # 8/29 以降 silent に無効化されていた事故と同じ形。点数表側 (下) は
+            # 既に警告を出しているので揃える。
+            print(f"  ⚠️ 能力モデル: 特徴量 {len(missing)}列が不足 ({missing[:3]}...) "
+                  f"→ ability_score=0 (MARKS_ABILITY_W が無効化されます)")
+            pred_df["_ability_score"] = 0.0
+            return pred_df
+        X = pred_df[cols].fillna(0)
+        raw = model.predict(X, num_iteration=getattr(model, "best_iteration", None))
+        p = calib.predict(raw)
+        s = p.sum()
+        pred_df["_ability_score"] = (p / s) if s > 0 else p
+    except Exception as e:
+        print(f"  ⚠️ 能力スコア計算失敗 ({e}) → 0")
+        pred_df["_ability_score"] = 0.0
+    return pred_df
+
+
+_SCORECARD = None
+_SCORECARD_TRIED = False
+
+
+def _load_scorecard():
+    """説明できる点数表 (#145) を読む。無ければ None。"""
+    global _SCORECARD, _SCORECARD_TRIED
+    if _SCORECARD_TRIED:
+        return _SCORECARD
+    _SCORECARD_TRIED = True
+    try:
+        from ml.scorecard import load_model
+        _SCORECARD = load_model()      # #175: 印に使う方 (MARKS_SCORECARD_MODEL)
+        if _SCORECARD:
+            print(f"  📋 点数表モデル読込 [{_SCORECARD.get('_sc_model', '?')}] "
+                  f"{_SCORECARD.get('version', '')} (学習〜{_SCORECARD.get('train_until')}"
+                  f" / 補正〜{_SCORECARD.get('lin_fit_until')} / 係数{len(_SCORECARD.get('pts', {}))}個)")
+            # #168: V2d (si_avg_v) を使う点数表なのに基準表が無い・壊れている・当てはめ時と違う
+            # → 違う基準表の V2d を黙って使わず、指数の区分だけ現行の si_avg/si_latest で代用する
+            #   (印は点数表のまま。従来ロジック = 市場寄りの pred_top3 には落とさない)。
+            #   毎朝の feature_parity (check_models → check_si_variant) が同じ理由で Issue を立てる。
+            from ml.scorecard import check_si_variant, without_col_map
+            _msg = check_si_variant(_SCORECARD)
+            if _msg:
+                _SCORECARD = without_col_map(_SCORECARD, _msg)
+                print(f"  🚨 点数表: {_msg}")
+                print("  🚨 → 指数の区分は現行の si_avg/si_latest で代用して点数表を使う (要対応: "
+                      "基準表 models/si_variant_table.json と点数表を揃える)")
+            # #169: 区分の表示名 (区分境界から作る) の検査。合わない区分は内訳に出さない
+            # (内部表記「5/5」は出さない) ので印・点数には影響しないが、黙らせない。
+            # 表示だけの検査なので、ここで例外が出ても点数表 (= 印) を止めない (#169 手直し:
+            # 外側の except に落ちると _SCORECARD=None になり、その run の印が全レース従来ロジックに落ちる)
+            try:
+                from ml.scorecard import check_display_bins
+                for _p in check_display_bins(_SCORECARD):
+                    print(f"  ⚠️ 点数表の表示名: {_p}")
+            except Exception as _e:
+                print(f"  ⚠️ 点数表の表示名の検査に失敗 (印・点数には影響なし): {_e!r}")
+        else:
+            print("  ⚠️ models/scorecard.pkl が無い → 点数表は使えません")
+    except Exception as e:
+        print(f"  ⚠️ 点数表モデルの読込失敗: {e}")
+        _SCORECARD = None
+    return _SCORECARD
+
+
+_SC_SHADOW = None
+_SC_SHADOW_TRIED = False
+
+
+def _load_shadow_scorecard():
+    """#175: 影の点数表 (印に使わない方) を読む。無ければ None。
+
+    印には一切使わない。毎回同じ母集団で点数を付けて「この点数表だったら印はこうだった」を
+    mark_shadow として残し、毎週 scripts/scorecard_shadow_report.py が回収率を並べる
+    (切り替えの効果を、同じレース・同じ日で比べ続けるため)。ここで何が起きても印は止めない。"""
+    global _SC_SHADOW, _SC_SHADOW_TRIED
+    if _SC_SHADOW_TRIED:
+        return _SC_SHADOW
+    _SC_SHADOW_TRIED = True
+    try:
+        live = _load_scorecard()
+        if not live:
+            return None
+        from ml.scorecard import load_named_model, shadow_model_name, check_si_variant, without_col_map
+        name = shadow_model_name(live.get("_sc_model") or "base")
+        m = load_named_model(name)
+        if m:
+            _msg = check_si_variant(m)
+            if _msg:
+                m = without_col_map(m, _msg)
+                print(f"  🚨 影の点数表 [{name}]: {_msg} → 指数の区分は si_avg/si_latest で代用")
+            print(f"  👥 影の点数表 [{name}] {m.get('version', '')} (印には使わない。毎週の比較用 #175)")
+        else:
+            print(f"  ⚠️ 影の点数表 [{name}] が無い (models/ にファイルなし) → 影の印 (mark_shadow) なし。"
+                  f"印には影響なし。毎週の比較 (#175) の材料が貯まらない")
+        _SC_SHADOW = m
+    except Exception as e:
+        print(f"  ⚠️ 影の点数表の読込失敗 (印には影響なし): {e!r}")
+        _SC_SHADOW = None
+    return _SC_SHADOW
+
+
+def _shadow_points(d, keep):
+    """#175: 影の点数表の合計点 (印の母集団 = 取消を除いた馬)。使えなければ None。"""
+    try:
+        sm = _load_shadow_scorecard()
+        if not sm:
+            return None
+        import numpy as np
+        from ml.scorecard import required_columns, score_with_reasons
+        miss = [c for c in required_columns(sm) if c not in d.columns]
+        if miss:
+            print(f"  ⚠️ 影の点数表: 特徴量 {len(miss)}列が無い ({miss[:3]}) → 影の印なし")
+            return None
+        if keep is None:
+            return np.asarray(score_with_reasons(d, sm)[0], dtype=float)
+        pts = np.full(len(d), np.nan)
+        pts[keep] = score_with_reasons(d[keep], sm)[0]
+        return pts
+    except Exception as e:
+        print(f"  ⚠️ 影の点数表の計算失敗 (印には影響なし): {e!r}")
+        return None
+
+
+def _is_scratch_odds(odds, popularity):
+    """#169: 予想時点で見えている「出走取消」の値か。
+
+    ⚠️ #171 (2026-11-06): 下の「odds = 999.9 → 取消」は撤回した。999.9倍は票がほとんど無い馬の
+    表示で、前日発売の直後 (11/06 19:05 の前夜予想) は11/07 の28レース・94頭の走る馬がこの値になり、
+    全員が取消扱いで印の候補から外れた。発売中の API は取消馬も 999.9倍・人気=頭数で返すので、
+    値だけでは区別できない。取消は出馬表の取消行 (scraper.scrape_shutuba / refresh_odds の照合) で
+    確かめて人気 9999 の目印 (race_utils.SCRATCH_SENTINEL) を書き、ここでは人気>=999 と負のオッズを見る。
+    以下は #169 時点の記録 (999.9 を取消とみなした根拠。前日発売の直後を見ていなかった)。
+
+    実データで実際に出る値 (2026-11 時点の確認):
+      - odds = 999.9 (人気=頭数=最下位): 9/05 以降の取消馬は results にこの値で入っている
+        (9/05〜11/01 で17頭、全頭 finish_position=0 = 走っていない)。予測 JSON でも
+        取消が分かった版から 999.9 に変わる (10/31 東京6R 13番は最初の版から、11/01 東京6R
+        13番は 07:32 の版から)。refresh_odds の #149 ガード (odds<=0 or 人気>=999) は通り抜ける。
+      - odds = -3.0 / 人気 = 9999: オッズ API の番兵 (11/05 に確定後の 202605041106 13番で実測)。
+        #149 で results には書かないが、古い行 (8/30 以前) と API キャッシュ経由の保険。
+      ※ 出馬表ページの取消表示 (tr.HorseList.Cancel) は scrape_shutuba が読んでいないので
+        ここでは使えない (読めるようになれば最も確実な信号)。
+    ※ 999.9倍は JRA の表示上限でもあり、実際に走った大穴も 2021〜2024 に5頭いる
+      (全頭12着以下)。予想時点では取消と区別できないが、その5頭はどれも印に値しない
+      馬なので、取消側に倒す (印の候補から外れるだけで、行も LGB の確率も残る)。
+    #170: 判定の本体は race_utils.is_scratch_values (投稿・Threads・買い目・export と共通)。
+    """
+    from race_utils import is_scratch_values
+    return is_scratch_values(odds, popularity)
+
+
+def _scratched_numbers(results_rows, api_odds=None):
+    """#169: 予想時点で取消と分かっている馬番の集合 (results の行 + オッズ API のキャッシュ)。
+
+    行は消さない (#43/#150e: finish_position=0 は取消だけでなく競走中止も含むので、
+    消すと取り返しがつかない)。印の候補と点数表の順位・z の母集団から外すだけに使う。
+    学習側 (scripts/train_scorecard.py) は finish_position>0 の行だけを使っており、
+    本番だけ取消馬が母集団に入っていた食い違いをここで揃える。
+
+    api_odds は cmd_predict の _api_odds_cache[race_id]。results にオッズが 0 の馬がいる時は
+    採点の前に _prefetch_api_odds で埋めてから呼ぶ (それまでは予測行ループの中で初めて API を
+    引いており、ここに渡る時点では常に空 = API でしか分からない取消を母集団から外せなかった)。
+    残る穴: results の全馬に正のオッズが入っていると API を引かないので、取消後も古い正の
+    オッズが残った馬は分からない (refresh_odds の #149 ガードは番兵 -3.0/9999 を書かない)。
+    9/05〜11/01 の取消17頭は全頭 results が 999.9 で、この穴に当たった例は無い。最も確実なのは
+    出馬表の取消行 (tr.HorseList.Cancel) を読むこと (E 班の範囲)。
+    """
+    out = set()
+    # #171: 確定済み (1着がいる) のレースを作り直す時 (バックテスト・復旧) は、着順の無い 999.9倍も
+    # 取消とみなす。#171 より前の取消馬は 999.9倍・人気=頭数で入っている (export と同じ救済)。
+    # 発走前のレースには効かない (票の少ない 999.9倍の走る馬を取消にしない)。
+    def _fin(r):
+        try:
+            return int(r["finish_position"] or 0)
+        except (TypeError, ValueError, KeyError, IndexError):
+            return 0
+    _confirmed = any(_fin(r) == 1 for r in results_rows or [])
+    for r in results_rows or []:
+        try:
+            hn = int(r["horse_number"])
+        except (TypeError, ValueError, KeyError, IndexError):
+            continue
+        if _is_scratch_odds(r["odds"], r["popularity"]):
+            out.add(hn)
+        elif _confirmed and _fin(r) == 0:
+            try:
+                if float(r["odds"] or 0) >= 999.9:
+                    out.add(hn)
+            except (TypeError, ValueError):
+                pass
+    for hn, od in (api_odds or {}).items():
+        if isinstance(od, dict) and _is_scratch_odds(od.get("odds_win"), od.get("popularity")):
+            try:
+                out.add(int(hn))
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def _prefetch_api_odds(race_id, results_rows, horse_numbers):
+    """#169: 予測対象の馬に results のオッズが 0 の馬がいれば、点数表の採点より前に API を引く。
+
+    条件と書き込みは予測行ループ内の取得 (「resultsテーブルにオッズがない場合、APIから直接取得」)
+    と同じ。引く時点を採点の前に移しただけで、API が値を返せば引く回数は増えない (ここで埋まれば
+    ループ内の取得はキャッシュを見て引かない)。API が空を返した時だけ、ループ内で従来どおり
+    引き直すので1回増える。
+    """
+    if _api_odds_cache.get(race_id):
+        return
+    nums = {int(x) for x in horse_numbers}
+    if not any(int(r["horse_number"]) in nums and not ((r["odds"] or 0) > 0)
+               for r in results_rows or []):
+        return
+    try:
+        from refresh_odds import fetch_odds_from_api
+        api_odds = fetch_odds_from_api(race_id)
+        if api_odds:
+            _api_odds_cache[race_id] = api_odds
+            with get_db() as conn2:
+                for hn, od in api_odds.items():
+                    # #150: 取消・除外センチネル (-3.0倍 / 9999人気) は results に書かない (#149)
+                    if (od.get("odds_win") or 0) <= 0 or (od.get("popularity") or 0) >= 999:
+                        continue
+                    conn2.execute(
+                        "UPDATE results SET odds = ?, popularity = ? WHERE race_id = ? AND horse_number = ?"
+                        # #171: 取消の目印 (人気9999) を API の 999.9倍・人気=頭数で上書きしない
+                        " AND NOT (COALESCE(popularity, 0) >= 999 AND finish_position = 0)",
+                        (od["odds_win"], od["popularity"], race_id, hn))
+            print(f"  📡 APIからオッズ取得: {len(api_odds)}頭 (採点前 #169)")
+    except Exception as e:
+        print(f"  ⚠️ APIオッズ取得失敗: {e}")
+
+
+def _attach_scorecard(pred_df, race_id=None, exclude=None):
+    """pred_df に _sc_points (合計点) と _sc_reasons (内訳) を付与。
+
+    #145: ◎ を「説明できる点数表」から選ぶための土台。
+    失敗しても純加算なので既存挙動は壊れない (点数0 = 従来ロジックにフォールバック)。
+
+    #169: exclude (予想時点で分かっている取消馬の馬番) は、レース内順位と z の母集団から
+    外して採点する。旧実装は取消馬も母集団に入れていたため、10/31 東京6R では取消の13番が
+    順位の枠を1つ使い ◎10番/○12番の順が入れ替わっていた (外すと12番が◎)。
+    取消馬自身は採点しない (点数0・内訳なし) — 学習側も取消馬は採点していない。
+    """
+    global _SCORECARD
+    m = _load_scorecard()
+    if not m:
+        pred_df["_sc_points"] = 0.0
+        pred_df["_sc_reasons"] = [[] for _ in range(len(pred_df))]
+        return pred_df
+    try:
+        from ml.scorecard import required_columns, score_with_reasons
+        # v2 の点数表は区分項目の一部を外し (drop)、連続項目 (form_cls5 / tb_min5) と
+        # 過去走の有無 (has_past_runs) を使う。モデルが実際に使う列だけを要求する。
+        need = required_columns(m)
+        missing = [c for c in need if c not in pred_df.columns]
+        _cm_targets = set((m.get("col_map") or {}).values())
+        if missing and _cm_targets and set(missing) <= _cm_targets:
+            # #168: V2d の列だけが無い (基準表が途中で読めなくなった等) → 指数の区分を現行の
+            # si_avg/si_latest で代用 (_load_scorecard と同じ扱い)
+            from ml.scorecard import without_col_map
+            _SCORECARD = m = without_col_map(m, f"V2d の列 {sorted(missing)} が作られていない")
+            print(f"  🚨 点数表: V2d の列 {sorted(missing)} が無い → 指数の区分は現行の si_avg/si_latest で代用")
+            need = required_columns(m)
+            missing = [c for c in need if c not in pred_df.columns]
+        if missing:
+            # #134 の silent 無効化の再発防止 — 黙って0にせず必ず警告する
+            print(f"  ⚠️ 点数表: 特徴量 {len(missing)}列が無い ({missing[:3]}...) → 点数0")
+            pred_df["_sc_points"] = 0.0
+            pred_df["_sc_reasons"] = [[] for _ in range(len(pred_df))]
+            return pred_df
+        d = pred_df.copy()
+        if "race_id" not in d.columns:
+            d["race_id"] = race_id or "x"
+        _keep = None
+        if exclude:
+            import numpy as np
+            import pandas as pd
+            _keep = ~pd.to_numeric(d["horse_number"], errors="coerce").isin(list(exclude)).to_numpy()
+            if not _keep.any() or _keep.all():
+                _keep = None       # 全頭取消 (あり得ない) / 該当なし → 従来どおり全頭で採点
+        if _keep is None:
+            pts, reasons = score_with_reasons(d, m)
+        else:
+            _pk, _rk = score_with_reasons(d[_keep], m)
+            pts = np.zeros(len(d))
+            pts[_keep] = _pk
+            reasons = [[] for _ in range(len(d))]
+            for _j, _i in enumerate(np.flatnonzero(_keep)):
+                reasons[_i] = _rk[_j]
+            print(f"  ✂️ 取消 {int((~_keep).sum())}頭を点数表の母集団から除外 (馬番 "
+                  f"{sorted(int(x) for x in exclude)}) #169")
+        pred_df["_sc_points"] = pts
+        pred_df["_sc_reasons"] = reasons
+        # #175: 影の点数表 (同じ母集団・同じ特徴量)。印には使わない
+        _sh = _shadow_points(d, _keep)
+        if _sh is not None:
+            pred_df["_sc_points_shadow"] = _sh
+    except Exception as e:
+        print(f"  ⚠️ 点数表の計算失敗 ({e}) → 点数0")
+        pred_df["_sc_points"] = 0.0
+        pred_df["_sc_reasons"] = [[] for _ in range(len(pred_df))]
+    return pred_df
+
+
+def _si_display_fields(row):
+    """#169: 点数表が V2d (si_avg_v) で区分を作ったレースだけ、その値をキャッシュに書く。
+    画面の SI・「能」バッジ・Threads の「スピード指数」を内訳の「平均スピード指数 N位」と
+    同じ値にそろえるため (旧指数 si_avg のままだと印馬の4割強で区分と順位が食い違った)。
+    代用モード・点数表なしでは書かない (表示は si_avg = 内訳と同じ値のまま)。"""
+    try:
+        from ml.si_display import fields_from_row
+        return fields_from_row(row, _SCORECARD)
+    except Exception:
+        return {}
+
+
+def cmd_collect(args):
+    """データ収集コマンド"""
+    scraper = NetkeibaScraper()
+
+    if args.date:
+        # 特定日のレースを収集
+        print(f"🏇 {args.date} のレースデータを収集...")
+        race_ids = scraper.get_race_list_by_date(args.date)
+        # 🐴 #159: 当日一覧は取りこぼす (2歳新馬が shutuba_debut.html で漏れていた実績、
+        # および netkeiba 側の日付ズレ)。**DB に登録済みのその日のレースを必ず合流**させる。
+        # 一覧は「増やす」方向にしか使わないので、漏れても DB が保険になる。
+        try:
+            _d = args.date
+            _iso = f"{_d[:4]}-{_d[4:6]}-{_d[6:8]}" if len(_d) == 8 else _d
+            with get_db() as _c:
+                _db_ids = [r[0] for r in _c.execute(
+                    "SELECT race_id FROM races WHERE race_date=? ORDER BY race_id", (_iso,))]
+            _add = [r for r in _db_ids if r not in race_ids]
+            if _add:
+                print(f"  ➕ DB から {len(_add)} レースを合流 (一覧の取りこぼし補完 #159)")
+                race_ids = list(race_ids) + _add
+        except Exception as _e:
+            print(f"  ⚠️ DB合流に失敗 (一覧のみで続行): {_e}")
+        for i, rid in enumerate(race_ids):
+            print(f"  [{i+1}/{len(race_ids)}] {rid}")
+            data = scraper.scrape_race_result(rid)
+            if data and data.get("results"):
+                scraper.save_race_to_db(data)
+            else:
+                # 未来のレース: 出馬表から取得
+                shutuba = scraper.scrape_shutuba(rid)
+                if shutuba and shutuba.get("entries"):
+                    # #169: 出馬表に天候・馬場がまだ無い (発表前) 時に既存の値を空で消さない
+                    from race_meta import keep_existing_race_meta
+                    shutuba = keep_existing_race_meta(rid, shutuba)
+                    with get_db() as conn:
+                        conn.execute("""
+                            INSERT OR REPLACE INTO races
+                            (race_id, race_date, venue, race_number, race_name, grade,
+                             distance, surface, direction, weather, track_condition, horse_count, start_time)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            # #106: shutuba の日付パース失敗時に race_date="" で既存の正しい行を
+                            # 上書きし、export が「レースなし」で静かに全滅する事故 (7/11実発生)。
+                            rid, shutuba.get("race_date") or f"{args.date[:4]}-{args.date[4:6]}-{args.date[6:8]}",
+                            shutuba.get("venue", ""), shutuba.get("race_number", 0),
+                            shutuba.get("race_name", ""), shutuba.get("grade", ""),
+                            shutuba.get("distance", 0), shutuba.get("surface", ""),
+                            shutuba.get("direction", ""), shutuba.get("weather", ""),
+                            shutuba.get("track_condition", ""),
+                            len(shutuba.get("entries", [])),
+                            shutuba.get("start_time", "")
+                        ))
+                        for e in shutuba.get("entries", []):
+                            if e.get("horse_id"):
+                                # 生年は horse_id 先頭4桁。既存行は NULL の時だけ埋める (他の列は従来どおり触らない)
+                                from database import birth_year_from_horse_id, BIRTH_YEAR_FILL_SQL
+                                conn.execute(f"""
+                                    INSERT INTO horses (horse_id, horse_name, sex, birth_year)
+                                    VALUES (?, ?, ?, ?)
+                                    ON CONFLICT(horse_id) DO UPDATE SET {BIRTH_YEAR_FILL_SQL}
+                                """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", ""),
+                                      birth_year_from_horse_id(e["horse_id"])))
+                            if e.get("jockey_id"):
+                                conn.execute("""
+                                    INSERT OR IGNORE INTO jockeys (jockey_id, jockey_name)
+                                    VALUES (?, ?)
+                                """, (e["jockey_id"], e.get("jockey_name", "")))
+                            if e.get("trainer_id"):
+                                conn.execute("""
+                                    INSERT OR IGNORE INTO trainers (trainer_id, trainer_name)
+                                    VALUES (?, ?)
+                                """, (e["trainer_id"], e.get("trainer_name", "")))
+                            conn.execute("""
+                                INSERT OR IGNORE INTO results
+                                (race_id, horse_id, jockey_id, trainer_id,
+                                 post_position, horse_number, odds, popularity,
+                                 finish_position, finish_time, finish_time_seconds,
+                                 margin, last_3f, passing_order, weight, weight_change, impost)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                rid, e.get("horse_id", ""),
+                                e.get("jockey_id", ""), e.get("trainer_id", ""),
+                                e.get("post_position", 0), e.get("horse_number", 0),
+                                0, 0, 0, "", 0, "", 0, "", 0, 0, e.get("impost", 0)
+                            ))
+                    print(f"  📋 出馬表保存: {len(shutuba['entries'])}頭")
+                else:
+                    print(f"  ⚠️ データ取得失敗: {rid}")
+    else:
+        # 期間指定で収集
+        start_y = args.start_year or 2024
+        start_m = args.start_month or 1
+        end_y = args.end_year or start_y
+        end_m = args.end_month or 12
+        scraper.collect_range(start_y, start_m, end_y, end_m)
+
+    # 収集結果を表示
+    with get_db() as conn:
+        race_count = conn.execute("SELECT COUNT(*) as c FROM races").fetchone()["c"]
+        result_count = conn.execute("SELECT COUNT(*) as c FROM results").fetchone()["c"]
+        print(f"\n📊 DB状況: {race_count}レース / {result_count}出走データ")
+
+
+def cmd_train(args):
+    """モデル学習コマンド（fast_train.pyに委譲）"""
+    import subprocess
+    script = os.path.join(os.path.dirname(__file__), "fast_train.py")
+    print("🧠 高速学習パイプラインを起動...")
+    print("   (fast_train.py に委譲)\n")
+    result = subprocess.run(
+        [sys.executable, script],
+        cwd=os.path.dirname(__file__)
+    )
+    sys.exit(result.returncode)
+
+
+# ── 最後の作り直しの開始時刻 (#173) ─────────────────────────────
+# 開催当日は 9:00 の odds_flash (refresh → predict) が最後の作り直しで、9:30 (確定) に投稿する。
+# 11/07 は 9:00 の odds_flash (09:14〜09:19) の後に、遅れて発火した 05:30 の predict cron
+# (concurrency で待って 09:20 開始) が 09:22〜09:29:59 にもう一度全レースを作り直し、投稿14Rの
+# うち4Rで ☆/注 が入れ替わった (◎○▲△△ はオッズ非依存の点数表なので不変)。09:11 の
+# workflow_run (fetch 完了 → predict) の作り直しもあった。
+# このため開催当日の 9:00 以降は、odds_flash 以外の予測 (type=predict の cron・workflow_run・
+# dispatch、preflight の自動修復) は「予測の無いレースだけ」を作る (--only-missing)。
+# ただし時刻だけでは決めない: 9:00 以降の作り直しが実際に済んだ (= その日の予測の過半数が
+# 9:00 以降に作られた) 時だけ。odds_flash が作り直さない日がある — auto_post_x の concurrency は
+# 待機を1本しか持たず、後から来た run が待機中の odds_flash を取り消す (11/07 は 23 秒差で
+# 免れた) / refresh_entries に失敗すると odds_flash は再予測しない (ENTRIES_OK=0)。その日に
+# 時刻だけで止めると 9:00 以降の作り直しが1度も起きず、☆/注 は 9:00 前のオッズのまま投稿され、
+# その後の取消も印に残る。作り直しが済んでいなければ、9:30 までは遅れて来た predict が最後の
+# 作り直しを引き受ける (途中で 9:30 を過ぎた分は #172 の途中停止が止める)。
+# 確定時刻は race_utils.PREDICTION_LOCK_JST (ここには書かない)。
+FINAL_REBUILD_JST = (9, 0)
+
+
+def final_rebuild_done(target_date):
+    """今日 9:00 以降に、その日の予測の作り直しが済んだ証拠があるか (#173)。
+
+    その日 (races.race_date) の予測キャッシュの**過半数**が 9:00 JST 以降に作られていれば済んだとみなす。
+    「全部」にしないのは、作り直しでも odds 充足ゲート (#52) などで見送ったレースは古い版が残るため。
+    「1件でも」にしないのは、予測の無いレースだけを作った分 (preflight の欠け埋め・幽霊馬の
+    レース単位の再予測) を作り直しと取り違えないため。キャッシュが1件も無ければ済んでいない
+    (どの範囲でも全レースを作ることになる)。
+    created_at は UTC ('YYYY-MM-DD HH:MM:SS'、predict が書くたびに datetime('now')、
+    db_merge_predictions は新しい方を残す) なので、9:00 JST を UTC に直して比べる。
+    読めない時は True (作り直さない側。予測の無いレースは作るので欠けは埋まる)。"""
+    d = str(target_date or "").replace("-", "")[:8]
+    if len(d) != 8 or not d.isdigit():
+        return True
+    jst = timezone(timedelta(hours=9))
+    since_utc = (datetime(int(d[:4]), int(d[4:6]), int(d[6:8]), *FINAL_REBUILD_JST, tzinfo=jst)
+                 .astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n_all, "
+                "       SUM(CASE WHEN datetime(pc.created_at) >= datetime(?) THEN 1 ELSE 0 END) AS n_new "
+                "FROM predictions_cache pc JOIN races r ON r.race_id = pc.race_id "
+                "WHERE r.race_date IN (?, ?)",
+                (since_utc, f"{d[:4]}-{d[4:6]}-{d[6:8]}", d)).fetchone()
+    except Exception as e:
+        print(f"⚠️ 9:00 以降の作り直しの有無を判定できない ({type(e).__name__}: {e}) → 済んだ扱い (#173)")
+        return True
+    n_all, n_new = (row[0] or 0), (row[1] or 0)
+    return n_new > 0 and n_new * 2 >= n_all
+
+
+def rebuild_scope_for(target_date, now=None):
+    """開催日 target_date (YYYYMMDD / YYYY-MM-DD) の予測を、odds_flash 以外の経路が
+    今どこまで作り直してよいか (#173)。
+
+    'locked'  … 確定済み (過去の日 / 今日の確定 9:30 以降) → 作り直さない (#172)
+    'missing' … 今日の 9:00〜確定で、9:00 以降の作り直しが済んでいる → 予測の無いレースだけ作る
+    'full'    … 今日の 9:00 より前 / 未来の日 / 今日の 9:00〜確定で 9:00 以降の作り直しが
+                まだ無い → 全レースを作り直してよい (final_rebuild_done)
+
+    日付が読めない時は時刻だけで判定する (race_utils.prediction_locked_for と同じ扱い)。
+    odds_flash (最後の作り直し) はこれを見ない。"""
+    from race_utils import prediction_locked_for
+    if now is None:
+        now = datetime.now(timezone(timedelta(hours=9)))
+    if prediction_locked_for(target_date, now):
+        return 'locked'
+    d = str(target_date or "").replace("-", "")[:8]
+    if len(d) == 8 and d.isdigit() and d != now.strftime("%Y%m%d"):
+        return 'full'      # 未来の日 (過去の日は上で locked)
+    if (now.hour, now.minute) < FINAL_REBUILD_JST:
+        return 'full'
+    return 'missing' if final_rebuild_done(target_date) else 'full'
+
+
+def cmd_predict(args):
+    """レース予測コマンド"""
+    model = KeibaModel()
+    strategy = BettingStrategy()
+    speed_calc = SpeedIndexCalculator()
+
+    if args.race_id:
+        # #173: カンマ区切りで複数を受ける (preflight の欠け埋め・幽霊馬の再予測を1プロセスで
+        # 回す。レースごとに別プロセスだとモデル・統計の読み込みが毎回かかる。ローカル実測で
+        # 1レース 0〜11秒の上乗せ = 機械の負荷で揺れる)
+        race_ids = [r.strip() for r in str(args.race_id).split(",") if r.strip()]
+    elif args.date:
+        scraper = NetkeibaScraper()
+        race_ids = scraper.get_race_list_by_date(args.date)
+        # 🐴 #159: 当日一覧は取りこぼす (2歳新馬が shutuba_debut.html で漏れていた実績、
+        # および netkeiba 側の日付ズレ)。**DB に登録済みのその日のレースを必ず合流**させる。
+        # 一覧は「増やす」方向にしか使わないので、漏れても DB が保険になる。
+        try:
+            _d = args.date
+            _iso = f"{_d[:4]}-{_d[4:6]}-{_d[6:8]}" if len(_d) == 8 else _d
+            with get_db() as _c:
+                _db_ids = [r[0] for r in _c.execute(
+                    "SELECT race_id FROM races WHERE race_date=? ORDER BY race_id", (_iso,))]
+            _add = [r for r in _db_ids if r not in race_ids]
+            if _add:
+                print(f"  ➕ DB から {len(_add)} レースを合流 (一覧の取りこぼし補完 #159)")
+                race_ids = list(race_ids) + _add
+        except Exception as _e:
+            print(f"  ⚠️ DB合流に失敗 (一覧のみで続行): {_e}")
+    else:
+        print("❌ --race-id か --date を指定してください")
+        return
+
+    # ─── #173: --only-missing = 予測キャッシュの無いレースだけを作る ───
+    # 既に予測があるレースは作り直さない (オッズが動いても ☆/注 を入れ替えない)。対象から
+    # 先に外すので、下の確定ロック (先頭レースの cache で判定) にも掛からず、確定後でも
+    # 無いレースは作れる。外したレースは「予測しなかった」扱いにしない (スキップ一覧・
+    # 11R の異常終了・スナップショットに入れない)。判定は確定ロックと同じ「行があるか」。
+    if getattr(args, 'only_missing', False) and race_ids:
+        with get_db() as _mc:
+            _ph = ",".join("?" * len(race_ids))
+            _have = {r[0] for r in _mc.execute(
+                f"SELECT race_id FROM predictions_cache WHERE race_id IN ({_ph})", list(race_ids))}
+        _n_all = len(race_ids)
+        race_ids = [r for r in race_ids if r not in _have]
+        print(f"🧩 --only-missing: 予測の無い {len(race_ids)}/{_n_all} レースだけ作る "
+              f"(予測のある {_n_all - len(race_ids)} レースは作り直さない #173)")
+        if not race_ids:
+            print("✅ 全レースに予測あり → 何も作らない")
+            return
+
+    # silent skip 検知: 各continueでreason付きで記録
+    _predicted_count = 0
+    _skipped_races = []  # [(race_id, reason), ...]
+
+    # ─── 確定ロック: 既存キャッシュがある場合は再予測を禁止 ───
+    # #172: 10:00 → 9:30 (1R の発走前に確定させる)。時刻は race_utils.PREDICTION_LOCK_JST
+    # 対象日ごとに判定する (金曜夜に土曜分を作る前夜予想は確定前 = 作り直してよい)
+    from race_utils import prediction_locked_for, PREDICTION_LOCK_LABEL
+    force = getattr(args, 'force', False)
+    _lock_date = getattr(args, 'date', None)
+    if not _lock_date and race_ids:
+        try:
+            with get_db() as _lc:
+                _r = _lc.execute("SELECT race_date FROM races WHERE race_id = ?", (race_ids[0],)).fetchone()
+                _lock_date = _r['race_date'] if _r else None
+        except Exception:
+            _lock_date = None
+    if not force and prediction_locked_for(_lock_date) and race_ids:
+        with get_db() as conn:
+            existing = conn.execute(
+                "SELECT COUNT(*) as c FROM predictions_cache WHERE race_id = ?",
+                (race_ids[0],)
+            ).fetchone()
+            if existing and existing['c'] > 0:
+                print(f"🔒 {PREDICTION_LOCK_LABEL}以降のため予測を再実行しません（確定済み・既存キャッシュを使用）")
+                print("   強制実行する場合: --force オプションを追加")
+                return
+
+    # UI-3 fix: 予測前に馬場状態が空のレースがあれば取得
+    # #169: 取得は 場×芝ダ ごと、埋めるのも同じ場・同じ芝ダの空のレースだけにする
+    # (旧実装は場単位で、芝の馬場をダートの空欄にも書いていた。EUC-JP 強制で
+    #  一度も取れていなかったため表面化しなかったが、#169 で取れるようにしたので同時に直す)。
+    # #169 レビュー: refresh_odds と同じく「着順が確定したレースは書き換えない」。確定レースの
+    # 馬場は結果ページの値 (= 学習が使う正本) なので、発走後に予測が走った時に予測時点の
+    # 発表値で埋めると、空でなくなるぶん充足率の検査でも見つからない。代表レースも
+    # 着順未確定のものから選び、取得の間は 1 秒あける (旧実装はループの後に 0.5 秒が1回だけ)。
+    if race_ids:
+        try:
+            import time as _t
+            from refresh_odds import fetch_track_condition
+            groups = {}
+            with get_db() as conn:
+                for rid in race_ids:
+                    r = conn.execute("""
+                        SELECT venue, surface, track_condition, race_date FROM races g
+                        WHERE race_id = ?
+                          AND NOT EXISTS (SELECT 1 FROM results x
+                                          WHERE x.race_id = g.race_id AND x.finish_position > 0)
+                    """, (rid,)).fetchone()
+                    if r and not r["track_condition"]:
+                        groups.setdefault((r["venue"], r["surface"]), (rid, r["race_date"]))
+            for i, ((venue, surface), (rid, race_date)) in enumerate(groups.items()):
+                if i:
+                    _t.sleep(1.0)
+                track_info = fetch_track_condition(rid)
+                if track_info and track_info.get("track_condition"):
+                    tc = track_info["track_condition"]
+                    wt = track_info.get("weather", "")
+                    with get_db() as conn:
+                        conn.execute("""
+                            UPDATE races SET track_condition = ?,
+                                             weather = COALESCE(NULLIF(?, ''), weather)
+                            WHERE venue = ? AND surface = ? AND (race_date = ? OR race_date = ?)
+                              AND (track_condition IS NULL OR track_condition = '')
+                              AND NOT EXISTS (SELECT 1 FROM results x
+                                              WHERE x.race_id = races.race_id
+                                                AND x.finish_position > 0)
+                        """, (tc, wt, venue, surface, race_date, race_date.replace("-", "")))
+                    print(f"  🏇 {venue}{surface}: 馬場={tc} 天候={wt}")
+        except Exception as e:
+            print(f"  ⚠️ 馬場状態の取得をスキップ: {e}")
+
+    for race_id in race_ids:
+        print(f"\n{'='*60}")
+        print(f"🏇 レース予測: {race_id}")
+        print(f"{'='*60}")
+
+        # ── #172: 処理中に確定 (9:30) を過ぎたら、残りのレースは作り直さない ──
+        # 確定ロックは冒頭で1回しか見ておらず、9:2x に始まった作り直し (36レースで約8分) は
+        # 9:30 を過ぎても続き、ダッシュボードの最終版が 1R の直前まで動いていた。
+        # 予測が既にあるレースだけ止める (無いレースは作る = ダッシュボードの欠けを出さない)。
+        if not force and _lock_date and prediction_locked_for(_lock_date):
+            with get_db() as _lc2:
+                _has_cache = _lc2.execute("SELECT 1 FROM predictions_cache WHERE race_id = ?",
+                                          (race_id,)).fetchone()
+            if _has_cache:
+                print(f"🔒 {race_id}: 予想の確定 ({PREDICTION_LOCK_LABEL}) を過ぎた → 作り直さない (既存の予測を残す #172)")
+                _skipped_races.append((race_id, f'確定 {PREDICTION_LOCK_LABEL} 以降'))
+                continue
+
+        # ── 投稿済 seal チェック ──
+        # 一度 post_predict された予測は、--force でも上書き禁止。
+        # (結果配信時に「投稿時の予測」と異なる予測を引かないため)
+        from database import is_prediction_sealed
+        if is_prediction_sealed(race_id):
+            print(f"🔒 {race_id}: 投稿済(seal)のため再予測スキップ")
+            _skipped_races.append((race_id, '投稿済 seal'))
+            continue
+
+        # レース情報取得
+        with get_db() as conn:
+            race = conn.execute(
+                "SELECT * FROM races WHERE race_id = ?", (race_id,)
+            ).fetchone()
+            results = conn.execute("""
+                SELECT r.*, h.horse_name, j.jockey_name
+                FROM results r
+                LEFT JOIN horses h ON r.horse_id = h.horse_id
+                LEFT JOIN jockeys j ON r.jockey_id = j.jockey_id
+                WHERE r.race_id = ?
+                ORDER BY r.horse_number
+            """, (race_id,)).fetchall()
+
+        if not race:
+            # 未来レース: 出馬表をスクレイピングして保存
+            print(f"  📡 出馬表を取得中...")
+            scraper = NetkeibaScraper()
+            # #169: ページから日付が読めない時は --date を既定値に (race_date="" で保存しない)
+            shutuba = scraper.scrape_shutuba(race_id, race_date_hint=getattr(args, "date", None))
+            if shutuba and shutuba.get("entries"):
+                # レース情報をDBに保存
+                with get_db() as conn:
+                    conn.execute("""
+                        INSERT OR REPLACE INTO races
+                        (race_id, race_date, venue, race_number, race_name, grade,
+                         distance, surface, direction, weather, track_condition, horse_count, start_time)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        race_id, shutuba.get("race_date", ""),
+                        shutuba.get("venue", ""), shutuba.get("race_number", 0),
+                        shutuba.get("race_name", ""), shutuba.get("grade", ""),
+                        shutuba.get("distance", 0), shutuba.get("surface", ""),
+                        shutuba.get("direction", ""), shutuba.get("weather", ""),
+                        shutuba.get("track_condition", ""),
+                        len(shutuba.get("entries", [])),
+                        shutuba.get("start_time", "")
+                    ))
+
+                    # 各馬のエントリーをresultsテーブルに保存（finish_position=0で未確定）
+                    entries = shutuba.get("entries", [])
+                    # 🆕 幽霊馬対策 (#43): 最新スクレイプの馬番に無い結果未確定レコードを削除
+                    # (枠順確定前の仮馬番が確定後も残る「幽霊馬」を根絶。save_race_to_db と同じ)
+                    _snums = [e.get("horse_number", 0) for e in entries if e.get("horse_number")]
+                    # #150e: 5頭未満のスクレイプは取得失敗とみなし削除しない
+                    # (部分取得で出走馬を消す事故: 9/5 札幌4R 14頭→1頭)
+                    if _snums and len(_snums) < 5:
+                        print(f"  🛡 {race_id}: 同期削除をスキップ ({len(_snums)}頭のみ取得)")
+                        _snums = []
+                    if _snums:
+                        _ph = ",".join("?" * len(_snums))
+                        conn.execute(
+                            f"DELETE FROM results WHERE race_id = ? AND finish_position = 0 "
+                            f"AND horse_number NOT IN ({_ph})",
+                            (race_id, *_snums)
+                        )
+                    for e in entries:
+                        if e.get("horse_id"):
+                            # #90: 化け名(U+FFFD)なら正しい名で自己修復 (OR IGNOREだと残存)
+                            # 生年は horse_id 先頭4桁。既存行は NULL の時だけ埋める
+                            from database import birth_year_from_horse_id, BIRTH_YEAR_FILL_SQL
+                            conn.execute(f"""
+                                INSERT INTO horses (horse_id, horse_name, sex, birth_year)
+                                VALUES (?, ?, ?, ?)
+                                ON CONFLICT(horse_id) DO UPDATE SET
+                                    horse_name = CASE
+                                        WHEN (horses.horse_name IS NULL OR horses.horse_name = ''
+                                              OR horses.horse_name LIKE '%'||CHAR(65533)||'%')
+                                             AND excluded.horse_name != ''
+                                             AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
+                                        THEN excluded.horse_name ELSE horses.horse_name END,
+                                    {BIRTH_YEAR_FILL_SQL}
+                            """, (e["horse_id"], e.get("horse_name", ""), e.get("sex", ""),
+                                  birth_year_from_horse_id(e["horse_id"])))
+                        if e.get("jockey_id"):
+                            conn.execute("""
+                                INSERT OR IGNORE INTO jockeys (jockey_id, jockey_name)
+                                VALUES (?, ?)
+                            """, (e["jockey_id"], e.get("jockey_name", "")))
+                        if e.get("trainer_id"):
+                            conn.execute("""
+                                INSERT OR IGNORE INTO trainers (trainer_id, trainer_name)
+                                VALUES (?, ?)
+                            """, (e["trainer_id"], e.get("trainer_name", "")))
+
+                        conn.execute("""
+                            INSERT OR REPLACE INTO results
+                            (race_id, horse_id, jockey_id, trainer_id,
+                             post_position, horse_number, odds, popularity,
+                             finish_position, finish_time, finish_time_seconds,
+                             margin, last_3f, passing_order, weight, weight_change, impost)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            race_id, e.get("horse_id", ""),
+                            e.get("jockey_id", ""), e.get("trainer_id", ""),
+                            e.get("post_position", 0), e.get("horse_number", 0),
+                            # #171: 出馬表の取消行は scraper が目印 (999.9倍・人気9999) を入れている
+                            e.get("odds", 0) or 0, e.get("popularity", 0) or 0,
+                            0, "", 0, "", 0, "", 0, 0,
+                            e.get("impost", 0)
+                        ))
+
+                # 保存後に再取得
+                with get_db() as conn:
+                    race = conn.execute(
+                        "SELECT * FROM races WHERE race_id = ?", (race_id,)
+                    ).fetchone()
+                    results = conn.execute("""
+                        SELECT r.*, h.horse_name, j.jockey_name
+                        FROM results r
+                        LEFT JOIN horses h ON r.horse_id = h.horse_id
+                        LEFT JOIN jockeys j ON r.jockey_id = j.jockey_id
+                        WHERE r.race_id = ?
+                        ORDER BY r.horse_number
+                    """, (race_id,)).fetchall()
+                print(f"  ✅ {len(results)}頭の出馬表を取得")
+            else:
+                print(f"  ⚠️ 出馬表を取得できませんでした")
+                _skipped_races.append((race_id, '出馬表取得失敗'))
+                continue
+
+        if not race:
+            print(f"  ⚠️ レースデータが見つかりません")
+            _skipped_races.append((race_id, 'レースデータ無し'))
+            continue
+
+        race_info = dict(race)
+
+        # ── 🆕 #52 (2026-06-08): オッズ充足ゲート (全D化の最終防御) ──
+        # model_rank は gain の 92% が odds_log。出走馬の odds が全頭 0 のまま予測すると
+        # rank_score がフラット化し、全レース confidence=D の degenerate 予測になる
+        # (6/7 の事故)。予測の「前」に odds を確認し、全頭0なら API 取得を試みる。
+        # それでも0なら degenerate を書かず、このレースを skip して既存 cache を保持する。
+        # (refresh_odds が後で走れば次サイクルで正常予測される)
+        if not getattr(args, 'allow_zero_odds', False):
+            # #173: 取消の目印 (999.9倍・人気9999 = race_utils.SCRATCH_SENTINEL) は「オッズあり」と
+            # 数えない。旧版は取消が1頭でもいると、発売前 (走る馬が全頭0) でもゲートを素通りし、
+            # degenerate な予測を作っていた (金夕方・土朝の前夜予想で起きる)。走る馬だけで判定する。
+            from race_utils import is_scratch_values as _is_scr
+            with get_db() as oconn:
+                odds_rows = [r for r in oconn.execute(
+                    "SELECT odds, popularity FROM results WHERE race_id = ?", (race_id,)
+                ).fetchall() if not _is_scr(r['odds'], r['popularity'])]
+            n_horses = len(odds_rows)
+            n_zero = sum(1 for r in odds_rows if not (r['odds'] and r['odds'] > 0))
+            if n_horses > 0 and n_zero == n_horses:
+                print(f"  ⚠️ 全{n_horses}頭 odds=0 → 予測前に API でオッズ取得を試行")
+                try:
+                    from refresh_odds import fetch_odds_from_api
+                    api_odds = fetch_odds_from_api(race_id)
+                    if api_odds:
+                        # #169: キャッシュにも入れる。旧実装は入れておらず、取消の判定
+                        # (_scratched_numbers) に API の値 (999.9倍 / 番兵) が届かなかった
+                        # (予測行ループで同じ API を引き直してから初めて人気に使っていた)。
+                        _api_odds_cache[race_id] = api_odds
+                        # #150: 旧実装は `od.get('win_odds')` を読んでいたが
+                        # refresh_odds.fetch_odds_from_api が返すキーは `odds_win`。
+                        # 常に 0 になり、#52 が用意した「最後の防衛線」は
+                        # 導入(2026-06-08)以来一度も機能していなかった。
+                        _n = 0
+                        with get_db() as oconn:
+                            for hn, od in api_odds.items():
+                                if isinstance(od, dict):
+                                    win = od.get('odds_win', od.get('win_odds', 0)) or 0
+                                    pop = od.get('popularity', 0) or 0
+                                else:
+                                    win, pop = (od or 0), 0
+                                # 取消・除外センチネル (-3.0倍 / 9999人気) は書かない (#149)
+                                if win <= 0 or pop >= 999:
+                                    continue
+                                oconn.execute(
+                                    "UPDATE results SET odds = ?, popularity = ? "
+                                    "WHERE race_id = ? AND horse_number = ?"
+                                    # #171: 取消の目印 (人気9999) を上書きしない
+                                    " AND NOT (COALESCE(popularity, 0) >= 999 AND finish_position = 0)",
+                                    (win, pop, race_id, int(hn))
+                                )
+                                _n += 1
+                        print(f"  📡 API オッズ {_n}頭分を反映 (取得{len(api_odds)}頭)")
+                except Exception as e:
+                    print(f"  ⚠️ API オッズ取得失敗: {e}")
+                # 再確認: まだ全頭0なら degenerate 予測を避けて skip
+                with get_db() as oconn:
+                    odds_rows2 = [r for r in oconn.execute(
+                        "SELECT odds, popularity FROM results WHERE race_id = ?", (race_id,)
+                    ).fetchall() if not _is_scr(r['odds'], r['popularity'])]
+                n_zero2 = sum(1 for r in odds_rows2 if not (r['odds'] and r['odds'] > 0))
+                if n_zero2 == len(odds_rows2) and len(odds_rows2) > 0:
+                    print(f"  🚫 オッズ取得不能 (全頭0) → degenerate 予測を避けて skip (既存cache保持)")
+                    _skipped_races.append((race_id, 'オッズ全頭0 (degenerate回避)'))
+                    continue
+                # #169: API で書いたオッズを読み直す。results は冒頭で読んだまま (全頭0) で、
+                # 取消の判定 (999.9倍) がこの書き込みを見ていなかった。
+                with get_db() as conn:
+                    results = conn.execute("""
+                        SELECT r.*, h.horse_name, j.jockey_name
+                        FROM results r
+                        LEFT JOIN horses h ON r.horse_id = h.horse_id
+                        LEFT JOIN jockeys j ON r.jockey_id = j.jockey_id
+                        WHERE r.race_id = ?
+                        ORDER BY r.horse_number
+                    """, (race_id,)).fetchall()
+
+        # 予測
+        try:
+            pred_df = model.predict_race(race_id)
+        except ValueError as e:
+            print(f"  ⚠️ {e}")
+            _skipped_races.append((race_id, f'predict_race: {e}'))
+            continue
+        except Exception as e:
+            print(f"  ❌ 予期しないエラー: {e}")
+            _skipped_races.append((race_id, f'予期しないエラー: {e}'))
+            continue
+
+        if pred_df.empty:
+            print(f"  ⚠️ 予測データを構築できません")
+            _skipped_races.append((race_id, '予測データ空'))
+            continue
+
+        # 能力スコア (オッズ非依存) を付与 (#72、純加算で既存挙動に影響なし)
+        pred_df = _attach_ability_score(pred_df)
+        # #169: 予想時点で分かっている取消馬 (999.9倍 / API の番兵 -3.0・9999)。
+        # 印の候補と点数表の順位・z の母集団から外す (行は消さない #43/#150e)。
+        # results にオッズ 0 の馬がいる時は、API を採点の前に引いておく (API でしか分からない
+        # 取消を母集団から外すため。引く条件と回数は下の予測行ループ内の取得と同じ)。
+        _prefetch_api_odds(race_id, results, pred_df["horse_number"])
+        _scratched = _scratched_numbers(results, _api_odds_cache.get(race_id))
+        # 説明できる点数表 (#145) を付与。◎ の選定根拠として使う
+        pred_df = _attach_scorecard(pred_df, race_id, exclude=_scratched)
+
+        # ── 追い切り (workout) 補正 — ML 統合できない過去データ不足を補う ──
+        # workouts は 2026年シーズン分のみ (513件) で、ML 学習データに統合できない。
+        # 代替として予測後に grade A/B/C で pred_win/pred_top3 を後処理スケール。
+        # A: 「気力充実」「好調持続」級 → +10%、B: 標準 → ±0、C: 仕上がり微妙 → -7%
+        try:
+            with get_db() as wconn:
+                wrows = wconn.execute(
+                    "SELECT horse_number, evaluation_grade FROM workouts WHERE race_id = ?",
+                    (race_id,)
+                ).fetchall()
+                workout_map = {r['horse_number']: r['evaluation_grade'] for r in wrows}
+        except Exception:
+            workout_map = {}
+
+        if workout_map:
+            # #169: D を追加 (D ≤ C)。旧表に D が無く、D 評価の馬は B と同じ補正なし (×1.0) で
+            # ×0.93 の C より上に来ていた (#70 で補正を入れた時から。#167 まで D は NULL 保存)。
+            # 値の根拠 (2026-07-04〜11-01 の 1,177R・15,405頭、発走前の予測だけ、
+            # 補正前の LGB 複勝確率 pred_top3_abs に対する実際の3着内の比、B=1 とした比、
+            # レース単位ブートストラップ 95%):
+            #   A 1.13 [0.99,1.26] / C 0.80 [0.75,0.86] / D 0.59 [0.43,0.77] / D÷C 0.73 [0.53,0.96]
+            # 既存の C (0.93) は実測の割引 (−20%) の約1/3しか効かせていない控えめな値なので、
+            # D も同じ縮め方で 1 − 0.07 × (0.41 / 0.20) ≈ 0.85 とする。D 単体では実測区間の
+            # 上端 (0.77) より弱い控えめな値で、D÷C = 0.91 は実測区間 (0.53〜0.96) の内側
+            # (= D < C はデータが支持する)。補正そのものの要否 (学習外での比較) は別途
+            # (#169 では D が C より有利という順序の矛盾だけを直す)。
+            WORKOUT_BOOST = {'A': 1.10, 'B': 1.00, 'C': 0.93, 'D': 0.85}
+            for idx in pred_df.index:
+                hn = int(pred_df.at[idx, 'horse_number'])
+                grade = workout_map.get(hn)
+                if grade and grade in WORKOUT_BOOST and WORKOUT_BOOST[grade] != 1.0:
+                    pred_df.at[idx, 'pred_win_norm'] *= WORKOUT_BOOST[grade]
+                    pred_df.at[idx, 'pred_win_display'] *= WORKOUT_BOOST[grade]
+                    pred_df.at[idx, 'pred_top3_norm'] *= WORKOUT_BOOST[grade]
+            # 再正規化 (合計 1.0 を維持) — 意思決定/表示の両チャネル
+            total_win = pred_df['pred_win_norm'].sum()
+            if total_win > 0:
+                pred_df['pred_win_norm'] = pred_df['pred_win_norm'] / total_win
+            total_disp = pred_df['pred_win_display'].sum()
+            if total_disp > 0:
+                pred_df['pred_win_display'] = pred_df['pred_win_display'] / total_disp
+            print(f"  💪 追い切り補正: {len(workout_map)}頭分 (A:+10% / C:-7% / D:-15%)")
+
+        # ── 馬体重変化補正: 廃止 (#95 2026-07-02 ROI監査) ──
+        # 旧 Phase α (#31) は「weight_change は ML model に入っていない」前提で
+        # post-prediction 乗算していたが、実際は ml/features.py L103 で
+        # weight_change/20 が52特徴量に含まれており **二重減点** だった。
+        # (#32 の実測でも Phase α 全適用は baseline 比 -3.9pt と逆効果を確認済み)
+        # ML の学習済み係数に任せ、post-hoc 乗算は行わない。
+
+        # ── 馬場バイアス補正 (Phase α #32, Track 1 完成版: 2026-05-27) ──
+        # 同日 R9+ で同 venue の R1-R8 結果から馬場バイアス (内伸び/外伸び) を推定。
+        # 検出された場合は post-prediction で枠順別に補正。
+        race_number_now = race_info.get("race_number") or 0
+        venue_now = race_info.get("venue") or ""
+        race_date_now = race_info.get("race_date") or ""
+        if race_number_now >= 9 and venue_now and race_date_now:
+            try:
+                from scripts.track_bias_detector import detect_track_bias
+                with get_db() as bconn:
+                    bias = detect_track_bias(bconn, race_date_now, venue_now)
+                if bias and bias.get("confidence") != "low":
+                    fb = bias.get("frame_bias")
+                    if fb in ("inside", "outside"):
+                        # post_position による補正
+                        pp_map = {}
+                        for r in results:
+                            hn = r.get("horse_number") if hasattr(r, 'get') else r["horse_number"]
+                            pp = r.get("post_position") if hasattr(r, 'get') else r["post_position"]
+                            if hn and pp:
+                                pp_map[int(hn)] = int(pp)
+                        adj_count = 0
+                        for idx in pred_df.index:
+                            hn = int(pred_df.at[idx, 'horse_number'])
+                            pp = pp_map.get(hn, 0)
+                            factor = 1.0
+                            if fb == "inside":
+                                if pp <= 3: factor = 1.08
+                                elif pp >= 6: factor = 0.92
+                            elif fb == "outside":
+                                if pp >= 6: factor = 1.08
+                                elif pp <= 3: factor = 0.92
+                            if factor != 1.0:
+                                pred_df.at[idx, 'pred_win_norm'] *= factor
+                                pred_df.at[idx, 'pred_win_display'] *= factor
+                                pred_df.at[idx, 'pred_top3_norm'] *= factor
+                                adj_count += 1
+                        total_win = pred_df['pred_win_norm'].sum()
+                        if total_win > 0:
+                            pred_df['pred_win_norm'] = pred_df['pred_win_norm'] / total_win
+                        total_disp = pred_df['pred_win_display'].sum()
+                        if total_disp > 0:
+                            pred_df['pred_win_display'] = pred_df['pred_win_display'] / total_disp
+                        if adj_count > 0:
+                            print(f"  🏁 馬場バイアス補正: {fb} bias, {adj_count}頭調整 (内 {bias['details']['inside_rate']*100:.0f}% / 外 {bias['details']['outside_rate']*100:.0f}%)")
+            except Exception as e:
+                # 静かに skip (バイアス検出は best-effort)
+                pass
+
+        # 予測結果表示
+        print(f"\n📊 予測結果: {race_info.get('race_name', '')} "
+              f"({race_info['venue']} {race_info['race_number']}R "
+              f"{race_info['surface']}{race_info['distance']}m)")
+        print(f"{'─'*60}")
+        print(f"{'馬番':>4} {'馬名':<12} {'勝率':>7} {'複勝率':>7} {'SI':>6}")
+        print(f"{'─'*60}")
+
+        predictions = []
+        for _, row in pred_df.iterrows():
+            # 馬名取得
+            horse_name = ""
+            for r in results:
+                if r["horse_number"] == row["horse_number"]:
+                    horse_name = r["horse_name"] or ""
+                    break
+
+            print(f"{int(row['horse_number']):>4} {horse_name:<12} "
+                  f"{row['pred_win_norm']:>6.1%} {row['pred_top3']:>6.1%} "
+                  f"{row.get('si_avg', 0):>6.1f}")
+
+            # 推奨馬券生成用データ
+            odds_win = 0
+            odds_place = 0
+            n_horses = len(pred_df)
+            for r in results:
+                if r["horse_number"] == row["horse_number"]:
+                    odds_win = r["odds"] or 0
+                    break
+
+            # FIX: resultsテーブルにオッズがない場合、APIから直接取得
+            if odds_win <= 0 and not _api_odds_cache.get(race_id):
+                try:
+                    from refresh_odds import fetch_odds_from_api
+                    api_odds = fetch_odds_from_api(race_id)
+                    if api_odds:
+                        _api_odds_cache[race_id] = api_odds
+                        # resultsテーブルも更新
+                        with get_db() as conn2:
+                            for hn, od in api_odds.items():
+                                # #150: 取消・除外センチネル (-3.0倍 / 9999人気) を
+                                # results に書き込まない (#149 のガードがこの経路に無かった)
+                                if (od.get("odds_win") or 0) <= 0 or (od.get("popularity") or 0) >= 999:
+                                    continue
+                                conn2.execute(
+                                    "UPDATE results SET odds = ?, popularity = ? WHERE race_id = ? AND horse_number = ?"
+                                    # #171: 取消の目印 (人気9999) を API の 999.9倍・人気=頭数で上書きしない
+                                    " AND NOT (COALESCE(popularity, 0) >= 999 AND finish_position = 0)",
+                                    (od["odds_win"], od["popularity"], race_id, hn))
+                        print(f"  📡 APIからオッズ取得: {len(api_odds)}頭")
+                except Exception as e:
+                    print(f"  ⚠️ APIオッズ取得失敗: {e}")
+
+            # APIキャッシュからオッズを取得
+            if odds_win <= 0 and race_id in _api_odds_cache:
+                api_data = _api_odds_cache[race_id].get(int(row["horse_number"]))
+                if api_data:
+                    odds_win = api_data["odds_win"]
+
+            # C7 fix: 複勝オッズの推定を改善（頭数・人気帯に応じた係数）
+            if odds_win:
+                if odds_win <= 3.0:
+                    place_ratio = 0.28 + (n_horses - 10) * 0.005
+                elif odds_win <= 10.0:
+                    place_ratio = 0.33 + (n_horses - 10) * 0.005
+                else:
+                    place_ratio = 0.40 + (n_horses - 10) * 0.008
+                place_ratio = max(0.20, min(0.55, place_ratio))
+                odds_place = max(round(odds_win * place_ratio, 1), 1.1)
+            else:
+                odds_place = 1.5
+
+            # オッズがない場合（未来レース）→ 予測確率から推定
+            has_real_odds = odds_win > 0
+            if odds_win <= 0 and row["pred_win_norm"] > 0:
+                # 推定オッズ = 0.8 / 予測勝率（JRAの控除率20%を考慮）
+                odds_win = max(round(0.8 / row["pred_win_norm"], 1), 1.2)
+                odds_place = max(round(0.8 / (row["pred_top3_norm"] / 3), 1), 1.1)
+
+            predictions.append({
+                "horse_number": int(row["horse_number"]),
+                "horse_name": horse_name,
+                # pred_win = 意思決定用 (温度1)。EV/Kelly/should_bet/confidence が使う。
+                "pred_win": row["pred_win_norm"],
+                # pred_win_display = 表示専用 (温度×3、本命明確化)。投稿/UI の「AI勝率」。
+                "pred_win_display": float(row.get("pred_win_display", row["pred_win_norm"])),
+                # pred_top3 = レース内シェア (合計~1.0)。confidence/betting の
+                # チューニング済みスケール — 変更禁止 (#95)。
+                "pred_top3": row["pred_top3_norm"] / 3,
+                # pred_top3_abs = 校正済みの真の複勝確率 P(3着内) (レース合計~3.0)。
+                # 表示と将来の place系EV再チューニング用 (#95 で追加、データ蓄積中)。
+                "pred_top3_abs": float(row.get("pred_top3", 0) or 0),
+                "rank_score": round(float(row.get("rank_score", 0)), 3),
+                "odds_win": odds_win,
+                "odds_place": odds_place,
+                "_has_real_odds": has_real_odds,
+                "si_avg": round(row.get("si_avg", 0), 1),
+                **_si_display_fields(row),    # #169: si_avg_v / si_latest_v (内訳と同じ指数)
+                "jockey_name": next((r["jockey_name"] for r in results if r["horse_number"] == int(row["horse_number"]) and "jockey_name" in r.keys()), ""),
+                # カテゴリスコア
+                "cat_ability": round(row.get("si_avg", 0), 1),
+                "cat_pedigree": round(row.get("pedigree_score", 0), 2),
+                "cat_jockey": round(row.get("jt_score", 0), 2),
+                "cat_track": round(row.get("bias_score", 0), 2),
+                "cat_record": round(row.get("top3_rate_10r", 0) * 100, 1),
+                "cat_weather": round(row.get("horse_wet_top3_rate", 0) * 100, 1),
+                "win_rate": round(row.get("win_rate_10r", 0) * 100, 1),
+                "top3_rate": round(row.get("top3_rate_10r", 0) * 100, 1),
+                # 能力モデル (オッズ非依存) 勝率 — 記事の AI独自評価 / ◎2軸化に使用 (#72)
+                "ability_score": round(float(row.get("_ability_score", 0) or 0), 4),
+                # ── 説明できる点数表 (#145) ──
+                # オッズを一切使わない23項目の加算スコアと、その内訳。
+                # 「なぜこの馬が◎か」を足し算で言えるようにするための唯一の材料。
+                "sc_points": round(float(row.get("_sc_points", 0) or 0), 1),
+                "sc_reasons": list(row.get("_sc_reasons") or []),
+                # #169: 印の並べ替えは丸めない点数で行う (sc_points の小数1桁は表示用)。
+                # 旧実装は丸めた値で並べており、同点になると直前の LGB 順 (オッズ寄り) が残った。
+                "_sc_points_raw": float(row.get("_sc_points", 0) or 0),
+                # #175: 影の点数表の合計点 (NaN = 取消で採点していない / None = 影なし)
+                "_sc_points_shadow_raw": (None if row.get("_sc_points_shadow") is None
+                                          else float(row.get("_sc_points_shadow"))),
+                # #169: 予想時点で取消と分かっている馬 (印の候補から外す。cache には
+                # "scratched" として保存し、投稿の 💡能力値1位 などが取消馬を名指ししないようにする)
+                "_scratched": int(row["horse_number"]) in _scratched,
+            })
+
+        # #169 手直し: 点数表の順位の母集団から外した取消馬 (_scratched) は、表示の V2d も
+        # 0 (データなし) にして画面・投稿の順位の母集団から外す。外さないと、取消馬の V2d が
+        # 高いレースで内訳の「平均スピード指数 1位」と画面の順位が食い違う。
+        # この時点の _scratched は点数表に渡した除外馬と同じ集合 (印の段で人気9999から後で
+        # 足す分は点数表の母集団に入っているので、ここでは触らない)。
+        try:
+            from ml.si_display import zero_scratched
+            _nz = zero_scratched(predictions)
+            if _nz:
+                print(f"  🔢 取消 {_nz}頭は表示の SI(V2d) を「データなし」に (点数表の母集団と同じ) #169")
+        except Exception as _e:
+            print(f"  ⚠️ 取消馬の SI(V2d) 表示の調整に失敗 (表示だけ。印・点数には影響なし): {_e!r}")
+
+        # ── 人気順 (popularity) を先に確定して各馬に付与 (#95 2026-07-02) ──
+        # 旧実装では popularity_map の計算が穴予兆/jockey_trust の後にあり、
+        # predictions dict に 'popularity' キーが無いまま compute_jockey_trust(pop=0) が
+        # 呼ばれ、騎手信頼補正と confidence の top_popularity 入力が常時ゼロの死にコードだった。
+        # 人気順: 実オッズがある場合のみ使用（推定オッズは循環参照になるため除外）
+        has_real_odds = any(p.get("_has_real_odds") for p in predictions)
+        if race_id in _api_odds_cache:
+            api_pop = _api_odds_cache[race_id]
+            popularity_map = {}
+            for p in predictions:
+                hn = p["horse_number"]
+                if hn in api_pop and api_pop[hn].get("popularity", 0) > 0:
+                    popularity_map[hn] = api_pop[hn]["popularity"]
+                else:
+                    popularity_map[hn] = 0
+            has_real_odds = True  # APIデータがある = 実オッズあり
+        elif has_real_odds:
+            by_odds = sorted(predictions, key=lambda x: x.get("odds_win", 999))
+            popularity_map = {p["horse_number"]: i+1 for i, p in enumerate(by_odds)}
+        else:
+            popularity_map = {p["horse_number"]: 0 for p in predictions}
+        for p in predictions:
+            p["popularity"] = popularity_map.get(p["horse_number"], 0)
+
+        # ── 穴予兆スコア (anasanee_score) と波乱度 (race_volatility) を計算 ──
+        # 過去 11265R 統計を元に、前走凡走 + 距離変更 + 脚質 + 血統 等から
+        # 各馬の「穴を出しやすさ」をスコア化 (○▲△ 選定で活用)。
+        try:
+            from volatility import (
+                fetch_horse_history, compute_anasanee_score,
+                compute_race_volatility, compute_jockey_trust,
+            )
+            hns = [p["horse_number"] for p in predictions]
+            ana_feats = fetch_horse_history(race_id, hns)
+            for p in predictions:
+                feat = ana_feats.get(p["horse_number"], {}) or {}
+                # 2026-05-27: jockey_name=None で NoneType crash → 二重ガード
+                jk_name = p.get("jockey_name") or ""
+                ana = compute_anasanee_score(feat, jk_name)
+                p["anasanee_score"] = ana["score"]
+                p["anasanee_reasons"] = ana["reasons"]
+                p["jockey_trust"] = compute_jockey_trust(
+                    jk_name, p.get("popularity", 0) or 0
+                )
+            race_volatility = compute_race_volatility(race_info)
+        except Exception as e:
+            print(f"  ⚠️ 穴予兆計算スキップ: {e}")
+            for p in predictions:
+                p["anasanee_score"] = 0
+                p["anasanee_reasons"] = []
+                p["jockey_trust"] = 0
+            race_volatility = {"score": 0, "factors": [], "conf_adjust": 0}
+
+        # predictions_cache に保存
+        # ソート: 勝率だけだと同率で内枠順になるため、
+        # rank_score(モデルの順位スコア)とSI指数を加味した複合スコアで順位付け
+        def _sort_key(p):
+            win = p["pred_win"]  # 0-1
+            rank = p.get("rank_score", 0)  # モデルの順位スコア
+            si = max(p.get("si_avg", 0), 0) / 100  # 0-1に正規化 (SI80→0.8)
+            # 複合スコア: 勝率50% + rank_score25% + SI25%
+            return win * 0.50 + rank * 0.25 + si * 0.25
+        sorted_preds = sorted(predictions, key=_sort_key, reverse=True)
+        # popularity_map / has_real_odds は predictions 構築直後に確定済み (#95)
+
+        # NEW: Contrarian 補正 — 「市場が見落としている過小評価馬」を加点
+        # 「ほぼ全レース1人気が本命」を避け、AI が見抜いた人気外妙味を◎候補に。
+        # 4-18人気で AI 予測勝率 > 市場想定確率(1/pop*0.6) のとき、その差に応じて加点。
+        # popularity_map が全頭 0 (未確定) の場合はスキップ (現状ソートのまま)。
+        # シミュレーション (5/9-10 各72R) では ◎1-3人気率 74%→65% / 4-9人気率 26%→35% 程度。
+        #
+        # v10 (2026-05-24): ML 勝率が均一なレース(3歳G1等の学習データ不足)では
+        # Contrarian が過剰発火し、SI 最低クラスの最低人気馬が ◎ になる事故が発生
+        # (5/24 オークス ◎18人気ミツカネベネラ事件)。
+        # ML 勝率のレンジ(max - min)が小さい場合は Contrarian を弱める。
+        ml_range = max(p["pred_win"] for p in sorted_preds) - min(p["pred_win"] for p in sorted_preds)
+        if ml_range < 0.03:
+            # ML が全く識別できていない → Contrarian を完全停止し SI と前哨戦実績を優先
+            CONTRARIAN_STRENGTH = 0.0
+        elif ml_range < 0.05:
+            # 弱めの識別 → Contrarian を30%に弱める
+            CONTRARIAN_STRENGTH = 0.3
+        else:
+            CONTRARIAN_STRENGTH = 1.0
+        if any(popularity_map.values()):
+            def _final_sort_key(p):
+                win = p["pred_win"]
+                rank = p.get("rank_score", 0)
+                si = max(p.get("si_avg", 0), 0) / 100
+                base = win * 0.50 + rank * 0.25 + si * 0.25
+                pop = popularity_map.get(p["horse_number"], 0) or 0
+                if 4 <= pop <= 18:
+                    market_implied = 1.0 / pop * 0.6
+                    if win > market_implied:
+                        base += (win - market_implied) * (pop - 3) * 0.10 * CONTRARIAN_STRENGTH
+                return base
+            sorted_preds = sorted(sorted_preds, key=_final_sort_key, reverse=True)
+
+        # 「データ強度」スコア (◎以外の印付けと「注」で共用)
+        # AI 勝率 / SI 指数 / 血統 / 騎手 / 直近実績 の合計 (0-13点)
+        def _data_strength(p):
+            s = 0
+            win_pct = (p.get('pred_win', 0) or 0) * 100
+            if win_pct >= 7.0: s += 3
+            elif win_pct >= 5.0: s += 2
+            elif win_pct >= 4.0: s += 1
+            si = p.get('si_avg', 0) or 0
+            if si >= 90: s += 3
+            elif si >= 80: s += 2
+            elif si >= 70: s += 1
+            ped = p.get('cat_pedigree', 0) or 0
+            if ped >= 60: s += 2
+            elif ped >= 50: s += 1
+            jk = p.get('cat_jockey', 0) or 0
+            if jk >= 65: s += 2
+            elif jk >= 55: s += 1
+            tr = p.get('top3_rate', 0) or 0
+            if tr >= 50: s += 2
+            elif tr >= 30: s += 1
+            rec = p.get('cat_record', 0) or 0
+            if rec >= 50: s += 1
+            return s
+
+        # 印付け v3 (2026-05-17): 「◎は人気でも OK、相手だけ穴志向」モード
+        # 旧版は ML 上位5頭をそのまま ◎○▲△× にしていた → 全部人気順になる弊害。
+        # 新版は ○▲△ を「ML 上位2-7位の中で人気外+データ強度を重視」して選ぶ。
+        # × は残り、◎ は従来通り ML 1位。
+        # ユーザー要望「◎は人気でも構わない、相手だけ穴志向」を反映。
+
+        # 全頭の mark を一旦リセット
+        for p in sorted_preds:
+            p['mark'] = ''
+
+        # ── ◎ 選定 (#72 2軸化、USE_ABILITY_CORE で切替) ──
+        # 既定 (OFF): 従来通り ML 1位を ◎。
+        # ON: 能力モデル (オッズ非依存) 1位を ◎。2020-2025 backtest で単勝ROI
+        #     112% (ML◎ 92% / +20pt、全6年100%超、単日支配クリア) を実証。
+        #     ※full bet (三連複◎軸) ROI の検証 + walk-forward 確認後に既定ONへ。
+        # 併せて妙味/危険フラグを「データ」として付与 (印は変えず、記事/UI 用、bet 非影響)。
+        ml_top = sorted_preds[0] if sorted_preds else None
+        abil_top = max(sorted_preds, key=lambda p: p.get('ability_score', 0) or 0) if sorted_preds else None
+        mkt_fav = min(sorted_preds, key=lambda p: (p.get('odds_win') or 1e9)) if sorted_preds else None
+
+        # 妙味/危険フラグ (additive data) — 能力 vs 市場の乖離
+        for p in sorted_preds:
+            a = p.get('ability_score', 0) or 0        # 能力勝率 (レース内正規化)
+            od = p.get('odds_win') or 0
+            m = (1.0 / od) if od > 0 else 0           # 市場の暗黙勝率 (控除前)
+            p['_ability_vs_market'] = round(a / m, 2) if m > 0 else 0
+        if abil_top and mkt_fav:
+            # 妙味馬 = 能力1位かつ市場本命でない (能力≠市場、backtest 135% 層)
+            abil_top['is_value_pick'] = (abil_top is not mkt_fav)
+            # 危険な人気馬 = 市場本命だが能力順位が低い (A/M < 0.6 目安)
+            mkt_fav['is_danger_fav'] = ((mkt_fav.get('_ability_vs_market') or 0) < 0.6)
+
+        # ═══ 印ロジック v5 (#76, 2026-06-16): 捕捉率最大化 + 妙味注 ═══
+        # ユーザー目標確定: 「6頭の印が3着内3頭を捕捉する確率」を最大化 (黒字化でなく)。
+        # 2020-2025 20,663R backtest:
+        #   - ◎○▲△× = 複勝率モデル(pred_top3)上位5頭 → 完全捕捉 52.1% (現行ML勝率 50.5%)。
+        #     穴を混ぜると 26.8% に半減するため、捕捉枠には穴を入れない。
+        #   - 注 = 妙味 longshot (複勝率÷市場率 が最大、オッズ7倍+)。複勝率11.4% だが
+        #     平均101倍・複勝期待回収135円/100 = ユーザー要望「人気ないが馬券になる高配当馬」。
+        # MARKS_LEGACY=1 で旧 ROI 志向ロジック (◎ML1位 + ○▲△relay + ×注穴) に戻せる。
+        if flags.is_on('MARKS_LEGACY'):
+            core = abil_top if (os.environ.get('USE_ABILITY_CORE') == '1' and abil_top) else ml_top
+            if core:
+                core['mark'] = '◎'
+            relay_pool = [p for p in sorted_preds if p is not core][:6]
+
+            def _relay_score(p):
+                pred = (p.get('pred_win', 0) or 0) * 80
+                si = (p.get('si_avg', 0) or 0) / 4
+                data = _data_strength(p) * 3
+                pop = p.get('popularity', 0) or 0
+                pop_bonus = max(min(pop - 3, 9), 0) * 1.5
+                ana = (p.get('anasanee_score', 0) or 0) * 2.0
+                return pred + si + data + pop_bonus + ana
+
+            relay_sorted = sorted(relay_pool, key=_relay_score, reverse=True)
+            for i, mk in enumerate(['○', '▲', '△']):
+                if i < len(relay_sorted):
+                    relay_sorted[i]['mark'] = mk
+
+            def _ana_score(p, pop):
+                if pop < 5:
+                    return 0
+                si = p.get('si_avg', 0) or 0
+                diversion = si / max(pop, 1)
+                course_fit = ((p.get('cat_track', 0) or 0) + (p.get('cat_pedigree', 0) or 0)) / 2
+                return diversion + course_fit * 0.5 + (p.get('anasanee_score', 0) or 0) * 3.0 + (p.get('cat_jockey', 0) or 0) * 0.3
+            ana_scored = sorted(
+                ((_ana_score(p, popularity_map.get(p['horse_number'], 0) or 0), p)
+                 for p in sorted_preds if not p.get('mark')),
+                key=lambda x: -x[0])
+            for i, mk in enumerate(['注', '×']):
+                if i < len(ana_scored) and ana_scored[i][0] > 0:
+                    ana_scored[i][1]['mark'] = mk
+        else:
+            # ── 捕捉枠 ◎○▲△× = 複勝率(pred_top3) 上位5頭 ──
+            # ── #99: 印ランキングの市場ブレンド ──
+            # #98 実測: pred_top3 単独の印は単純人気top5に完全捕捉率で -5.2pt 劣後
+            # (◎≠1人気時の◎複勝44% vs 見送った1人気69% = 市場から離れた判断が弱い)。
+            # score = w×市場シェア(1/odds正規化) + (1-w)×モデルシェア(pred_top3正規化)。
+            # #99 検証結果: 「w=0.6が最良」に見えた cache 検証は refresh_odds の最終オッズ
+            # 上書き (look-ahead) 汚染だったと反証された。クリーン層では w 間の差はノイズ
+            # (歴史側±0.7pt)。優位の証明が無い以上 default は 0.0 (現行=モデル単独) を維持し、
+            # refresh_odds 凍結後の posted_marks (真の投稿時点記録) が4-8週貯まったら再判定。
+            # 実オッズが8割未満の馬しか無い時 (木金の事前予測等) は市場側を使わない (w=0)。
+            _blend_w = flags.as_float('MARKS_BLEND_W', '0.0')
+            _inv = {p['horse_number']: 1.0 / p['odds_win'] for p in sorted_preds
+                    if p.get('_has_real_odds') and (p.get('odds_win') or 0) > 0}
+            _inv_sum = sum(_inv.values())
+            _has_market = _inv_sum > 0 and len(_inv) >= len(sorted_preds) * 0.8
+            _t3_sum = sum((p.get('pred_top3') or 0) for p in sorted_preds) or 1.0
+
+            # ── #108 (2026-07-11): 能力ブレンドで「人気依存を弱める」 ──
+            # ユーザー指示「人気を弱くして」。オッズ非依存の能力モデル (ability_score,
+            # レース内正規化勝率) を印スコアに混ぜる。20,663R スイープ:
+            #   a=0.0: 完全捕捉37.2% ◎勝率34.0% ◎=1人気86%
+            #   a=0.5: 完全捕捉34.8% ◎勝率35.4% ◎=1人気72% (◎勝率は改善、捕捉-2.4pt)
+            #   a=1.0: 完全捕捉25.9% (全面置換は#98の再確認 = 破滅)
+            # MARKS_ABILITY_W env で制御 (default 0.0 = 従来)。workflow 側で設定。
+            _abil_w = flags.as_float('MARKS_ABILITY_W', '0.0')
+            _ab_sum = sum((p.get('ability_score') or 0) for p in sorted_preds)
+            _has_abil = _ab_sum > 0
+
+            def _mark_rank_key(p):
+                _w = _blend_w if _has_market else 0.0
+                _mkt = (_inv.get(p['horse_number'], 0.0) / _inv_sum) if _has_market else 0.0
+                _mod = (p.get('pred_top3') or 0) / _t3_sum
+                base = _w * _mkt + (1.0 - _w) * _mod
+                if _has_abil and _abil_w > 0:
+                    _ab = (p.get('ability_score') or 0) / _ab_sum
+                    base = (1.0 - _abil_w) * base + _abil_w * _ab
+                return base
+
+            # ── #145 (2026-09-03): 印を「説明できる点数表」から選ぶ ──
+            # ユーザー判断: 「人気だから9割はやめたい。当たっても安すぎだから」
+            # 従来の印は pred_top3 (=実質オッズの写し、評価順位と人気順位の相関0.90) から
+            # 選んでいたため、「なぜこの馬が◎か」の正直な答えが「人気だから」しかなかった。
+            # 点数表はオッズ・人気を一切使わない23項目の加算式で、内訳をそのまま
+            # 理由として出せる。
+            #
+            # 実測 (OOS 2,688R、学習境界より後だけで統一比較):
+            #   点数表◎      3着内 56.9% / 印5頭の完全捕捉 29.5%
+            #   現行の◎      3着内 62.4% / 35.2%   ← 点数表は 5.5pt 劣る
+            #   市場(人気順)  3着内 65.7% / 37.7%
+            # 得られるもの: ◎の平均人気 1.45→1.99、中央オッズ 2.70→3.20、
+            #   そして「なぜこの馬か」が足し算で言えること。
+            # = 的中は上がらない。説明可能性と引き換えに捕捉を約5pt 払う取引。
+            # 点数が全頭0 (モデル未ロード/特徴量欠損) なら従来ロジックに自動フォールバック。
+            # #146: 既定 OFF に反転。監査 (OOS 2,688レース) で
+            #   点数表◎ 3着内 56.9% / 5頭完全捕捉 29.5%
+            #   現行 (能力ブレンド)  62.4% / 35.2%
+            # と **捕捉が約5.5pt 劣る** ことが判明した。
+            # 当初 docstring に書いた「58.1% で引き分け」は比較が誤り —
+            # 点数表(オフライン再現) と 実配信の◎(本番) を比べており、
+            # 本番側にだけ配信経路の劣化(約3pt)が乗る非対称比較だった。
+            # 同条件のオフライン同士で比べると符号が逆になる。
+            # よって「当たるから入れる」根拠は無い。入れるなら
+            # 「説明できることに捕捉5ptを払う」という製品判断として明示的にONにする。
+            _use_sc = flags.is_on('MARKS_SCORECARD')
+            _sc_ok = _use_sc and any((p.get('sc_points') or 0) != 0 for p in sorted_preds)
+            # #169: 予想時点で取消と分かっている馬は印 (◎○▲△△/☆/注) の候補から外す。
+            # #147 で印の主軸をオッズ非依存の点数表にしたため、999.9倍の取消馬でも点数が
+            # 高ければ印が付いた (10/17 東京5R ○ / 10/25 京都3R ▲ — 公開ダッシュボードで発生)。
+            # API の番兵 (9999人気 / 負のオッズ) は通常は採点前の _prefetch_api_odds で拾うが、
+            # そこで API が空を返し予測行ループ内で初めて取れた時に備えて、ここでも拾う
+            # (点数表の採点より後に分かった分)。推定オッズ (0.8/勝率) は見ない (実オッズのみ)。
+            # #171: 999.9倍だけでは取消にしない (前日発売の直後は走る馬も 999.9倍)。発売中の取消は
+            # 出馬表の取消行から results に書いた人気 9999 で、_scratched_numbers が拾う。
+            for p in sorted_preds:
+                if _is_scratch_odds(p.get('odds_win') if p.get('_has_real_odds') else 0,
+                                    p.get('popularity')):
+                    p['_scratched'] = True
+            _cands = [p for p in sorted_preds if not p.get('_scratched')] or list(sorted_preds)
+            if _sc_ok:
+                # #169: 丸めない点数で並べ、同点は馬番の小さい方 (オッズを使わない第2キー)。
+                # 点数表を評価したコード (scripts/train_scorecard.py:per_race) と同じ決め方。
+                # 旧実装は小数1桁に丸めた sc_points の安定 sort で、同点だと直前の LGB 順
+                # (pred_win・rank_score・Contrarian = オッズ寄り) が残っていた。
+                by_top3 = sorted(_cands,
+                                 key=lambda p: (-float(p.get('_sc_points_raw',
+                                                             p.get('sc_points')) or 0),
+                                                p['horse_number']))
+            else:
+                if _use_sc:
+                    print("  ⚠️ 点数表が使えないため印は従来ロジック (pred_top3) で選定")
+                by_top3 = sorted(_cands, key=_mark_rank_key, reverse=True)
+            capture5 = by_top3[:5]
+            # ── #110 (2026-07-13): ○を妙味枠に (MARKS_VALUE_TAIKO=1) ──
+            # ユーザー「本命や対抗が人気馬すぎて面白くない」(8度目)。○ を
+            # 「モデル複勝率÷市場率が最大の 5-20倍馬」に置換。OOS 10ヶ月実測:
+            # ○が平均6.3人気/中央16.3倍になる代わり、完全捕捉 34.1→29.6% (-4.5pt)、
+            # ○単体複勝率 51→25%。的中でなく「面白さ」への製品判断 (#108 と同じ扱い)。
+            # 実オッズが無い時 (木金の事前予測) は発動しない。
+            # ── #143 (2026-09-02): 印(捕捉) と 穴枠 を分離する ──
+            # 旧構造は6印のうち2枠 (妙味○/☆ と 注) を穴が占めており、
+            # 「捕捉に使える印」は実質 ◎○▲△ の4頭しかなかった。
+            # 実測 (公開JSON 1,462R): その4頭だけで3着以内3頭が揃うのは **21.2%** —
+            # 8割のレースで印の外に手を伸ばさないと買い目が組めない状態だった。
+            # ユーザーの用途は「印を見て自分で買い目を組む」ことなので、これは致命的。
+            #
+            # 新構造: 印5頭 (◎○▲△△、△は2頭) = 純粋に捕捉最優先
+            #         穴枠2頭 (☆妙味 / 注大穴) = 印の枠を消費しない別建て
+            # 実測: 捕捉印だけで3頭揃う 21.2% → **33.9%**、穴込みでは 39.0% → 51.6%。
+            # 穴を消したわけではなく「印の枠を奪うのをやめた」だけなので、
+            # 面白さ (#108/#110 の要望) は維持される。
+            _symbols = ['◎', '○', '▲', '△', '△']
+            for i, mk in enumerate(_symbols):
+                if i < len(capture5):
+                    capture5[i]['mark'] = mk
+
+            # ── #175: 影の印 (印に使わない方の点数表で選んだら、こうだった) ──
+            # 同じ候補 (_cands)・同じ並べ方 (丸めない点数、同点は馬番の小さい方)。印・☆・注・
+            # 買い目には一切使わない。毎週 scripts/scorecard_shadow_report.py が、実際の印と
+            # 影の印それぞれから組む買い方の回収率を同じレースで並べる (戻すかどうかの判断材料)。
+            _sc_name = (_SCORECARD or {}).get('_sc_model', '') if _sc_ok else ''
+            for p in sorted_preds:
+                p['sc_model'] = _sc_name
+            if _sc_ok:
+                import math as _m
+
+                def _shk(p):
+                    v = p.get('_sc_points_shadow_raw')
+                    v = -1e18 if (v is None or (isinstance(v, float) and _m.isnan(v))) else float(v)
+                    return (-v, p['horse_number'])
+                if any(p.get('_sc_points_shadow_raw') is not None for p in _cands):
+                    for i, p in enumerate(sorted(_cands, key=_shk)[:5]):
+                        p['mark_shadow'] = _symbols[i]
+
+            # ── ☆ = 妙味枠 (モデル複勝率÷市場率が最大の 5-20倍馬、印5頭の外) ──
+            # #110 で ○ に入れていたものを、印の枠を奪わない別建てに移した。
+            if flags.is_on('MARKS_VALUE_TAIKO') and _has_market:
+                def _vt(p):
+                    od = p.get('odds_win') or 0
+                    mkt = (_inv.get(p['horse_number'], 0.0) / _inv_sum) if _inv_sum else 0
+                    t3 = (p.get('pred_top3') or 0) / _t3_sum
+                    return (t3 / mkt) if mkt > 0 else 0
+                _vpool = [p for p in sorted_preds
+                          if not p.get('mark') and p.get('_has_real_odds')
+                          and not p.get('_scratched')      # #169
+                          and 5.0 <= (p.get('odds_win') or 0) < 20.0]
+                if _vpool:
+                    _vp = max(_vpool, key=_vt)
+                    _vp['mark'] = '☆'
+                    _vp['is_value_pick'] = True
+
+            # ── 注 = 妙味 longshot (複勝率÷市場率 最大、オッズ7-30倍、印・☆の外) ──
+            def _value(p):
+                od = p.get('odds_win') or 0
+                mkt = (1.0 / od) if od > 0 else 0          # 市場の暗黙率
+                t3 = p.get('pred_top3', 0) or 0            # モデルの複勝率
+                return (t3 / mkt) if mkt > 0 else 0
+            # #169: 取消馬は注の候補にも入れない。7-30倍の帯に候補が無い時の後段
+            # (7倍以上 → 全頭) では 999.9倍の取消馬が「妙味最大」になり得た。
+            rest = [p for p in sorted_preds if not p.get('mark') and not p.get('_scratched')]
+            # #114 (2026-07-14): 注に上限30倍を導入。OOS実測 (2025-03+): 上限なしは
+            # 複勝率7.4%/単勝ROI72円 (深い大穴に吸われる #58 FLバイアス)、7-30倍×value は
+            # 複勝率19.7%/単勝ROI91円/複勝ROI87円で全候補最良。実運用4週の
+            # 「20-50倍帯 62R 回収ゼロ (roi_weekly 降格флаг)」とも整合。
+            longshots = [p for p in rest if 7 <= (p.get('odds_win') or 0) < 30]
+            if not longshots:
+                longshots = [p for p in rest if (p.get('odds_win') or 0) >= 7]
+            pool = longshots if longshots else rest
+            if pool:
+                chu = max(pool, key=_value)
+                chu['mark'] = '注'
+                chu['is_value_pick'] = True
+
+        # 推奨理由を生成 (UI-2 fix)
+        # #117 (2026-07-20): 「直近勝率/複勝率」系の理由は廃止 — 出馬表で誰でも分かる
+        # 浅い情報 (ユーザー指摘)。AIにしか出せない「市場との乖離」を理由の主軸に。
+        # #170: 順位は取消と分かっている馬を除いた母集団で数える (印の候補 _cands と同じ)。
+        # 能力モデルはオッズを見ないので取消馬が能力1位になりうる (11/01 東京7R 11番) —
+        # 母集団に残すと全馬の「能力評価N位」が1つずつずれる。取消馬自身の理由は出さない。
+        from race_utils import is_scratched_horse, running_horses, field_popularities
+        _field = running_horses(sorted_preds)
+        _t3_order = sorted(_field, key=lambda q: -(q.get('pred_top3') or 0))
+        _t3_rank = {q['horse_number']: r + 1 for r, q in enumerate(_t3_order)}
+        _ab_order = sorted(_field, key=lambda q: -(q.get('ability_score') or 0))
+        _ab_rank = {q['horse_number']: r + 1 for r, q in enumerate(_ab_order)}
+        # #170 手直し: 比べる市場の人気も出走馬の中で数え直す (AI 側だけ出走馬で数えると、
+        # 取消馬が中位人気の番兵時代のレースで存在しない「乖離」が出る。202607020612 12番)。
+        # cache に保存する popularity は変えない。取消馬が最下位 (現行) なら値はそのまま
+        _mkt = field_popularities(sorted_preds)
+        _first = _field[0] if _field else None     # 取消が無ければ sorted_preds[0] と同じ
+        for i, p in enumerate(sorted_preds):
+            if is_scratched_horse(p):
+                p["reasons"] = []
+                continue
+            pw = p["pred_win"] * 100
+            pt = p["pred_top3"] * 100
+            # #169: 理由の「SI」も画面と同じ値 (V2d のレースは si_avg_v)。Threads が
+            # 「スピード指数NN」に開いて出すので、内訳・画面と別の数字を出さない
+            from ml.si_display import display_si, si_rank
+            si = round(display_si(p), 1)
+            # 内訳「平均スピード指数 N位」と同じ順位。#170: 母集団は出走馬 (_field) — V2d の
+            # レースは取消馬の値が 0 (zero_scratched) なので結果は同じ、旧指数 (代用モード) の
+            # レースでは点数表と同じく取消馬を数えなくなる
+            _sir = si_rank(_field, p)
+            reasons = []
+            if p is _first:
+                if pw >= 40: reasons.append("圧倒的な勝率で本命筆頭")
+                elif pw >= 25: reasons.append("勝率トップで信頼度が高い")
+                else: reasons.append("僅差ながら勝率1位")
+            _pop = _mkt.get(p['horse_number'], p.get('popularity') or 0)
+            _tr3 = _t3_rank.get(p['horse_number'], 99)
+            _ab = _ab_rank.get(p['horse_number'], 99)
+            if _pop >= 6 and _tr3 <= 3:
+                reasons.append(f"市場{_pop}人気に対しAI複勝評価{_tr3}位")   # #163: 「妙味」は回収の裏付けが無いので付けない
+            elif _pop == 1 and _ab >= 5:
+                reasons.append(f"1人気だがオッズ非依存の能力評価は{_ab}位 — 過剰人気に注意")
+            elif _pop and _tr3 < 99 and _pop - _tr3 >= 3:
+                reasons.append(f"AI評価{_tr3}位 vs 市場{_pop}人気の乖離あり")
+            # #169 手直し: 「トップクラス」「能力上位」を値の絶対しきい値 (90/80) で付けると、
+            # 内訳・画面の順位と矛盾した (10/31・11/01 の SI 系の理由 215件中 135件はレース内
+            # 4位以下、◎クレーキング 95.1 は13位で「トップクラス」)。順位で言う (3位以内のみ)。
+            if _sir and _sir <= 3: reasons.append(f"SI{si}は出走馬中{_sir}位")
+            if pt >= 25: reasons.append("複勝率が非常に高く堅実")
+            if pw >= 20 and _sir and _sir <= 3: reasons.append("勝率とSIの両面で好材料")
+            if not reasons:
+                if pw > 0: reasons.append(f"AI勝率{pw:.1f}%")
+                else: reasons.append("出走歴なし or 特徴量不足")
+            p["reasons"] = reasons[:3]
+
+        cache_json = json.dumps([{
+            "horse_number": p["horse_number"],
+            "horse_name": p["horse_name"],
+            "mark": p.get("mark", ""),
+            # pred_win_pct = 意思決定用 (温度1、confidence 再評価/分析と整合)
+            "pred_win_pct": round(p["pred_win"] * 100, 1),
+            # pred_win_display_pct = 表示用 (温度×3、投稿/UI の「AI勝率」はこちら)
+            "pred_win_display_pct": round(p.get("pred_win_display", p["pred_win"]) * 100, 1),
+            # pred_top3_pct = レース内シェア (歴史的スケール、既存の読み手と互換)
+            "pred_top3_pct": round(p["pred_top3"] * 100, 1),
+            # pred_top3_abs_pct = 校正済みの真の複勝確率 (#95 で追加、再チューニング用)
+            "pred_top3_abs_pct": round(p.get("pred_top3_abs", 0) * 100, 1),
+            "rank_score": p.get("rank_score", 0),
+            "odds_win": round(p.get("odds_win", 0), 1),
+            "popularity": popularity_map.get(p["horse_number"], 0),
+            "si_avg": p.get("si_avg", 0),
+            # #169: 点数表が V2d を読んだレースだけ (キーがある = 内訳の指数は V2d)
+            **{k: p[k] for k in ("si_avg_v", "si_latest_v") if k in p},
+            "jockey_name": p.get("jockey_name", ""),
+            "cat_ability": p.get("cat_ability", 0),
+            "cat_pedigree": p.get("cat_pedigree", 0),
+            "cat_jockey": p.get("cat_jockey", 0),
+            "cat_track": p.get("cat_track", 0),
+            "cat_record": p.get("cat_record", 0),
+            "cat_weather": p.get("cat_weather", 0),
+            "win_rate": p.get("win_rate", 0),
+            "top3_rate": p.get("top3_rate", 0),
+            # #98: 能力モデル (オッズ非依存 #72) を配信コンテンツに使うため cache に保存。
+            # 印には使わない (#73/#98 バックテスト: 印に混ぜると捕捉率が半減)
+            "ability_score": p.get("ability_score", 0),
+            "anasanee_score": p.get("anasanee_score", 0),
+            "anasanee_reasons": p.get("anasanee_reasons", []),
+            # #95: 再評価サイト (evaluate_from_horses) が騎手信頼補正を再現できるよう保存
+            "jockey_trust": p.get("jockey_trust", 0),
+            "reasons": p.get("reasons", []),
+            # ── #145: 説明できる点数表 ──
+            # 印の選定根拠そのもの。UI/投稿が「なぜこの馬か」を出すのに必須。
+            # ※ このブロックは列を明示列挙する形なので、predictions dict に足すだけでは
+            #    ここまで届かない (実際 sc_points が全頭 None で保存される事故を起こした)。
+            "sc_points": p.get("sc_points", 0),
+            "sc_reasons": p.get("sc_reasons", []),
+            # #175: 印に使った点数表の名前 (roi/base、点数表を使わなかったレースは "") と、
+            # 使わなかった方の点数表で選んだ印 (影の印)。毎週の比較 (scorecard_shadow_report) の材料
+            "sc_model": p.get("sc_model", ""),
+            "mark_shadow": p.get("mark_shadow", ""),
+            # #169: 予想時点で取消と分かっている馬。印の候補から外した判定を下流 (投稿の
+            # 💡能力値1位・Threads の能力値ランキング) にも渡す。旧 cache には無い = False 扱い。
+            "scratched": bool(p.get("_scratched", False)),
+        } for p in sorted_preds], ensure_ascii=False)
+
+        with get_db() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO predictions_cache
+                (race_id, predictions_json, all_bets_json, confidence, should_bet, created_at)
+                VALUES (?, ?, '{}', 'C', 0, datetime('now'))
+            """, (race_id, cache_json))
+
+        # 信頼度: confidence.py(v2 6軸合成、単一のSource of Truth)に委譲
+        # v13 (2026-05-26): confidence を bet 判定の前に確定 (旧 path は confidence 知らずに
+        # should_bet 判定 → C/D も bet=1 のまま、というバグの根本修正)
+        from confidence import evaluate as eval_confidence
+        from confidence import post_adjust as post_adjust_confidence   # #169
+        n_horses = len(sorted_preds) if sorted_preds else 1
+        # #142: 信頼度は【実際に◎を付けた馬】から計算する。
+        # 旧実装は sorted_preds[0] (ML勝率1位) を入力にしていたが、◎ は v5 で
+        # pred_top3 × 能力ブレンドから別に選ばれるため、**219レース中81レース (37%)**
+        # で信頼度が◎とは違う馬を説明していた。
+        # 実測 (凍結印×確定着順、16開催日): 信頼度が◎と一致したレースでは
+        # ラベルと◎3着内率の相関 +0.80 (S 68.9% → D 33.3% と綺麗に並ぶ) なのに対し、
+        # 別馬から計算されたレースでは +0.31 でラダーが崩れる (S 50.0% < A 59.1%)。
+        # ユーザーの用途は「印を見て自分で買い目を組む時の参考」であり、
+        # 『この◎は信用していいか』を示す信頼度が別馬の話をしているのは致命的。
+        _axis = next((p for p in sorted_preds if p.get('mark') == '◎'), None)
+        top1 = _axis or (sorted_preds[0] if sorted_preds else {})
+        # 2番手も◎を除いた先頭に (◎自身が top2 に入る自己参照を避ける)
+        _rest = [p for p in sorted_preds
+                 if p.get('horse_number') != top1.get('horse_number')]
+        top2 = _rest[0] if _rest else top1
+        # ★ #95: confidence の勝率入力は【表示チャネル (温度×3)】を使う。
+        # confidence.py の _win_grade 閾値 (S≥45/A≥30/B≥20/C≥13) は 2026-05-30 に
+        # 「WIN_SHARPEN=3 適用後の◎勝率分布」に合わせて再調整されたもの。
+        # 温度1 の pred_win を入れると S/A/B がほぼ消滅する (逆張りレビューで
+        # 6/20-6/29 144R 実測: S+A+B 49→7)。閾値とペアの分布を入れるのが正。
+        # EV/Kelly/should_bet は温度1 (pred_win) のまま — それぞれの調整時代に整合。
+        def _disp_pct(p):
+            return p.get("pred_win_display", p.get("pred_win", 0)) * 100
+        top_win = _disp_pct(top1)
+        top2_win = _disp_pct(top2)
+        # ◎の複勝率 (pred_top3 がなければ pred_win*2.2 で推定)
+        top_top3 = top1.get("pred_top3", 0) * 100 if top1.get("pred_top3") is not None else None
+        top3_sum = sum(_disp_pct(p) for p in sorted_preds[:3])
+        top_pop = top1.get("popularity")
+        try:
+            top_pop = int(top_pop) if top_pop else None
+            if top_pop is not None and top_pop <= 0:
+                top_pop = None
+        except (TypeError, ValueError):
+            top_pop = None
+        c = eval_confidence(
+            top_win_pct=top_win,
+            n_horses=n_horses,
+            top3_sum_pct=top3_sum,
+            grade=race_info.get('grade'),
+            second_win_pct=top2_win,
+            top_top3_pct=top_top3,
+            top_popularity=top_pop,
+            top_odds=top1.get('odds_win', 0) or 0,  # v4: ROI 期待値計算用
+        )
+        confidence = c['confidence']
+        conf_reason = c['reason']
+
+        # ── race_volatility 補正 (2026-05-30: confidence からは外し should_bet 専用に) ──
+        # 旧設計では未勝利-2 / 1勝×loss-1 等の「投資ROI由来の降格」を confidence に
+        # 適用していたが、エンタメ用 confidence = ◎勝率 と矛盾する (◎35%の未勝利本命が
+        # ROI 理由で C/D に落ち「自信度A表示なのにグレードC」となる)。
+        # confidence は予測自信度 (◎勝率) のまま保持し、未勝利/1勝loss/16頭等の
+        # 「投資を避けるべき要因」は should_bet 側で判定する (下の should_bet_race)。
+        # race_volatility は should_bet 用に保持。reason には参考として併記のみ。
+        if race_volatility and race_volatility.get("factors"):
+            factors = ",".join(race_volatility.get("factors", []))
+            if factors:
+                conf_reason = f"{conf_reason} / 波乱要因({factors})※should_bet判定に反映"
+
+        # ── 閾値判定の後の補正 (#169: confidence.post_adjust に一本化) ──
+        # 旧実装はここで「信頼騎手+1 / 不信騎手-1 / ◎オッズ5.0-7.9倍は過信帯-1」を
+        # 直書きしていた。基準表の閾値は補正前の分布から引くのに目標構成比は補正後の
+        # 分布 (2026-08) だったため、平場の C/D が目標29%に対し 41-44% に膨らんでいた。
+        # 点数表の◎で再検証した結果、過信帯と不信騎手は狙いを示せず撤去、信頼騎手は
+        # A→S / B→A だけ残す (C→B は等級C で逆向き。詳細は confidence.post_adjust)。
+        # 残った補正は基準表が込みで閾値を較正する。
+        confidence, _adj = post_adjust_confidence(
+            confidence, top1.get("jockey_trust", 0) if top1 else 0)
+        if _adj:
+            conf_reason = f"{conf_reason} / {_adj}"
+
+        # 🆕 v13 (2026-05-26): confidence-aware should_bet 判定 (旧 v12 の二重評価を一本化)
+        # confidence が確定した時点で 1 回だけ should_bet 判定する。
+        # C/D は backtest ROI 75-80% の損失層なので明示的に should_bet=0。
+        # 🆕 v14 (2026-05-27 #30): race_info を渡して 1勝×2.5-3.9倍 帯遮断
+        # 🆕 v15 (Phase α): USE_WHITELIST=1 で specialization mode (walk-forward 確認の 2 segments のみ)
+        use_whitelist = os.environ.get("USE_WHITELIST", "") == "1"
+        should_bet, reason = strategy.should_bet_race(
+            predictions, confidence=confidence, race_info=race_info,
+            strict_whitelist=use_whitelist
+        )
+
+        # 買い目生成 (常に実行 — EV・妙味計算のため。should_bet=0 でも UI は買い目表示)
+        # v3 (2026-05-27): confidence-aware bet weighting (S=1.5x, A=1.2x, B=1.0x)
+        # Phase α: whitelist mode で specialization
+        bets_result = strategy.generate_bets(
+            predictions, confidence=confidence,
+            race_info=race_info, strict_whitelist=use_whitelist
+        )
+
+        # ── #95 (2026-07-02): should_bet=0 の買い目は金額 0 の参考表示に強制 ──
+        # 旧実装は「ガード判定」と「買い目生成」が独立で、sb=0 レースにも金額付き
+        # 買い目が残り、6月実投資額の 77% (ROI 68% の損失層) がガードを素通りしていた。
+        # 例外: trio-focus band (◎2.0-2.9倍 × S/A/B、実測 trio ROI 200% / 単日除外161%)
+        #       該当レースは sb=0 でも三連複/ワイドの honor 買い目を投資対象として残す。
+        trio_band = bets_result.get('trio_focus_band', False)
+        if not should_bet:
+            _zeroed = 0
+            for b in bets_result.get('bets', []):
+                if trio_band and b.get('honor') and b.get('type') in ('三連複', 'ワイド'):
+                    continue
+                if b.get('amount'):
+                    b['amount'] = 0
+                    _zeroed += 1
+            bets_result['total_amount'] = sum(b.get('amount', 0) for b in bets_result.get('bets', []))
+            if trio_band:
+                # #169: band は #30 (1勝×◎2.5-3.9倍) や EV の見送りより優先する (BETTING_SPEC.md)。
+                # 理由欄を「投資している」が先に読める文にする (旧: 見送り理由 + 括弧書き)。
+                reason = strategy.band_override_reason(reason)
+            if _zeroed:
+                print(f"  🛡️ sb=0 のため {_zeroed} 点の金額を 0 に強制 (参考表示のみ)")
+
+        bets_by_type = {}
+        for b in bets_result.get('bets', []):
+            bt = b.get('type', '単勝')
+            if bt not in bets_by_type:
+                bets_by_type[bt] = []
+            bets_by_type[bt].append(b)
+
+        # v11 (2026-05-24): 見送りレースでも買い目を出す (UI 側で推奨/見送りバッジ判別)
+        all_bets_json = json.dumps(bets_by_type, ensure_ascii=False)
+        if should_bet:
+            print(strategy.format_recommendation(bets_result, race_info))
+        else:
+            print(f"\n⏭️ 見送り推奨だが買い目は提示: {reason}")
+
+        # キャッシュ更新（買い目・confidence・conf_reason・should_bet・bet_reason）
+        with get_db() as conn:
+            conn.execute("""
+                UPDATE predictions_cache
+                SET all_bets_json = ?, confidence = ?, conf_reason = ?,
+                    should_bet = ?, bet_reason = ?
+                WHERE race_id = ?
+            """, (all_bets_json, confidence, conf_reason,
+                  1 if should_bet else 0, reason if not should_bet else "OK",
+                  race_id))
+        print(f"  💾 予測キャッシュを保存 (信頼度: {confidence}, 理由: {conf_reason})")
+        _predicted_count += 1
+
+    # 📸 #169: 予測した瞬間の値 (全頭のオッズ・人気・印・確率・馬場) とモデル/点数表/基準表の
+    # 版を、1 run = 1 ファイルのテキストで残す。cache のオッズは後で上書きされ、9時台の再予測は
+    # runner の push で消えるため、ここで残さないと「予測時点」がどこにも無い。既定は CI のみ。
+    # 下の sys.exit(1) より前に置く (メインレース skip で落ちる run でも予測済み分は残す)。
+    try:
+        import prediction_snapshot
+        prediction_snapshot.record_run(race_ids, _skipped_races, args=args, scorecard=_SCORECARD)
+    except Exception as _e:     # 記録の失敗で予測の run を落とさない
+        print(f"⚠️ 予測スナップショットを記録できず: {_e}")
+
+    # ─── 完了サマリー + sanity check ───
+    print("\n" + "="*60)
+    print(f"📊 予測完了: 成功 {_predicted_count}/{len(race_ids)} レース")
+    if _SCORECARD and _SCORECARD.get("_degraded"):
+        # #168: 点数表を代用モードで使った (印は点数表のまま、指数の区分だけ現行の si_avg/si_latest)
+        print(f"🚨 点数表は代用モード: {_SCORECARD['_degraded']}")
+    # #169: V2d の使用状況を毎回1行残す (旧実装は異常時の 🚨 しか出さず、本番で V2d が
+    # どれだけ効いたかは DB コピーで再計算しないと分からなかった)。平地で旧指数に埋めた走が
+    # 5% を超えたら 🚨 (#168 の設計では平地の埋めは 0.2〜0.7% が平常)。
+    try:
+        _sv = getattr(getattr(model, "feature_builder", None), "_sv", None)
+        if _sv is not None and hasattr(_sv, "usage_line"):
+            print(_sv.usage_line())
+        elif _predicted_count and _SCORECARD and _SCORECARD.get("si_variant"):
+            print("🚨 V2d 使用状況: 基準表が読めず V2d を1走も計算していない")
+    except Exception as _e:
+        print(f"  ⚠️ V2d 使用状況の集計に失敗: {_e}")
+    if _skipped_races:
+        print(f"⚠️  スキップ {len(_skipped_races)} レース:")
+        for rid, reason in _skipped_races:
+            print(f"    {rid}: {reason}")
+
+        # メインレース(11R)が含まれていたら異常終了
+        # #169: 投稿済み (seal) で見送ったのは意図した凍結なので異常に数えない。11R は必ず
+        # 投稿対象 (#71) なので、投稿後の predict --force (幽霊馬除去の再予測など) は毎回 11R を
+        # 見送る。これを異常扱いすると CI で exit 1 → 呼び出し側 (remove_ghost_horses) が
+        # 再予測失敗として export まで飛ばしていた。
+        # #172: 確定 (9:30) を過ぎて作り直しを止めたのも意図した凍結なので数えない
+        main_skipped = [(rid, r) for rid, r in _skipped_races
+                        if rid[10:12] == '11' and r != '投稿済 seal'
+                        and not str(r).startswith('確定 ')]
+        if main_skipped:
+            print(f"\n❌ メインレース(11R)を {len(main_skipped)} 件スキップ → 異常状態")
+            for rid, r in main_skipped:
+                print(f"    {rid}: {r}")
+            # CI環境では exit 1 でワークフロー失敗扱いに
+            if os.environ.get('CI') or os.environ.get('GITHUB_ACTIONS'):
+                print("🚨 CI環境のため exit 1(workflow失敗扱い)")
+                sys.exit(1)
+    print("="*60)
+
+
+def cmd_backtest(args):
+    """バックテストコマンド（fast_train.pyに委譲）"""
+    import subprocess
+    script = os.path.join(os.path.dirname(__file__), "fast_train.py")
+    print("📊 高速バックテストを起動...")
+    print("   (fast_train.py に委譲)\n")
+    result = subprocess.run(
+        [sys.executable, script],
+        cwd=os.path.dirname(__file__)
+    )
+    sys.exit(result.returncode)
+
+
+def cmd_status(args):
+    """DB状況確認コマンド"""
+    with get_db() as conn:
+        races = conn.execute("SELECT COUNT(*) as c FROM races").fetchone()["c"]
+        results = conn.execute("SELECT COUNT(*) as c FROM results").fetchone()["c"]
+        horses = conn.execute("SELECT COUNT(*) as c FROM horses").fetchone()["c"]
+        jockeys = conn.execute("SELECT COUNT(*) as c FROM jockeys").fetchone()["c"]
+
+        if races > 0:
+            date_range = conn.execute(
+                "SELECT MIN(race_date) as min_d, MAX(race_date) as max_d FROM races"
+            ).fetchone()
+            print(f"📅 期間: {date_range['min_d']} 〜 {date_range['max_d']}")
+
+        bets = conn.execute("SELECT COUNT(*) as c FROM bets").fetchone()["c"]
+        if bets > 0:
+            bet_stats = conn.execute("""
+                SELECT SUM(amount) as total_bet,
+                       SUM(payout) as total_payout,
+                       SUM(is_hit) as hits
+                FROM bets
+            """).fetchone()
+            print(f"\n💰 馬券実績:")
+            print(f"  購入数: {bets}件")
+            print(f"  的中数: {bet_stats['hits']}件")
+            print(f"  投資額: ¥{bet_stats['total_bet']:,}")
+            print(f"  回収額: ¥{bet_stats['total_payout']:,}")
+
+    print(f"\n📊 データベース状況:")
+    print(f"  レース数:   {races:,}")
+    print(f"  出走データ: {results:,}")
+    print(f"  馬:         {horses:,}")
+    print(f"  騎手:       {jockeys:,}")
+
+    # モデル状態
+    model_path = os.path.join(os.path.dirname(__file__), "models", "model_top3.pkl")
+    rank_path = os.path.join(os.path.dirname(__file__), "models", "model_rank.pkl")
+    if os.path.exists(model_path):
+        has_rank = "✅" if os.path.exists(rank_path) else "⚠️ なし"
+        print(f"\n🧠 モデル: ✅ 学習済み (LambdaRank: {has_rank})")
+    else:
+        print(f"\n🧠 モデル: ⚠️ 未学習 (python predict.py train で学習してください)")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="🏇 競馬予想AI — プラス収支を目指す統合予測システム",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用例:
+  # ステップ1: データ収集 (2024年のデータ)
+  python predict.py collect --start-year 2024 --end-month 12
+
+  # ステップ2: モデルを学習
+  python predict.py train
+
+  # ステップ3: 予測
+  python predict.py predict --date 20250315
+
+  # バックテスト
+  python predict.py backtest --year 2024
+
+  # DB状況確認
+  python predict.py status
+        """
+    )
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    # collect
+    p_collect = subparsers.add_parser("collect", help="レースデータを収集")
+    p_collect.add_argument("--date", help="日付 (YYYYMMDD)")
+    p_collect.add_argument("--start-year", type=int)
+    p_collect.add_argument("--start-month", type=int, default=1)
+    p_collect.add_argument("--end-year", type=int)
+    p_collect.add_argument("--end-month", type=int, default=12)
+
+    # train
+    p_train = subparsers.add_parser("train", help="予測モデルを学習")
+
+    # predict
+    p_predict = subparsers.add_parser("predict", help="レースを予測")
+    p_predict.add_argument("--race-id", help="レースID (カンマ区切りで複数可 #173)")
+    p_predict.add_argument("--date", help="日付 (YYYYMMDD)")
+    p_predict.add_argument("--force", action="store_true", help="確定 (9:30) 以降でも強制再予測")
+    p_predict.add_argument("--only-missing", action="store_true",
+                           help="予測キャッシュの無いレースだけ作る (既にあるレースは作り直さない #173)")
+    p_predict.add_argument("--allow-zero-odds", action="store_true",
+                           help="odds=0 でも予測する (#42 odds充足ゲートを無効化、履歴backtest用)")
+
+    # backtest
+    p_backtest = subparsers.add_parser("backtest", help="バックテスト実行")
+    p_backtest.add_argument("--year", type=int)
+    p_backtest.add_argument("--month", type=int)
+
+    # status
+    p_status = subparsers.add_parser("status", help="DB状況確認")
+
+    args = parser.parse_args()
+
+    init_db()
+
+    if args.command == "collect":
+        cmd_collect(args)
+    elif args.command == "train":
+        cmd_train(args)
+    elif args.command == "predict":
+        cmd_predict(args)
+    elif args.command == "backtest":
+        cmd_backtest(args)
+    elif args.command == "status":
+        cmd_status(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

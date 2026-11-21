@@ -1,0 +1,180 @@
+{
+  "venue": "京都",
+  "surface": "芝",
+  "distance": 3200,
+  "start_year": 2020,
+  "end_year": 2025,
+  "total_races": 4,
+  "total_horses": 60,
+  "frame_stats": [
+    {
+      "frame": 1,
+      "runs": 5,
+      "win_rate": 20.0,
+      "top3_rate": 20.0
+    },
+    {
+      "frame": 2,
+      "runs": 6,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "frame": 3,
+      "runs": 8,
+      "win_rate": 0.0,
+      "top3_rate": 25.0
+    },
+    {
+      "frame": 4,
+      "runs": 8,
+      "win_rate": 12.5,
+      "top3_rate": 50.0
+    },
+    {
+      "frame": 5,
+      "runs": 8,
+      "win_rate": 0.0,
+      "top3_rate": 12.5
+    },
+    {
+      "frame": 6,
+      "runs": 8,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "frame": 7,
+      "runs": 9,
+      "win_rate": 11.1,
+      "top3_rate": 11.1
+    },
+    {
+      "frame": 8,
+      "runs": 8,
+      "win_rate": 12.5,
+      "top3_rate": 37.5
+    }
+  ],
+  "jockey_stats": [
+    {
+      "jockey": "北村友一",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 33.3
+    },
+    {
+      "jockey": "和田竜二",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 33.3
+    },
+    {
+      "jockey": "横山典弘",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 33.3
+    },
+    {
+      "jockey": "武豊",
+      "runs": 4,
+      "win_rate": 0.0,
+      "top3_rate": 25.0
+    },
+    {
+      "jockey": "幸英明",
+      "runs": 4,
+      "win_rate": 0.0,
+      "top3_rate": 25.0
+    },
+    {
+      "jockey": "池添謙一",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "jockey": "岩田望来",
+      "runs": 4,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "jockey": "Ｍ．デム",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    }
+  ],
+  "running_style_stats": [
+    {
+      "style": "逃げ",
+      "runs": 3,
+      "win_rate": 0.0,
+      "top3_rate": 0.0
+    },
+    {
+      "style": "先行",
+      "runs": 17,
+      "win_rate": 5.9,
+      "top3_rate": 23.5
+    },
+    {
+      "style": "差し",
+      "runs": 19,
+      "win_rate": 15.8,
+      "top3_rate": 26.3
+    },
+    {
+      "style": "追込",
+      "runs": 21,
+      "win_rate": 0.0,
+      "top3_rate": 14.3
+    }
+  ],
+  "popularity_stats": [
+    {
+      "label": "1-3人気",
+      "runs": 11,
+      "win_rate": 36.4,
+      "top3_rate": 36.4,
+      "recovery": 111
+    },
+    {
+      "label": "4-6人気",
+      "runs": 12,
+      "win_rate": 0.0,
+      "top3_rate": 58.3,
+      "recovery": 0
+    },
+    {
+      "label": "7-9人気",
+      "runs": 12,
+      "win_rate": 0.0,
+      "top3_rate": 0.0,
+      "recovery": 0
+    },
+    {
+      "label": "10人気以下",
+      "runs": 25,
+      "win_rate": 0.0,
+      "top3_rate": 4.0,
+      "recovery": 0
+    }
+  ],
+  "last3f_stats": [
+    {
+      "label": "上がり最速",
+      "runs": 4,
+      "win_rate": 50.0,
+      "top3_rate": 100.0
+    },
+    {
+      "label": "上がり3位以内",
+      "runs": 12,
+      "win_rate": 33.3,
+      "top3_rate": 75.0
+    }
+  ],
+  "cached_at": "2026-04-27T22:28:55.603898"
+}

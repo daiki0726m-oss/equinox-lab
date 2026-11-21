@@ -1,0 +1,1358 @@
+"""
+netkeibaスクレイパー
+レース情報・出馬表・結果・馬情報をスクレイピング
+"""
+
+import re
+import time
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+from database import get_db, init_db, birth_year_from_horse_id, BIRTH_YEAR_FILL_SQL
+
+
+# 追い切り評価 (netkeiba oikiri.html の「評価」列) の取り得る値。
+# 旧実装は A/B/C 以外を None にしており、実在する D 評価 (いま一息・動き平凡 等) を
+# 捨てていた (2026-05〜10 の NULL 842件のうち 660件が D、残り182件は評価なし=空欄)。
+# ページ上は A〜D の4段階。2026-10-19 に実ページ (202605040701 / 202604020111) で D を確認。
+WORKOUT_GRADES = ("A", "B", "C", "D")
+
+
+def normalize_workout_grade(raw, race_id="", horse_number=""):
+    """追い切り評価セルの文字列を A/B/C/D に正規化する。
+    空欄 (評価なし) は None。想定外の文字も None にしてログに出す (黙って捨てない)。"""
+    import unicodedata
+    g = unicodedata.normalize("NFKC", raw or "").strip().upper()
+    if not g:
+        return None
+    if g in WORKOUT_GRADES:
+        return g
+    print(f"⚠️ 追い切り評価が想定外の値: {raw!r} (race_id={race_id} 馬番={horse_number}) → None で保存")
+    return None
+
+
+class NetkeibaScraper:
+    """netkeibaからデータを収集するスクレイパー"""
+
+    BASE_URL = "https://race.netkeiba.com"
+    DB_URL = "https://db.netkeiba.com"
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/120.0.0.0 Safari/537.36"
+    }
+    REQUEST_INTERVAL = 1.5  # リクエスト間隔(秒)
+
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update(self.HEADERS)
+        init_db()
+
+    def _get(self, url, encoding=None):
+        """GETリクエスト（間隔制御付き）"""
+        time.sleep(self.REQUEST_INTERVAL)
+        try:
+            resp = self.session.get(url, timeout=30)
+            # 🆕 #84: サーバが Content-Type で charset を宣言していれば最優先で採用する。
+            #   netkeiba は 2026 に EUC-JP → UTF-8 へ移行。旧コードは呼び出し側の
+            #   encoding='EUC-JP' を強制していたため出馬表が文字化けし、<title> の
+            #   「YYYY年M月D日」が壊れて race_date が空 → 週末レースが全日付クエリで
+            #   不可視 → 過去レースを誤投稿する事故になった (6/17 函館スプリントS=6/13)。
+            #   宣言が無い時のみ呼び出し側 hint → chardet にフォールバック。
+            ct = resp.headers.get("Content-Type", "")
+            m = re.search(r"charset=([\w-]+)", ct, re.I)
+            if m:
+                resp.encoding = m.group(1)
+            else:
+                resp.encoding = encoding or resp.apparent_encoding
+            if resp.status_code == 200:
+                return resp
+            print(f"⚠️ HTTP {resp.status_code}: {url}")
+            return None
+        except requests.RequestException as e:
+            print(f"❌ リクエストエラー: {e}")
+            return None
+
+    # =========================================================
+    # レース一覧の取得
+    # =========================================================
+    def get_race_list(self, year, month):
+        """指定年月のレースID一覧を取得（カレンダー→日別→race_id）"""
+        # Step 1: カレンダーから開催日一覧を取得
+        calendar_url = f"{self.BASE_URL}/top/calendar.html?year={year}&month={month}"
+        resp = self._get(calendar_url)
+        if not resp:
+            return []
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        dates = re.findall(r"kaisai_date=(\d{8})", resp.text)
+        dates = sorted(set(dates))
+
+        if not dates:
+            print(f"📋 {year}年{month}月: 開催日なし")
+            return []
+
+        print(f"📅 {year}年{month}月: {len(dates)}開催日")
+
+        # Step 2: 各開催日のレースIDを取得
+        all_race_ids = []
+        for date_str in dates:
+            race_ids = self.get_race_list_by_date(date_str)
+            all_race_ids.extend(race_ids)
+
+        print(f"📋 {year}年{month}月: 合計{len(all_race_ids)}レース取得")
+        return all_race_ids
+
+    def get_race_list_by_date(self, date_str):
+        """指定日のレースID一覧を取得 (date_str: 'YYYYMMDD')"""
+        url = f"{self.BASE_URL}/top/race_list_sub.html?kaisai_date={date_str}"
+        resp = self._get(url)
+        if not resp:
+            return []
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        race_ids = []
+
+        # race_id=XXXXXXXXXXXX の形式でクエリパラメータから取得
+        link_kinds = {}   # race_id → そのレースを指していたリンクのページ名 (診断用)
+        for a_tag in soup.find_all("a", href=True):
+            href = a_tag["href"]
+            match = re.search(r"race_id=(\d{12})", href)
+            if match:
+                race_id = match.group(1)
+                page = re.search(r"/([a-z_]+)\.html", href)
+                link_kinds.setdefault(race_id, set()).add(page.group(1) if page else "?")
+                # result.html / shutuba.html のリンクのみ (movie.html は重複なので除外)。
+                # shutuba_debut.html は shutuba.html と同じページの別名なので念のため許可。
+                # #161 訂正: #159 で「新馬戦は shutuba_debut.html にリンクされるため毎週消えていた
+                # (年50レース欠落)」と書いたが誤り。現行の一覧8日分に shutuba_debut は1件も無く、
+                # 新馬の登録率も同じ期間で比べれば過去5年と同水準 (1-9月と通年を比べた取り違え)。
+                # 2026-09-21 に阪神の一覧が 10R しか返さなかった真因は未特定 — 下の検査で次に備える。
+                if ("result.html" in href or "shutuba.html" in href
+                        or "shutuba_debut.html" in href):
+                    if race_id not in race_ids:
+                        race_ids.append(race_id)
+
+        # #161: JRA は1場1日12レース。場ごとに12に満たなければ、取りこぼしの証拠を残す
+        # (欠けたレース番号と、そのレースを指していたリンクの種類)。呼び出し側 (predict.py)
+        # は DB 登録済みのレースを合流させるので、ここは止めずに警告だけ出す。
+        by_venue = {}
+        for rid in link_kinds:
+            by_venue.setdefault(rid[4:6], set()).add(rid)
+        for code, rids in sorted(by_venue.items()):
+            if not 1 <= int(code) <= 10:
+                continue
+            got = {int(r[-2:]) for r in race_ids if r[4:6] == code}
+            missing = sorted(set(range(1, 13)) - got)
+            if missing:
+                kinds = sorted({k for r in rids if int(r[-2:]) in missing for k in link_kinds[r]})
+                print(f"  ⚠️ レース一覧 {date_str} 場{code}: {len(got)}/12R "
+                      f"(欠け {missing} / そのリンク種別 {kinds or 'リンク自体が無い'})")
+
+        return race_ids
+
+    # =========================================================
+    # レース結果の取得・パース
+    # =========================================================
+    def scrape_race_result(self, race_id):
+        """1つのレース結果ページをスクレイピング"""
+        url = f"{self.BASE_URL}/race/result.html?race_id={race_id}"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return None
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        race_data = {"race_id": race_id}
+
+        # レース情報のパース
+        race_data.update(self._parse_race_info(soup, race_id))
+
+        # 結果テーブルのパース
+        results = self._parse_result_table(soup, race_id)
+        race_data["results"] = results
+
+        # 配当テーブルのパース
+        payouts = self._parse_payout_table(soup, race_id)
+        race_data["payouts"] = payouts
+
+        return race_data
+
+    def scrape_race_result_archive(self, race_id):
+        """db.netkeiba.com のアーカイブページから結果を取得 (#65)。
+
+        race.netkeiba.com の result.html は過去レースで「通過」列を持たないが、
+        db.netkeiba.com/race/<id>/ には通過・上りが常設。通過順 backfill 用。
+        """
+        url = f"https://db.netkeiba.com/race/{race_id}/"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return None
+        soup = BeautifulSoup(resp.text, "lxml")
+        return {"race_id": race_id, "results": self._parse_result_table(soup, race_id)}
+
+    def _parse_race_info(self, soup, race_id):
+        """レース基本情報をパース"""
+        info = {
+            "race_date": "",
+            "venue": "",
+            "race_number": 0,
+            "race_name": "",
+            "grade": "",
+            "distance": 0,
+            "surface": "",
+            "direction": "",
+            "weather": "",
+            "track_condition": "",
+            "horse_count": 0,
+            "start_time": "",
+        }
+
+        # レース名
+        race_name_tag = soup.find("h1", class_="RaceName")
+        if not race_name_tag:
+            race_name_tag = soup.find("div", class_="RaceName")
+        if race_name_tag:
+            info["race_name"] = race_name_tag.get_text(strip=True)
+
+            # グレード判定: Icon_GradeType CSSクラスから (G1=Type1, G2=Type2, G3=Type3)
+            icon_grade_map = {
+                'Icon_GradeType1': 'G1',
+                'Icon_GradeType2': 'G2',
+                'Icon_GradeType3': 'G3',
+            }
+            for span in race_name_tag.find_all("span", class_=True):
+                for cls in span.get("class", []):
+                    if cls in icon_grade_map:
+                        info["grade"] = icon_grade_map[cls]
+                        break
+                if info["grade"]:
+                    break
+
+        # レース詳細 (距離・馬場・天候等)
+        # RaceData01 は <div>, <dl>, <span> など様々な形式がありえる
+        race_data01 = soup.find("div", class_="RaceData01") or soup.find("dl", class_="RaceData01")
+        if race_data01:
+            text = race_data01.get_text()
+
+            # 距離 (3桁 or 4桁 + m)
+            dist_match = re.search(r"(\d{3,4})m", text)
+            if dist_match:
+                info["distance"] = int(dist_match.group(1))
+
+            # 芝/ダート
+            if "芝" in text:
+                info["surface"] = "芝"
+            elif "ダ" in text:
+                info["surface"] = "ダート"
+            elif "障" in text:
+                info["surface"] = "障害"
+
+            # 右/左
+            if "右" in text:
+                info["direction"] = "右"
+            elif "左" in text:
+                info["direction"] = "左"
+
+            # 天候・馬場状態
+            # #169: 2026-10-26 前後に「天候:晴 / 馬場:稍」の見出し語が消え、天候はアイコン
+            # (title 属性) だけ、馬場は span.Item03(芝)/Item04(ダ) の1文字「稍」「不」になった。
+            # 旧実装 (正規表現 + 部分一致 ["不良","稍重","重","良"]) は天候を全レース空、
+            # 稍・不を空で保存していた。新旧両方の書式を race_meta で読み、DB の正規表記
+            # (良/稍/重/不) に揃える。
+            from race_meta import parse_weather_track
+            info["weather"], info["track_condition"] = parse_weather_track(race_data01)
+
+            # 発走時刻 (例: "15:40発走" or 時刻パターン "10:05")
+            time_match = re.search(r"(\d{1,2}:\d{2})", text)
+            if time_match:
+                info["start_time"] = time_match.group(1)
+
+        # 日付（titleタグから取得）
+        title_tag = soup.find("title")
+        if title_tag:
+            date_match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", title_tag.get_text())
+            if date_match:
+                info["race_date"] = f"{date_match.group(1)}-{int(date_match.group(2)):02d}-{int(date_match.group(3)):02d}"
+
+        # 開催情報
+        race_data02 = soup.find("div", class_="RaceData02") or soup.find("dl", class_="RaceData02")
+        if race_data02:
+            text = race_data02.get_text()
+            # 競馬場名
+            venues = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"]
+            for v in venues:
+                if v in text:
+                    info["venue"] = v
+                    break
+
+            # グレード・クラス情報（RaceData02のspanから取得）
+            # ※ Icon_GradeTypeで既にG1/G2/G3が判定済みなら上書きしない
+            if not info["grade"]:
+                grade_keywords = {
+                    'リステッド': 'L', 'L': 'L',
+                    'オープン': 'OP', 'OP': 'OP',
+                }
+                for span in race_data02.find_all("span"):
+                    span_text = span.get_text(strip=True)
+                    if span_text in grade_keywords:
+                        info["grade"] = grade_keywords[span_text]
+                        break
+                    # "3勝クラス", "2勝クラス", "1勝クラス" 等
+                    if '勝クラス' in span_text or span_text in ('新馬', '未勝利'):
+                        info["grade"] = span_text
+                        break
+
+        # race_idからの情報補完
+        if len(race_id) == 12:
+            info["race_number"] = int(race_id[10:12])
+            if not info["venue"]:
+                venue_codes = {
+                    "01": "札幌", "02": "函館", "03": "福島", "04": "新潟",
+                    "05": "東京", "06": "中山", "07": "中京", "08": "京都",
+                    "09": "阪神", "10": "小倉"
+                }
+                info["venue"] = venue_codes.get(race_id[4:6], "不明")
+
+        return info
+
+    def _build_col_map(self, table):
+        """テーブルのヘッダー行から列名→index map を構築。
+
+        netkeibaの列順が変更されても追従できるようにする。
+        """
+        first_row = table.find("tr")
+        if not first_row:
+            return {}
+        cells = first_row.find_all(["th", "td"])
+        headers = [c.get_text(strip=True) for c in cells]
+        cmap = {}
+        for i, h in enumerate(headers):
+            h = h.strip()
+            if not h:
+                continue
+            if h in ("着順", "着", "入線") or (h.endswith("着") and h != "着差"):
+                cmap.setdefault("finish_position", i)
+            elif h in ("枠", "枠番"):
+                cmap.setdefault("post_position", i)
+            elif h in ("馬番", "番号", "番"):
+                cmap.setdefault("horse_number", i)
+            elif h in ("馬名",):
+                cmap.setdefault("horse_name", i)
+            elif h in ("性齢", "性別/年齢"):
+                cmap.setdefault("sex_age", i)
+            elif h in ("斤量",) or h == "kg":
+                cmap.setdefault("impost", i)
+            elif h == "騎手":
+                cmap.setdefault("jockey", i)
+            elif h == "タイム":
+                cmap.setdefault("finish_time", i)
+            elif h == "着差":
+                cmap.setdefault("margin", i)
+            elif h in ("人気",):
+                cmap.setdefault("popularity", i)
+            elif h in ("単勝", "オッズ", "単勝オッズ"):
+                cmap.setdefault("odds", i)
+            elif ("上がり" in h or "上り" in h or h == "後3F") and "指数" not in h:
+                cmap.setdefault("last_3f", i)
+            elif "通過" in h:
+                # #134 (2026-08-31): netkeiba が列名を「通過」→「コーナー通過順」に改称し、
+                # 完全一致判定が外れて **2026-04-25 以降 passing_order が 100% 欠落**していた
+                # (5月以降の全レース)。脚質・展開系の特徴量が4か月分ゼロで学習されていた。
+                # 列名の揺れに強い部分一致にする。
+                cmap.setdefault("passing_order", i)
+            elif h in ("調教師", "厩舎"):
+                # 同じく「調教師」→「厩舎」の改称で trainer_id が5月に94.9%欠落していた
+                cmap.setdefault("trainer", i)
+            elif h in ("馬体重", "体重", "馬体重(増減)"):
+                cmap.setdefault("weight", i)
+        return cmap
+
+    def _parse_result_table(self, soup, race_id):
+        """
+        結果テーブルをパース。
+
+        ヘッダー行から列を識別する robust 版。
+        netkeibaの列順が変わっても自動追従。
+        """
+        results = []
+
+        # テーブル検索
+        table = None
+        for selector in [
+            ("table", {"class_": "RaceTable01"}),
+            ("table", {"class_": "Shutuba_Table"}),
+            ("table", {"summary": "レース結果"}),
+        ]:
+            table = soup.find(selector[0], **selector[1])
+            if table:
+                break
+
+        if not table:
+            for t in soup.find_all("table"):
+                ths = t.find_all("th")
+                texts = [th.get_text(strip=True) for th in ths]
+                if any("着" in txt for txt in texts):
+                    table = t
+                    break
+
+        if not table:
+            print(f"⚠️ 結果テーブルが見つかりません: {race_id}")
+            return results
+
+        # ヘッダーから列map構築
+        cmap = self._build_col_map(table)
+        # 必須列の検証
+        required = ("finish_position", "horse_number")
+        missing = [k for k in required if k not in cmap]
+        if missing:
+            # ヘッダーが想定外フォーマット → 旧hardcodedにfallback
+            print(f"⚠️ {race_id}: ヘッダーから列識別失敗({missing})、旧固定index 使用")
+            cmap = {
+                "finish_position": 0, "post_position": 1, "horse_number": 2,
+                "horse_name": 3, "sex_age": 4, "impost": 5, "jockey": 6,
+                "finish_time": 7, "margin": 8, "popularity": 9,
+                "odds": 10, "last_3f": 11, "passing_order": 12,
+                "trainer": 13, "weight": 14,
+            }
+
+        def _get(cols, key):
+            i = cmap.get(key)
+            if i is None or i >= len(cols):
+                return ""
+            return cols[i].get_text(strip=True)
+
+        def _get_cell(cols, key):
+            i = cmap.get(key)
+            if i is None or i >= len(cols):
+                return None
+            return cols[i]
+
+        rows = table.find_all("tr")[1:]
+        skipped_no_finish = 0
+
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) < 8:  # 最低限の列数チェック(緩めに)
+                continue
+
+            entry = {"race_id": race_id}
+
+            try:
+                # 着順
+                pos_text = _get(cols, "finish_position")
+                entry["finish_position"] = int(pos_text) if pos_text.isdigit() else 0
+                # #173: 着順の無い馬の理由 (中止/失格/除外/取消) を先頭1字で残す。旧版は 0 にして
+                # 捨てていたため、通過順の無い競走中止 (障害戦の早い落馬など) を除外と区別できなかった
+                entry["finish_status"] = (pos_text[:1]
+                                          if entry["finish_position"] == 0 and pos_text[:1] in "中失除取"
+                                          and pos_text else "")
+
+                # 枠番
+                post_text = _get(cols, "post_position")
+                entry["post_position"] = int(post_text) if post_text.isdigit() else 0
+
+                # 馬番(必須)
+                num_text = _get(cols, "horse_number")
+                entry["horse_number"] = int(num_text) if num_text.isdigit() else 0
+                if entry["horse_number"] == 0:
+                    continue
+
+                # 馬名 + horse_id
+                horse_cell = _get_cell(cols, "horse_name")
+                entry["horse_name"] = horse_cell.get_text(strip=True) if horse_cell else ""
+                entry["horse_id"] = ""
+                if horse_cell:
+                    horse_tag = horse_cell.find("a")
+                    if horse_tag and horse_tag.get("href"):
+                        h_match = re.search(r"/horse/(\w+)", horse_tag["href"])
+                        if h_match:
+                            entry["horse_id"] = h_match.group(1)
+
+                # 性齢
+                sex_age = _get(cols, "sex_age")
+                entry["sex"] = sex_age[0] if sex_age else ""
+                entry["age"] = int(sex_age[1:]) if len(sex_age) > 1 and sex_age[1:].isdigit() else 0
+
+                # 斤量
+                impost_text = _get(cols, "impost")
+                entry["impost"] = float(impost_text) if self._is_number(impost_text) else 0
+
+                # 騎手
+                jockey_cell = _get_cell(cols, "jockey")
+                entry["jockey_name"] = jockey_cell.get_text(strip=True) if jockey_cell else ""
+                entry["jockey_id"] = ""
+                if jockey_cell:
+                    jockey_tag = jockey_cell.find("a")
+                    if jockey_tag and jockey_tag.get("href"):
+                        j_match = re.search(r"/jockey/(?:result/recent/)?(\w+)", jockey_tag["href"])
+                        if j_match:
+                            entry["jockey_id"] = j_match.group(1)
+
+                # タイム
+                time_text = _get(cols, "finish_time")
+                entry["finish_time"] = time_text
+                entry["finish_time_seconds"] = self._parse_time(time_text)
+
+                # 着差
+                entry["margin"] = _get(cols, "margin")
+
+                # 人気
+                pop_text = _get(cols, "popularity")
+                entry["popularity"] = int(pop_text) if pop_text.isdigit() else 0
+
+                # 着順0なら(中止/未確定など) skipped カウント
+                if entry["finish_position"] == 0:
+                    skipped_no_finish += 1
+
+                # 単勝オッズ
+                odds_text = _get(cols, "odds")
+                entry["odds"] = float(odds_text) if self._is_number(odds_text) else 0
+
+                # 上がり3F
+                last3f_text = _get(cols, "last_3f")
+                entry["last_3f"] = float(last3f_text) if self._is_number(last3f_text) else 0
+
+                # 通過順
+                entry["passing_order"] = _get(cols, "passing_order")
+
+                # 調教師
+                entry["trainer_name"] = ""
+                entry["trainer_id"] = ""
+                trainer_cell = _get_cell(cols, "trainer")
+                if trainer_cell:
+                    entry["trainer_name"] = trainer_cell.get_text(strip=True)
+                    trainer_tag = trainer_cell.find("a")
+                    if trainer_tag and trainer_tag.get("href"):
+                        t_match = re.search(r"/trainer/(?:result/recent/)?(\w+)", trainer_tag["href"])
+                        if t_match:
+                            entry["trainer_id"] = t_match.group(1)
+
+                # 馬体重(増減)
+                entry["weight"] = 0
+                entry["weight_change"] = 0
+                weight_text = _get(cols, "weight")
+                if weight_text:
+                    w_match = re.match(r"(\d+)\(([+-]?\d+)\)", weight_text)
+                    if w_match:
+                        entry["weight"] = int(w_match.group(1))
+                        entry["weight_change"] = int(w_match.group(2))
+                    elif weight_text.isdigit():
+                        entry["weight"] = int(weight_text)
+
+                results.append(entry)
+
+            except (ValueError, IndexError) as e:
+                print(f"⚠️ パースエラー (行スキップ): {e}")
+                continue
+
+        # 全頭が finish_position=0 だった場合の警告(根本予防)
+        if results and skipped_no_finish == len(results):
+            print(f"⚠️ {race_id}: {len(results)}頭全員 finish_position=0 → 結果parse失敗の可能性大")
+            print(f"   ヘッダー検出列: {list(cmap.keys())}")
+
+        return results
+
+    def _parse_payout_table(self, soup, race_id):
+        """配当テーブルをパース
+
+        netkeiba result.html の払戻テーブル構造 (2024-2026版):
+        - Payout_Detail_Table が2つ:
+          Table1: 単勝 | 複勝 | 枠連 | 馬連
+          Table2: ワイド | 馬単 | 3連複 | 3連単
+        - 各行: TH(券種名) + TD.Result(組合せ) + TD.Payout(配当) + TD.Ninki(人気)
+        - 複勝/ワイドは1行に複数エントリ (br区切り)
+        """
+        payouts = []
+
+        # 2つの Payout_Detail_Table を全て取得
+        payout_tables = soup.find_all("table", class_="Payout_Detail_Table")
+        if not payout_tables:
+            return payouts
+
+        # 券種名の正規化マップ
+        type_norm = {
+            "単勝": "単勝", "複勝": "複勝", "枠連": "枠連",
+            "馬連": "馬連", "ワイド": "ワイド", "馬単": "馬単",
+            "3連複": "三連複", "三連複": "三連複",
+            "3連単": "三連単", "三連単": "三連単",
+        }
+
+        for table in payout_tables:
+            for row in table.find_all("tr"):
+                ths = row.find_all("th")
+                tds = row.find_all("td")
+                if not ths or len(tds) < 2:
+                    continue
+
+                th_text = ths[0].get_text(strip=True)
+                bet_type = type_norm.get(th_text)
+                if not bet_type:
+                    continue
+
+                combo_td = tds[0]
+                payout_td = tds[1]
+                pop_td = tds[2] if len(tds) > 2 else None
+
+                try:
+                    # === 組み合わせの抽出 ===
+                    combos = self._extract_combos(combo_td, bet_type)
+
+                    # === 配当金の抽出 (br区切り) ===
+                    payout_vals = self._extract_payout_values(payout_td)
+
+                    # === 人気の抽出 (複数span) ===
+                    pop_vals = self._extract_popularity(pop_td)
+
+                    # 結合
+                    for i, combo in enumerate(combos):
+                        if not combo:
+                            continue
+                        payout_val = payout_vals[i] if i < len(payout_vals) else 0
+                        pop_val = pop_vals[i] if i < len(pop_vals) else 0
+                        if payout_val > 0:
+                            payouts.append({
+                                "race_id": race_id,
+                                "bet_type": bet_type,
+                                "combination": combo,
+                                "payout_amount": payout_val,
+                                "popularity": pop_val,
+                            })
+                except (ValueError, IndexError):
+                    continue
+
+        return payouts
+
+    def _extract_combos(self, td, bet_type):
+        """組み合わせTDから馬番組み合わせを抽出"""
+        combos = []
+
+        if bet_type in ("単勝", "複勝"):
+            # 複勝: <div><span>5</span></div><div><span></span></div><div><span></span></div>
+            # の3つのdivが1セット。空spanは無視
+            divs = td.find_all("div")
+            nums = []
+            for d in divs:
+                span = d.find("span")
+                if span:
+                    text = span.get_text(strip=True)
+                    if text and text.isdigit():
+                        nums.append(text)
+            # 単勝は1つ、複勝は3つの馬番
+            if bet_type == "単勝":
+                combos = nums[:1]
+            else:
+                combos = nums
+        else:
+            # 馬連/ワイド/馬単/三連複/三連単: <ul><li><span>3</span></li><li><span>5</span></li><li></li></ul> で1組
+            uls = td.find_all("ul")
+            for ul in uls:
+                lis = ul.find_all("li")
+                nums = []
+                for li in lis:
+                    span = li.find("span")
+                    if span:
+                        text = span.get_text(strip=True)
+                        if text and text.isdigit():
+                            nums.append(text)
+                if nums:
+                    combos.append("-".join(nums))
+
+        return combos
+
+    @staticmethod
+    def _extract_payout_values(td):
+        """配当TDから金額リストを抽出 (br区切り対応)"""
+        html = td.decode_contents()
+        # <br/> で分割
+        parts = re.split(r'<br\s*/?>', html, flags=re.IGNORECASE)
+        vals = []
+        for part in parts:
+            # HTMLタグ除去 → 数字以外除去
+            text = re.sub(r'<[^>]+>', '', part).strip()
+            num = re.sub(r'[^\d]', '', text)
+            if num:
+                vals.append(int(num))
+        return vals
+
+    @staticmethod
+    def _extract_popularity(td):
+        """人気TDから人気順リストを抽出 (複数span対応)"""
+        if not td:
+            return []
+        spans = td.find_all("span")
+        vals = []
+        for span in spans:
+            text = span.get_text(strip=True)
+            num = re.sub(r'[^\d]', '', text)
+            if num:
+                vals.append(int(num))
+        return vals
+
+    # =========================================================
+    # リアルタイムオッズ取得
+    # =========================================================
+    def scrape_odds(self, race_id):
+        """リアルタイムの単勝・複勝オッズを取得"""
+        url = f"{self.BASE_URL}/odds/index.html?race_id={race_id}&type=b1"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return {}
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        odds_data = {}
+
+        # 単勝オッズテーブル
+        table = soup.find("table", class_="RaceOdds_HorseList_Table")
+        if not table:
+            # フォールバック: 出馬表からオッズを取得
+            return self._scrape_odds_from_shutuba(race_id)
+
+        for tr in table.find_all("tr"):
+            tds = tr.find_all("td")
+            if len(tds) < 4:
+                continue
+
+            try:
+                horse_num = int(tds[1].get_text(strip=True))
+                win_odds_text = tds[3].get_text(strip=True).replace(",", "")
+                win_odds = float(win_odds_text) if win_odds_text and win_odds_text != "---" else 0
+                odds_data[horse_num] = {
+                    "win_odds": win_odds,
+                    "place_odds_min": 0,
+                    "place_odds_max": 0,
+                }
+            except (ValueError, IndexError):
+                continue
+
+        # 複勝オッズ
+        url_place = f"{self.BASE_URL}/odds/index.html?race_id={race_id}&type=b1"
+        # 複勝は同じページに含まれることが多い
+        for tr in table.find_all("tr"):
+            tds = tr.find_all("td")
+            if len(tds) < 6:
+                continue
+            try:
+                horse_num = int(tds[1].get_text(strip=True))
+                if horse_num in odds_data:
+                    place_text = tds[4].get_text(strip=True).replace(",", "") if len(tds) > 4 else ""
+                    if place_text and " - " in place_text:
+                        parts = place_text.split(" - ")
+                        odds_data[horse_num]["place_odds_min"] = float(parts[0])
+                        odds_data[horse_num]["place_odds_max"] = float(parts[1])
+                    elif place_text and place_text != "---":
+                        try:
+                            odds_data[horse_num]["place_odds_min"] = float(place_text)
+                            odds_data[horse_num]["place_odds_max"] = float(place_text)
+                        except ValueError:
+                            pass
+            except (ValueError, IndexError):
+                continue
+
+        return odds_data
+
+    def _scrape_odds_from_shutuba(self, race_id):
+        """出馬表ページからオッズを取得（フォールバック）"""
+        url = f"{self.BASE_URL}/race/shutuba.html?race_id={race_id}"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return {}
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        odds_data = {}
+
+        table = soup.find("table", class_="Shutuba_Table")
+        if not table:
+            return {}
+
+        for tr in table.find_all("tr", class_="HorseList"):
+            tds = tr.find_all("td")
+            if len(tds) < 10:
+                continue
+            try:
+                horse_num = int(tds[1].get_text(strip=True))
+                # オッズは通常最後の方のカラム
+                for td in reversed(tds):
+                    text = td.get_text(strip=True).replace(",", "")
+                    try:
+                        odds_val = float(text)
+                        if 1.0 < odds_val < 1000:
+                            odds_data[horse_num] = {
+                                "win_odds": odds_val,
+                                "place_odds_min": max(odds_val * 0.25, 1.1),
+                                "place_odds_max": max(odds_val * 0.4, 1.2),
+                            }
+                            break
+                    except ValueError:
+                        continue
+            except (ValueError, IndexError):
+                continue
+
+        return odds_data
+
+    # =========================================================
+    # 馬のキャリア成績取得
+    # =========================================================
+    def scrape_horse_career(self, horse_id):
+        """馬ページから通算成績を取得
+
+        Returns:
+            dict: {
+                'total_races': int,
+                'wins': int,
+                'seconds': int,
+                'thirds': int,
+                'others': int,
+                'win_rate': float,    # 0.0-1.0
+                'top3_rate': float,   # 0.0-1.0
+            }
+            取得失敗時はNone
+        """
+        url = f"{self.DB_URL}/horse/{horse_id}/"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return None
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        prof = soup.find("table", class_="db_prof_table")
+        if not prof:
+            return None
+
+        for tr in prof.find_all("tr"):
+            th = tr.find("th")
+            td = tr.find("td")
+            if th and td and "通算成績" in th.text:
+                text = td.text.strip()
+                # フォーマット: "6戦0勝 [0-1-0-5]"
+                m = re.search(r'(\d+)戦(\d+)勝.*\[(\d+)-(\d+)-(\d+)-(\d+)\]', text)
+                if m:
+                    total = int(m.group(1))
+                    wins = int(m.group(3))
+                    seconds = int(m.group(4))
+                    thirds = int(m.group(5))
+                    others = int(m.group(6))
+                    if total > 0:
+                        return {
+                            'total_races': total,
+                            'wins': wins,
+                            'seconds': seconds,
+                            'thirds': thirds,
+                            'others': others,
+                            'win_rate': wins / total,
+                            'top3_rate': (wins + seconds + thirds) / total,
+                        }
+        return None
+
+    # =========================================================
+    # 追い切り評価 (netkeiba oikiri.html)
+    # =========================================================
+    def scrape_workouts(self, race_id):
+        """指定レースの追い切り評価を全馬分取得。
+
+        Returns:
+            list[dict]: [{horse_id, horse_number, horse_name,
+                          evaluation_grade(A/B/C/D or None), evaluation_text, comment}, ...]
+            取得失敗時は空リスト。
+        """
+        url = f"{self.BASE_URL}/race/oikiri.html?race_id={race_id}"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return []
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        table = soup.find("table", class_="OikiriTable")
+        if not table:
+            return []
+
+        out = []
+        for tr in table.find_all("tr", class_=re.compile(r"OikiriDataHead\d+")):
+            tds = tr.find_all("td")
+            if len(tds) < 6:
+                continue
+            try:
+                num_text = tds[1].get_text(strip=True)
+                horse_number = int(num_text) if num_text.isdigit() else 0
+
+                horse_a = tds[3].find("a", href=True)
+                horse_name = horse_a.get_text(strip=True) if horse_a else ""
+                horse_id = ""
+                if horse_a:
+                    m = re.search(r"/horse/(\d{10,})", horse_a["href"])
+                    if m:
+                        horse_id = m.group(1)
+
+                full_text = tds[3].get_text(strip=True)
+                comment = full_text.replace(horse_name, "").strip()
+                evaluation_text = tds[4].get_text(strip=True)
+                evaluation_grade = normalize_workout_grade(
+                    tds[5].get_text(strip=True), race_id=race_id, horse_number=horse_number)
+
+                if not horse_id:
+                    continue
+
+                out.append({
+                    "race_id": race_id,
+                    "horse_id": horse_id,
+                    "horse_number": horse_number,
+                    "horse_name": horse_name,
+                    "evaluation_text": evaluation_text or None,
+                    "evaluation_grade": evaluation_grade,
+                    "comment": comment[:80] if comment else None,
+                })
+            except Exception:
+                continue
+        return out
+
+    def save_workouts_to_db(self, workouts):
+        """workouts(list[dict]) を DBに保存。
+        Returns: 保存件数"""
+        if not workouts:
+            return 0
+        from database import get_db
+        n = 0
+        with get_db() as conn:
+            for w in workouts:
+                try:
+                    conn.execute("""
+                        INSERT OR REPLACE INTO workouts
+                        (race_id, horse_id, horse_number, evaluation_grade, evaluation_text, comment)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (
+                        w["race_id"], w["horse_id"], w["horse_number"],
+                        w.get("evaluation_grade"), w.get("evaluation_text"),
+                        w.get("comment"),
+                    ))
+                    n += 1
+                except Exception:
+                    continue
+        return n
+
+    # =========================================================
+    # 出馬表（未来レース）の取得
+    # =========================================================
+    def scrape_shutuba(self, race_id, race_date_hint=None):
+        """出馬表をスクレイピング（当日レース予測用）
+
+        race_date_hint: そのレースを見つけた一覧の日付 (YYYYMMDD / YYYY-MM-DD)。
+        #169: ページの <title> から日付が読めなかった時の既定値。#106 (7/11) と同じ型で、
+        日付が取れないと race_date="" のまま保存され、日付で引く全クエリ
+        (refresh_entries / #159 の DB 合流 / V2d のそろい判定) から見えなくなる。
+        一覧の日付はそのレースの開催日そのものなので、読めた日付が無い時だけ使う。
+        """
+        url = f"{self.BASE_URL}/race/shutuba.html?race_id={race_id}"
+        resp = self._get(url, encoding="EUC-JP")
+        if not resp:
+            return None
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        race_data = {"race_id": race_id}
+        race_data.update(self._parse_race_info(soup, race_id))
+        if not race_data.get("race_date") and race_date_hint:
+            _h = str(race_date_hint).replace("-", "")
+            if len(_h) == 8 and _h.isdigit():
+                race_data["race_date"] = f"{_h[:4]}-{_h[4:6]}-{_h[6:8]}"
+                print(f"  📅 {race_id}: ページから日付が読めない → 一覧の日付 "
+                      f"{race_data['race_date']} を使用 (#169)")
+
+        entries = []
+        table = soup.find("table", class_="ShutubaTable") or soup.find("table", class_="RaceTable01")
+        if not table:
+            print(f"⚠️ 出馬表テーブルが見つかりません: {race_id}")
+            return race_data
+
+        rows = table.find_all("tr")[1:]
+        entry_idx = 0  # 月曜時点の仮馬番 (1-based)
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) < 8:
+                continue
+
+            entry = {"race_id": race_id}
+            try:
+                # 枠順 (post_position): 抽選前は "--" / "-" → 0 として扱う
+                post_text = cols[0].get_text(strip=True)
+                entry["post_position"] = int(post_text) if post_text.isdigit() else 0
+
+                # 馬番 (horse_number): 抽選前 (空 or "--") → 仮の連番を振る
+                # UNIQUE(race_id, horse_number) 制約のため重複0を許容できない。
+                # 枠順抽選後に scraper が走り直して正式な馬番に置換される設計。
+                num_text = cols[1].get_text(strip=True)
+                if num_text.isdigit():
+                    entry["horse_number"] = int(num_text)
+                else:
+                    entry_idx += 1
+                    entry["horse_number"] = entry_idx  # 仮: 登録順の連番 (1, 2, 3, ...)
+                    entry["_provisional_number"] = True  # マーク (DBには入れない)
+
+                # #171: 出走取消・除外の行 (tr.HorseList.Cancel、3列目が「取消」「除外」)。
+                # 取消の確かな信号はこれだけ (オッズ API は発売中の取消馬を 999.9倍・人気=頭数で返し、
+                # 票の少ない走る馬と区別できない)。results に SCRATCH_SENTINEL (999.9倍・人気9999) を
+                # 書かせ、取消の判定 (race_utils.is_scratch_values の人気>=999) に乗せる。
+                # 行は残す (#43 の同期削除で取消馬を消さない。finish_position=0 は取消も含む #150e)。
+                _row_cls = row.get("class") or []
+                _row_mark = cols[2].get_text(strip=True) if len(cols) > 2 else ""
+                entry["_cancel_checked"] = True   # この版の出馬表で取消の有無を見た (DBには入れない)
+                if "Cancel" in _row_cls or _row_mark in ("取消", "除外"):
+                    from race_utils import SCRATCH_SENTINEL
+                    entry["scratched"] = True
+                    entry["odds"], entry["popularity"] = SCRATCH_SENTINEL
+
+                # 馬名 td (cols[3] = 馬名)
+                horse_tag = cols[3].find("a") if len(cols) > 3 else None
+                entry["horse_name"] = cols[3].get_text(strip=True) if len(cols) > 3 else ""
+                # 馬名空なら entry 不正 → skip
+                if not entry["horse_name"]:
+                    continue
+                entry["horse_id"] = ""
+                if horse_tag and horse_tag.get("href"):
+                    h_match = re.search(r"/horse/(\w+)", horse_tag["href"])
+                    if h_match:
+                        entry["horse_id"] = h_match.group(1)
+
+                sex_age = cols[4].get_text(strip=True) if len(cols) > 4 else ""
+                entry["sex"] = sex_age[0] if sex_age else ""
+                entry["age"] = int(sex_age[1:]) if len(sex_age) > 1 and sex_age[1:].isdigit() else 0
+
+                impost_text = cols[5].get_text(strip=True) if len(cols) > 5 else "0"
+                entry["impost"] = float(impost_text) if self._is_number(impost_text) else 0
+
+                jockey_tag = cols[6].find("a") if len(cols) > 6 else None
+                entry["jockey_name"] = cols[6].get_text(strip=True) if len(cols) > 6 else ""
+                entry["jockey_id"] = ""
+                if jockey_tag and jockey_tag.get("href"):
+                    j_match = re.search(r"/jockey/(?:result/recent/)?(\w+)", jockey_tag["href"])
+                    if j_match:
+                        entry["jockey_id"] = j_match.group(1)
+
+                trainer_tag = cols[7].find("a") if len(cols) > 7 else None
+                entry["trainer_name"] = cols[7].get_text(strip=True) if len(cols) > 7 else ""
+                entry["trainer_id"] = ""
+                if trainer_tag and trainer_tag.get("href"):
+                    t_match = re.search(r"/trainer/(?:result/recent/)?(\w+)", trainer_tag["href"])
+                    if t_match:
+                        entry["trainer_id"] = t_match.group(1)
+
+                entries.append(entry)
+            except (ValueError, IndexError):
+                continue
+
+        race_data["entries"] = entries
+        return race_data
+
+    def scrape_cancelled_numbers(self, race_id):
+        """#171: 出馬表の取消・除外の馬番の集合。取得できなければ None (= 分からない)。
+
+        refresh_odds が、オッズ API の登録頭数 (touroku) > 出走頭数 (shusso) の時だけ呼ぶ
+        (発売中の API は取消馬も 999.9倍・人気=頭数で返すので、どの馬かは出馬表で確かめる)。
+        """
+        data = self.scrape_shutuba(race_id)
+        entries = (data or {}).get("entries") or []
+        if not entries:
+            return None
+        # 枠番の無いページ (仮馬番 = 五十音順/登録順の連番) では馬番が当てにならない → 分からない
+        if any(e.get("_provisional_number") for e in entries) or \
+                not any((e.get("post_position") or 0) > 0 for e in entries):
+            return None
+        return {e["horse_number"] for e in entries
+                if e.get("scratched") and e.get("horse_number")}
+
+    # =========================================================
+    # DBへの保存
+    # =========================================================
+    def save_race_to_db(self, race_data):
+        """レースデータをDBに保存"""
+        if not race_data:
+            return
+        # #169: race_date を空で上書きしない / 中身の無いページで既存行を潰さない
+        if self._guard_race_date_overwrite(race_data):
+            return
+
+        with get_db() as conn:
+            # レース情報保存
+            # #169: 下の INSERT OR REPLACE は空の天候・馬場で既存の正しい値を消す
+            # (10/26 の取り直しで、当日正しく取れていた 10/24・10/25 の稍36・不16 が空になった)。
+            # 新しく取れた値が空なら既存の値を引き継ぐ。天候・馬場以外の列の挙動は変えない。
+            # (関数冒頭でなくここに置くのは、同じ関数の冒頭に入る E 班の日付ガードと別の位置にして
+            #  merge で衝突させないため。ガードは race_data をその場で直し、こちらはその後の値から
+            #  コピーを作るので、どちらが先でも保存される値は同じ)
+            from race_meta import keep_existing_race_meta
+            race_data = keep_existing_race_meta(race_data.get("race_id"), race_data, conn=conn)
+            conn.execute("""
+                INSERT OR REPLACE INTO races
+                (race_id, race_date, venue, race_number, race_name, grade,
+                 distance, surface, direction, weather, track_condition, horse_count, start_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                race_data["race_id"], race_data.get("race_date", ""),
+                race_data.get("venue", ""), race_data.get("race_number", 0),
+                race_data.get("race_name", ""), race_data.get("grade", ""),
+                race_data.get("distance", 0), race_data.get("surface", ""),
+                race_data.get("direction", ""), race_data.get("weather", ""),
+                race_data.get("track_condition", ""),
+                len(race_data.get("results", []) or race_data.get("entries", [])),
+                race_data.get("start_time", "")
+            ))
+
+            # 各馬の結果保存
+            # 互換: scrape_race は "results" キー、scrape_shutuba は "entries" キー
+            # 過去のバグで未来レースで出走馬が保存されない事象があり、
+            # entries も results として処理するよう統一 (2026-05-23 修正)
+            horse_records = race_data.get("results", []) or race_data.get("entries", [])
+
+            # 🆕 幽霊馬対策 (#43): 最新スクレイプの馬番に無い「結果未確定」レコードを削除。
+            # 枠順確定前の仮馬番 (出馬表の行数で 1..N 採番) が、確定後の正式馬番 (1..M,
+            # M<N) で上書きされず残存して「幽霊馬」(オッズ0・出走表に存在しない) になる
+            # 問題を根絶。確定済 (finish_position>0) は保護し、出走馬段階のみ最新スクレイプ
+            # で完全同期する。UNIQUE(race_id,horse_number) は同一馬の異馬番重複を防げない。
+            scraped_nums = [r.get("horse_number", 0) for r in horse_records if r.get("horse_number")]
+            # 🚨 #150e (2026-09-05): この削除には「スクレイプが完全か」の検査が無く、
+            # **発走直後の結果ページを部分取得しただけで残りの出走馬を全部消していた**。
+            # 実害: 札幌4R (11:20発走) が 11:28 の収集で 14頭 → **1頭** に。
+            # 勝ち馬1頭だけ載った状態のページを掴み、残り13頭 (finish=0) を削除した。
+            # ガード: (a) 着順を含むスクレイプ (= 結果ページ) では絶対に削除しない。
+            #   幽霊馬 (#43) は「枠順確定前の仮馬番」の問題なので、出馬表スクレイプ
+            #   でしか起きない。結果ページは部分描画が普通にあるので削除の根拠にならない。
+            # (b) 5頭未満のスクレイプでは削除しない (JRA の最小出走頭数を下回る = 取得失敗)。
+            _has_finish = any((r.get("finish_position") or 0) > 0 for r in horse_records)
+            _sync_ok = bool(scraped_nums) and not _has_finish and len(scraped_nums) >= 5
+            if scraped_nums and not _sync_ok:
+                print(f"  🛡 {race_data['race_id']}: 同期削除をスキップ "
+                      f"({len(scraped_nums)}頭{'・着順あり' if _has_finish else ''}) "
+                      f"— 部分取得で出走馬を消さない (#150e)")
+            if _sync_ok:
+                _ph = ",".join("?" * len(scraped_nums))
+                conn.execute(
+                    f"DELETE FROM results WHERE race_id = ? AND finish_position = 0 "
+                    f"AND horse_number NOT IN ({_ph})",
+                    (race_data["race_id"], *scraped_nums)
+                )
+
+            for r in horse_records:
+                # 馬マスター。#90: INSERT OR IGNORE だと #85 修正前(EUC-JP)に登録された
+                # 文字化け馬名 (U+FFFD 含む) が上書きされず残る → 化け名なら正しい名で自己修復。
+                if r.get("horse_id"):
+                    # 生年は horse_id 先頭4桁 (NULL の時だけ埋める。既存値は上書きしない)
+                    conn.execute(f"""
+                        INSERT INTO horses (horse_id, horse_name, sex, birth_year)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(horse_id) DO UPDATE SET
+                            horse_name = CASE
+                                WHEN (horses.horse_name IS NULL OR horses.horse_name = ''
+                                      OR horses.horse_name LIKE '%'||CHAR(65533)||'%')
+                                     AND excluded.horse_name != ''
+                                     AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
+                                THEN excluded.horse_name ELSE horses.horse_name END,
+                            {BIRTH_YEAR_FILL_SQL}
+                    """, (r["horse_id"], r.get("horse_name", ""), r.get("sex", ""),
+                          birth_year_from_horse_id(r["horse_id"])))
+
+                # 騎手マスター
+                if r.get("jockey_id"):
+                    conn.execute("""
+                        INSERT OR IGNORE INTO jockeys (jockey_id, jockey_name)
+                        VALUES (?, ?)
+                    """, (r["jockey_id"], r.get("jockey_name", "")))
+
+                # 調教師マスター
+                if r.get("trainer_id"):
+                    conn.execute("""
+                        INSERT OR IGNORE INTO trainers (trainer_id, trainer_name)
+                        VALUES (?, ?)
+                    """, (r["trainer_id"], r.get("trainer_name", "")))
+
+                # 結果
+                # 🆕 #52 (2026-06-08): INSERT OR REPLACE → ON CONFLICT DO UPDATE (保全 UPSERT)。
+                # 旧 INSERT OR REPLACE は行を削除して再挿入するため、出馬表 scrape (scrape_shutuba
+                # =odds/weight を持たない) で save するたびに既存の odds/popularity/weight/着順 を
+                # 0 で上書きしていた。これが「予測時 odds=0 → rank_score フラット → 全レース D」
+                # (model_rank gain 92% が odds_log) と「馬体重補正 dead code」(#38) の主因。
+                # 対策: 各列「新値が非ゼロ/非空ならそれを採用、ゼロ/空なら既存値を保全」する。
+                # → 出馬表 save は既存 odds/weight を壊さず、結果 save は実値で正しく更新される。
+                # conflict key は results の UNIQUE(race_id, horse_number)。
+                conn.execute("""
+                    INSERT INTO results
+                    (race_id, horse_id, jockey_id, trainer_id,
+                     post_position, horse_number, odds, popularity,
+                     finish_position, finish_time, finish_time_seconds,
+                     margin, last_3f, passing_order, weight, weight_change, impost,
+                     finish_status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(race_id, horse_number) DO UPDATE SET
+                        horse_id = CASE WHEN excluded.horse_id != '' THEN excluded.horse_id ELSE results.horse_id END,
+                        jockey_id = CASE WHEN excluded.jockey_id != '' THEN excluded.jockey_id ELSE results.jockey_id END,
+                        trainer_id = CASE WHEN excluded.trainer_id != '' THEN excluded.trainer_id ELSE results.trainer_id END,
+                        post_position = CASE WHEN excluded.post_position != 0 THEN excluded.post_position ELSE results.post_position END,
+                        odds = CASE WHEN excluded.odds != 0 THEN excluded.odds ELSE results.odds END,
+                        popularity = CASE WHEN excluded.popularity != 0 THEN excluded.popularity ELSE results.popularity END,
+                        finish_position = CASE WHEN excluded.finish_position != 0 THEN excluded.finish_position ELSE results.finish_position END,
+                        finish_time = CASE WHEN excluded.finish_time != '' THEN excluded.finish_time ELSE results.finish_time END,
+                        finish_time_seconds = CASE WHEN excluded.finish_time_seconds != 0 THEN excluded.finish_time_seconds ELSE results.finish_time_seconds END,
+                        margin = CASE WHEN excluded.margin != '' THEN excluded.margin ELSE results.margin END,
+                        last_3f = CASE WHEN excluded.last_3f != 0 THEN excluded.last_3f ELSE results.last_3f END,
+                        passing_order = CASE WHEN excluded.passing_order != '' THEN excluded.passing_order ELSE results.passing_order END,
+                        weight = CASE WHEN excluded.weight != 0 THEN excluded.weight ELSE results.weight END,
+                        weight_change = CASE WHEN excluded.weight_change != 0 THEN excluded.weight_change ELSE results.weight_change END,
+                        impost = CASE WHEN excluded.impost != 0 THEN excluded.impost ELSE results.impost END,
+                        finish_status = CASE WHEN excluded.finish_status != '' THEN excluded.finish_status
+                                             WHEN excluded.finish_position != 0 THEN ''
+                                             ELSE COALESCE(results.finish_status, '') END
+                """, (
+                    race_data["race_id"], r.get("horse_id", ""),
+                    r.get("jockey_id", ""), r.get("trainer_id", ""),
+                    r.get("post_position", 0), r.get("horse_number", 0),
+                    r.get("odds", 0), r.get("popularity", 0),
+                    r.get("finish_position", 0), r.get("finish_time", ""),
+                    r.get("finish_time_seconds", 0), r.get("margin", ""),
+                    r.get("last_3f", 0), r.get("passing_order", ""),
+                    r.get("weight", 0), r.get("weight_change", 0),
+                    r.get("impost", 0), r.get("finish_status", "") or ""
+                ))
+
+            # #171: 出馬表で取消でなかった馬に、前の版の取消の目印 (人気9999) が残っていたら外す
+            # (誤って取消扱いのまま印の候補から外れ続けないように)。着順のある行と、取消の有無を
+            # 見ていない経路 (結果ページ・旧形式) は触らない。オッズは 0 に戻し refresh_odds が埋め直す。
+            if not _has_finish:
+                for r in horse_records:
+                    if r.get("_cancel_checked") and not r.get("scratched") and r.get("horse_number"):
+                        conn.execute(
+                            "UPDATE results SET odds = 0, popularity = 0 "
+                            "WHERE race_id = ? AND horse_number = ? AND finish_position = 0 "
+                            "AND popularity >= 999",
+                            (race_data["race_id"], r["horse_number"]))
+
+            # 配当保存
+            for p in race_data.get("payouts", []):
+                conn.execute("""
+                    INSERT OR REPLACE INTO payouts
+                    (race_id, bet_type, combination, payout_amount, popularity)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    race_data["race_id"], p["bet_type"],
+                    p["combination"], p["payout_amount"],
+                    p.get("popularity", 0)
+                ))
+
+        # #161: 出馬表の保存は entries キー (#14 で両キー対応済み)。results だけ数えていたため
+        # refresh_entries が実際には保存しているのに毎回「0頭」と表示していた。
+        _n = len(race_data.get('results') or race_data.get('entries') or [])
+        print(f"💾 保存完了: {race_data['race_id']} ({_n}頭, {len(race_data.get('payouts', []))}配当)")
+
+    def _guard_race_date_overwrite(self, race_data):
+        """#169: races の INSERT OR REPLACE が既存の正しい日付を空で潰すのを防ぐ。
+
+        #106 (7/11) は cmd_collect にだけ「日付を必ず埋める」修正が入り、出馬表を保存する
+        他の経路 (refresh_entries は毎朝その日の全レース・fetch_weekend_races・preflight の
+        auto-fix) には入っていなかった。ページから日付が読めない時にこれらが race_date=""
+        で保存すると、日付で引くクエリ全部からそのレースが消える (#85/#106 と同じ壊れ方)。
+
+        - race_date が空なら、DB の既存行の日付を引き継ぐ (scrape_shutuba の
+          race_date_hint で一覧の日付が入っていればそれが優先)。
+        - 出走馬も着順も無いページ (週中の一覧にリンクだけ出ている新馬など) で、
+          既に出走馬が入っている行を上書きしない (中身の無い行で race_name 等も消える)。
+
+        戻り値: True なら保存しない (呼び出し側はそのまま return する)。
+        """
+        rid = race_data.get("race_id")
+        if not rid:
+            return False
+        try:
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT race_date, (SELECT COUNT(*) FROM results WHERE race_id = ?) AS n "
+                    "FROM races WHERE race_id = ?", (rid, rid)).fetchone()
+        except Exception:
+            return False
+        if not row:
+            if not race_data.get("race_date"):
+                print(f"  ⚠️ {rid}: 日付不明のまま新規保存 (一覧の日付が渡されていない) #169")
+            return False
+        old_date = row[0] or ""
+        n_old = row[1] or 0
+        records = race_data.get("results") or race_data.get("entries") or []
+        if not records and n_old > 0:
+            print(f"  🛡 {rid}: 出走馬の無いページ → 既存の行 ({n_old}頭) を上書きしない (#169)")
+            return True
+        if not race_data.get("race_date") and old_date:
+            race_data["race_date"] = old_date
+            print(f"  🛡 {rid}: ページから日付が読めない → 既存の日付 {old_date} を維持 (#169)")
+        return False
+
+    # =========================================================
+    # 一括収集
+    # =========================================================
+    def collect_month(self, year, month):
+        """指定年月のレース結果を一括収集"""
+        race_ids = self.get_race_list(year, month)
+        print(f"🏇 {year}年{month}月: {len(race_ids)}レースを収集開始...")
+
+        for i, race_id in enumerate(race_ids):
+            print(f"  [{i+1}/{len(race_ids)}] {race_id}")
+            race_data = self.scrape_race_result(race_id)
+            if race_data:
+                self.save_race_to_db(race_data)
+
+        print(f"✅ {year}年{month}月の収集完了")
+
+    def collect_range(self, start_year, start_month, end_year, end_month):
+        """期間指定で一括収集"""
+        y, m = start_year, start_month
+        while (y, m) <= (end_year, end_month):
+            self.collect_month(y, m)
+            m += 1
+            if m > 12:
+                m = 1
+                y += 1
+
+    # =========================================================
+    # ユーティリティ
+    # =========================================================
+    @staticmethod
+    def _split_td_by_br(td):
+        """<td>の中身を<br>タグで分割してリストを返す
+        netkeibaの配当テーブルは複勝・ワイド等で1セルに複数値を
+        <br>で区切って格納しているため、これを適切に分割する"""
+        if not td:
+            return []
+        # decode_contents() で内部HTMLを取得し、<br>, <br/>, <br /> で分割
+        html = td.decode_contents()
+        parts = re.split(r'<br\s*/?>', html, flags=re.IGNORECASE)
+        result = []
+        for part in parts:
+            # HTMLタグを除去してテキストだけ取得
+            text = re.sub(r'<[^>]+>', '', part).strip()
+            if text:
+                result.append(text)
+        return result
+
+    @staticmethod
+    def _parse_time(time_str):
+        """タイム文字列を秒に変換 ('1:53.4' → 113.4)"""
+        if not time_str:
+            return 0
+        try:
+            # "1:53.4" → 113.4
+            if ":" in time_str:
+                parts = time_str.split(":")
+                minutes = int(parts[0])
+                seconds = float(parts[1])
+                return minutes * 60 + seconds
+            else:
+                return float(time_str)
+        except (ValueError, IndexError):
+            return 0
+
+    @staticmethod
+    def _is_number(s):
+        """文字列が数値かどうか判定"""
+        try:
+            float(s)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+
+if __name__ == "__main__":
+    scraper = NetkeibaScraper()
+    print("🏇 データ収集テスト")
+    print("使用法:")
+    print("  scraper.collect_month(2025, 1)    # 2025年1月データを収集")
+    print("  scraper.collect_range(2024, 1, 2024, 12)  # 2024年全データを収集")

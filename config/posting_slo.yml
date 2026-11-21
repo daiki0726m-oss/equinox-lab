@@ -1,0 +1,158 @@
+# 投稿 SLO (Service Level Objective) 定義
+# 「いつ何が起こるべきか」を明示的にコード化
+#
+# このファイルが「投稿は確実に実行される」を保証する基準。
+# - check_posting_health.py がこれを読んで現状確認
+# - posting_watchdog.yml が cron 失敗時に自動 fallback
+# - docs/data/posting_health.json に健全性結果を記録
+#
+# 編集ルール: time は JST、deadline は時間ガード end の 30 分前
+
+slots:
+  # ─────────── 平日 (月-金) ───────────
+  morning:
+    description: "平日朝の投稿 (週末ラインナップ・血統・最終確定 等)"
+    cron: "30 22 * * 0-4"   # UTC, = 07:30 JST 月-金
+    expected_jst: "07:30"
+    time_guard_jst: [7, 11]  # 7:00-11:59 内に投稿可能
+    watchdog_deadline_jst: "11:00"  # この時刻までに success なければ fallback
+    fallback_mode: "morning"
+    days: [0, 1, 2, 3, 4]  # 月火水木金 (Python weekday: Mon=0)
+
+  weekday:
+    description: "平日昼の投稿 (コース傾向・追い切り・危険な人気馬 等)"
+    cron: "30 3 * * 1-5"
+    expected_jst: "12:30"
+    time_guard_jst: [11, 15]
+    watchdog_deadline_jst: "15:00"
+    fallback_mode: "weekday"
+    days: [0, 1, 2, 3, 4]
+
+  evening:
+    description: "平日夜の投稿 (最終3頭・翌朝告知 等)"
+    cron: "0 11 * * 1-5"
+    expected_jst: "20:00"
+    time_guard_jst: [19, 23]
+    watchdog_deadline_jst: "23:00"
+    fallback_mode: "evening"
+    days: [0, 1, 2, 3, 4]
+
+  # ─────────── 土日 ───────────
+  weekend_morning_predict:
+    description: "土日朝の予測実行 (X 投稿は post_predict が担当)"
+    cron: "0 22 * * 5,6"     # = 07:00 JST 土日
+    expected_jst: "07:00"
+    time_guard_jst: [6, 9]
+    # 🆕 deadline 早期化 + fallback mode 直接化 (2026-06-06 #36)
+    # 旧 08:30 + mode="auto" だと: 7:00 cron がスキップされた時、watchdog が
+    # 8:30 まで待機し、その後 "auto" を auto_post_x の JST 時刻 fallback で
+    # "predict" に間接解決していた。これだと 8時台にダッシュボード 404 が継続。
+    # 対策: deadline を 07:30 に短縮、fallback_mode を "predict" に直接指定。
+    # → 7:00 cron が遅延・スキップしても、7:30 (or 8:00) watchdog tick で
+    # deadline 過ぎ判定 → 即 predict mode で trigger → 8時前後には JSON 反映。
+    #
+    # 🚨 #150c (2026-09-05) — 上の #36 の前提が実測で崩れていた。
+    # 「7:30 の watchdog tick」は存在しない。posting_watchdog は `*/30` 指定だが
+    # **実測の発火間隔は中央値121分・p95 473分**、30分以内の間隔は全体の10%しかない。
+    # 復旧窓 (expected〜deadline = 30分) に tick が入る確率は極めて低く、
+    # 直近5週末で窓に入ったのは 2/5 日だけ。しかも入らなかった3日は
+    # いずれも GitHub スケジューラが劣化した日 = **復旧が必要な日ほど復旧しない**。
+    # 窓を狭めると復旧が速くなるどころか、復旧経路そのものが発火しなくなる。
+    # → deadline を watchdog の実解像度より広く取る (07:30 → 09:30)。
+    # 併せて check_posting_health 側で「生成系は missed でも復旧を試みる」ようにした。
+    watchdog_deadline_jst: "09:30"
+    fallback_mode: "predict"  # ← 直接指定で確実性UP
+    days: [5, 6]              # 土日
+
+  # #172 (2026-11-06): 予想の確定を 10:00 → 9:30 に早めた (1R は 9:45〜発走)。
+  # 最後の作り直しは 9:00 の odds_flash、予想投稿は確定と同時の 9:30。
+  odds_flash:
+    description: "土日朝 9:00 朝オッズ + 最後の作り直し"
+    cron: "0 0 * * 6,0"
+    expected_jst: "09:00"
+    time_guard_jst: [9, 10]  # post_x 側は 9:00-10:30
+    # 確定 (9:30) を過ぎてから代打しても予想は作り直さず、9:30 の印の後に朝オッズが出るだけ。
+    # #173: 代打は確定の15分前まで (race_utils.ODDS_FLASH_LATEST_HM)。odds_flash の run (~10.5分) が
+    # auto_post_x の枠を占め、遅く出すと 9:30 の予想投稿を後ろで待たせる (runner・保険と同じ締切)
+    watchdog_deadline_jst: "09:15"
+    fallback_mode: "odds_flash"
+    days: [5, 6]
+
+  post_predict:
+    description: "土日朝 9:30 予想投稿 (◎○▲ 印 配信、確定と同時)"
+    cron: "30 0 * * 6,0"
+    expected_jst: "09:30"
+    time_guard_jst: [9, 11]  # 確定 (9:30) 以降、post_x の上限 12:00 (#69) まで
+    # 発走前のレースだけ投稿するので、遅れても残りのレースには間に合う (旧 10:15→10:50 の35分窓は狭すぎた)
+    watchdog_deadline_jst: "11:00"
+    # #149: ここが "predict" だと、代打が呼ばれても**予測を回すだけで投稿しない**まま
+    # 「投稿済み」と記録され、失敗が見えなくなる。投稿させたいので post_predict。
+    fallback_mode: "post_predict"
+    days: [5, 6]
+
+  # (旧 hit_flash slot は #57 で削除 — cmd_results の完走ガードにより 15:30 時点では
+  #  メイン11R 未発走で常にスキップされる構造的 no-op だった。結果投稿は results に一本化)
+
+  results:
+    description: "土日 17:30 結果スレッド投稿"
+    cron: "30 8 * * 6,0"
+    expected_jst: "17:30"
+    time_guard_jst: [17, 19]
+    watchdog_deadline_jst: "18:30"
+    fallback_mode: "results"
+    days: [5, 6]
+
+# ─────────── データ収集系 SLO (5/30 新規追加) ───────────
+# fetch_weekend_races.yml の cron スケジュールも watchdog 対象に。
+# 「データが入ってない」状態を構造的に防ぐ。
+data_fetch_slots:
+  fetch_monday:
+    workflow: fetch_weekend_races.yml
+    description: "月曜朝 — 来週末のレース予備登録"
+    cron: "0 21 * * 0"
+    expected_jst: "06:00"
+    watchdog_deadline_jst: "09:00"
+    days: [0]  # 月曜
+
+  fetch_wednesday:
+    workflow: fetch_weekend_races.yml
+    description: "水曜朝 — 出馬表更新 (木の出走確定前 予備)"
+    cron: "0 21 * * 2"
+    expected_jst: "06:00"
+    watchdog_deadline_jst: "09:00"
+    days: [2]
+
+  fetch_friday:
+    workflow: fetch_weekend_races.yml
+    description: "金曜朝 — 出馬表最終確認"
+    cron: "0 21 * * 4"
+    expected_jst: "06:00"
+    watchdog_deadline_jst: "09:00"
+    days: [4]
+
+  fetch_saturday:
+    workflow: fetch_weekend_races.yml
+    description: "土曜朝 — R1-R8 一般レース取り込み (重要)"
+    cron: "0 20 * * 5"
+    expected_jst: "05:00"
+    # #150c: watchdog の実測発火間隔 (中央値121分) より窓が狭く、復旧が発火しなかった
+    watchdog_deadline_jst: "09:00"
+    days: [5]
+
+  fetch_sunday:
+    workflow: fetch_weekend_races.yml
+    description: "日曜朝 — 日曜分の最終 fetch (重要)"
+    cron: "0 20 * * 6"
+    expected_jst: "05:00"
+    # #150c: watchdog の実測発火間隔 (中央値121分) より窓が狭く、復旧が発火しなかった
+    watchdog_deadline_jst: "09:00"
+    days: [6]
+
+# ─────────── 監視設定 ───────────
+monitor:
+  # workflow_dispatch で何分前以内の success を「最近成功」とみなすか
+  recent_success_window_minutes: 240  # 4h (=cron 遅延最大値)
+  # 同一 slot を何度まで再 trigger するか
+  max_retries_per_day: 2
+  # 失敗時に SLO 違反として記録するかしないか
+  record_violations: true

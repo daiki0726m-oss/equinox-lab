@@ -1,0 +1,210 @@
+name: 🐴 Backfill horse meta (生年・母・追い切りD評価)
+
+# 馬マスターと追い切りの欠けを過去分まで埋める (scripts/backfill_horse_meta.py)。
+#   - 生年 (horses.birth_year): 全件 NULL だった → horse_id 先頭4桁から計算 (ネット不要)
+#   - 母 (horses.dam): 新しい馬ほど空 (2026年の出走馬で 25-31%) → 血統ページから取得 (約3,400頭)
+#   - 追い切り評価 (workouts.evaluation_grade): D を捨てていた → 該当レースの追い切りページを取り直す (約470レース)
+# 取得には約2時間かかる。その間に他の workflow (週末の出走馬登録など) が keiba.db.gz を
+# 更新しても消さないよう、取得した値は JSONL に記録しておき、push 直前に
+# **最新の DB を取り直して空欄だけに当て直す** (#70 の丸ごと上書きを避ける。手本は backfill_passing.yml)。
+# 手動 dispatch のみ。
+#
+# ⚠️ 実行してよいのは「開催の無い 火・水(11時以降)・木 (JST)」だけ (Guard ステップが止める。force で解除)。
+#   理由は2つ:
+#   (1) 順番待ちの取り消し — 実行中 (~2時間) は蓄積系の枠 keiba-db-accum を占有する。GitHub の
+#       concurrency は待ちが2本重なると先に待っていた方を取り消す (cancel-in-progress: false でも)。
+#       日曜22時は auto_pedigree と collect_results が同時に待ちに入るので片方が消える。
+#       火〜木に待ちに入りうる蓄積系は木7時/金7時の auto_pedigree 1本だけ。
+#   (2) 上書き (#70) — この枠を使わない書き込み (fetch_weekend_races 月水金6時・土日5時 /
+#       race_day_runner / auto_post_x の予想系) は push 直前に自分の DB を優先して取り込む
+#       (pull --rebase -X theirs)。それらが走っている間に push すると、埋めた値ごと上書きされる。
+#       水曜6時の fetch は cron 遅延で10時台までずれる (#22) ので水曜は11時以降。
+#       さらに push 直前に、それらの workflow が実行中なら終わるまで待つ (最大20分)。
+#
+# 実行後の確認: 翌日以降の auto_pedigree の実行報告に「母が空: N頭」が出る (数十頭程度なら完了)。
+#   生年は `SELECT COUNT(*) FROM horses WHERE birth_year IS NULL` が 1 (外国馬 000a02c324) なら完了。
+#   上書きされていた場合は、取得し直さずに **reapply_run_id にこの run の ID を入れて再実行** すれば
+#   artifact (backfill-meta-records、90日保存) の記録を最新 DB に当て直す。
+on:
+  workflow_dispatch:
+    inputs:
+      what:
+        description: '対象 (all / birth_year / dam / workouts)'
+        required: false
+        default: 'all'
+        type: choice
+        options: [all, birth_year, dam, workouts]
+      limit:
+        description: '取得する頭数・レース数の上限 (0 = 全件。試運転用)'
+        required: false
+        default: '0'
+      reapply_run_id:
+        description: '取得せず、この run ID の記録 (artifact) を最新 DB に当て直すだけにする (空 = 取得から)'
+        required: false
+        default: ''
+      force:
+        description: '曜日・開催日の制限を無視して実行する (上書き・取り消しのリスクを承知の上で)'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: keiba-db-accum          # #70 part1: 蓄積系writer直列化
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345         # 取得 ≤270分 + 書き込み待ち ≤20分 + 当て直し (最大8回) ≒ 320分
+    permissions:
+      contents: write
+      actions: read              # 実行中の他 workflow の確認・前回 run の artifact 取得
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard (開催の無い火〜木だけ)
+        id: guard
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          from datetime import datetime, timedelta, timezone
+          now = datetime.now(timezone(timedelta(hours=9)))
+          wd, hm = now.weekday(), now.strftime("%H:%M")   # 0=月
+          today, tomorrow = now.date().isoformat(), (now.date() + timedelta(days=1)).isoformat()
+          why = []
+          if wd not in (1, 2, 3):
+              why.append(f"今日は{'月火水木金土日'[wd]}曜 (火〜木だけ。金〜月は週末の予想・結果収集と重なる)")
+          elif wd == 2 and now.hour < 11:
+              why.append(f"水曜 {hm} (水曜6時の出走馬登録が cron 遅延で10時台まで走りうるので11時以降)")
+          try:
+              cal = json.load(open("docs/data/race_calendar.json", encoding="utf-8"))
+              lo, hi = cal["window"]
+              for d in (today, tomorrow):
+                  if d in cal.get("dates", {}):
+                      why.append(f"{d} は開催日 (race_calendar.json)")
+                  elif not (lo <= d <= hi):
+                      why.append(f"{d} が開催日カレンダーの範囲 {lo}〜{hi} の外で判定できない")
+          except Exception as e:
+              why.append(f"race_calendar.json を読めない ({e})")
+          print(f"JST {now:%Y-%m-%d %H:%M}")
+          if not why:
+              print("✅ 実行可")
+              sys.exit(0)
+          for w in why:
+              print(f"⛔ {w}")
+          if os.environ.get("FORCE") == "true":
+              print("::warning::force=true のため制限を無視して実行します")
+              sys.exit(0)
+          print("::error::この時間帯は実行しない (理由は上)。必要なら force=true で再実行")
+          sys.exit(1)
+          PY
+
+      - name: Unpack DB
+        run: bash scripts/db_unpack.sh
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Backfill (fetch and record)
+        id: fetch
+        if: ${{ inputs.reapply_run_id == '' }}
+        # ジョブ全体の時間切れは「取り消し」になり、後続の当て直しが動かない (取得が丸ごと無駄になる)。
+        # ステップ単位の時間切れは「失敗」扱いなので、当て直し・artifact 保存は動く。
+        timeout-minutes: 270
+        run: |
+          touch "$RUNNER_TEMP/updates.jsonl"
+          python3 scripts/backfill_horse_meta.py "${{ inputs.what }}" \
+            --limit "${{ inputs.limit }}" --record "$RUNNER_TEMP/updates.jsonl"
+          echo "記録: $(wc -l < "$RUNNER_TEMP/updates.jsonl") 件"
+
+      - name: Keep the records (artifact)
+        # 取得が途中で失敗・時間切れでも保存する。上書きされた時に取り直さず当て直せる (reapply_run_id)
+        if: ${{ always() && inputs.reapply_run_id == '' && steps.guard.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-meta-records
+          path: ${{ runner.temp }}/updates.jsonl
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Download the records of an earlier run
+        id: download
+        if: ${{ inputs.reapply_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: backfill-meta-records
+          path: ${{ runner.temp }}
+          run-id: ${{ inputs.reapply_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Wait for other DB writers
+        # この枠 (keiba-db-accum) を使わずに keiba.db.gz を push する workflow が走っている間に push すると、
+        # 後から来たその push (pull --rebase -X theirs) が埋めた値ごと上書きする (#70)。終わるまで待つ。
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' && steps.download.outcome != 'failure' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          WRITERS='Fetch Weekend Races|Race Day Runner|Auto Post to X|Manual Predict'
+          for k in $(seq 1 20); do
+            busy=$(gh run list --repo "$GITHUB_REPOSITORY" --status in_progress --limit 100 \
+                     --json workflowName,databaseId \
+                     -q "[.[] | select(.databaseId != ${GITHUB_RUN_ID}) | select(.workflowName | test(\"${WRITERS}\")) | .workflowName] | join(\", \")" \
+                   || echo "?")
+            if [ -z "$busy" ]; then echo "✅ 実行中の書き込み workflow なし"; exit 0; fi
+            echo "⏳ 実行中: ${busy} — 終わるまで待つ ($k/20 分)"
+            sleep 60
+          done
+          echo "::warning::20分待っても書き込み workflow が終わらない。当て直して push するが、上書きされたら reapply_run_id=${GITHUB_RUN_ID} で再実行する"
+
+      - name: Apply onto the latest DB and push
+        # 取得が途中で失敗・時間切れでも、それまでに記録した分 (空欄だけを埋める安全な値) は当て直す
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' && steps.download.outcome != 'failure' }}
+        run: |
+          set -o pipefail   # --apply の失敗を tee で握りつぶさない
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          U="$RUNNER_TEMP/updates.jsonl"
+          # 記録が空でも生年は --apply 側で埋まるので続行する
+          for i in 1 2 3 4 5 6 7 8; do
+            # 取得中に他の workflow が DB を更新していても消さない: 毎回最新を取り直して当て直す
+            git fetch -q origin main && git reset -q --hard origin/main
+            bash scripts/db_unpack.sh
+            python3 scripts/backfill_horse_meta.py --apply "$U" | tee "$RUNNER_TEMP/apply.log"
+            bash scripts/db_pack.sh
+            # #167: 固めた gz が壊れていない・索引の退避 (_pack_meta) が空でないことを確かめてから commit
+            python3 - <<'PY'
+          import gzip, shutil, sqlite3, sys, os
+          p = os.path.join(os.environ["RUNNER_TEMP"], "packcheck.db")
+          with gzip.open("keiba.db.gz", "rb") as f, open(p, "wb") as g:
+              shutil.copyfileobj(f, g)
+          c = sqlite3.connect(p)
+          ok = c.execute("PRAGMA integrity_check").fetchone()[0]
+          meta = c.execute("SELECT COUNT(*) FROM _pack_meta").fetchone()[0]
+          nb = c.execute("SELECT COUNT(*) FROM horses WHERE birth_year IS NULL").fetchone()[0]
+          print(f"🔎 pack check: integrity={ok} / 索引の退避 {meta} 件 / 生年が空 {nb} 頭")
+          sys.exit(0 if (ok == "ok" and meta > 0) else 1)
+          PY
+            git add keiba.db.gz
+            if git diff --staged --quiet; then echo "📭 変更なし (既に補完済み)"; exit 0; fi
+            git commit -q -m "🐴 Backfill horse meta (${{ inputs.what }}): 生年・母・追い切りD評価"
+            if git push origin HEAD:main; then
+              echo "🚀 pushed (try $i)"
+              {
+                echo "### 🐴 Backfill horse meta"
+                echo '```'
+                cat "$RUNNER_TEMP/apply.log"
+                echo '```'
+                echo "上書きされていたら reapply_run_id=${GITHUB_RUN_ID} で再実行 (取得はしない)"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep $((i*15))
+          done
+          exit 1

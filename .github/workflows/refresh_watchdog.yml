@@ -1,0 +1,59 @@
+name: 🐕 Race Day Runner Watchdog
+
+# #59 (2026-06-10): レース日の結果収集を race_day_runner に一本化したのに伴い、
+# 本 watchdog の監視対象を refresh_live (削除済) から race_day_runner に変更。
+#
+# race_day_runner は 8:30-19:00 JST の long-running loop (10分間隔)。
+# 起動 cron (8:30/8:50/9:00/9:30/10:00) が全部スキップされた場合や、
+# loop が途中で死んだ場合に、ここが検知して再起動する。
+# concurrency group (race-day-runner) があるため多重起動しても直列化され安全。
+
+on:
+  schedule:
+    # 土日 JST 8:45-18:45 (UTC 前日23:45 + 当日0-9時台) 15分間隔
+    # (runner の iter は10分間隔なので 5分監視は過剰。15分で十分)
+    - cron: '45 23 * * 5,6'
+    - cron: '0,15,30,45 0-9 * * 6,0'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure race_day_runner is alive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 時刻ガード: 土日のレース時間帯のみ (8:30-18:30 JST)
+          DOW=$(TZ=Asia/Tokyo date +%u)
+          HOUR=$(TZ=Asia/Tokyo date +%H)
+          MIN=$(TZ=Asia/Tokyo date +%M)
+          HM=$((10#$HOUR * 100 + 10#$MIN))
+          if [ "$DOW" -lt 6 ] || [ "$HM" -lt 830 ] || [ "$HM" -gt 1830 ]; then
+            echo "⏭️ レース時間外 (DOW=$DOW ${HOUR}:${MIN} JST)"
+            exit 0
+          fi
+
+          # race_day_runner に in_progress の run があるか確認
+          ACTIVE=$(gh api "repos/${{ github.repository }}/actions/runs?status=in_progress&per_page=20" \
+            --jq '[.workflow_runs[] | select(.name == "🏇 Race Day Runner")] | length')
+
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "✅ race_day_runner 稼働中 (${ACTIVE} run) → スキップ"
+            exit 0
+          fi
+
+          # queued (concurrency 待ち) も稼働扱い
+          QUEUED=$(gh api "repos/${{ github.repository }}/actions/runs?status=queued&per_page=20" \
+            --jq '[.workflow_runs[] | select(.name == "🏇 Race Day Runner")] | length')
+          if [ "$QUEUED" -gt 0 ]; then
+            echo "✅ race_day_runner queue 待ち (${QUEUED} run) → スキップ"
+            exit 0
+          fi
+
+          echo "🚨 race_day_runner が稼働していない → 再起動"
+          gh workflow run race_day_runner.yml -R ${{ github.repository }}

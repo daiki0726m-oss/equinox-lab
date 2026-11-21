@@ -1,0 +1,385 @@
+name: 🛡 Posting SLO Watchdog
+
+# 投稿 SLO 保証 — config/posting_slo.yml の rule を強制する
+#
+# 毎 30 分 cron で走り、各 slot の health を check。
+# 期待時刻〜deadline の間で success が無ければ workflow_dispatch で
+# auto_post_x.yml を自動 trigger。
+#
+# これにより GitHub Actions cron の 1-4.5h 遅延に依存せず、
+# 「投稿は確実に実行される」を構造的に保証する。
+#
+# 設計: CLAUDE.md #22 (cron 遅延)・#33 (TypeError) の事故を踏まえた
+# 「ユーザーが気づくまで動かない」状態の構造的解消。
+
+on:
+  schedule:
+    # 30 分おき (重要時間帯のみ走る方が GHA 消費少ないが、シンプル優先)
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write   # workflow_dispatch trigger に必要
+  contents: write  # health.json commit に必要
+  issues: write    # #150: SLO 違反 Issue の作成に必要 (無くて一度も作成できていなかった)
+
+jobs:
+  check-and-recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pyyaml
+        run: pip install pyyaml
+
+      - name: 🔍 投稿ヘルスチェック
+        id: health
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # missing slots を JSON で取得 (check は未投稿ありで exit 1 を返す)
+          # ここは表示用。exit 1 を握らないと set -e で step が死に、後続の自動 trigger step が
+          # success() 判定でスキップされ「missing を検知した瞬間に復旧不能になる」自己矛盾が起きる (#36)
+          python3 scripts/check_posting_health.py || true
+          echo ""
+          echo "=== missing slots JSON ==="
+          python3 scripts/check_posting_health.py --json-only > /tmp/missing.json || true
+          cat /tmp/missing.json
+          MISSING_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/missing.json'))))")
+          echo "missing_count=$MISSING_COUNT" >> "$GITHUB_OUTPUT"
+          echo "missing_slots<<EOF" >> "$GITHUB_OUTPUT"
+          cat /tmp/missing.json >> "$GITHUB_OUTPUT"
+          echo "" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: 🚨 未投稿 slot を自動 trigger (posted_slots aware)
+        # #150: always() ではなく missing がある時だけだが、continue-on-error で
+        # ここが落ちても Issue 通知・health.json・runner 生存確認は必ず走らせる。
+        continue-on-error: true
+        if: steps.health.outputs.missing_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "📋 ${{ steps.health.outputs.missing_count }} 件の未実行 slot を trigger します"
+          # 🔒 #41 (2026-06-07): dispatch 前に posted_slots テーブル (atomic lock) を
+          # 事前 check し、既に lock が取られている slot は trigger しない。
+          # check_posting_health は workflow run の event/title で判定してるが、
+          # cron success の display_title='cron' で見落とすことがある (cron success が
+          # missing 誤判定 → 重複 dispatch の元、#41 audit より)。posted_slots は
+          # post_x.py が物理的に書く lock なので、これが SoT。
+          echo '${{ steps.health.outputs.missing_slots }}' | python3 -c "
+          import json, sys, subprocess, time, os, datetime
+          # #150: 旧実装は 'from database import is_slot_posted' で keiba.db を開いていたが、
+          # このワークフローの checkout に keiba.db は存在しない (git 正本は keiba.db.gz、
+          # しかも展開していない) ため 'no such table: posted_slots' で **必ず例外死**していた。
+          # set -e 配下なので、未投稿を検知した瞬間に自動復旧 step がクラッシュし、
+          # 同じ run 内の Issue 通知・health.json・runner 生存確認まで巻き添えで飛んでいた。
+          # #141 で lock の正本はテキストサイドカーに移っているので、そちらを読む。
+          _today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime('%Y%m%d')
+          try:
+              with open(os.path.join('docs','data',f'posted_slots_{_today}.json'), encoding='utf-8') as f:
+                  _locked = (json.load(f).get('slots') or {})
+          except Exception as e:
+              print(f'ℹ️ slot サイドカー未取得 ({e}) → lock 不明として dispatch する')
+              _locked = {}
+          slots = json.load(sys.stdin)
+          # #170: auto_post_x への dispatch は 1 tick に1本まで (raceday_safety_net #161 と同じ型)。
+          # auto_post_x の concurrency (group: auto-post-x, cancel-in-progress: false) は待機を1本しか
+          # 持たず、新しい待機が古い待機を黙って取り消す。旧版は missing を全部3秒おきに dispatch
+          # していたため、09:3x に [predict, odds_flash, fetch, predict] と並ぶと末尾の predict が
+          # odds_flash の代打を取り消しえた (#169 で dashboard_predictions が末尾に predict を足した)。
+          # どれを出すかは check_posting_health の並び (投稿 slot を deadline 順 → predict) で決まる。
+          # 待機中の run が既にあれば、この tick は auto_post_x を出さない (出すとそれを取り消す)。
+          # 実行中 (in_progress) だけなら1本出す = 待機に入るだけ (従来どおり)。
+          # auto_post_x 以外 (fetch_weekend_races 等) は concurrency group が別なので従来どおり全部出す。
+          sys.path.insert(0, 'scripts')
+          try:
+              from check_posting_health import order_for_dispatch
+              slots = order_for_dispatch(slots)
+          except Exception as e:
+              print(f'⚠️ dispatch 順の並べ替えに失敗 ({e}) → 受け取った順で処理')
+          try:
+              from raceday_safety_net import _auto_post_pending
+          except Exception as e:
+              print(f'⚠️ 待機中 run の確認関数を読めない ({e}) → 待機なしとして扱う')
+              _auto_post_pending = lambda: 0   # 判定不能なら 0 (raceday_safety_net と同じ扱い)
+          ap_sent = None      # None=未確認 / True=この tick はもう auto_post_x を出さない
+          ap_mode = None
+          for s in slots:
+              workflow = s.get('workflow', 'auto_post_x.yml')
+              mode = s.get('fallback_mode')
+              slot_name = s.get('slot', '')
+
+              # 🔒 atomic lock check (auto_post_x.yml 系のみ)
+              if workflow == 'auto_post_x.yml' and mode:
+                  existing = _locked.get(mode) or _locked.get(slot_name)
+                  if existing:
+                      print(f'⏭️ {workflow} mode={mode} ({slot_name}) は lock 済み → trigger skip')
+                      print(f'    posted_at={existing.get(\"posted_at\")} run_id={existing.get(\"run_id\")}')
+                      continue
+
+              # #170: 1 tick 1本 + 待機中があれば出さない
+              if workflow == 'auto_post_x.yml':
+                  if ap_sent is None:
+                      _pending = _auto_post_pending()
+                      if _pending:
+                          print(f'⏳ auto_post_x に待機中の run が {_pending} 本 → この tick では auto_post_x を dispatch しない')
+                      ap_sent = bool(_pending)
+                  if ap_sent:
+                      _why = ('同じ mode を dispatch 済み' if ap_mode is not None and mode == ap_mode
+                              else '既に1本出した/待機中')
+                      print(f'⏭️ {workflow} mode={mode} ({slot_name}): この tick は {_why} → 次の tick に回す')
+                      continue
+
+              if workflow == 'auto_post_x.yml' and mode:
+                  cmd = ['gh', 'workflow', 'run', workflow,
+                         '--ref', 'main', '-f', f'mode={mode}']
+                  print(f'🔄 Triggering {workflow} mode={mode} ({slot_name})...')
+              else:
+                  cmd = ['gh', 'workflow', 'run', workflow, '--ref', 'main']
+                  print(f'🔄 Triggering {workflow} ({slot_name})...')
+              result = subprocess.run(cmd, capture_output=True, text=True)
+              if result.returncode == 0:
+                  print(f'  ✅ triggered')
+                  if workflow == 'auto_post_x.yml':
+                      ap_sent, ap_mode = True, mode
+              else:
+                  print(f'  ❌ failed: {result.stderr[:200]}')
+              time.sleep(3)
+          "
+
+      - name: 🔔 missed slot を GitHub Issue で通知 (復旧不能 = 沈黙の失敗を可視化)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          python3 scripts/check_posting_health.py --missed-json > /tmp/missed.json 2>/dev/null || echo "[]" > /tmp/missed.json
+          MISSED_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/missed.json'))))")
+          echo "missed count: $MISSED_COUNT"
+          if [ "$MISSED_COUNT" = "0" ]; then
+            echo "✅ missed slot なし → Issue 作成不要"
+            exit 0
+          fi
+          # 当日の Issue が既にあれば重複作成しない (title でデデュープ)
+          TODAY=$(TZ=Asia/Tokyo date '+%Y-%m-%d')
+          TITLE="🚨 投稿/データ SLO 違反 ($TODAY)"
+          EXISTING=$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+          if [ "$EXISTING" != "0" ]; then
+            echo "ℹ️ 当日の SLO Issue は既存 → スキップ"
+            exit 0
+          fi
+          BODY=$(python3 -c "
+          import json
+          missed = json.load(open('/tmp/missed.json'))
+          lines = ['## 復旧不能な未実行 slot (deadline 超過)', '']
+          lines.append('| slot | workflow | expected | deadline |')
+          lines.append('|---|---|---|---|')
+          for m in missed:
+              lines.append(f\"| {m['slot']} | {m.get('workflow','?')} | {m.get('expected','?')} | {m.get('deadline','?')} |\")
+          lines += ['', '時間ガードを超過したため自動 fallback では復旧できません。',
+                    '手動対応が必要なら \`gh workflow run\` で trigger してください。',
+                    '', '_この Issue は posting_watchdog.yml が自動生成_']
+          print(chr(10).join(lines))
+          ")
+          # #150: 旧実装は失敗しても無条件に「✅ 作成」と出していたため、
+          # permissions 不足で一度も作成できていない事実が3ヶ月見えなかった。
+          if gh issue create --title "$TITLE" --body "$BODY" --label "slo-violation" 2>&1 \
+             || gh issue create --title "$TITLE" --body "$BODY" 2>&1; then
+            echo "✅ SLO 違反 Issue 作成 (GitHub からメール通知が飛ぶ)"
+          else
+            echo "❌ Issue 作成に失敗 — SLO 違反が通知されていません"
+            {
+              echo "### ❌ SLO 違反 Issue の作成に失敗"
+              echo ""
+              echo '```json'
+              cat /tmp/missed.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 📝 health.json を commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # #107: push 前のツリー健全性チェック — stale/破損 checkout から main を
+          # 上書きする事故防止 (7/11 に予測系コード一式が古い版に巻き戻る事故が発生)
+          if ! grep -q "trio_focus_band" strategy/betting.py 2>/dev/null; then
+            echo "🚨 checkout が stale (機能マーカー欠落) — push を中止して main を保護"
+            exit 1
+          fi
+          git add docs/data/posting_health.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no health change to commit"
+          else
+            git commit -m "watchdog: health update $(TZ=Asia/Tokyo date '+%H:%M JST')"
+            for i in 1 2 3; do
+              git pull --rebase --autostash -X theirs origin main || true
+              if git push origin HEAD:main; then echo "✅ pushed (try $i)"; break; fi
+              echo "⚠️ push retry $i"; sleep 5
+            done
+          fi
+
+      - name: 📊 Summary
+        if: always()
+        run: |
+          echo "## 🛡 Posting Watchdog Result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Missing slots: ${{ steps.health.outputs.missing_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/missing.json >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "(no data)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # 🆕 #67 (2026-06-13): race_day_runner の生存監視を統合。
+      # 6/13 朝、runner の 5 crons + 専用 watchdog (refresh_watchdog) の全 cron が
+      # 同時不発 = 収集系が完全停止した (投稿系 GAS 4層は機能、収集は2層とも
+      # GitHub スケジューラ依存で相関故障)。本 workflow の cron は同朝も生存して
+      # いた実績があるため、土日 8:40-17:00 JST に runner が不在なら再起動する。
+      # #150: GAS (外部の独立した時計) の生存監視。
+      # 監査で「GAS が唯一の実働独立層。しかも PAT の失効監視がゼロ」と判明した。
+      # PAT が切れると GAS は 401 で静かに死に (#63 で一度実際に起きている)、
+      # GitHub スケジューラが全滅した日に復旧手段がなくなる。
+      # 直近24hの workflow_dispatch に GAS 起点が1件も無ければ警告する。
+      - name: GAS 生存確認 (外部トリガー層)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # #161: 判定を scripts/check_trigger_layers.py に一本化。旧 inline 版は
+          # github-actions[bot] 以外を全部 GAS と数えたため、手動 dispatch 1回で
+          # 「GAS 生存」と誤判定した (9/21 に私の手動2回が13日間の沈黙を隠した)。
+          set +e
+          python3 scripts/check_trigger_layers.py --days 2
+          CODE=$?
+          set -e
+          if [ "$CODE" = "1" ]; then
+            # #161: タイトルに日付を入れていたため dedup が効かず、同一障害で
+            # 18本の Issue が積まれて誰も読まなくなっていた。固定タイトル1本に集約する。
+            TITLE="🛰 外部の起動層 (GAS) が沈黙しています"   # feature_parity.yml と同じ題 = 1障害1本
+            OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -z "$OPEN" ]; then
+              gh issue create --title "$TITLE" --body "$(printf '%s\n' \
+                "定刻に発火する外部 dispatch (GAS) が直近2日間ありません。手動 dispatch は数えていません。" "" \
+                "GAS は GitHub スケジューラから故障モードが独立した唯一の時計です。" \
+                "止まっていると、GitHub cron が落ちた日に予想・結果・収集がまとめて止まります。" "" \
+                "**確認手順**" \
+                "1. https://github.com/settings/personal-access-tokens で PAT の期限を確認" \
+                "2. 失効していれば再発行し、GAS の「プロジェクトの設定 → スクリプト プロパティ」の" \
+                "   GITHUB_TOKEN を更新 (docs/GAS_SETUP.md)" \
+                "3. scripts/gas_trigger.js を Code.gs に貼り直して setupTriggers() を1回実行" "" \
+                "GAS を復旧した日は、翌日の2回目の発火で「生存」と判定されるまでこの警報が続きます (手動 dispatch と区別するため)。" \
+                "復旧すると、この Issue は自動では閉じません。翌日の発火を確認してから手で閉じてください。" "" \
+                "_posting_watchdog.yml が自動生成 (初回検知 $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M'))_")" \
+                2>&1 || echo "⚠️ Issue 作成失敗"
+            else
+              echo "ℹ️ 既存 Issue #$OPEN が open のまま → 追加しない"
+            fi
+          fi
+
+      # 🧱 #174 (2026-11-14): GitHub に workflow ファイルごと拒否されている workflow を検知する。
+      # 11/10 に race_day_runner.yml が「式の長さ 21,000 字」の上限で拒否され、cron も dispatch も
+      # 一切起動しないまま 11/14 (土) の朝まで4日間だれも気づかなかった (結果収集ゼロ)。
+      # 拒否は push の後の event=push の失敗 run としてしか見えない (この repo に on: push は無い)。
+      # あわせて、いまの workflow ファイルが上限に近づいていないかも見る。
+      - name: 🧱 workflow ファイルの拒否を検知 (#174)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          OUT=$(python3 scripts/check_workflow_rejections.py 2>&1); RC1=$?
+          LIM=$(python3 scripts/check_workflow_limits.py 2>&1); RC2=$?
+          set -e
+          echo "$OUT"; echo "$LIM"
+          if [ "$RC1" = "1" ] || [ "$RC2" = "1" ]; then
+            TITLE="🧱 workflow ファイルが GitHub に拒否されています"
+            OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            BODY=$(printf '%s\n' \
+              "拒否された workflow は **cron も dispatch も一切起動しません** (dispatch は HTTP 422)。" \
+              "11/10〜11/14 は race_day_runner.yml がこの状態で、土曜の結果収集が一度も動きませんでした (#174)。" "" \
+              '```' "$OUT" "$LIM" '```' "" \
+              "**対処**: Actions の該当 run を開くとエラー行が出ます。式の長さ上限なら、run ブロックの" \
+              "式 (ドル記号と二重の波括弧) を環境変数 (GITHUB_REPOSITORY など) に置き換える。直して push したら手で dispatch して確認。" "" \
+              "_posting_watchdog.yml が自動生成 ($(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M'))_")
+            if [ -z "$OPEN" ]; then
+              gh issue create --title "$TITLE" --body "$BODY" 2>&1 || echo "⚠️ Issue 作成失敗"
+            else
+              gh issue comment "$OPEN" --body "$BODY" 2>&1 || echo "⚠️ Issue コメント失敗"
+            fi
+            exit 1
+          fi
+
+      # 🏇 #160 (2026-09-21): 平日・祝日開催のセーフティネット (曜日でなくカレンダー駆動)
+      #
+      # auto_post_x.yml の race-day cron は全て DOW '6,0' (土日) 固定、race_day_runner も
+      # '5,6'/'6,0' 固定。そのため **月曜・祝日・順延開催の日は起動層がゼロ** になる。
+      # 実例: 2026-09-21(月・祝) 阪神12R と 2026-09-22(火) 中山12R (台風順延) は、
+      # 予測生成・odds_flash・post_predict・results・結果収集のすべてが発火しなかった。
+      # 曜日は開催日の代理変数として壊れている (JRA は月曜・祝日にも開催する) ので、
+      # DB から生成した docs/data/race_calendar.json を正として判定する。
+      #
+      # 土日はネイティブ cron + GAS + runner の4層が既に機能しているので触らない
+      # (DOW<=5 のみ発火)。dispatch は全て posted_slots サイドカー (#141) の
+      # atomic lock を事前 check するので、多重発火しても投稿は1回。
+      - name: 🏇 平日・祝日開催のセーフティネット (calendar-driven)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DOW=$(TZ=Asia/Tokyo date +%u)
+          if [ "$DOW" -ge 6 ]; then
+            echo "⏭️ 土日はネイティブ cron/GAS/runner が担当 → skip"; exit 0
+          fi
+          export SAFETY_NET_ALERTS=/tmp/safety_net_alerts.md
+          set +e
+          python3 scripts/raceday_safety_net.py
+          CODE=$?
+          set -e
+          # #161: 旧版は常に exit 0 で、取りこぼしが誰にも通知されなかった。
+          # 開催日ごとに1本だけ Issue を立てる (同じ日の2回目以降は追記しない)。
+          if [ "$CODE" = "2" ] && [ -s "$SAFETY_NET_ALERTS" ]; then
+            DAY=$(head -1 "$SAFETY_NET_ALERTS")
+            TITLE="🏇 開催日の自動運転に要対応: $DAY"
+            OPEN=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -z "$OPEN" ]; then
+              gh issue create --title "$TITLE" --body "$(tail -n +2 "$SAFETY_NET_ALERTS"; printf '\n_posting_watchdog.yml の開催日セーフティネット (#160/#161) が自動生成_\n')" \
+                || echo "⚠️ Issue 作成失敗"
+            fi
+          fi
+
+      - name: Ensure race_day_runner alive (weekend)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DOW=$(TZ=Asia/Tokyo date +%u)   # 6=土, 7=日
+          HM=$((10#$(TZ=Asia/Tokyo date +%H) * 100 + 10#$(TZ=Asia/Tokyo date +%M)))
+          if [ "$DOW" -lt 6 ] || [ "$HM" -lt 840 ] || [ "$HM" -ge 1900 ]; then  # #161: runner の end_hour=19 に揃える (旧 1700)
+            echo "⏭️ 平日 or 窓外 ($HM) → runner check skip"; exit 0
+          fi
+          ALIVE=$(gh api "repos/${{ github.repository }}/actions/workflows/race_day_runner.yml/runs?status=in_progress&per_page=1" --jq '.total_count')
+          QUEUED=$(gh api "repos/${{ github.repository }}/actions/workflows/race_day_runner.yml/runs?status=queued&per_page=1" --jq '.total_count')
+          if [ "$ALIVE" = "0" ] && [ "$QUEUED" = "0" ]; then
+            echo "🚨 race_day_runner 不在 → 再起動 dispatch"
+            gh workflow run race_day_runner.yml -R "${{ github.repository }}"
+          else
+            echo "✅ runner 生存 (in_progress=$ALIVE queued=$QUEUED)"
+          fi
