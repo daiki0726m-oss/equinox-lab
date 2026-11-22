@@ -690,3 +690,5 @@ jobs:
         with:
           path: keiba.db
           key: keiba-db-${{ github.run_number }}
+
+# #178: 新リポジトリでスケジュールを登録し直すための更新 (動作は変えない)

@@ -326,3 +326,5 @@ jobs:
           gh issue create --title "$TITLE" --body "$BODY" --label "slo-violation" 2>&1 || \
             gh issue create --title "$TITLE" --body "$BODY" 2>&1 || \
             echo "⚠️ Issue 作成失敗"
+
+# #178: 新リポジトリでスケジュールを登録し直すための更新 (動作は変えない)

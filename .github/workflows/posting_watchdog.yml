@@ -383,3 +383,5 @@ jobs:
           else
             echo "✅ runner 生存 (in_progress=$ALIVE queued=$QUEUED)"
           fi
+
+# #178: 新リポジトリでスケジュールを登録し直すための更新 (動作は変えない)

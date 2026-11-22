@@ -279,3 +279,5 @@ jobs:
             git pull --rebase --autostash -X theirs origin main || git rebase --abort || true
             git push origin HEAD:main && break || sleep 5
           done
+
+# #178: 新リポジトリでスケジュールを登録し直すための更新 (動作は変えない)

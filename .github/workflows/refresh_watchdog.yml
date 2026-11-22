@@ -57,3 +57,5 @@ jobs:
 
           echo "🚨 race_day_runner が稼働していない → 再起動"
           gh workflow run race_day_runner.yml -R ${{ github.repository }}
+
+# #178: 新リポジトリでスケジュールを登録し直すための更新 (動作は変えない)

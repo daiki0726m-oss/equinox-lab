@@ -397,3 +397,5 @@ jobs:
           else
             echo "::warning::auto_post_x の dispatch に失敗 (fetch 自体は成功。07:00/07:40 の predict cron と見張り役に任せる)"
           fi
+
+# #178: 新リポジトリでスケジュールを登録し直すための更新 (動作は変えない)

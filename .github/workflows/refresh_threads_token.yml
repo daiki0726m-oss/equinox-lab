@@ -64,3 +64,5 @@ jobs:
           BODY+=$'(失効前の週次 refresh で本来は自動延長されます)'
           gh issue create --title "$TITLE" --body "$BODY" 2>/dev/null \
             || echo "issue 作成スキップ (権限/重複)"
+
+# #178: 新リポジトリでスケジュールを登録し直すための更新 (動作は変えない)
