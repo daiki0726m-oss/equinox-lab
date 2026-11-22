@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-22T10:52:02.535446+09:00",
+  "generated_at": "2026-11-22T17:55:54.887908+09:00",
   "today": "2026-11-22 (Sun)",
   "weekday": 6,
   "slots": {
@@ -38,17 +38,18 @@
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "missing",
+      "status": "missed",
       "expected": "09:30 JST",
       "deadline": "11:00 JST",
-      "fallback_mode": "post_predict",
-      "action": "gh workflow run auto_post_x.yml --ref main -f mode=post_predict",
       "workflow": "auto_post_x.yml"
     },
     "results": {
       "slot": "results",
-      "status": "future",
+      "status": "ok",
       "expected": "17:30 JST",
+      "actual": "2026-11-22T17:37:30+09:00",
+      "delay_minutes": 8,
+      "event": "workflow_dispatch",
       "workflow": "auto_post_x.yml"
     },
     "fetch_monday": {
@@ -88,15 +89,15 @@
       "slot": "dashboard_predictions",
       "status": "ok",
       "expected": "開催日は常時",
-      "actual": "24レース (exported_at=2026-11-22T10:45:18.861180+09:00)"
+      "actual": "24レース (exported_at=2026-11-22T17:47:09.099410+09:00)"
     }
   },
   "summary": {
-    "ok": 1,
-    "missing": 2,
-    "future": 1,
+    "ok": 2,
+    "missing": 1,
+    "future": 0,
     "not_today": 7,
-    "missed": 1,
+    "missed": 2,
     "ok_delayed": 0,
     "ok_late": 1
   },
@@ -106,6 +107,12 @@
       "workflow": "auto_post_x.yml",
       "expected": "09:00 JST",
       "deadline": "09:15 JST"
+    },
+    {
+      "slot": "post_predict",
+      "workflow": "auto_post_x.yml",
+      "expected": "09:30 JST",
+      "deadline": "11:00 JST"
     }
   ]
 }
