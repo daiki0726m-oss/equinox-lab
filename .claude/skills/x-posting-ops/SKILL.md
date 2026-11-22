@@ -140,3 +140,4 @@ If the failure was novel (not in past mistake list), add an entry to `## 🐛 �
 参照する既存スクリプト (repo root):
 - `scripts/x_diagnose.py` — X API 認証・rate limit・read 健全性チェック
 - `.github/workflows/auto_post_x.yml` — 全 slot の cron schedule
+- `.github/workflows/raceday_clock.yml` + `scripts/raceday_clock.py` (SCHEDULE) — **土日以外の開催日** (月曜祝日・順延) の定刻の起動 (#179)。race_calendar.json に載っている日だけ predict / runner / odds_flash / post_predict / results / 前夜予想 / 夜間スイープを dispatch する。土日はネイティブの cron が担当

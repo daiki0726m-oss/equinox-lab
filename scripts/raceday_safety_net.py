@@ -17,6 +17,9 @@
   * post_predict は post_x.py 側の 12:00 JST ハード上限 (#69) があるため、
     それを越える時刻では dispatch しない (発走後の予想投稿は事故)。
   * 土日は呼び出し側 (posting_watchdog.yml) が skip する。
+
+#179: 土日以外の開催日の「定刻の起動」は raceday_clock.yml (scripts/raceday_clock.py) が担う。
+  ここは見張り役 (時計も飛ばされた時の最後の保険と、判定できない時の通知) として残す。
 """
 import argparse
 import datetime

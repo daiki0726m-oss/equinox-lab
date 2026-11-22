@@ -1,0 +1,96 @@
+name: 🗓 Race-day Clock (土日以外の開催日)
+
+# #179: 土日以外の開催日 (月曜祝日・台風順延) の定刻の起動。
+# 土日の朝の処理は曜日で書いた cron に乗っていて、土日以外の開催日は posting_watchdog の */30 の中の
+# セーフティネット1本 (#160/#161) だけが頼りだった。2026-11-23(月・祝) は GitHub がその watchdog を
+# 5時間以上飛ばし、07:07 に手で dispatch するまで予測がゼロだった。
+# ここは土日と同じ時刻 (分だけ数分ずらす) に tick を20本持ち、race_calendar.json が
+# 「対象日 = 土日以外の開催日」と言う時だけ本体を mode・日付つきで dispatch する。
+# 非開催日は数秒で何もせずに終わる。本体 (auto_post_x / race_day_runner) の cron は変えない。
+# 対応表と判定は scripts/raceday_clock.py (SCHEDULE / decide)。
+# この workflow は DB を扱わず push もしない (リポジトリを増やさない)。
+
+on:
+  schedule:
+    - cron: '41 6 * * 0-4'     # 日〜木 15:41 JST 前夜予想 (翌日分)
+    - cron: '41 10 * * 0-4'    # 日〜木 19:41 JST 前夜予想
+    - cron: '41 14 * * 0-4'    # 日〜木 23:41 JST 前夜予想
+    - cron: '37 18 * * 0-4'    # 月〜金 03:37 JST 当日分の前夜予想
+    - cron: '3 19 * * 0-4'     # 月〜金 04:03 JST predict
+    - cron: '33 20 * * 0-4'    # 05:33 predict
+    - cron: '3 22 * * 0-4'     # 07:03 predict
+    - cron: '43 22 * * 0-4'    # 07:43 predict
+    - cron: '33 23 * * 0-4'    # 08:33 race_day_runner
+    - cron: '53 23 * * 0-4'    # 08:53 race_day_runner
+    - cron: '1 0 * * 1-5'      # 09:01 odds_flash (+runner)
+    - cron: '31 0 * * 1-5'     # 09:31 post_predict (+runner)
+    - cron: '51 0 * * 1-5'     # 09:51 post_predict (+runner)
+    - cron: '7 1 * * 1-5'      # 10:07 runner
+    - cron: '7 2 * * 1-5'      # 11:07 runner
+    - cron: '7 4 * * 1-5'      # 13:07 runner
+    - cron: '7 6 * * 1-5'      # 15:07 runner
+    - cron: '33 8 * * 1-5'     # 17:33 results (+runner)
+    - cron: '7 11 * * 1-5'     # 20:07 夜間スイープ (collect_results)
+    - cron: '7 13 * * 1-5'     # 22:07 夜間スイープ
+  workflow_dispatch:
+    inputs:
+      intent:
+        description: '手動の確認用 (dry_run=1 なら判定だけ)'
+        required: true
+        default: 'predict'
+        type: choice
+        options:
+          - prefetch_eve
+          - prefetch_early
+          - predict
+          - runner
+          - odds_flash
+          - post_predict
+          - results
+          - sweep
+      date:
+        description: '対象日 YYYYMMDD (空なら intent の既定: prefetch_eve は明日、他は今日)'
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: '1 = 判定だけ (dispatch しない)'
+        required: false
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '0'
+
+concurrency:
+  # tick を直列にし、後の tick が前の tick の dispatch (待機中の run) を見てから判定できるように
+  group: raceday-clock
+  cancel-in-progress: false
+
+permissions:
+  actions: write     # 本体の dispatch と run の一覧
+  contents: read     # sparse checkout と lock の読み取り (push はしない)
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            race_utils.py
+            predict.py
+            scripts/raceday_clock.py
+            scripts/raceday_safety_net.py
+            docs/data/race_calendar.json
+            docs/data/posted_slots_*.json
+      - name: 開催日なら定刻の処理を dispatch (#179)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLOCK_SCHEDULE: ${{ github.event.schedule }}
+          CLOCK_INTENT: ${{ inputs.intent }}
+          CLOCK_DATE: ${{ inputs.date }}
+          CLOCK_DRY_RUN: ${{ inputs.dry_run }}
+        run: python3 scripts/raceday_clock.py

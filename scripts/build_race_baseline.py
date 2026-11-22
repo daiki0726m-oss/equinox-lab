@@ -1036,8 +1036,14 @@ def _weekend_gate_hold(now=None):
       (土曜の 9:00 の作り直しが新しい閾値で土曜分を揃える)
     「確定済みか」は race_utils.prediction_locked_for (#172)、9:00 は predict.FINAL_REBUILD_JST を
     正とする (時刻を書き下さない)。weekend_prefetch の生成の step も同じ2つで当日分を外す。
-    月曜の開催 (祝日・順延) は見ない: weekend_prefetch は月曜を対象にせず、weekly_retrain は
-    開催日の月曜は再学習ごと延期する (retrain_decision #169)。
+    #179: 土日以外の開催日 (月曜祝日・台風順延) も見る。raceday_clock が weekend_prefetch に
+    dates=その日 を渡して前夜予想を作るようになり、月曜祝日の 03:37 の回などがここを通る。
+    - 今日が土日以外の開催日 (race_calendar.json に載っている) で、前日も開催日 (土日 or 載っている)
+      … 連続開催の途中 (例: 日→月祝)。前日までの印と見送りの基準を変えない → 据え置く
+    - 単独の土日以外の開催日 (月曜は非開催で火曜だけ順延 等) … 土曜と同じ扱い
+      (確定後・最後の作り直し 9:00 以降は据え置き、それより前は引き直す)
+    - 載っていない・判定できない平日 … 従来どおり引き直す (金曜夜の前夜予想が新モデルで閾値を
+      引き直す #156 を壊さない)。weekly_retrain は開催日の月曜は再学習ごと延期する (retrain_decision #169)。
     """
     from race_utils import prediction_locked_for, PREDICTION_LOCK_LABEL
     if now is None:
@@ -1055,6 +1061,23 @@ def _weekend_gate_hold(now=None):
         if (now.hour, now.minute) >= fr:
             return True, f"土曜の最後の作り直し ({label}) 以降"
         return False, f"土曜の最後の作り直し ({label}) 前"
+    # #179: 土日以外の開催日 (月曜祝日・順延)
+    from race_utils import calendar_race_day
+    listed, _why = calendar_race_day(now.date().isoformat(), now=now)
+    if listed:
+        y = now.date() - timedelta(days=1)
+        y_listed, _ = calendar_race_day(y.isoformat(), now=now)
+        if y.weekday() >= 5 or y_listed:
+            return True, f"連続開催の途中 ({y} から続く土日以外の開催日)"
+        if prediction_locked_for(now.strftime("%Y%m%d"), now):
+            return True, f"土日以外の開催日の予想の確定 ({PREDICTION_LOCK_LABEL}) 後"
+        fr = _final_rebuild_jst()
+        if fr is None:
+            return True, "土日以外の開催日で、当日の最後の作り直しの時刻を読めない → 据え置く側"
+        label = f"{fr[0]}:{fr[1]:02d}"
+        if (now.hour, now.minute) >= fr:
+            return True, f"土日以外の開催日の最後の作り直し ({label}) 以降"
+        return False, f"土日以外の開催日の最後の作り直し ({label}) 前"
     return False, "週末の途中ではない"
 
 

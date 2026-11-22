@@ -57,6 +57,12 @@ on:
     - cron: '41 10 * * 6'
     - cron: '41 14 * * 6'
   workflow_dispatch:
+    inputs:
+      dates:
+        description: '対象日 YYYYMMDD (空白/カンマ区切り)。空なら従来どおり次の土日 (#179: 土日以外の開催日の前夜予想は raceday_clock が渡す)'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   # 蓄積系 writer を直列化 (#70)。#173: ただし土曜の回 (曜日欄が '6' だけの cron) は別グループ。
@@ -65,7 +71,9 @@ concurrency:
   # が同じグループで走るので、ここに3本足すとスイープか前夜予想のどちらかが取り消されうる。
   # この workflow は keiba.db.gz を push しない (公開は docs/data だけ) ので、スイープと並走しても
   # DB の clobber は起きない。金曜・日曜未明の回は従来どおり keiba-db-accum。
-  group: ${{ (github.event_name == 'schedule' && endsWith(github.event.schedule, ' * * 6')) && 'weekend-prefetch-sat' || 'keiba-db-accum' }}
+  # #179: 対象日を指定した dispatch (土日以外の開催日の前夜予想。日曜の夜に来る) も土曜の回と同じ
+  # 別グループ。日曜の夜は collect_results の夜間スイープと重なるため。
+  group: ${{ ((github.event_name == 'schedule' && endsWith(github.event.schedule, ' * * 6')) || (github.event_name == 'workflow_dispatch' && inputs.dates != '')) && 'weekend-prefetch-sat' || 'keiba-db-accum' }}
   cancel-in-progress: false
 
 permissions:
@@ -101,6 +109,8 @@ jobs:
 
       - name: 週末2日分の予測を生成
         id: gen
+        env:
+          PREFETCH_DATES: ${{ inputs.dates }}   # #179: 空なら従来どおり (run には式を書かない #174)
         run: |
           set -o pipefail
           # 公開と基準表の step は generated を見て動く。途中で落ちた時に「未設定 = 公開してよい」に
@@ -118,39 +128,8 @@ jobs:
           # 無駄打ちしないため (predict は確定後に作り直さないが、他の3つは走っていた)。
           # 判定材料 (今日の日付・21時前か) もここで1回だけ決め、下の終了判定で使う。
           # 変数への代入にするのは、Python が落ちた時に step を止めるため (eval "$(...)" だと素通りする)
-          DECISION=$(python3 - <<'PY'
-          import contextlib, datetime, sys
-          from race_utils import prediction_locked_for, PREDICTION_LOCK_LABEL
-          # predict の import はモデル周りまで読む (数秒)。import 時の出力が eval に混ざらないよう stderr へ
-          with contextlib.redirect_stdout(sys.stderr):
-              from predict import FINAL_REBUILD_JST
-          fr = tuple(FINAL_REBUILD_JST)
-          now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
-          d = now.date()
-          today = d.strftime("%Y%m%d")
-          cands = [c for c in (d + datetime.timedelta(days=i) for i in range(3))
-                   if c.weekday() in (5, 6)][:2]
-          dates, locked, final = [], [], []
-          for c in cands:
-              ds = c.strftime("%Y%m%d")
-              if prediction_locked_for(ds, now):
-                  locked.append(ds)
-              elif ds == today and (now.hour, now.minute) >= fr:
-                  final.append(ds)
-              else:
-                  dates.append(ds)
-          print('DATES="%s"' % " ".join(dates))
-          print('LOCKED="%s"' % " ".join(locked))
-          print('FINAL_SKIP="%s"' % " ".join(final))
-          print('LOCK_LABEL="%s"' % PREDICTION_LOCK_LABEL)
-          print('FINAL_LABEL="%d:%02d"' % fr)
-          print('FINAL_HM="%02d%02d"' % fr)
-          print('TODAY="%s"' % today)
-          print('BEFORE21="%d"' % (1 if now.hour < 21 else 0))
-          # 今日が開催日 (土日) で、今日の分をもう作らない回 = 土曜の夕方〜夜の回 (日曜分だけを作る)
-          print('TODAY_EXCLUDED="%d"' % (1 if today in locked + final else 0))
-          PY
-          )
+          # #179: 判定は scripts/prefetch_targets.py に移設 (偽の now でテストするため。dates が空なら移設前と同じ)
+          DECISION=$(python3 scripts/prefetch_targets.py)
           eval "$DECISION"
           # 公開の step が「当日分を最後の作り直し以降に公開しない」の判定に使う
           echo "final_hm=$FINAL_HM" >> $GITHUB_OUTPUT
@@ -175,6 +154,24 @@ jobs:
           # 書かなかった時 (予測が2割超減って上書きを止めた等) も成功扱いになる
           RUN_START=$(date +%s)
           for D in $DATES; do
+            # #179: 対象日を指定された回 (土日以外の開催日) は、出走表が欠けていれば先に集める。
+            # fetch_weekend_races は土日しか取らないので、月曜分は DB に数レースしか無いことがある
+            # (2026-11-23 は 24R 中 6R)。判定: 出走馬 50頭未満 か レース数 < 場数×12 (JRA は1場1日12R)。
+            # この workflow は DB を push しない (集めた行もこの run の中だけ)
+            if [ "$REQUESTED" = "1" ]; then
+              SHORT=$(python3 -c "
+          from database import get_db
+          d='$D'; h=f'{d[:4]}-{d[4:6]}-{d[6:8]}'
+          with get_db() as c:
+              nh = c.execute('SELECT COUNT(*) FROM results r JOIN races ra ON ra.race_id=r.race_id WHERE ra.race_date IN (?,?)',(d,h)).fetchone()[0]
+              nr, nv = c.execute('SELECT COUNT(*), COUNT(DISTINCT venue) FROM races WHERE race_date IN (?,?)',(d,h)).fetchone()
+          print(f'{1 if (nh < 50 or nr < 12 * max(nv, 1)) else 0} {nh}頭/{nr}R/{nv}場')
+          " 2>/dev/null || echo "1 不明")
+              if [ "${SHORT%% *}" = "1" ]; then
+                echo "📥 $D: 出走表が欠けている (${SHORT#* }) → 先に集める (#179)"
+                timeout 300 python3 predict.py collect --date "$D" || echo "⚠️ $D: 出走表の収集に失敗 → 続行"
+              fi
+            fi
             N=$(python3 -c "
           from database import get_db
           d='$D'; h=f'{d[:4]}-{d[4:6]}-{d[6:8]}'

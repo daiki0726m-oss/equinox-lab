@@ -87,6 +87,74 @@ def prediction_locked_for(target_date, now=None):
     return prediction_lock_passed(now)
 
 
+# ── 開催カレンダーの読み取り (#179) ─────────────────────────────
+# 土日以外の開催日 (月曜祝日・台風順延) の定刻の起動 (scripts/raceday_clock.py) と、閾値の据え置き
+# (build_race_baseline._weekend_gate_hold) が使う共通の読み取り口。docs/data/race_calendar.json は
+# DB 由来で、feature_parity (毎朝) と fetch_weekend_races (出走馬の登録直後) が作り直す。
+# 「載っている」は7日まで信用する: 開催予定は消えないし、生成元の cron も GitHub のスケジューラに
+# 乗っているので、鮮度を短く絞ると「生成 cron の不発」と「起動役の不発」が同じ日に重なる (#67)。
+# 「載っていない」は36時間以内の版だけ信用する (後から登録された開催は翌日まで載らない #161)。
+# raceday_safety_net.is_race_day (通知役。肯定は無期限に信用) とは意図的に基準が違う。
+CALENDAR_POSITIVE_MAX_AGE_H = 7 * 24
+CALENDAR_NEGATIVE_MAX_AGE_H = 36
+
+
+def calendar_race_day(day, now=None, path=None):
+    """race_calendar.json で day (YYYY-MM-DD / YYYYMMDD) が開催日か (#179)。戻り値 (True/False/None, 理由)。
+
+    path 省略時は env RACE_CALENDAR_PATH → <repo>/docs/data/race_calendar.json (テストで差し替える)。
+      無い・壊れている・生成時刻を読めない → None
+      載っている & 生成から7日以内        → True
+      載っている & 7日超                  → None
+      載っていない & 36時間以内 & 窓内     → False
+      それ以外                            → None
+    呼び出し側は None を「土日だけを開催日とみなす (縮退)」に倒し、ログにそう書く。"""
+    import json
+    import os
+    from datetime import datetime, timezone, timedelta
+    jst = timezone(timedelta(hours=9))
+    if now is None:
+        now = datetime.now(jst)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=jst)
+    d = str(day or "").replace("-", "")[:8]
+    if len(d) != 8 or not d.isdigit():
+        return None, f"日付を読めない ({day!r})"
+    iso = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+    if path is None:
+        path = os.environ.get("RACE_CALENDAR_PATH") or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "docs", "data", "race_calendar.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            cal = json.load(f)
+    except FileNotFoundError:
+        return None, "race_calendar.json が無い"
+    except Exception as e:
+        return None, f"race_calendar.json を読めない ({type(e).__name__})"
+    if not isinstance(cal, dict) or not isinstance(cal.get("dates"), dict):
+        return None, "race_calendar.json が壊れている (dates が無い)"
+    try:
+        gen = datetime.fromisoformat(str(cal.get("generated_at")))
+        if gen.tzinfo is None:
+            gen = gen.replace(tzinfo=jst)
+        age = (now - gen).total_seconds() / 3600
+    except Exception:
+        return None, f"生成時刻を読めない ({cal.get('generated_at')!r})"
+    info = cal["dates"].get(iso)
+    if info:
+        if age > CALENDAR_POSITIVE_MAX_AGE_H:
+            return None, f"{iso} は載っているがカレンダーが古い ({age:.0f}時間前の生成)"
+        venues = "・".join((info or {}).get("venues") or []) if isinstance(info, dict) else ""
+        races = (info or {}).get("races") if isinstance(info, dict) else "?"
+        return True, f"{iso} は開催日 ({races}R {venues}、カレンダーは {age:.0f}時間前の生成)"
+    if age > CALENDAR_NEGATIVE_MAX_AGE_H:
+        return None, f"{iso} は載っていないがカレンダーが古い ({age:.0f}時間前の生成)"
+    win = cal.get("window") or []
+    if len(win) == 2 and str(win[0]) <= iso <= str(win[1]):
+        return False, f"{iso} は開催日でない (カレンダーは {age:.0f}時間前の生成)"
+    return None, f"{iso} はカレンダーの窓 {win} の外"
+
+
 # ── 出走取消の判定 (#170) ─────────────────────────────────────
 # #169 で取消馬を印・点数表・💡能力値1位・Threads の能力値ランキングから外したが、
 # 判定が呼び出し元ごとの書き下し (scratched / 999.9倍 / 9999人気) で、推奨理由の
