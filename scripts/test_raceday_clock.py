@@ -870,6 +870,21 @@ def test_probe():
     code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:24]}), prev=prev1, db_extra=six, today="2026-11-23")
     check(cal["dates"].get("2026-11-23") == sup and "partial_list" not in cal["probe"],
           "当日 (開催中) に全場12Rそろった一覧 → いつもどおり 24R (途中までの扱いにならない)")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:18]}),
+                                prev={"2026-11-23": {"races": 12, "venues": ["東京"], "source": "netkeiba"}})
+    d23 = cal["dates"].get("2026-11-23")
+    check(d23 == {"races": 18, "venues": ["東京", "福島"], "source": "netkeiba"}
+          and "前回見つけた 12R / 東京 を減らさずに引き継ぐ" in out and "2026-11-23" in cal["probe"].get("refreshed", [])
+          and "2026-11-23" in cal["probe"].get("partial_list", []) and cal["probe"]["added"] == [],
+          f"前回 12R 東京 + 途中までの一覧 18R 東京/福島 → 足して 18R、警告は前回の値 (12R 東京) を言い、確かめ直しとして記録 ({d23})")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:12]}), prev={"2026-11-23": dict(NK_1123)})
+    check(cal["dates"].get("2026-11-23") == {"races": 12, "venues": ["東京"], "source": "netkeiba"}
+          and cal["probe"].get("shrunk") == ["2026-11-23"] and "福島 が今回の一覧 (全場12R) に無い" in out
+          and "::warning::" in out and cal["probe"]["added"] == [],
+          "前回 24R 東京/福島 + 全場12Rの一覧が 東京 だけ → 外すが黙らない (::warning:: と probe.shrunk。中止と取りこぼしは区別できない)")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:12]}), prev=prev1, db_extra=tokyo12)
+    check(cal["probe"].get("shrunk") == ["2026-11-23"] and cal["probe"].get("reverted") == ["2026-11-23"],
+          "DB にある日で福島を外した時も probe.shrunk に残る")
     check(brc_list_complete(24, ["東京", "福島"]) and not brc_list_complete(0, [])
           and not brc_list_complete(18, ["東京", "福島"]) and brc_list_complete(12, ["東京"]),
           "list_complete: 全場12R = 完全 / 空・途中までは不完全")

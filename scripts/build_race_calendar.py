@@ -393,18 +393,22 @@ def main(argv=None):
                     #   セーフティネットの予測の再投入と「予測不足」の警告、preflight の欠けた場の取得が黙って止まる。
                     #   過大に言う側 (警告が余分に出る) に倒す。前回の値を外すのは「全場12Rそろった一覧」が支えない時だけ。
                     n_obs, v_obs = obs
+                    prev_v = v
                     base = res.add.get(k)
                     if base is not None:
+                        # 一覧で増えた分は足す (res.add も合わせた値にして、added / merged の記録にも残す)
                         v = {"races": max(int(v.get("races") or 0), int(base.get("races") or 0)),
                              "venues": sorted(set(v.get("venues") or []) | set(base.get("venues") or [])),
                              "source": base.get("source") or v.get("source")}
-                        res.add.pop(k)
+                        res.add[k] = v
                     final[k] = v
                     kept.append(k)
                     partial_list.append(k)
                     print(f"::warning::#179: {k} の netkeiba の一覧が空・途中まで ({n_obs}R / "
                           f"{'・'.join(v_obs) or 'JRA なし'}) — 中止か一時的な取りこぼしか区別できないので、"
-                          f"前回見つけた {v.get('races')}R / {'・'.join(v.get('venues') or [])} を減らさずに引き継ぐ")
+                          f"前回見つけた {prev_v.get('races')}R / {'・'.join(prev_v.get('venues') or [])} を減らさずに引き継ぐ"
+                          + (f" (一覧で増えた分を足して {v.get('races')}R / {'・'.join(v.get('venues') or [])})"
+                             if v is not prev_v else ""))
                     continue
                 if k in res.add:
                     continue                    # 確かめ直した値で置き換える (下)
@@ -433,10 +437,26 @@ def main(argv=None):
             for k, v in res.add.items():
                 if date.fromisoformat(k).weekday() < 5:     # 念のため二重に守る
                     final[k] = v
+            # #179 round 5 (PT-lookalike-1): 前回見つけた開催場が「全場12Rそろった一覧」に無いので外した日は警告する。
+            #   場の中止・移動なら正しいが、一覧が場を丸ごと落とした一時的な取りこぼしとは一覧だけでは区別できない
+            #   (取りこぼしなら次の作り直しで戻る)。黙って減らさない
+            shrunk = []
+            for k, v in sorted(carried.items()):
+                if k not in final:
+                    continue                        # dropped (上で警告済み)
+                lost = sorted(set(v.get("venues") or []) - set(final[k].get("venues") or []))
+                if lost:
+                    shrunk.append(k)
+                    print(f"::warning::#179: {k} は前回 netkeiba で見つけた {'・'.join(lost)} が今回の一覧 (全場12R) に無い "
+                          f"→ 外す ({v.get('races')}R → {final[k].get('races')}R)。中止・移動なら正しい。"
+                          f"一覧の一時的な取りこぼしなら次の作り直しで戻る")
             dates = final
-            new = sorted(k for k in res.add if k not in db)
+            new = sorted(k for k in res.add if k not in db and k not in carried)
+            refreshed = sorted(k for k in res.add if k not in db and k in carried)   # 前回見つけた日を確かめ直した
             merged = sorted(k for k in res.add if k in db)
             info["added"] = new
+            if refreshed:
+                info["refreshed"] = refreshed
             if merged:
                 info["merged"] = merged
             if kept:
@@ -447,6 +467,8 @@ def main(argv=None):
                 info["reverted"] = reverted
             if partial_list:
                 info["partial_list"] = partial_list
+            if shrunk:
+                info["shrunk"] = shrunk
             if res.partial:
                 why = [f"{y}年{m}月: {r}" for (y, m), r in sorted(res.skipped.items())]
                 why += [f"{k}: {r}" for k, r in sorted(res.unknown.items())]
@@ -462,9 +484,12 @@ def main(argv=None):
                 payload.pop("carried", None)
             print(f"🔎 #179: netkeiba で平日の開催日を確認 — 追加 {len(new)}日"
                   + (f" ({', '.join(new)})" if new else "")
+                  + (f" / 確かめ直す {len(refreshed)}日 ({', '.join(refreshed)})" if refreshed else "")
                   + (f" / 補う {len(merged)}日 ({', '.join(merged)})" if merged else "")
                   + (f" / 外す {len(dropped)}日 ({', '.join(dropped)})" if dropped else "")
-                  + (f" / 補いを外す {len(reverted)}日 ({', '.join(reverted)})" if reverted else ""))
+                  + (f" / 補いを外す {len(reverted)}日 ({', '.join(reverted)})" if reverted else "")
+                  + (f" / 開催場が減った {len(shrunk)}日 ({', '.join(shrunk)})" if shrunk else "")
+                  + (f" / 一覧が途中まで {len(partial_list)}日 ({', '.join(partial_list)})" if partial_list else ""))
         payload["probe"] = info
         write_payload(a.out, payload)
 
