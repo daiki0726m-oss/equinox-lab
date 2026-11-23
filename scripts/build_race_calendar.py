@@ -45,8 +45,11 @@ watchdog は git 上のテキストを読むだけにする。
 calendar_race_day / セーフティネットが確信を持って「開催日でない」と言う (時計もセーフティネットも黙る)。
 そこで前回の版の source=netkeiba / db+netkeiba の平日 (窓内) を、DB 由来に重ねて **最初の書き込みから** 引き継ぐ。
 外すのは --probe が「その月のカレンダーを読めた (リンクがある) のに、その日がもう載っていない」と確かめた
-未来の日だけ (中止・移動。::warning:: を出す)。一覧を取れなかった・空だった日は引き継ぐ (通信失敗と区別できない)。
-今日より前の日は確かめようがないので窓を出るまで残す (翌朝の完了検査が使う)。
+未来の日だけ (中止・移動。::warning:: を出す)。一覧を取れなかった日は引き継ぐ (判定できない)。
+DB にある日は、一覧を取れた (空でも) なら引き継がず DB 由来 + 今回の一覧で補った値に戻す — 補う分が無くなった
+(場が中止・移動して一覧が DB と一致した) のに前回の値を残すと、窓を出るまで期待レース数・開催場を過大に言い続ける
+(#179 round 4 T-partd-4 / R3-T-stale-merge)。DB に無い日で一覧が空だった時だけは、中止か一時的な空ページかを
+区別できないので警告して引き継ぐ。今日より前の日は確かめようがないので窓を出るまで残す (翌朝の完了検査が使う)。
 
   - 失敗・タイムアウトは DB 由来 + 引き継ぎで書く (先に書いてから問い合わせるので、外側の
     `timeout 120` に殺されても残る。呼び出し側は `|| 従来の呼び出し` で必ず書き直す — それも引き継ぐ)。
@@ -155,6 +158,8 @@ def make_scraper():
 class ProbeResult:
     """probe() の結果 (#179)。
     add:      新しく見つけた平日 (source=netkeiba) と、DB 由来を補った平日 (source=db+netkeiba)
+    observed: レース一覧を取れた平日 → (JRA のレース数, 場名)。空 (0) も含む・DB にある日も含む
+              (#179 round 4: 前回補った値が今回の一覧でもう支えられていないかを main が判定する)
     seen:     リンクのある月のカレンダーに載っていた日 (窓内・全曜日)
     verified: 日付セルのリンクが1本以上あった月 (= 形式を確かめられた月。「載っていない」と言える月)
     unknown:  レース一覧を取れなかった日 → 理由 (「開催なし」と確定しない)
@@ -162,6 +167,7 @@ class ProbeResult:
 
     def __init__(self):
         self.add, self.seen, self.verified, self.unknown, self.skipped = {}, set(), set(), {}, {}
+        self.observed = {}
 
     @property
     def partial(self):
@@ -261,6 +267,7 @@ def probe(dates, today, scraper, deadline=None, log=print):
                 f"→ この日は判定できない (前回の版で見つけていれば引き継ぐ)")
             continue
         n, venues = got
+        res.observed[k] = (n, venues)
         if known:
             merged = merge_up(dates[k], {"races": n, "venues": venues})
             if merged is not dates[k]:
@@ -363,15 +370,33 @@ def main(argv=None):
             print(f"::warning::#179: netkeiba での開催日の発見に失敗 ({e}) → DB 由来の日付{kept}")
         else:
             final = dict(db)
-            kept, dropped = [], []
+            kept, dropped, reverted = [], [], []
             for k, v in sorted(carried.items()):
                 if k in res.add:
                     continue                    # 確かめ直した値で置き換える (下)
                 d = date.fromisoformat(k)
+                if k in res.observed and k in db:
+                    # #179 round 4 (T-partd-4 / R3-T-stale-merge): 一覧を取れた (空も含む) DB にある日。res.add に無い =
+                    #   merge_up(DB 由来, 今回の一覧) が DB 由来のまま = 前回補った分 (中止・移動した場など) を今回の一覧は
+                    #   もう支えていない → DB 由来に戻す (final[k] は db[k] のまま)。前回の値を残すと、DB と一覧が一致しても
+                    #   窓を出るまで期待レース数・開催場を過大に言い続け、セーフティネットの「予測不足」と preflight の
+                    #   「開催場なのに DB に無い」を毎回誤って出す。
+                    reverted.append(k)
+                    n_obs, v_obs = res.observed[k]
+                    print(f"   🔎 {k}: netkeiba の一覧 ({n_obs}R / {'・'.join(v_obs) or 'JRA なし'}) が DB 由来 "
+                          f"({db[k].get('races')}R / {'・'.join(db[k].get('venues') or [])}) を超えない → 前回補った "
+                          f"{v.get('races')}R / {'・'.join(v.get('venues') or [])} を外す (DB 由来に戻す)")
+                    continue
+                if k in res.observed:
+                    # DB に無い日で一覧が空 (n>0 なら res.add に入っている): 中止か一時的な空ページかを区別できない → 引き継ぐ
+                    final[k] = v
+                    kept.append(k)
+                    print(f"::warning::#179: 前回 netkeiba で見つけた {k} の一覧が今回は空 (JRA のレースが無い) — "
+                          f"中止の可能性があるが、一時的な空ページと区別できないので引き継ぐ")
+                    continue
                 if (d < today or (d.year, d.month) not in res.verified
                         or k in res.unknown or k in res.seen):
-                    # 今日より前 (確かめようがない) / その月を確かめられない / 一覧を取れない /
-                    # カレンダーには載っているが一覧が空 (通信失敗と区別できない) → 引き継ぐ
+                    # 今日より前 (確かめようがない) / その月を確かめられない / 一覧を取れない (締切を含む) → 引き継ぐ
                     final[k] = v
                     kept.append(k)
                 else:
@@ -392,6 +417,8 @@ def main(argv=None):
                 info["kept"] = kept
             if dropped:
                 info["dropped"] = dropped
+            if reverted:
+                info["reverted"] = reverted
             if res.partial:
                 why = [f"{y}年{m}月: {r}" for (y, m), r in sorted(res.skipped.items())]
                 why += [f"{k}: {r}" for k, r in sorted(res.unknown.items())]
@@ -408,7 +435,8 @@ def main(argv=None):
             print(f"🔎 #179: netkeiba で平日の開催日を確認 — 追加 {len(new)}日"
                   + (f" ({', '.join(new)})" if new else "")
                   + (f" / 補う {len(merged)}日 ({', '.join(merged)})" if merged else "")
-                  + (f" / 外す {len(dropped)}日 ({', '.join(dropped)})" if dropped else ""))
+                  + (f" / 外す {len(dropped)}日 ({', '.join(dropped)})" if dropped else "")
+                  + (f" / 補いを外す {len(reverted)}日 ({', '.join(reverted)})" if reverted else ""))
         payload["probe"] = info
         write_payload(a.out, payload)
 

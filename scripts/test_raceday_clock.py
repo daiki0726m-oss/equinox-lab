@@ -4,7 +4,7 @@
   python3 scripts/test_raceday_clock.py     (失敗があれば exit 1)
 
 検査:
-  1. raceday_clock.yml の schedule == SCHEDULE、各 tick の対象日が JST 月〜金、土日に動くのは日曜の前夜だけ
+  1. raceday_clock.yml の schedule == SCHEDULE、各 tick の対象日が JST 月〜金、土日に動くのは日曜の前夜 (対象日=月曜) だけ
   2. auto_post_x.yml の schedule == dedup_cron の case == determine の case (今回は変えないが取り違えを止める)
   3. planned_fire (定刻 / 遅延 / 日付またぎ / 前倒し / 20時間超)
   4. 11/23 (月・祝) の再現、前夜、順延、縮退、待機・重複
@@ -13,13 +13,15 @@
   7. build_race_baseline._weekend_gate_hold の土日以外の開催日
   8. 指定の時刻でのゲート表 (土日 07:00 / 月祝 04:00・07:00・09:00・09:30・17:30 / 普通の月曜 07:00 /
      月祝前の日曜 22:30 / 金曜 22:30)
-  9. 一律の遅れ (0〜10時間) で、最初の predict と runner の起動がいつになるか (#179 レビュー M1)
+  9. 一律の遅れ (0〜10時間) で、最初の predict と runner の起動がいつになるか (#179 レビュー M1)。odds_flash が
+     どこかから出るか (T-clock-3) を、カレンダーに載っている日と問い合わせで見つける日の両方で 0〜13h19m 流す (round 4)
  10. (Part D) build_race_calendar --probe を偽の scraper と実ページと同じ形の HTML で: 平日の開催日を足す / 土日は
      足さない・問い合わせない / DB にある平日は補うだけ (T-partd-4) / JRA 場コード以外は足さない / 翌月が空・取れないのは
      正常 (T-weekend-1/T-partd-2) / 天候パネルの kaisai_date を拾わない (T-partd-3) / 一覧を取れない日は「開催なし」に
      しない (T-partd-3) / 前回の版で見つけた平日を引き継ぎ、消えたと確かめた日だけ外す (T-clock-1/T-partd-1/T-landing-3) /
      --probe なしも引き継ぐ。さらに、probe だけが見つけた日 (DB にレースが無い) で時計が predict と前夜予想を出す
  11. (T-clock-2) カレンダーの作り直しより後に決まった平日の開催を、時計が netkeiba の一覧で確かめて動く
+     (round 4: 遅れて 8:30〜19:00 に着いた predict / 前夜の tick も、載っている日と同じく runner を起こす)
  12. (T-landing-4) 予想 (post_predict) の lock が無い日は results を出さない
 """
 import atexit
@@ -148,8 +150,10 @@ def test_tables():
             if j.weekday() >= 5:
                 weekend_fire.append((c, intents))
     check(not bad, "すべての tick の対象日が JST の月〜金" + (f" (違反: {bad})" if bad else ""))
-    check(weekend_fire and all(i == ("prefetch_eve",) and j_is_sun(c) for c, i in weekend_fire),
-          f"JST の土日に動く tick は日曜の前夜だけ ({sorted({c for c, _ in weekend_fire})})")
+    check(weekend_fire and all(rc.SCHEDULE[c][1] == 1 and j_is_sun(c) and i in (("prefetch_eve",), ("runner",))
+                               for c, i in weekend_fire),
+          f"JST の土日に動く tick は日曜の前夜 (前夜予想・runner だけ、対象日=月曜) だけ ({len(weekend_fire)}本: "
+          f"{sorted({c for c, _ in weekend_fire})})")
     doc, _on = wf_doc("raceday_clock.yml")
     runs = [st.get("run", "") for j in doc["jobs"].values() for st in j.get("steps", [])]
     check(all("${{" not in r for r in runs), "raceday_clock.yml の run ブロックに式が無い (#174)")
@@ -534,29 +538,47 @@ def test_uniform_delay():
     # 外した日は runner の代打が頼りで、runner の判定は起動から ~8〜14分後 (起動29秒 + 1周目 436〜763秒、
     # 本番ログ実測)。→ 「8:30〜9:01 に着く tick」(runner を起こす) か時計自身の odds_flash が、どの遅れでも要る。
     of_last_start = jst("2026-11-23T09:01")
-    # (a) 構造: 対象日 T の tick の予定時刻の間隔が 23:41 〜 08:53 ですべて30分以下 (8:30〜9:01 は31分の窓)
-    ts = sorted(p for p, c in planned if rc.SCHEDULE[c][1] == 0 or p.date() < jst(HOLIDAY).date())
-    ts = [p for p in ts if jst("2026-11-22T23:41") <= p <= jst("2026-11-23T08:53")]
+    # (a) 構造: 対象日 T の tick の予定時刻の間隔が 19:41 (前夜) 〜 08:53 ですべて30分以下 (8:30〜9:01 は31分の窓)
+    hol = jst(HOLIDAY).date()
+    ts = sorted(p for p, c in planned if p.date() + dt.timedelta(days=rc.SCHEDULE[c][1]) == hol)
+    ts = [p for p in ts if jst("2026-11-22T19:41") <= p <= jst("2026-11-23T08:53")]
     gaps = [(a, b) for a, b in zip(ts, ts[1:]) if b - a > dt.timedelta(minutes=30)]
-    check(not gaps, "23:41〜08:53 の tick の間隔がすべて30分以下 (一律 0〜9h19m の遅れで runner が 9:01 までに起きる)"
+    check(not gaps and ts and ts[0] == jst("2026-11-22T19:41"),
+          "19:41 (前夜) 〜08:53 の対象日 T の tick の間隔がすべて30分以下 (一律 0〜13h19m の遅れで runner が 9:01 までに起きる)"
           + (f" — 空き: {[f'{a:%H:%M}→{b:%H:%M}' for a, b in gaps]}" if gaps else ""))
-    # (b) 実走: 旧表で odds_flash がどこからも出なかった遅れ (34/150/240/330/360 分 等) を流す。9h20m 超は
-    #     23:41 の tick も 9:01 を過ぎる = 同じスケジューラ上の時計の限界 (上の 9h と同じ扱い)
-    bad = []
-    for delay in (0, 34, 150, 240, 330, 360, 480, 540, 559):
+    # (b) 実走: 旧表で odds_flash がどこからも出なかった遅れ (34/150/240/330/360 分 等)、round 3 の表で出なかった
+    #     9h20m 以上 (570/600 分 等)、round 3 の問い合わせの道で出なかった遅れ (65/105/197/290/405/465/525 分 等) を、
+    #     カレンダーに載っている日と、カレンダーが否定して netkeiba の一覧で見つける日 (急な順延) の両方で流す。
+    #     13h20m 以上は 19:41 の tick も 9:01 を過ぎる = 同じスケジューラ上の時計の限界 (上の 9h と同じ扱い)
+    cal_neg = make_calendar(["2026-11-21", "2026-11-22"], "2026-11-22T07:00:00+09:00", name="cal_eve_neg.json")
+    rl_hol = "".join(f'<a href="../race/shutuba.html?race_id=20260505{r:02d}{r:02d}&rf=race_list">' for r in range(1, 13))
+
+    def odds_flash_reachable(delay, cal, extra):
         runner = of = None
         for p, c in planned:
             arrive = p + dt.timedelta(minutes=delay)
-            _code, sent, _out = run_clock(c, arrive.strftime("%Y-%m-%dT%H:%M"), CAL_EVE,
+            _code, sent, _out = run_clock(c, arrive.strftime("%Y-%m-%dT%H:%M"), cal,
                                           fake={"since": {"collect_results.yml": 999},
-                                                "active": {"race_day_runner.yml": 1 if runner else 0}})
+                                                "active": {"race_day_runner.yml": 1 if runner else 0}, **extra})
             if "race_day_runner.yml" in sent and runner is None:
                 runner = arrive
             if any("mode=odds_flash" in x for x in sent) and of is None:
                 of = arrive
-        if not (of is not None or (runner is not None and runner <= of_last_start)):
-            bad.append(f"{delay}分 (runner {runner:%H:%M})" if runner else f"{delay}分 (runner なし)")
-    check(not bad, "一律の遅れでも odds_flash を時計が出すか、runner を 9:01 までに起こす" + (f" — 外れ: {bad}" if bad else ""))
+        return (of is not None or (runner is not None and runner <= of_last_start)), runner
+    delays = (0, 34, 65, 105, 110, 150, 197, 205, 240, 290, 330, 360, 405, 465, 480, 525, 540, 559, 570, 600,
+              660, 720, 780, 799)
+    for label, cal, extra in (("カレンダーに載っている日", CAL_EVE, {}),
+                              ("問い合わせで見つける日 (カレンダーは否定)", cal_neg, {"race_list": {"20261123": rl_hol}})):
+        bad = []
+        for delay in delays:
+            ok, runner = odds_flash_reachable(delay, cal, extra)
+            if not ok:
+                bad.append(f"{delay}分 (runner {runner:%H:%M})" if runner else f"{delay}分 (runner なし)")
+        check(not bad, f"{label}: 一律 0〜13h19m の遅れでも odds_flash を時計が出すか、runner を 9:01 までに起こす"
+              + (f" — 外れ: {bad}" if bad else ""))
+    ok, runner = odds_flash_reachable(801, CAL_EVE, {})
+    check(not ok, f"13h21m の遅れには勝てない (runner {runner:%H:%M} — 同じスケジューラ上の時計の限界)。限界として記録"
+          if runner else "13h21m の遅れには勝てない — 限界として記録")
 
 
 # ── 10. (Part D) build_race_calendar --probe ───────────────────────────
@@ -790,6 +812,41 @@ def test_probe():
     check(cal["dates"].get("2026-11-23", {}).get("races") == 24,
           "前回補った値も引き継ぐ (今回の問い合わせが失敗しても 1R に戻さない)")
 
+    print("\n   前回補った値が今回の一覧で支えられなくなった時 (#179 round 4 T-partd-4 / R3-T-stale-merge)")
+    tokyo12 = [("2026-11-23", "05", "東京", r) for r in range(1, 13)]
+    sup = {"races": 24, "venues": ["東京", "福島"], "source": "db+netkeiba"}
+    code, cal, out = _run_probe(FakeScraper(), db_extra=tokyo12)
+    check(cal["dates"].get("2026-11-23") == sup, f"1回目: DB 12R 東京 + 一覧 24R 東京・福島 → 補う ({cal['dates'].get('2026-11-23')})")
+    prev1 = cal["dates"]
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:12]}), prev=prev1, db_extra=tokyo12)
+    d23 = cal["dates"].get("2026-11-23")
+    check(d23 == {"races": 12, "venues": ["東京"]} and cal["probe"].get("reverted") == ["2026-11-23"]
+          and cal["probe"]["status"] == "ok" and "2026-11-23" not in cal["probe"].get("kept", [])
+          and sn.expected_races(d23) == 12,
+          f"2回目: 一覧も DB も 東京 12R だけ (福島が中止・移動) → 前回補った 24R・福島を外して DB 由来に戻す "
+          f"(期待レース数 12) ({d23} / {cal['probe'].get('reverted')})")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:12]}), prev=cal["dates"], db_extra=tokyo12)
+    check(cal["dates"].get("2026-11-23") == {"races": 12, "venues": ["東京"]} and "reverted" not in cal["probe"],
+          "3回目: 戻した後は引き継ぐものが無い (DB 由来のまま・何度でも同じ)")
+    code, cal, out = _run_probe(None, args=(), prev=prev1, db_extra=tokyo12)
+    check(cal["dates"].get("2026-11-23") == sup, "--probe なしの作り直しは前回補った値を引き継ぐ (確かめていない)")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:12]}), prev=cal["dates"], db_extra=tokyo12)
+    check(cal["dates"].get("2026-11-23") == {"races": 12, "venues": ["東京"]},
+          "その後の --probe で一覧が 東京 12R だけ → DB 由来に戻る (--probe なしを挟んでも治る)")
+    six = [("2026-11-23", "05", "東京", r) for r in range(1, 7)]
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:12]}), prev=prev1, db_extra=six)
+    check(cal["dates"].get("2026-11-23") == {"races": 12, "venues": ["東京"], "source": "db+netkeiba"},
+          "DB がまだ追いついていない (6R) 時に一覧が 東京 12R に縮む → 一覧で補った 12R・東京 (福島は外れる)")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": []}), prev=prev1, db_extra=tokyo12)
+    check(cal["dates"].get("2026-11-23") == {"races": 12, "venues": ["東京"]} and cal["probe"].get("reverted") == ["2026-11-23"],
+          "DB にある日の一覧が空 (取得は成功) → 補いを外して DB 由来に戻す (開催日のまま・DB 由来は減らさない)")
+    code, cal, out = _run_probe(FakeScraper(fail_list={"20261123"}), prev=prev1, db_extra=tokyo12)
+    check(cal["dates"].get("2026-11-23") == sup and "2026-11-23" in cal["probe"].get("kept", []),
+          "一覧を取れない (HTTP 500) → 判定できないので前回補った値を引き継ぐ")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": []}), prev={"2026-11-23": dict(NK_1123)})
+    check(cal["dates"].get("2026-11-23") == NK_1123 and "一覧が今回は空" in out and "::warning::" in out,
+          "DB に無い日 (netkeiba だけで見つけた日) の一覧が空 → 中止か一時的な空ページか区別できないので警告して引き継ぐ")
+
     print("\n   probe だけが見つけた日 (DB にレースが無い) で時計が動く")
     code, cal, _ = _run_probe(FakeScraper())
     cal["generated_at"] = "2026-11-22T05:00:00+09:00"     # 前日朝の feature_parity が書いた版とする
@@ -856,6 +913,29 @@ def test_late_postponement():
     check(sent == [] and "問い合わせ" not in out, "定刻に着いた runner だけの tick (8:30 前) は問い合わせない")
     code, sent, out = run_clock("3 22 * * 0-4", "2026-09-26T07:03", cal_a, fake=hit)
     check(sent == [] and "問い合わせ" not in out, "土曜の対象日は問い合わせない (ネイティブの cron)")
+    # round 4 (T-clock-2 / R3-T-probe-worth-runner): decide は当日 8:30〜19:00 の tick なら intent に関係なく runner を
+    #   確認する。問い合わせの要否 (probe_worth) も同じ条件にそろえる (載っている日と同じ動きになる)
+    code, sent, out = run_clock("33 20 * * 0-4", "2026-09-22T08:50", cal_a, fake=hit)
+    check(sent == ["race_day_runner.yml"] and "問い合わせ" in out,
+          f"05:33 の predict の tick が遅れて 08:50 に着く (predict の締切後) → 問い合わせて runner を起こす ({sent})")
+    code, sent, _ = run_clock("33 20 * * 0-4", "2026-09-22T08:50", make_calendar(
+        ["2026-09-19", "2026-09-20", "2026-09-22"], "2026-09-21T10:29:00+09:00", window=("2026-09-07", "2026-10-05"),
+        name="cal_late_listed.json"))
+    check(sent == ["race_day_runner.yml"], f"(比較) 9/22 がカレンダーに載っている日の同じ tick も runner だけ ({sent})")
+    code, sent, out = run_clock("3 22 * * 0-4", "2026-09-22T09:00", cal_a, fake=hit)
+    check(sent == ["race_day_runner.yml"], f"07:03 の predict の tick が 09:00 に着く → runner ({sent})")
+    code, sent, out = run_clock("41 14 * * 0-4", "2026-09-22T09:00", cal_a, fake=hit)
+    check(sent == ["race_day_runner.yml"], f"前夜 23:41 の tick が 09:00 に着く (前夜予想の締切後) → runner ({sent})")
+    code, sent, out = run_clock("11 14 * * 0-4", "2026-09-22T08:41", cal_a, fake=hit)
+    check(sent == ["race_day_runner.yml"], f"前夜 23:11 の runner だけの tick が 9h30m 遅れて 08:41 に着く → runner ({sent})")
+    code, sent, out = run_clock("11 11 * * 0-4", "2026-09-21T20:11", cal_a, fake=hit)
+    check(sent == [] and "問い合わせ" not in out,
+          f"前夜 20:11 の runner だけの tick が定刻に着く (対象日の前日) → 何もしない・問い合わせない ({sent})")
+    code, sent, out = run_clock("11 11 * * 0-4", "2026-11-22T20:11", CAL_EVE)
+    check(sent == [], f"(載っている日) 前夜 20:11 の tick が定刻に着く → 何もしない ({sent})")
+    code, sent, out = run_clock("33 20 * * 0-4", "2026-09-22T08:50", cal_a, fake={"race_list": {"20260922": RL_EMPTY}})
+    check(sent == [] and "問い合わせ" in out and "開催日でない" in out,
+          "普通の平日に遅れた predict の tick が 08:50 に着く → 1回問い合わせて何もしない (コストは1リクエスト)")
     stale = make_calendar(["2026-09-19"], "2026-09-19T10:00:00+09:00", window=("2026-09-07", "2026-10-05"),
                           name="cal_stale.json")
     code, sent, out = run_clock("3 22 * * 0-4", "2026-09-22T07:03", stale, fake=hit)

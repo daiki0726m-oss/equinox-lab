@@ -9,7 +9,7 @@
   まで予測がゼロだった。1本の cron に全部を賭ける構造が原因。
 
 仕組み:
-  raceday_clock.yml が土日と同じ時刻 (分だけ数分ずらす) を中心に35本の cron を持ち、各 tick がこの
+  raceday_clock.yml が土日と同じ時刻 (分だけ数分ずらす) を中心に42本の cron を持ち、各 tick がこの
   スクリプトを数秒走らせる。対象日 T が「土日以外の開催日」と race_calendar.json が言う時だけ、
   本体 (auto_post_x / race_day_runner / weekend_prefetch / collect_results) を mode と日付を
   明示して dispatch する。非開催日は何も出さずに終わる。本体の cron 表は1行も変えない
@@ -46,8 +46,8 @@ UTC = dt.timezone.utc
 # cron (UTC) → (intents, 対象日の offset [予定時刻の JST 日 + offset])。唯一の対応表。
 # raceday_clock.yml の schedule と scripts/test_raceday_clock.py で突き合わせる。
 # 曜日欄: JST の 00:00-08:59 は前日の UTC なので JST 月〜金 = UTC '0-4'、09:00 以降は '1-5'。
-# 前夜 (JST 日〜木の 15:41/19:41/23:41) は同日の UTC で '0-4'。
-# → この時計が JST の土・日に動くのは「日曜の前夜3本」だけ (翌月曜が開催日の時しか何もしない)。
+# 前夜 (JST 日〜木の 15:41/19:41/23:41 と 20:11〜23:11 の runner だけの7本) は同日の UTC で '0-4'。
+# → この時計が JST の土・日に動くのは「日曜の前夜10本」だけ (翌月曜が開催日の時しか何もしない)。
 #
 # #179 レビュー (M1): 時刻表は「定刻に当てる」でなく「遅れて着いても窓に入る」前提で組む。
 #   このリポジトリでは 11/22-23 に schedule が一律 4〜8時間遅れた (auto_post_x の 07:00 cron が 11:03、
@@ -64,15 +64,29 @@ UTC = dt.timezone.utc
 #   11/07 は 763秒。11/23 本番ログ実測) で、代打の締切は 9:15 (race_utils.ODDS_FLASH_LATEST_HM)。
 #   → runner を **09:01 までに** 起こす tick が要る。decide() は当日 8:30〜19:00 に着いた tick なら intent に
 #   関係なく runner を確認するので、#179 T-clock-3 で「runner だけ」の tick を足し、23:41 〜 08:53 の
-#   予定時刻の間隔をすべて30分以下にした (8:30〜9:01 は31分の窓 = 一律 0〜9h19m のどの遅れでも1本入る)。
+#   予定時刻の間隔をすべて30分以下にした (8:30〜9:01 は31分の窓)。round 4 で前夜 19:41〜23:41 にも
+#   runner だけの tick を30分おきに足し (20:11〜23:11 の7本、対象日は翌日)、**19:41 〜 08:53 の間隔がすべて
+#   30分以下 = 一律 0〜13h19m のどの遅れでも1本が 8:30〜9:01 に入る** (round 3 の表は 9h20m 以上で
+#   runner の起動が 9:11/9:41 になり、odds_flash がどこからも出なかった)。
 #   旧表は間隔が 50〜90分あり、一律 0〜9h の遅れの約4割 (34〜46分・124〜176分・330〜382分 等) で
 #   runner の起動が 9:07〜9:41 になり、odds_flash (9:00 の最後の作り直しを兼ねる) がどこからも出なかった。
-#   足した tick は定刻に着けば 8:30 前なので何もしない (DB も触らない。数秒で終わる)。
-#   それより大きい一律遅延には、同じスケジューラに乗るこの時計は勝てない (独立した時計は GAS だけ #155)。
+#   足した tick は定刻に着けば 8:30 前 (前夜の tick は前日) なので何もしない (DB も netkeiba も触らない。数秒で終わる)。
+#   問い合わせで見つける日 (急な順延) も同じ: probe_worth は decide と同じく当日 8:30〜19:00 の tick を問い合わせる。
+#   **限界**: 一律 13h20m 以上の遅れでは odds_flash は出ない (19:41 より前の前夜 tick は 15:41 だけ。予測は前夜予想が
+#   作る)。それより大きい一律遅延には、同じスケジューラに乗るこの時計は勝てない (独立した時計は GAS だけ #155)。
 SCHEDULE = {
     "41 6 * * 0-4": (("prefetch_eve",), 1),            # 日〜木 15:41 前夜予想 (翌日分)
     "41 10 * * 0-4": (("prefetch_eve",), 1),           # 日〜木 19:41
     "41 14 * * 0-4": (("prefetch_eve",), 1),           # 日〜木 23:41
+    # #179 round 4 (T-clock-3 B): 遅れて対象日 T の 8:30〜9:01 に着いた時に runner を起こす前夜の tick (対象日は翌日)。
+    #   定刻 (前日の夜) に着けば日付が違うので何もしない (問い合わせもしない)。19:41〜23:41 の空きを30分おきに埋める。
+    "11 11 * * 0-4": (("runner",), 1),                 # 日〜木 20:11 (翌日分)
+    "41 11 * * 0-4": (("runner",), 1),                 # 20:41
+    "11 12 * * 0-4": (("runner",), 1),                 # 21:11
+    "41 12 * * 0-4": (("runner",), 1),                 # 21:41
+    "11 13 * * 0-4": (("runner",), 1),                 # 22:11
+    "41 13 * * 0-4": (("runner",), 1),                 # 22:41
+    "11 14 * * 0-4": (("runner",), 1),                 # 23:11
     "7 15 * * 0-4": (("predict",), 0),                 # 月〜金 00:07 当日分の predict (遅延対策 M1)
     "7 16 * * 0-4": (("predict",), 0),                 # 月〜金 01:07
     "7 17 * * 0-4": (("predict",), 0),                 # 月〜金 02:07
@@ -226,14 +240,20 @@ def probe_race_day(gh, t8):
 
 def probe_worth(intents, target, now, final_hm):
     """この tick がこの時刻に何かを出しうるか (= netkeiba に問い合わせる価値があるか)。定刻に着いた
-    runner だけの tick (8:30 前) などは問い合わせない。判定の本体は decide (ここは窓の粗い写し)。"""
+    runner だけの tick (8:30 前) などは問い合わせない。判定の本体は decide (ここは窓の粗い写し)。
+    呼び出し側は intents が PROBE_INTENTS を1つも含まない tick (results / sweep だけ) を先に除く。"""
     from race_utils import PREDICTION_LOCK_HM, ODDS_FLASH_LATEST_HM
     hm = now.hour * 100 + now.minute
     same_day = now.date() == target
     cutoff = dt.datetime.combine(target, dt.time(final_hm // 100, final_hm % 100), JST)
+    # #179 round 4 (T-clock-2/T-clock-3/R3-T-probe-worth-runner): decide() は当日 8:30〜19:00 に着いた tick なら
+    #   intent に関係なく race_day_runner を確認する。ここが「runner の intent を持つ tick」に限っていたので、
+    #   遅れて 8:48〜9:01 に着いた predict / prefetch の tick (自分の窓は閉じている) は、カレンダーに載っている日なら
+    #   runner を起こすのに、問い合わせで見つける日 (急な順延) では何もしなかった (一律の遅れの約12%で runner が
+    #   9:08〜9:57 に遅れ、9:15 締切の odds_flash がどこからも出ない)。decide と同じ条件にそろえる。
+    if same_day and 830 <= hm < 1900:
+        return True
     for i in intents:
-        if i == "runner" and same_day and 830 <= hm < 1900:
-            return True
         if i in ("prefetch_eve", "prefetch_early") and now < cutoff:
             return True
         if i == "predict" and same_day and hm < _minus_min(final_hm, PREDICT_RUN_MIN):
