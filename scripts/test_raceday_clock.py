@@ -14,9 +14,13 @@
   8. 指定の時刻でのゲート表 (土日 07:00 / 月祝 04:00・07:00・09:00・09:30・17:30 / 普通の月曜 07:00 /
      月祝前の日曜 22:30 / 金曜 22:30)
   9. 一律の遅れ (0〜10時間) で、最初の predict と runner の起動がいつになるか (#179 レビュー M1)
- 10. (Part D) build_race_calendar --probe を偽の scraper と固定の HTML で: 平日の開催日を足す / 土日は足さない・
-     問い合わせない / DB にある日は上書きしない / JRA 場コード以外は足さない / 失敗・締切・例外は DB 由来だけ /
-     --probe なしは従来どおり。さらに、probe だけが見つけた日 (DB にレースが無い) で時計が predict と前夜予想を出す
+ 10. (Part D) build_race_calendar --probe を偽の scraper と実ページと同じ形の HTML で: 平日の開催日を足す / 土日は
+     足さない・問い合わせない / DB にある平日は補うだけ (T-partd-4) / JRA 場コード以外は足さない / 翌月が空・取れないのは
+     正常 (T-weekend-1/T-partd-2) / 天候パネルの kaisai_date を拾わない (T-partd-3) / 一覧を取れない日は「開催なし」に
+     しない (T-partd-3) / 前回の版で見つけた平日を引き継ぎ、消えたと確かめた日だけ外す (T-clock-1/T-partd-1/T-landing-3) /
+     --probe なしも引き継ぐ。さらに、probe だけが見つけた日 (DB にレースが無い) で時計が predict と前夜予想を出す
+ 11. (T-clock-2) カレンダーの作り直しより後に決まった平日の開催を、時計が netkeiba の一覧で確かめて動く
+ 12. (T-landing-4) 予想 (post_predict) の lock が無い日は results を出さない
 """
 import atexit
 import contextlib
@@ -200,7 +204,7 @@ def test_holiday_and_eve():
     check(sent == ["auto_post_x.yml mode=post_predict"], f"09:51 → post_predict ({sent})")
     code, sent, _ = run_clock("51 0 * * 1-5", "2026-11-23T11:56", CAL_HOL, fake={"active": {"race_day_runner.yml": 1}})
     check(sent == [], f"11:56 (12時ガードの手前の締切 11:55 の後) → 出さない ({sent})")
-    code, sent, _ = run_clock("33 8 * * 1-5", "2026-11-24T00:20", CAL_HOL)
+    code, sent, _ = run_clock("33 8 * * 1-5", "2026-11-24T00:20", CAL_HOL, slots_dir({"20261123": ["post_predict"]}))
     check(sent == ["auto_post_x.yml mode=results date_override=20261123"],
           f"17:33 の tick が 11/24 00:20 に遅れて来る → results (対象日 11/23) ({sent})")
     code, sent, _ = run_clock("1 0 * * 1-5", "2026-11-24T01:00", CAL_HOL)
@@ -217,15 +221,17 @@ def test_holiday_and_eve():
     check(sent == [], f"月祝: collect_results 自身の月曜 cron (20:00) の7分後の 20:07 → 見送り ({sent})")
     code, sent, _ = run_clock("47 13 * * 1-5", "2026-11-23T22:47", CAL_HOL, fake={"since": {"collect_results.yml": 167}})
     check(sent == ["collect_results.yml date=20261123"], f"月祝: 20:00 の月曜 cron の後の 22:47 → 2本目を出す ({sent})")
-    code, sent, _ = run_clock("33 10 * * 1-5", "2026-11-23T19:33", CAL_HOL)
+    code, sent, _ = run_clock("33 10 * * 1-5", "2026-11-23T19:33", CAL_HOL, slots_dir({"20261123": ["post_predict"]}))
     check(sent == ["auto_post_x.yml mode=results date_override=20261123"],
           f"19:33 (results の lock 無し = 17:33 の分が待機中に取り消された) → results を出し直す ({sent})")
-    code, sent, _ = run_clock("33 12 * * 1-5", "2026-11-23T21:33", CAL_HOL, slots_dir({"20261123": ["results"]}))
+    code, sent, _ = run_clock("33 12 * * 1-5", "2026-11-23T21:33", CAL_HOL,
+                              slots_dir({"20261123": ["post_predict", "results"]}))
     check(sent == [], f"21:33 で results が lock 済み → 出さない ({sent})")
-    code, sent, _ = run_clock("33 12 * * 1-5", "2026-11-24T02:10", CAL_HOL)
+    code, sent, _ = run_clock("33 12 * * 1-5", "2026-11-24T02:10", CAL_HOL, slots_dir({"20261123": ["post_predict"]}))
     check(sent == ["auto_post_x.yml mode=results date_override=20261123"],
           f"21:33 の tick が翌 02:10 に遅れて来る → results (対象日 11/23) ({sent})")
-    code, sent, _ = run_clock("33 10 * * 1-5", "2026-11-23T19:33", CAL_HOL, fake={"pending": {"auto_post_x.yml": 1}})
+    code, sent, _ = run_clock("33 10 * * 1-5", "2026-11-23T19:33", CAL_HOL, slots_dir({"20261123": ["post_predict"]}),
+                              fake={"pending": {"auto_post_x.yml": 1}})
     check(sent == [], f"auto_post_x に待機1本 → results を重ねない ({sent})")
 
     print("\n   前夜・順延")
@@ -475,7 +481,10 @@ def test_gate_table():
             check(not clock_fired, f"{label}: 時計の tick は起きない (起きたもの {clock_fired})")
             shown = "(時計は動かない)"
         else:
-            code, sent, _out = run_clock(clock_cron, when, calp,
+            # 17:30 の results は予想 (post_predict) を配信できた日だけ出す (#179 T-landing-4) → 配信済みの日として流す
+            pp = ({when[:10].replace("-", ""): ["post_predict"]}
+                  if any("mode=results" in x for x in (expect or [])) else None)
+            code, sent, _out = run_clock(clock_cron, when, calp, slots_dir(pp),
                                          fake={"since": {"collect_results.yml": 999}})
             check(sent == expect, f"{label}: 時計 ({clock_cron} を {when[-5:]} に実行) → {sent or 'なし'}")
             shown = sent or "なし (開催日でない)"
@@ -521,14 +530,59 @@ def test_uniform_delay():
           "0〜8h の遅れ: runner は正午前に起動する (9:30 を過ぎる遅れでは post_predict を runner が代打する)")
     check(rows[0][1] is not None and rows[0][1] < lock, "定刻なら runner は 9:30 の確定前に起動する")
 
+    # #179 T-clock-3: odds_flash (9:00 の最後の作り直しを兼ねる) の窓は 9:00〜9:15。時計の 09:01 tick を
+    # 外した日は runner の代打が頼りで、runner の判定は起動から ~8〜14分後 (起動29秒 + 1周目 436〜763秒、
+    # 本番ログ実測)。→ 「8:30〜9:01 に着く tick」(runner を起こす) か時計自身の odds_flash が、どの遅れでも要る。
+    of_last_start = jst("2026-11-23T09:01")
+    # (a) 構造: 対象日 T の tick の予定時刻の間隔が 23:41 〜 08:53 ですべて30分以下 (8:30〜9:01 は31分の窓)
+    ts = sorted(p for p, c in planned if rc.SCHEDULE[c][1] == 0 or p.date() < jst(HOLIDAY).date())
+    ts = [p for p in ts if jst("2026-11-22T23:41") <= p <= jst("2026-11-23T08:53")]
+    gaps = [(a, b) for a, b in zip(ts, ts[1:]) if b - a > dt.timedelta(minutes=30)]
+    check(not gaps, "23:41〜08:53 の tick の間隔がすべて30分以下 (一律 0〜9h19m の遅れで runner が 9:01 までに起きる)"
+          + (f" — 空き: {[f'{a:%H:%M}→{b:%H:%M}' for a, b in gaps]}" if gaps else ""))
+    # (b) 実走: 旧表で odds_flash がどこからも出なかった遅れ (34/150/240/330/360 分 等) を流す。9h20m 超は
+    #     23:41 の tick も 9:01 を過ぎる = 同じスケジューラ上の時計の限界 (上の 9h と同じ扱い)
+    bad = []
+    for delay in (0, 34, 150, 240, 330, 360, 480, 540, 559):
+        runner = of = None
+        for p, c in planned:
+            arrive = p + dt.timedelta(minutes=delay)
+            _code, sent, _out = run_clock(c, arrive.strftime("%Y-%m-%dT%H:%M"), CAL_EVE,
+                                          fake={"since": {"collect_results.yml": 999},
+                                                "active": {"race_day_runner.yml": 1 if runner else 0}})
+            if "race_day_runner.yml" in sent and runner is None:
+                runner = arrive
+            if any("mode=odds_flash" in x for x in sent) and of is None:
+                of = arrive
+        if not (of is not None or (runner is not None and runner <= of_last_start)):
+            bad.append(f"{delay}分 (runner {runner:%H:%M})" if runner else f"{delay}分 (runner なし)")
+    check(not bad, "一律の遅れでも odds_flash を時計が出すか、runner を 9:01 までに起こす" + (f" — 外れ: {bad}" if bad else ""))
+
 
 # ── 10. (Part D) build_race_calendar --probe ───────────────────────────
-CAL_HTML = {   # netkeiba の月カレンダーと同じ形のリンク (実ページは 2026-11-23 に1回だけ読んで確認済み)
-    (2026, 11): "".join(f'<td><a href="../top/race_list.html?kaisai_date={d}">x</a></td>'
-                        for d in ("20261119", "20261121", "20261122", "20261123", "20261124",
-                                  "20261128", "20261129")),
-    (2026, 12): "".join(f'<td><a href="../top/race_list.html?kaisai_date={d}">x</a></td>'
-                        for d in ("20261201", "20261205", "20261206")),
+def cal_page(links=(), unpublished=(), weather=None):
+    """netkeiba の月カレンダーと同じ形の HTML (2026-11-23 に実ページの11月・12月・1月を読んで写した形)。
+    links: レース一覧が公開済みの日 (セルに race_list.html のリンクと HaveData) / unpublished: 開催予定だが未公開の日
+    (セルに場名だけ、リンクも HaveData も無い) / weather: 開催日の開催時間帯にだけ全ページに出る天候パネルの日付。"""
+    cells = []
+    for d in links:
+        cells.append(f'<td class="RaceCellBox">\n<a href="../top/race_list.html?kaisai_date={d}"  tile="" '
+                     f'target="_parent">\n<div class="RaceKaisaiBox HaveData">\n<p><span class="Day">{int(d[-2:])}'
+                     f'</span></p>\n<p><span class="JyoName">東京</span></p>\n</div>\n</a>\n</td>')
+    for d in unpublished:
+        cells.append(f'<td class="RaceCellBox">\n<div class="RaceKaisaiBox">\n<p><span class="Day">{int(d[-2:])}'
+                     f'</span></p>\n<p><span class="JyoName">中山</span></p>\n</div>\n</td>')
+    panel = ("" if not weather else
+             f'<div class="RealtimeWeatherContent Active"><p class="RealtimeWeatherCourse">東京競馬場</p>'
+             f'<a class="RealtimeWeatherSummary" href="/race/weather_summary.html?kaisai_date={weather}&amp;jyo_cd=05">'
+             f'天候</a></div>')
+    return (f'<div class="Race_Calendar_Main"><table class="Calendar_Table"><tbody><tr class="Week">'
+            f'{"".join(cells)}</tr></tbody></table></div>{panel}')
+
+
+CAL_HTML = {
+    (2026, 11): cal_page(("20261119", "20261121", "20261122", "20261123", "20261124", "20261128", "20261129")),
+    (2026, 12): cal_page(("20261201", "20261205", "20261206")),
 }
 JRA_1123 = ([f"20260505{r:02d}{r:02d}" for r in range(1, 13)]          # 東京 (05) 12R
             + [f"20260302{r:02d}{r:02d}" for r in range(1, 13)]        # 福島 (03) 12R
@@ -537,44 +591,55 @@ LISTS = {"20261123": JRA_1123, "20261124": ["202644112401", "202644112402"]}   #
 
 
 class FakeScraper:
-    def __init__(self, fail_month=None, raise_list=False):
+    def __init__(self, fail_month=None, raise_list=False, html=None, lists=None, fail_list=()):
         self.fail_month, self.raise_list, self.calls = fail_month, raise_list, []
+        self.html = {**CAL_HTML, **(html or {})}
+        self.lists = {**LISTS, **(lists or {})}
+        self.fail_list = set(fail_list)
 
     def _get(self, url, encoding=None):
         m = re.search(r"year=(\d+)&month=(\d+)", url)
         ym = (int(m.group(1)), int(m.group(2)))
         self.calls.append(("cal", ym))
-        if ym == self.fail_month:
+        if ym == self.fail_month or ym in (self.fail_month or ()):
             return None
-        return types.SimpleNamespace(text=CAL_HTML.get(ym, ""))
+        return types.SimpleNamespace(text=self.html.get(ym, cal_page()))
 
-    def get_race_list_by_date(self, d8):
+    def get_race_list_by_date(self, d8, strict=False):
         self.calls.append(("list", d8))
         if self.raise_list:
             raise RuntimeError("接続が切れた")
-        return LISTS.get(d8, [])
+        if d8 in self.fail_list:              # HTTP エラー・タイムアウト (scraper は strict=True で None)
+            return None if strict else []
+        return self.lists.get(d8, [])
 
 
-def _probe_db():
+def _probe_db(extra=()):
     import sqlite3
     p = os.path.join(TMP, "probe.db")
     if os.path.exists(p):
         os.remove(p)
     c = sqlite3.connect(p)
     c.execute("CREATE TABLE races (race_id TEXT PRIMARY KEY, race_date TEXT, venue TEXT)")
-    for d, code, venue in (("2026-11-21", "08", "京都"), ("2026-11-22", "05", "東京"), ("2026-12-01", "06", "中山")):
-        for r in range(1, 13):
-            c.execute("INSERT INTO races VALUES (?, ?, ?)", (f"2026{code}05{d[-2:]}{r:02d}", d, venue))
+    rows = [(d, code, venue, r) for d, code, venue in (("2026-11-21", "08", "京都"), ("2026-11-22", "05", "東京"),
+                                                       ("2026-12-01", "06", "中山")) for r in range(1, 13)]
+    rows += list(extra)
+    for d, code, venue, r in rows:
+        c.execute("INSERT INTO races VALUES (?, ?, ?)", (f"2026{code}05{d[-2:]}{r:02d}", d, venue))
     c.commit()
     c.close()
     return p
 
 
-def _run_probe(fake, args=("--probe",), deadline=None):
+def _run_probe(fake, args=("--probe",), deadline=None, prev=None, today="2026-11-20", db_extra=()):
+    """build_race_calendar.main を偽の scraper で。prev: 前回の版 (dates) を書いておく (引き継ぎの検査)。"""
     import build_race_calendar as brc
     out = os.path.join(TMP, "cal_probe.json")
     if os.path.exists(out):
         os.remove(out)
+    if prev is not None:
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump({"generated_at": "2026-11-19T05:00:00+09:00", "dates": prev}, fh, ensure_ascii=False)
     bak = (brc.make_scraper, brc.PROBE_DEADLINE_S)
     brc.make_scraper = (lambda: fake) if fake is not None else (lambda: (_ for _ in ()).throw(AssertionError("呼ばれた")))
     if deadline is not None:
@@ -582,43 +647,148 @@ def _run_probe(fake, args=("--probe",), deadline=None):
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
-            code = brc.main(list(args) + ["--db", _probe_db(), "--out", out, "--today", "2026-11-20"])
+            code = brc.main(list(args) + ["--db", _probe_db(db_extra), "--out", out, "--today", today])
     finally:
         brc.make_scraper, brc.PROBE_DEADLINE_S = bak
     with open(out, encoding="utf-8") as f:
         return code, json.load(f), buf.getvalue()
 
 
+NK_1123 = {"races": 24, "venues": ["東京", "福島"], "source": "netkeiba"}
+
+
 def test_probe():
-    print("\n10. (Part D) build_race_calendar --probe (偽の scraper・固定の HTML、ネットワークに出ない)")
+    print("\n10. (Part D) build_race_calendar --probe (偽の scraper・実ページと同じ形の HTML、ネットワークに出ない)")
     db_only = {"2026-11-21", "2026-11-22", "2026-12-01"}
     fake = FakeScraper()
     code, cal, out = _run_probe(fake)
     d = cal["dates"]
-    check(code == 0 and d.get("2026-11-23") == {"races": 24, "venues": ["東京", "福島"], "source": "netkeiba"},
+    check(code == 0 and d.get("2026-11-23") == NK_1123,
           f"平日 (11/23 月) の開催日を netkeiba から足す: JRA の 24R だけ数え、source=netkeiba ({d.get('2026-11-23')})")
     check("2026-11-24" not in d, "netkeiba のカレンダーにあっても JRA のレースが無い平日 (11/24) は足さない")
     check(not any(k in d for k in ("2026-11-28", "2026-11-29", "2026-12-05", "2026-12-06")),
           "DB に無い土日 (11/28・11/29・12/05・12/06) は足さない")
     asked = sorted(x[1] for x in fake.calls if x[0] == "list")
-    check(asked == ["20261123", "20261124"],
-          f"レース一覧を問い合わせるのは窓内の平日で DB に無い日だけ (土日・窓外 11/19・DB にある 12/01 は問い合わせない: {asked})")
+    check(asked == ["20261123", "20261124", "20261201"],
+          f"レース一覧を問い合わせるのは窓内の平日だけ (DB にある平日 12/01 は補うために問い合わせる。土日・窓外 11/19 は"
+          f"問い合わせない: {asked})")
     check(d.get("2026-12-01") == {"races": 12, "venues": ["中山"]} and d.get("2026-11-21") == {"races": 12, "venues": ["京都"]},
-          "DB にある日 (平日 12/01・土曜 11/21) は DB 由来のまま (上書きしない・source を付けない)")
+          "DB にある日 (平日 12/01 は一覧が空・土曜 11/21) は DB 由来のまま (減らさない・source を付けない)")
     check(sorted(x[1] for x in fake.calls if x[0] == "cal") == [(2026, 11), (2026, 12)],
           "窓 [11/20, 12/04] にかかる2か月のカレンダーだけ読む")
     check(cal.get("probe", {}).get("status") == "ok" and cal["probe"]["added"] == ["2026-11-23"], "probe の記録 (ok・追加日)")
 
-    for label, f, kw in (("12月のカレンダーを取れない", FakeScraper(fail_month=(2026, 12)), {}),
-                         ("レース一覧の取得で例外", FakeScraper(raise_list=True), {}),
-                         ("締切を過ぎた", FakeScraper(), {"deadline": -1})):
+    print("\n   翌月のページ (#179 T-weekend-1 / T-partd-2) と天候パネル (T-partd-3)")
+    dec_empty = cal_page(unpublished=("20261205", "20261206"))      # 実際の 11/17〜 の12月: 場名だけでリンク0本
+    code, cal, out = _run_probe(FakeScraper(html={(2026, 12): dec_empty}))
+    check(cal["dates"].get("2026-11-23") == NK_1123 and cal["probe"]["status"] == "ok",
+          f"12月がまだ未公開 (リンク0本) でも当月の 11/23 を足す・status ok ({cal['probe']['status']})")
+    code, cal, out = _run_probe(FakeScraper(html={(2026, 12): cal_page(unpublished=("20261205",), weather="20261125")}))
+    check(cal["dates"].get("2026-11-23") == NK_1123 and "2026-11-25" not in cal["dates"],
+          "12月のページの天候パネル (weather_summary.html?kaisai_date=20261125) は開催日の候補にしない")
+    f = FakeScraper(fail_month=(2026, 12))
+    code, cal, out = _run_probe(f)
+    check(code == 0 and cal["dates"].get("2026-11-23") == NK_1123 and cal["probe"]["status"].startswith("partial")
+          and "::warning::" in out,
+          f"12月 (翌月) を取れない → 当月の発見は残し status=partial + 警告 ({cal['probe']['status'][:40]})")
+    # 当月が空・パネルだけ: DB に今日以前の当月の開催日があるのにリンク0本 → 形式が変わった疑い
+    code, cal, out = _run_probe(FakeScraper(html={(2026, 11): cal_page(weather="20261123")}), today="2026-11-23")
+    check(code == 0 and cal["probe"]["status"].startswith("failed") and "形式が変わった" in cal["probe"]["status"]
+          and "DB 由来の日付だけ" in out,
+          f"今日を含む月 (11月) がパネルだけ (DB の 11/21 があるのにリンク0本) → failed・DB 由来だけ ({cal['probe']['status'][:60]})")
+    code, cal, out = _run_probe(FakeScraper(html={(2026, 11): cal_page(unpublished=("20261123",)).replace(
+        '<div class="RaceKaisaiBox">', '<div class="RaceKaisaiBox HaveData">')}))
+    check(cal["probe"]["status"].startswith("failed") and "HaveData" in cal["probe"]["status"],
+          "HaveData のセルがあるのに日付のリンクが0本 (リンクの形式が変わった) → failed")
+    code, cal, out = _run_probe(FakeScraper(html={(2026, 11): cal_page()}), today="2026-11-02")
+    check(cal["probe"]["status"] == "ok",
+          f"月初で当月 (11月) にまだ過去の開催日もリンクも無い → 失敗にしない ({cal['probe']['status']})")
+
+    print("\n   失敗の扱い")
+    for label, f, kw in (("11月 (今日を含む月) のカレンダーを取れない", FakeScraper(fail_month=(2026, 11)), {}),
+                         ("締切を過ぎた (カレンダーの前)", FakeScraper(), {"deadline": -1})):
         code, cal, out = _run_probe(f, **kw)
         check(code == 0 and set(cal["dates"]) == db_only and cal["probe"]["status"].startswith("failed")
               and "DB 由来の日付だけ" in out,
               f"{label} → DB 由来の日付だけで書く (exit 0・警告つき)")
+    code, cal, out = _run_probe(FakeScraper(raise_list=True))
+    check(code == 0 and set(cal["dates"]) == db_only and cal["probe"]["status"].startswith("partial")
+          and "JRA のレースが無い" not in out and "::warning::" in out,
+          "レース一覧の取得で例外 → その日は判定しない (足さない・「開催なし」と言わない・partial + 警告)")
+    code, cal, out = _run_probe(FakeScraper(fail_list={"20261123"}))
+    check("2026-11-23" not in cal["dates"] and cal["probe"]["status"].startswith("partial")
+          and "20261123" not in re.findall(r"JRA のレースが無い.*", out) and "2026-11-23 (平日) は netkeiba のカレンダーにあるが" not in out,
+          "一覧を取れない (HTTP 500 = strict で None) 11/23 → 「JRA のレースが無い」と確定しない (partial)")
     code, cal, out = _run_probe(None, args=())
     check(code == 0 and set(cal["dates"]) == db_only and "probe" not in cal,
           "--probe なし → 従来どおり DB 由来だけ (scraper を作らない・ネットワークに出ない)")
+
+    print("\n   前回の版の引き継ぎ (#179 T-clock-1 / T-partd-1 / T-landing-3)")
+    prev = {"2026-11-21": {"races": 12, "venues": ["京都"]}, "2026-11-23": dict(NK_1123),
+            "2026-11-26": {"races": 12, "venues": ["阪神"], "source": "netkeiba"},       # 木曜 (今回のカレンダーに無い)
+            "2026-11-25": {"races": 8, "venues": ["東京"]},                                # DB 由来だった古い行 → 生き返らせない
+            "2026-11-28": {"races": 12, "venues": ["東京"], "source": "netkeiba"},       # 土曜 → 引き継がない
+            "2026-12-25": {"races": 12, "venues": ["中山"], "source": "netkeiba"},       # 窓の外 → 引き継がない
+            "2026-11-17": {"races": 12, "venues": ["福島"], "source": "netkeiba"}}       # 過去の平日 (窓内) → 残す
+    for label, f, kw in (("カレンダーを取れない", FakeScraper(fail_month=(2026, 11)), {}),
+                         ("締切", FakeScraper(), {"deadline": -1}),
+                         ("--probe なし (|| の呼び直し)", None, {"args": ()})):
+        code, cal, out = _run_probe(f, prev=prev, **kw)
+        dd = cal["dates"]
+        check(dd.get("2026-11-23") == NK_1123 and dd.get("2026-11-26", {}).get("source") == "netkeiba"
+              and dd.get("2026-11-17") and "2026-11-25" not in dd and "2026-11-28" not in dd and "2026-12-25" not in dd,
+              f"{label} → 前回 netkeiba で見つけた平日 (11/23・11/26・過去の 11/17) を引き継ぐ。DB 由来の古い行・土曜・窓外は"
+              f"引き継がない ({sorted(dd)})")
+    code, cal, out = _run_probe(FakeScraper(raise_list=True), prev=prev)
+    check(cal["dates"].get("2026-11-23") == NK_1123 and "2026-11-26" not in cal["dates"],
+          "一覧で例外 → カレンダーに載っている 11/23 は引き継ぐ (判定できない)。読めたカレンダーに無い 11/26 は外す")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": []}), prev=prev)
+    dd = cal["dates"]
+    check(dd.get("2026-11-23") == NK_1123 and "2026-11-23" in cal["probe"].get("kept", []),
+          "probe は成功、11/23 はカレンダーに載っているが一覧が空 (通信失敗と区別できない) → 引き継ぐ")
+    check("2026-11-26" not in dd and "2026-11-26" in cal["probe"].get("dropped", []) and "::warning::" in out,
+          "読めた11月のカレンダーにもう載っていない 11/26 (中止・移動) → 警告して外す")
+    check(dd.get("2026-11-17") is not None, "今日より前の平日 (確かめようがない) は窓を出るまで残す")
+    code, cal, out = _run_probe(FakeScraper(fail_list={"20261123"}), prev=prev)
+    check(cal["dates"].get("2026-11-23") == NK_1123, "一覧を取れない (HTTP 500) → 前回の 11/23 を引き継ぐ")
+    code, cal, out = _run_probe(FakeScraper(fail_month=(2026, 12)),
+                                prev={"2026-12-02": {"races": 12, "venues": ["中山"], "source": "netkeiba"}})
+    check(cal["dates"].get("2026-12-02") is not None,
+          "12月を確かめられない (取れない) → 12月の引き継ぎ日 (12/02) は外さない")
+    code, cal, out = _run_probe(FakeScraper(html={(2026, 12): dec_empty}),
+                                prev={"2026-12-02": {"races": 12, "venues": ["中山"], "source": "netkeiba"}})
+    check(cal["dates"].get("2026-12-02") is not None,
+          "12月のページにリンクが0本 (= 形式を確かめられない月) → 12月の引き継ぎ日は外さない")
+    # 引き継いだ日で時計・セーフティネットが開催日とみなす
+    code, cal, _ = _run_probe(FakeScraper(fail_month=(2026, 11)), prev=prev)
+    p = os.path.join(TMP, "cal_carried.json")
+    cal["generated_at"] = "2026-11-22T05:00:00+09:00"
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump(cal, fh, ensure_ascii=False)
+    ok, why = race_utils.calendar_race_day(HOLIDAY, jst("2026-11-23T04:05"), p)
+    check(ok is True, f"問い合わせに失敗した版でも、引き継いだ 11/23 を calendar_race_day は開催日とみなす ({why})")
+    import raceday_safety_net as sn
+    check(sn.expected_races(cal["dates"].get(HOLIDAY)) == 24, "セーフティネットの期待レース数も引き継いだ値 (24R)")
+
+    print("\n   DB にある平日を補う (#179 T-partd-4)")
+    one = [("2026-11-23", "05", "東京", 11)]          # 特別登録の1レースだけ (東京11R)
+    code, cal, out = _run_probe(FakeScraper(), db_extra=one)
+    d23 = cal["dates"].get("2026-11-23")
+    check(d23 == {"races": 24, "venues": ["東京", "福島"], "source": "db+netkeiba"} and cal["probe"].get("merged") == ["2026-11-23"]
+          and cal["probe"]["added"] == [],
+          f"DB に 11/23 の1R (東京) だけ → 一覧で 24R・東京/福島 に補う (source=db+netkeiba) ({d23})")
+    check(sn.expected_races(d23) == 24, f"セーフティネットの期待レース数 = 24 (補う前は 12) ({sn.expected_races(d23)})")
+    code, cal, out = _run_probe(FakeScraper(fail_list={"20261123"}), db_extra=one)
+    check(cal["dates"].get("2026-11-23") == {"races": 1, "venues": ["東京"]} and cal["probe"]["status"].startswith("partial"),
+          "DB にある平日の一覧を取れない → DB 由来のまま (補いは打ち切るだけ)")
+    many = [("2026-11-23", "05", "東京", r) for r in range(1, 13)] + [("2026-11-23", "03", "福島", r) for r in range(1, 13)]
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:12]}), db_extra=many)
+    check(cal["dates"].get("2026-11-23") == {"races": 24, "venues": ["東京", "福島"]},
+          "DB の方が多い (一覧は 12R だけ) → DB 由来のまま (減らさない)")
+    code, cal, out = _run_probe(FakeScraper(fail_month=(2026, 11)), db_extra=one,
+                                prev={"2026-11-23": {"races": 24, "venues": ["東京", "福島"], "source": "db+netkeiba"}})
+    check(cal["dates"].get("2026-11-23", {}).get("races") == 24,
+          "前回補った値も引き継ぐ (今回の問い合わせが失敗しても 1R に戻さない)")
 
     print("\n   probe だけが見つけた日 (DB にレースが無い) で時計が動く")
     code, cal, _ = _run_probe(FakeScraper())
@@ -643,6 +813,67 @@ def test_probe():
           is not None, "auto_post_x mode=predict は出走馬 50 頭未満なら先に predict.py collect する")
     check(re.search(r'if \[ "\$REQUESTED" = "1" \]; then.*?predict\.py collect --date "\$D"', wpf, re.S) is not None,
           "weekend_prefetch dates=T は指定日の出走表が欠けていれば先に predict.py collect する")
+    # fetch_weekend_races: 問い合わせ (通信) は db_pack の前 (#179 T-partd-5)
+    with open(os.path.join(ROOT, ".github", "workflows", "fetch_weekend_races.yml"), encoding="utf-8") as fh:
+        fwr = fh.read()
+    i_probe, i_pack = fwr.find("build_race_calendar.py --probe"), fwr.find("bash scripts/db_pack.sh")
+    check(0 < i_probe < i_pack, "fetch_weekend_races: カレンダーの問い合わせは db_pack (origin の取り込み) より前 (T-partd-5)")
+
+
+# ── 11. (T-clock-2) 作り直しより後に決まった平日の開催 ───────────────────────
+RL_0922 = ("".join(f'<a href="../race/result.html?race_id=20260604{r:02d}{r:02d}&rf=race_list">'
+                   f'<a href="../race/movie.html?race_id=20260604{r:02d}{r:02d}&rf=race_list">' for r in range(1, 12))
+           + '<a href="../race/shutuba_debut.html?race_id=202606041212&rf=race_list">')     # 中山 12R (実ページの形)
+RL_EMPTY = '<div class="RaceList_Body RaceList_Top" id="RaceTopRace"><div class="RaceList_Box clearfix">\n\n</div></div>'
+RL_ABROAD = '<a href="../race/shutuba.html?race_id=202644092201&rf=race_list">'
+
+
+def test_late_postponement():
+    print("\n11. (T-clock-2) カレンダーの作り直しより後に決まった平日の開催 (急な順延) を時計が netkeiba で確かめる")
+    check(rc.race_ids_from_list_html(RL_0922) == sorted(f"20260604{r:02d}{r:02d}" for r in range(1, 12)) + ["202606041212"],
+          "レース一覧の HTML から result/shutuba/shutuba_debut の race_id だけ拾う (movie は数えない)")
+    # 月 9/21 10:29 に作り直したカレンダー (9/22 火 は載っていない = 新しい否定)
+    cal_a = make_calendar(["2026-09-19", "2026-09-20"], "2026-09-21T10:29:00+09:00",
+                          window=("2026-09-07", "2026-10-05"), name="cal_late.json")
+    hit = {"race_list": {"20260922": RL_0922}}
+    code, sent, out = run_clock("41 10 * * 0-4", "2026-09-21T19:41", cal_a, fake=hit)
+    check(sent == ["weekend_prefetch.yml dates=20260922"] and "食い違い" in out,
+          f"月 19:41: カレンダーは否定だが netkeiba に 9/22 の一覧 → 前夜予想を出す ({sent})")
+    code, sent, _ = run_clock("3 22 * * 0-4", "2026-09-22T07:03", cal_a, fake=hit)
+    check(sent == ["auto_post_x.yml mode=predict"], f"火 07:03 → predict ({sent})")
+    code, sent, _ = run_clock("1 0 * * 1-5", "2026-09-22T09:01", cal_a, fake=hit)
+    check(sent == ["race_day_runner.yml", "auto_post_x.yml mode=odds_flash"], f"火 09:01 → runner + odds_flash ({sent})")
+    code, sent, _ = run_clock("31 0 * * 1-5", "2026-09-22T09:31", cal_a, fake={**hit, "active": {"race_day_runner.yml": 1}})
+    check(sent == ["auto_post_x.yml mode=post_predict"], f"火 09:31 → post_predict ({sent})")
+    for label, spec in (("問い合わせない (race_list に無い)", {}), ("取れない", {"race_list": {"20260922": None}}),
+                        ("一覧が空", {"race_list": {"20260922": RL_EMPTY}}),
+                        ("海外のレースだけ", {"race_list": {"20260922": RL_ABROAD}})):
+        code, sent, out = run_clock("3 22 * * 0-4", "2026-09-22T07:03", cal_a, fake=spec)
+        check(sent == [] and "開催日でない" in out, f"{label} → カレンダーどおり何もしない ({sent})")
+    code, sent, out = run_clock("33 10 * * 1-5", "2026-09-22T19:33", cal_a, fake=hit)
+    check(sent == [] and "問い合わせ" not in out, "results だけの tick は問い合わせない (何もしない)")
+    code, sent, out = run_clock("37 15 * * 0-4", "2026-09-22T00:37", cal_a, fake=hit)
+    check(sent == [] and "問い合わせ" not in out, "定刻に着いた runner だけの tick (8:30 前) は問い合わせない")
+    code, sent, out = run_clock("3 22 * * 0-4", "2026-09-26T07:03", cal_a, fake=hit)
+    check(sent == [] and "問い合わせ" not in out, "土曜の対象日は問い合わせない (ネイティブの cron)")
+    stale = make_calendar(["2026-09-19"], "2026-09-19T10:00:00+09:00", window=("2026-09-07", "2026-10-05"),
+                          name="cal_stale.json")
+    code, sent, out = run_clock("3 22 * * 0-4", "2026-09-22T07:03", stale, fake=hit)
+    check(sent == [] and "縮退" in out, "カレンダーが古い (None) は従来どおり縮退 (問い合わせで上書きしない)")
+    doc, _on = wf_doc("raceday_clock.yml")
+    sparse = doc["jobs"]["tick"]["steps"][0]["with"]["sparse-checkout"].split()
+    check("scripts/build_race_calendar.py" in sparse, "raceday_clock.yml の sparse checkout に build_race_calendar.py")
+
+
+# ── 12. (T-landing-4) 予想を配信できていない日の results ──────────────────────
+def test_results_needs_post_predict():
+    print("\n12. (T-landing-4) 予想 (post_predict) の lock が無い日は results を出さない")
+    code, sent, out = run_clock("33 10 * * 1-5", "2026-11-23T19:35", CAL_HOL)
+    check(sent == [] and "報告対象なし" in out, f"19:35 で post_predict の lock 無し → results を出さない ({sent})")
+    code, sent, _ = run_clock("33 12 * * 1-5", "2026-11-24T02:10", CAL_HOL)
+    check(sent == [], f"21:33 の tick が翌 02:10 に来ても post_predict の lock が無ければ出さない ({sent})")
+    code, sent, _ = run_clock("33 8 * * 1-5", "2026-11-23T17:33", CAL_HOL)
+    check(sent == ["race_day_runner.yml"], f"17:33: runner は確認するが results は出さない ({sent})")
 
 
 if __name__ == "__main__":
@@ -655,6 +886,8 @@ if __name__ == "__main__":
     test_gate_table()
     test_uniform_delay()
     test_probe()
+    test_late_postponement()
+    test_results_needs_post_predict()
     print()
     if FAILS:
         print(f"❌ {len(FAILS)} 件失敗")

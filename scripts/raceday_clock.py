@@ -9,7 +9,7 @@
   まで予測がゼロだった。1本の cron に全部を賭ける構造が原因。
 
 仕組み:
-  raceday_clock.yml が土日と同じ時刻 (分だけ数分ずらす) を中心に25本の cron を持ち、各 tick がこの
+  raceday_clock.yml が土日と同じ時刻 (分だけ数分ずらす) を中心に35本の cron を持ち、各 tick がこの
   スクリプトを数秒走らせる。対象日 T が「土日以外の開催日」と race_calendar.json が言う時だけ、
   本体 (auto_post_x / race_day_runner / weekend_prefetch / collect_results) を mode と日付を
   明示して dispatch する。非開催日は何も出さずに終わる。本体の cron 表は1行も変えない
@@ -24,6 +24,7 @@
   python3 scripts/raceday_clock.py --schedule '3 19 * * 0-4' --now 2026-11-23T04:05 \\
       --calendar <cal.json> --slots-dir <dir> --fake-gh '{}' --dry-run
   workflow は env (CLOCK_SCHEDULE / CLOCK_INTENT / CLOCK_DATE / CLOCK_DRY_RUN) を渡す。
+  --fake-gh を渡した時は netkeiba に出ない (確かめる HTML は --fake-gh の "race_list" で渡す)。
 終了コード: 0 = 正常 (何もしない・縮退を含む) / 1 = 例外・dispatch 失敗
 """
 import argparse
@@ -57,9 +58,16 @@ UTC = dt.timezone.utc
 #   窓は実行時刻で判定するので、6時間遅れて 06:07 に着いても当日の predict として働く。定刻に着いた
 #   場合も predict の段階 (refresh_entries / オッズ充足ゲート #52) が扱い、非開催日はカレンダーで何もしない。
 #   修正前は 4h45m 以上の一律遅延で時計の predict が0本 (runner の起動も 8h 遅れで 11:37)。追加後は一律
-#   〜8h40m の遅れまで 8:48 の締切前に predict を出せ、runner も早く起きる (8h 遅れで 09:07。test_raceday_clock.py §9)。
-#   odds_flash の tick は 09:01 の1本 (窓 9:00〜9:15) だが、race_day_runner が自分の時計で 9:00 直後に
-#   代打する (trigger_post odds_flash) ので、ここでは足さない。
+#   〜8h40m の遅れまで 8:48 の締切前に predict を出せ、runner も早く起きる (8h 遅れで 09:07 → T-clock-3 の tick で 08:37。test_raceday_clock.py §9)。
+#   odds_flash の tick は 09:01 の1本 (窓 9:00〜9:15)。一律の遅れでこれを外した日は race_day_runner の代打
+#   (trigger_post odds_flash) が頼りだが、runner の判定は起動から ~8〜14分後 (起動29秒 + 1周目 436秒、
+#   11/07 は 763秒。11/23 本番ログ実測) で、代打の締切は 9:15 (race_utils.ODDS_FLASH_LATEST_HM)。
+#   → runner を **09:01 までに** 起こす tick が要る。decide() は当日 8:30〜19:00 に着いた tick なら intent に
+#   関係なく runner を確認するので、#179 T-clock-3 で「runner だけ」の tick を足し、23:41 〜 08:53 の
+#   予定時刻の間隔をすべて30分以下にした (8:30〜9:01 は31分の窓 = 一律 0〜9h19m のどの遅れでも1本入る)。
+#   旧表は間隔が 50〜90分あり、一律 0〜9h の遅れの約4割 (34〜46分・124〜176分・330〜382分 等) で
+#   runner の起動が 9:07〜9:41 になり、odds_flash (9:00 の最後の作り直しを兼ねる) がどこからも出なかった。
+#   足した tick は定刻に着けば 8:30 前なので何もしない (DB も触らない。数秒で終わる)。
 #   それより大きい一律遅延には、同じスケジューラに乗るこの時計は勝てない (独立した時計は GAS だけ #155)。
 SCHEDULE = {
     "41 6 * * 0-4": (("prefetch_eve",), 1),            # 日〜木 15:41 前夜予想 (翌日分)
@@ -73,6 +81,18 @@ SCHEDULE = {
     "33 20 * * 0-4": (("predict",), 0),                # 05:33
     "3 22 * * 0-4": (("predict",), 0),                 # 07:03
     "43 22 * * 0-4": (("predict",), 0),                # 07:43
+    # #179 T-clock-3: 遅れて 8:30〜9:01 に着いて runner を起こすための tick (定刻なら何もしない)。
+    #   上と合わせて 23:41 〜 08:53 の予定の間隔を30分以下にする (理由は上の odds_flash の注)。
+    "37 15 * * 0-4": (("runner",), 0),                 # 月〜金 00:37
+    "37 16 * * 0-4": (("runner",), 0),                 # 01:37
+    "37 17 * * 0-4": (("runner",), 0),                 # 02:37
+    "7 18 * * 0-4": (("runner",), 0),                  # 03:07
+    "33 19 * * 0-4": (("runner",), 0),                 # 04:33
+    "3 20 * * 0-4": (("runner",), 0),                  # 05:03
+    "3 21 * * 0-4": (("runner",), 0),                  # 06:03
+    "33 21 * * 0-4": (("runner",), 0),                 # 06:33
+    "23 22 * * 0-4": (("runner",), 0),                 # 07:23
+    "3 23 * * 0-4": (("runner",), 0),                  # 08:03
     "33 23 * * 0-4": (("runner",), 0),                 # 08:33
     "53 23 * * 0-4": (("runner",), 0),                 # 08:53
     "1 0 * * 1-5": (("runner", "odds_flash"), 0),      # 09:01
@@ -95,6 +115,16 @@ SCHEDULE = {
 }
 INTENTS = ("prefetch_eve", "prefetch_early", "predict", "runner", "odds_flash",
            "post_predict", "results", "sweep")
+# #179 T-clock-2: カレンダーが「開催日でない」と言っても、作り直し (feature_parity 毎朝 05:00 / fetch_weekend_races)
+#   より後に決まった平日の開催 (台風の順延など) は載っていない。作り直しは GitHub の遅れで 09:36・10:29 着の実測が
+#   あり (11/23)、それを待つと predict の締切 (8:48)・9:30 の確定を過ぎる。そこで平日の対象日にカレンダーが
+#   新しい否定 (False) を返した時だけ、その1日の netkeiba のレース一覧を引いて確かめる (1 tick 1 リクエスト)。
+#   取れない・JRA のレースが無い → カレンダーの判定どおり何もしない。カレンダーは書き換えない (次の作り直しで載る)。
+#   この workflow は sparse checkout で pip も入れないので標準ライブラリ (urllib) だけで引く。
+PROBE_INTENTS = ("prefetch_eve", "prefetch_early", "predict", "runner", "odds_flash", "post_predict")
+RACE_LIST_URL = "https://race.netkeiba.com/top/race_list_sub.html?kaisai_date={d8}"
+NETKEIBA_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")   # scraper.NetkeibaScraper.HEADERS と同じ
 MANUAL_OFFSET = {"prefetch_eve": 1}
 PREDICT_RUN_MIN = 12          # predict の run の所要 (fetch の chain #173 と同じ) — 9:00 の12分前で締める
 EARLY_TOLERANCE_MIN = 10      # cron が予定より早く起きた時の許容
@@ -159,6 +189,60 @@ def final_rebuild_hm():
 def _minus_min(hm, minutes):
     t = (hm // 100) * 60 + hm % 100 - minutes
     return (t // 60) * 100 + t % 60
+
+
+# ── netkeiba で1日だけ確かめる (#179 T-clock-2) ─────────────────────
+def race_ids_from_list_html(text):
+    """race_list_sub.html の HTML から race_id (12桁) を拾う。scraper.get_race_list_by_date と同じ規則
+    (result.html / shutuba.html / shutuba_debut.html のリンクだけ。movie.html 等は数えない)。"""
+    out = set()
+    for href in re.findall(r'href="([^"]+)"', text or ""):
+        if re.search(r"/(?:result|shutuba|shutuba_debut)\.html", href):
+            m = re.search(r"race_id=(\d{12})", href)
+            if m:
+                out.add(m.group(1))
+    return sorted(out)
+
+
+def judge_race_list(text):
+    """レース一覧の HTML → (True/False, 理由)。JRA の場コード 01-10 のレースがあれば True (build_race_calendar と同じ判定)。"""
+    from build_race_calendar import jra_summary
+    n, venues = jra_summary(race_ids_from_list_html(text))
+    if n:
+        return True, f"netkeiba のレース一覧に JRA の {n}R ({'・'.join(venues)})"
+    return False, "netkeiba のレース一覧に JRA のレースが無い"
+
+
+def probe_race_day(gh, t8):
+    """対象日 t8 を netkeiba のレース一覧で確かめる。(True/False/None, 理由)。None = 取れない。"""
+    try:
+        text, why = gh.race_list_html(t8)
+    except Exception as e:
+        return None, f"netkeiba に問い合わせられない ({type(e).__name__})"
+    if text is None:
+        return None, why
+    return judge_race_list(text)
+
+
+def probe_worth(intents, target, now, final_hm):
+    """この tick がこの時刻に何かを出しうるか (= netkeiba に問い合わせる価値があるか)。定刻に着いた
+    runner だけの tick (8:30 前) などは問い合わせない。判定の本体は decide (ここは窓の粗い写し)。"""
+    from race_utils import PREDICTION_LOCK_HM, ODDS_FLASH_LATEST_HM
+    hm = now.hour * 100 + now.minute
+    same_day = now.date() == target
+    cutoff = dt.datetime.combine(target, dt.time(final_hm // 100, final_hm % 100), JST)
+    for i in intents:
+        if i == "runner" and same_day and 830 <= hm < 1900:
+            return True
+        if i in ("prefetch_eve", "prefetch_early") and now < cutoff:
+            return True
+        if i == "predict" and same_day and hm < _minus_min(final_hm, PREDICT_RUN_MIN):
+            return True
+        if i == "odds_flash" and same_day and 900 <= hm < ODDS_FLASH_LATEST_HM:
+            return True
+        if i == "post_predict" and same_day and PREDICTION_LOCK_HM <= hm < 1155:
+            return True
+    return False
 
 
 # ── 判定 (純粋関数) ───────────────────────────────────────────────
@@ -252,6 +336,14 @@ def decide(intents, target, now, locks, gh, final_hm):
             if intent in locks:
                 log(f"   ⏭️ {intent} は lock 済み ({(locks[intent] or {}).get('posted_at')})")
                 continue
+            if intent == "results" and "post_predict" not in locks:
+                # #179 T-landing-4: 予想を1本も配信できていない日 (post_predict の lock 無し) は results に報告対象が無い
+                #   (post_x は「予想投稿の記録が無いため結果対象なし」で lock を解放して終わる #150)。lock が立たないので
+                #   17:33/19:33/21:33 の tick が毎回 results を出し、その run は投稿しないのに collect・配当収集・lock の
+                #   取得/解放で keiba.db.gz を必ず変えて commit する (bootstrap #179(1) までは1本 ~27MB。11/23 実測)。
+                #   着順の収集は race_day_runner と夜間スイープが担う。セーフティネット・runner の results は従来どおり。
+                log(f"   ⏭️ results: {t8} は予想投稿 (post_predict) の lock が無い = 報告対象なし → 出さない")
+                continue
             p = gh.pending("auto_post_x.yml")
             a = gh.active("auto_post_x.yml", title=intent)
             if p != 0 or a != 0:
@@ -302,14 +394,29 @@ class LiveGh:
     def dispatch(self, wf, mode, fields, dry):
         return self.sn.dispatch(wf, mode, dry, fields or None)
 
+    def race_list_html(self, t8):
+        """netkeiba のレース一覧 (race_list_sub) の HTML。(text, 理由) / 取れなければ (None, 理由)。"""
+        import urllib.request
+        req = urllib.request.Request(RACE_LIST_URL.format(d8=t8), headers={"User-Agent": NETKEIBA_UA})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                if getattr(r, "status", 200) != 200:
+                    return None, f"netkeiba の HTTP {r.status}"
+                return r.read().decode("utf-8", "replace"), ""
+        except Exception as e:
+            return None, f"netkeiba に届かない ({type(e).__name__}: {e})"[:160]
+
 
 class FakeGh:
     """--fake-gh '{"active": {"auto_post_x.yml": 0, "auto_post_x.yml:odds_flash": 0},
-    "pending": {...}, "since": {"collect_results.yml": 300}, "dispatch_fail": [...]}'。無いキーは 0。"""
+    "pending": {...}, "since": {"collect_results.yml": 300}, "dispatch_fail": [...],
+    "race_list": {"20260922": "<html>…" または null (取れない)}}'。無いキーは 0。
+    race_list に無い日は netkeiba に問い合わせない (テストはネットワークに出ない)。"""
 
     def __init__(self, spec):
         self.s = spec or {}
         self.sent = []
+        self.probed = []
 
     def active(self, wf, title=None):
         a = self.s.get("active") or {}
@@ -331,6 +438,14 @@ class FakeGh:
             return False
         log(f"   [dry-run] would dispatch: {label}" if dry else f"   ✅ (fake) dispatched: {label}")
         return True
+
+    def race_list_html(self, t8):
+        rl = self.s.get("race_list") or {}
+        self.probed.append(t8)
+        log(f"   (fake) netkeiba のレース一覧を問い合わせ: {t8}")
+        if t8 not in rl:
+            return None, "テスト: 問い合わせない"
+        return (rl[t8], "") if rl[t8] is not None else (None, "テスト: 取れない")
 
 
 def read_locks(t8, slots_dir=None):
@@ -422,15 +537,28 @@ def main(argv=None):
         log(f"::warning::#179: race_calendar.json を判定に使えない ({why}) → 土日だけを開催日とみなす (縮退)。"
             f"この tick は何もしない。土日以外の開催日なら posting_watchdog のセーフティネットが Issue で知らせる")
         return 0
+    gh = FakeGh(json.loads(a.fake_gh)) if a.fake_gh is not None else LiveGh()
+    final_hm = final_rebuild_hm()
+    t8 = target.strftime("%Y%m%d")
+    if not listed:
+        # #179 T-clock-2: 新しいカレンダーの否定は「作り直しより後に決まった順延」を知らない → 平日の対象日だけ
+        #   netkeiba で確かめる (この tick が何かを出しうる時だけ。上で土日は返している)
+        if set(intents) & set(PROBE_INTENTS) and probe_worth(intents, target, now, final_hm):
+            hit, pwhy = probe_race_day(gh, t8)
+            if hit:
+                log(f"::warning::#179: カレンダー ({why}) と食い違い、{target} は {pwhy} → 開催日として扱う "
+                    f"(作り直しより後に決まった平日の開催 = 急な順延など。次のカレンダーの作り直しで載る)")
+                listed, why = True, f"{target} は {pwhy}"
+            else:
+                log(f"   🔎 netkeiba でも {target} の開催を確認できない ({pwhy})")
     if not listed:
         log(f"⏭️ {why} → 何もしない")
         return 0
     log(f"🏇 {why}")
 
-    gh = FakeGh(json.loads(a.fake_gh)) if a.fake_gh is not None else LiveGh()
-    locks = read_locks(target.strftime("%Y%m%d"), a.slots_dir)
+    locks = read_locks(t8, a.slots_dir)
     log(f"   lock 済み slot: {sorted(locks) or 'なし'}")
-    acts = decide(intents, target, now, locks, gh, final_rebuild_hm())
+    acts = decide(intents, target, now, locks, gh, final_hm)
     failed = 0
     for wf, mode, fields, why in acts:
         log(f"🚨 {why} → dispatch")

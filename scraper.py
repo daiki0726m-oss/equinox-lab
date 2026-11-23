@@ -103,12 +103,16 @@ class NetkeibaScraper:
         print(f"📋 {year}年{month}月: 合計{len(all_race_ids)}レース取得")
         return all_race_ids
 
-    def get_race_list_by_date(self, date_str):
-        """指定日のレースID一覧を取得 (date_str: 'YYYYMMDD')"""
+    def get_race_list_by_date(self, date_str, strict=False):
+        """指定日のレースID一覧を取得 (date_str: 'YYYYMMDD')
+
+        strict=True (#179): 取得そのものの失敗 (HTTP エラー・タイムアウト) を [] でなく None で返す。
+        既定の [] は「レースが無い日」と区別できず、build_race_calendar --probe が一時的な通信エラーを
+        「JRA の開催なし」と確定して status=ok のまま開催日を落としていた。既存の呼び出し側は既定のまま。"""
         url = f"{self.BASE_URL}/top/race_list_sub.html?kaisai_date={date_str}"
         resp = self._get(url)
         if not resp:
-            return []
+            return None if strict else []
 
         soup = BeautifulSoup(resp.text, "lxml")
         race_ids = []

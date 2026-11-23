@@ -4,11 +4,16 @@ name: 🗓 Race-day Clock (土日以外の開催日)
 # 土日の朝の処理は曜日で書いた cron に乗っていて、土日以外の開催日は posting_watchdog の */30 の中の
 # セーフティネット1本 (#160/#161) だけが頼りだった。2026-11-23(月・祝) は GitHub がその watchdog を
 # 5時間以上飛ばし、07:07 に手で dispatch するまで予測がゼロだった。
-# ここは土日と同じ時刻 (分だけ数分ずらす) を中心に tick を25本持ち、race_calendar.json が
+# ここは土日と同じ時刻 (分だけ数分ずらす) を中心に tick を35本持ち、race_calendar.json が
 # 「対象日 = 土日以外の開催日」と言う時だけ本体を mode・日付つきで dispatch する。
 # 非開催日は数秒で何もせずに終わる。本体 (auto_post_x / race_day_runner) の cron は変えない。
 # 対応表と判定は scripts/raceday_clock.py (SCHEDULE / decide)。
-# この workflow は DB を扱わず push もしない (リポジトリを増やさない)。
+# この workflow 自身は DB を扱わず push もしない。ただし dispatch した auto_post_x の predict / results は
+# keiba.db.gz を commit する (#179(1) の bootstrap までは1本 ~27MB)。土日以外の開催日は深夜の predict 3本の分だけ
+# 土日より多い。results は予想 (post_predict) の lock が無い日は出さない (報告対象が無く DB を push するだけ、
+# #179 T-landing-4)。bootstrap 後はポインタ1行になり増えない (#179)。
+# #179 T-clock-2: カレンダーが新しく「開催日でない」と言う平日の対象日は、その1日の netkeiba のレース一覧で
+# 確かめる (作り直しより後に決まった順延を拾う。1 tick 1 リクエスト、標準ライブラリだけ)。
 # #179 レビュー: tick も GitHub のスケジューラに乗るので、11/22-23 に実測した一律4〜8時間の遅れでも
 # 窓に入るよう、深夜の predict (00:07/01:07/02:07)・results の再試行 (19:33/21:33) を足し、
 # 2本目の夜間スイープを 22:47 に置く (理由と遅れ掃引は scripts/raceday_clock.py の SCHEDULE)。
@@ -26,6 +31,18 @@ on:
     - cron: '33 20 * * 0-4'    # 05:33 predict
     - cron: '3 22 * * 0-4'     # 07:03 predict
     - cron: '43 22 * * 0-4'    # 07:43 predict
+    # #179 T-clock-3: 遅れて 8:30〜9:01 に着いた時に runner を起こす tick (定刻なら何もしない)。
+    # 23:41〜08:53 の予定の間隔を30分以下にし、一律の遅れでも 9:15 の odds_flash の締切に runner が間に合う
+    - cron: '37 15 * * 0-4'    # 00:37 runner
+    - cron: '37 16 * * 0-4'    # 01:37 runner
+    - cron: '37 17 * * 0-4'    # 02:37 runner
+    - cron: '7 18 * * 0-4'     # 03:07 runner
+    - cron: '33 19 * * 0-4'    # 04:33 runner
+    - cron: '3 20 * * 0-4'     # 05:03 runner
+    - cron: '3 21 * * 0-4'     # 06:03 runner
+    - cron: '33 21 * * 0-4'    # 06:33 runner
+    - cron: '23 22 * * 0-4'    # 07:23 runner
+    - cron: '3 23 * * 0-4'     # 08:03 runner
     - cron: '33 23 * * 0-4'    # 08:33 race_day_runner
     - cron: '53 23 * * 0-4'    # 08:53 race_day_runner
     - cron: '1 0 * * 1-5'      # 09:01 odds_flash (+runner)
@@ -92,6 +109,7 @@ jobs:
             predict.py
             scripts/raceday_clock.py
             scripts/raceday_safety_net.py
+            scripts/build_race_calendar.py
             docs/data/race_calendar.json
             docs/data/posted_slots_*.json
       - name: 開催日なら定刻の処理を dispatch (#179)

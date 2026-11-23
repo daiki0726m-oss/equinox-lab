@@ -181,15 +181,23 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          bash scripts/db_pack.sh || true
-          git add keiba.db.gz 2>/dev/null || true
           # #161: 開催カレンダーは「出走馬を DB に入れた直後」に作り直す。feature_parity (毎朝) だけだと
           # このジョブより前に作られ、週末を 7R (実際 24R) と過少に記録していた。
           # #179 Part D: --probe で netkeiba のカレンダーから平日の開催日 (月曜祝日・順延) も発見して足す。
-          #   失敗・タイムアウトは従来どおり DB 由来だけで書き直す。
+          #   失敗・タイムアウトは DB 由来 + 前回 netkeiba で確かめた平日の引き継ぎで書き直す。
+          # #179 T-partd-5: この問い合わせは db_pack の「前」に置く。db_pack は origin/main の予測キャッシュと
+          #   未来レースを取り込んでから固める (#169/#84) ので、そこから下の push までの間に他の workflow が
+          #   push した DB は -X theirs で消える (#70)。その区間に通信 (通常 5〜10 秒、netkeiba が遅いと最大 120 秒)
+          #   を入れない。DB 由来の日付は取り込み前の DB から読む (差はこの数分に他が足したレースだけ。平日の
+          #   開催日はこの問い合わせが拾い、毎朝の feature_parity と次の fetch でも書き直される)。
+          #   前回の版の引き継ぎ (#179 T-clock-1) は origin/main の最新の版から始める (job の途中で他が書いた分を消さない)。
+          git fetch -q origin "${GITHUB_REF_NAME:-main}" \
+            && git checkout "origin/${GITHUB_REF_NAME:-main}" -- docs/data/race_calendar.json 2>/dev/null || true
           timeout 120 python3 scripts/build_race_calendar.py --probe || python3 scripts/build_race_calendar.py \
             || echo "⚠️ カレンダー再生成に失敗 (続行)"
           git add docs/data/race_calendar.json 2>/dev/null || true
+          bash scripts/db_pack.sh || true
+          git add keiba.db.gz 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "no DB changes to commit"
           else

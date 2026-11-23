@@ -48,12 +48,14 @@ jobs:
       # このファイルを唯一の判定材料にするので、毎日必ず更新して commit する。
       # #179 Part D: --probe で netkeiba のカレンダーから平日 (月曜祝日・順延) の開催日を発見して足す
       #   (DB に1レースも無い平日開催は、時計 raceday_clock もセーフティネットも見えない)。
-      #   失敗・タイムアウトは従来どおり DB 由来だけで書き直す。
+      #   失敗・タイムアウトは DB 由来 + 前回 netkeiba で確かめた平日の引き継ぎで書き直す (#179 T-clock-1)。
+      #   引き継ぎは前回の版を読むので、checkout (run 作成時点で固定) ではなく origin/main の最新の版から始める。
       - name: 📅 開催カレンダーを更新 (#160)
         if: always()
         continue-on-error: true
         run: |
           set -e
+          git fetch -q origin main && git checkout origin/main -- docs/data/race_calendar.json 2>/dev/null || true
           timeout 120 python3 scripts/build_race_calendar.py --probe || python3 scripts/build_race_calendar.py
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
