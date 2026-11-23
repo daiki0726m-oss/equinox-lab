@@ -13,6 +13,7 @@
   7. build_race_baseline._weekend_gate_hold の土日以外の開催日
   8. 指定の時刻でのゲート表 (土日 07:00 / 月祝 04:00・07:00・09:00・09:30・17:30 / 普通の月曜 07:00 /
      月祝前の日曜 22:30 / 金曜 22:30)
+  9. 一律の遅れ (0〜10時間) で、最初の predict と runner の起動がいつになるか (#179 レビュー M1)
 """
 import atexit
 import contextlib
@@ -204,6 +205,26 @@ def test_holiday_and_eve():
     code, sent, _ = run_clock("7 11 * * 1-5", "2026-11-23T20:07", CAL_HOL, fake={"since": {"collect_results.yml": 300}})
     check(sent == ["collect_results.yml date=20261123"], f"20:07 → 夜間スイープ (date=11/23) ({sent})")
 
+    print("\n   夜間スイープの2本目・results の再試行 (#179 レビュー m2/m3)")
+    code, sent, _ = run_clock("47 13 * * 1-5", "2026-11-23T22:47", CAL_HOL, fake={"since": {"collect_results.yml": 160}})
+    check(sent == ["collect_results.yml date=20261123"], f"22:47 (1本目 20:07 の160分後) → 2本目を出す ({sent})")
+    code, sent, _ = run_clock("47 13 * * 1-5", "2026-11-23T22:47", CAL_HOL, fake={"since": {"collect_results.yml": 130}})
+    check(sent == ["collect_results.yml date=20261123"], f"1本目が30分遅れて 20:37 に走った夜でも 22:47 → 出す ({sent})")
+    code, sent, _ = run_clock("7 11 * * 1-5", "2026-11-23T20:07", CAL_HOL, fake={"since": {"collect_results.yml": 7}})
+    check(sent == [], f"月祝: collect_results 自身の月曜 cron (20:00) の7分後の 20:07 → 見送り ({sent})")
+    code, sent, _ = run_clock("47 13 * * 1-5", "2026-11-23T22:47", CAL_HOL, fake={"since": {"collect_results.yml": 167}})
+    check(sent == ["collect_results.yml date=20261123"], f"月祝: 20:00 の月曜 cron の後の 22:47 → 2本目を出す ({sent})")
+    code, sent, _ = run_clock("33 10 * * 1-5", "2026-11-23T19:33", CAL_HOL)
+    check(sent == ["auto_post_x.yml mode=results date_override=20261123"],
+          f"19:33 (results の lock 無し = 17:33 の分が待機中に取り消された) → results を出し直す ({sent})")
+    code, sent, _ = run_clock("33 12 * * 1-5", "2026-11-23T21:33", CAL_HOL, slots_dir({"20261123": ["results"]}))
+    check(sent == [], f"21:33 で results が lock 済み → 出さない ({sent})")
+    code, sent, _ = run_clock("33 12 * * 1-5", "2026-11-24T02:10", CAL_HOL)
+    check(sent == ["auto_post_x.yml mode=results date_override=20261123"],
+          f"21:33 の tick が翌 02:10 に遅れて来る → results (対象日 11/23) ({sent})")
+    code, sent, _ = run_clock("33 10 * * 1-5", "2026-11-23T19:33", CAL_HOL, fake={"pending": {"auto_post_x.yml": 1}})
+    check(sent == [], f"auto_post_x に待機1本 → results を重ねない ({sent})")
+
     print("\n   前夜・順延")
     code, sent, _ = run_clock("41 6 * * 0-4", "2026-11-22T15:41", CAL_EVE)
     check(sent == ["weekend_prefetch.yml dates=20261123"], f"11/22(日) 15:41 で 11/23 が載っている → 前夜予想 ({sent})")
@@ -243,8 +264,8 @@ def test_holiday_and_eve():
     check(sent == [], f"runner 稼働中 → runner を出さない ({sent})")
     code, sent, _ = run_clock("33 23 * * 0-4", "2026-11-23T08:33", CAL_HOL, fake={"active": {"race_day_runner.yml": -1}})
     check(sent == [], f"runner の稼働を確認できない (-1) → 出さない ({sent})")
-    code, sent, _ = run_clock("7 13 * * 1-5", "2026-11-23T22:07", CAL_HOL, fake={"since": {"collect_results.yml": 100}})
-    check(sent == [], f"collect_results が100分前 → スイープを出さない ({sent})")
+    code, sent, _ = run_clock("47 13 * * 1-5", "2026-11-23T22:47", CAL_HOL, fake={"since": {"collect_results.yml": 60}})
+    check(sent == [], f"collect_results が60分前 → スイープを出さない ({sent})")
     code, sent, out = run_clock(None, "2026-11-21T07:00", CAL_HOL, intent="predict", date="20261121")
     check(sent == [] and "土日" in out, "手動で対象日が土曜 → 拒否 (土日はネイティブ)")
     code, sent, _ = run_clock(None, "2026-11-23T07:00", CAL_HOL, intent="predict")
@@ -465,6 +486,39 @@ def test_gate_table():
     check(fri2230 == ["30 13 * * 5"], f"金 22:30 の weekend_prefetch cron は不変 {fri2230}")
 
 
+def test_uniform_delay():
+    print("\n9. 一律の遅れ (#179 レビュー M1: 11/22-23 に実測した 4〜8時間) — 遅れて着いた tick でも予測を作れるか")
+    # 11/22(日) 12:00 〜 11/23(月・祝) 12:00 に予定された tick を、全部同じだけ遅らせて流す
+    t, end, planned = jst("2026-11-22T12:00"), jst("2026-11-23T12:00"), []
+    while t < end:
+        planned += [(t, c) for c in rc.SCHEDULE if cron_fires(c, t)]
+        t += dt.timedelta(minutes=1)
+    deadline = jst("2026-11-23T08:48")        # predict の締切 (9:00 の最後の作り直し - 12分)
+    lock = jst("2026-11-23T09:30")
+    rows = {}
+    for delay in (0, 120, 240, 300, 360, 420, 480, 510, 520, 540, 600):
+        first_pred = first_runner = None
+        for p, c in planned:
+            arrive = p + dt.timedelta(minutes=delay)
+            _code, sent, _out = run_clock(c, arrive.strftime("%Y-%m-%dT%H:%M"), CAL_EVE,
+                                          fake={"since": {"collect_results.yml": 999}})
+            if any("mode=predict" in x for x in sent) and first_pred is None:
+                first_pred = arrive
+            if "race_day_runner.yml" in sent and first_runner is None:
+                first_runner = arrive
+        rows[delay] = (first_pred, first_runner)
+        fp = f"{first_pred:%m/%d %H:%M}" if first_pred else "なし"
+        fr = f"{first_runner:%H:%M}" if first_runner else "なし"
+        print(f"     遅れ {delay // 60}h{delay % 60:02d}m: 最初の predict {fp} / 最初の runner 起動 {fr}")
+    ok = all(rows[d][0] is not None and rows[d][0] < deadline for d in (0, 120, 240, 300, 360, 420, 480, 510, 520))
+    check(ok, "一律 0〜8h40m の遅れ: 8:48 の締切前に predict を出す (修正前は 4h45m 以上の遅れで0本、runner の起動も 8h で 11:37)")
+    check(rows[540][0] is None or rows[540][0] >= deadline,
+          "9h の遅れには勝てない (同じスケジューラ上の時計の限界。独立した時計は GAS だけ #155) — 限界として記録")
+    check(all(rows[d][1] is not None and rows[d][1] < jst("2026-11-23T12:00") for d in (0, 120, 240, 360, 480)),
+          "0〜8h の遅れ: runner は正午前に起動する (9:30 を過ぎる遅れでは post_predict を runner が代打する)")
+    check(rows[0][1] is not None and rows[0][1] < lock, "定刻なら runner は 9:30 の確定前に起動する")
+
+
 if __name__ == "__main__":
     test_tables()
     test_planned_fire()
@@ -473,6 +527,7 @@ if __name__ == "__main__":
     test_prefetch_targets()
     test_gate_hold()
     test_gate_table()
+    test_uniform_delay()
     print()
     if FAILS:
         print(f"❌ {len(FAILS)} 件失敗")
