@@ -46,12 +46,15 @@ jobs:
       # 曜日ガードは JRA の月曜・祝日・順延開催を取りこぼす (2026-09-21 月/祝 阪神、
       # 2026-09-22 火 中山=台風順延)。posting_watchdog の開催日セーフティネットは
       # このファイルを唯一の判定材料にするので、毎日必ず更新して commit する。
+      # #179 Part D: --probe で netkeiba のカレンダーから平日 (月曜祝日・順延) の開催日を発見して足す
+      #   (DB に1レースも無い平日開催は、時計 raceday_clock もセーフティネットも見えない)。
+      #   失敗・タイムアウトは従来どおり DB 由来だけで書き直す。
       - name: 📅 開催カレンダーを更新 (#160)
         if: always()
         continue-on-error: true
         run: |
           set -e
-          python3 scripts/build_race_calendar.py
+          timeout 120 python3 scripts/build_race_calendar.py --probe || python3 scripts/build_race_calendar.py
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/data/race_calendar.json
