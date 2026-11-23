@@ -46,10 +46,12 @@ calendar_race_day / セーフティネットが確信を持って「開催日で
 そこで前回の版の source=netkeiba / db+netkeiba の平日 (窓内) を、DB 由来に重ねて **最初の書き込みから** 引き継ぐ。
 外すのは --probe が「その月のカレンダーを読めた (リンクがある) のに、その日がもう載っていない」と確かめた
 未来の日だけ (中止・移動。::warning:: を出す)。一覧を取れなかった日は引き継ぐ (判定できない)。
-DB にある日は、一覧を取れた (空でも) なら引き継がず DB 由来 + 今回の一覧で補った値に戻す — 補う分が無くなった
-(場が中止・移動して一覧が DB と一致した) のに前回の値を残すと、窓を出るまで期待レース数・開催場を過大に言い続ける
-(#179 round 4 T-partd-4 / R3-T-stale-merge)。DB に無い日で一覧が空だった時だけは、中止か一時的な空ページかを
-区別できないので警告して引き継ぐ。今日より前の日は確かめようがないので窓を出るまで残す (翌朝の完了検査が使う)。
+一覧を取れても、空・途中まで (どこかの場が12Rに満たない) なら前回の値を減らさない — 一時的な空ページ・
+取りこぼし (9/21 は一覧が 10R だけ返った #161) と中止を区別できないので、警告して引き継ぎ、一覧で増えた分だけ足す
+(#179 round 5)。全場12Rそろった一覧を取れた DB にある日は、引き継がず DB 由来 + 今回の一覧で補った値に戻す —
+補う分が無くなった (場が中止・移動して一覧が DB と一致した) のに前回の値を残すと、窓を出るまで期待レース数・
+開催場を過大に言い続ける (#179 round 4 T-partd-4 / R3-T-stale-merge)。
+今日より前の日は確かめようがないので窓を出るまで残す (翌朝の完了検査が使う)。
 
   - 失敗・タイムアウトは DB 由来 + 引き継ぎで書く (先に書いてから問い合わせるので、外側の
     `timeout 120` に殺されても残る。呼び出し側は `|| 従来の呼び出し` で必ず書き直す — それも引き継ぐ)。
@@ -183,6 +185,16 @@ def merge_up(base, obs):
     if (n, v) == (b_n, b_v):
         return base
     return {"races": n, "venues": v, "source": "db+netkeiba"}
+
+
+# JRA は1場1日12レース (raceday_safety_net.expected_races と同じ前提)
+RACES_PER_VENUE = 12
+
+
+def list_complete(n, venues):
+    """#179 round 5: レース一覧が「その日の全部」に見えるか (JRA のレースが1本以上あり、どの場も12レースそろう)。
+    空・途中まで (一時的な空ページ・9/21 の 10R のような取りこぼし) は False — 前回の値を減らす根拠にしない。"""
+    return n > 0 and n >= RACES_PER_VENUE * len(venues or [])
 
 
 def probe(dates, today, scraper, deadline=None, log=print):
@@ -370,13 +382,34 @@ def main(argv=None):
             print(f"::warning::#179: netkeiba での開催日の発見に失敗 ({e}) → DB 由来の日付{kept}")
         else:
             final = dict(db)
-            kept, dropped, reverted = [], [], []
+            kept, dropped, reverted, partial_list = [], [], [], []
             for k, v in sorted(carried.items()):
+                d = date.fromisoformat(k)
+                obs = res.observed.get(k)
+                if obs is not None and not list_complete(*obs):
+                    # #179 round 5 (R4-revert-on-empty-or-partial-list): 一覧は取れたが空・途中まで (どこかの場が12Rに
+                    #   満たない)。一時的な空ページ・取りこぼし (9/21 は一覧が 10R だけ返った #161) と中止を区別できない
+                    #   → 前回の値を減らさない (一覧で増えた分だけ足す)。減らすと期待レース数・開催場を過小に言い、
+                    #   セーフティネットの予測の再投入と「予測不足」の警告、preflight の欠けた場の取得が黙って止まる。
+                    #   過大に言う側 (警告が余分に出る) に倒す。前回の値を外すのは「全場12Rそろった一覧」が支えない時だけ。
+                    n_obs, v_obs = obs
+                    base = res.add.get(k)
+                    if base is not None:
+                        v = {"races": max(int(v.get("races") or 0), int(base.get("races") or 0)),
+                             "venues": sorted(set(v.get("venues") or []) | set(base.get("venues") or [])),
+                             "source": base.get("source") or v.get("source")}
+                        res.add.pop(k)
+                    final[k] = v
+                    kept.append(k)
+                    partial_list.append(k)
+                    print(f"::warning::#179: {k} の netkeiba の一覧が空・途中まで ({n_obs}R / "
+                          f"{'・'.join(v_obs) or 'JRA なし'}) — 中止か一時的な取りこぼしか区別できないので、"
+                          f"前回見つけた {v.get('races')}R / {'・'.join(v.get('venues') or [])} を減らさずに引き継ぐ")
+                    continue
                 if k in res.add:
                     continue                    # 確かめ直した値で置き換える (下)
-                d = date.fromisoformat(k)
-                if k in res.observed and k in db:
-                    # #179 round 4 (T-partd-4 / R3-T-stale-merge): 一覧を取れた (空も含む) DB にある日。res.add に無い =
+                if obs is not None and k in db:
+                    # #179 round 4 (T-partd-4 / R3-T-stale-merge): 全場12Rそろった一覧を取れた DB にある日。res.add に無い =
                     #   merge_up(DB 由来, 今回の一覧) が DB 由来のまま = 前回補った分 (中止・移動した場など) を今回の一覧は
                     #   もう支えていない → DB 由来に戻す (final[k] は db[k] のまま)。前回の値を残すと、DB と一覧が一致しても
                     #   窓を出るまで期待レース数・開催場を過大に言い続け、セーフティネットの「予測不足」と preflight の
@@ -386,13 +419,6 @@ def main(argv=None):
                     print(f"   🔎 {k}: netkeiba の一覧 ({n_obs}R / {'・'.join(v_obs) or 'JRA なし'}) が DB 由来 "
                           f"({db[k].get('races')}R / {'・'.join(db[k].get('venues') or [])}) を超えない → 前回補った "
                           f"{v.get('races')}R / {'・'.join(v.get('venues') or [])} を外す (DB 由来に戻す)")
-                    continue
-                if k in res.observed:
-                    # DB に無い日で一覧が空 (n>0 なら res.add に入っている): 中止か一時的な空ページかを区別できない → 引き継ぐ
-                    final[k] = v
-                    kept.append(k)
-                    print(f"::warning::#179: 前回 netkeiba で見つけた {k} の一覧が今回は空 (JRA のレースが無い) — "
-                          f"中止の可能性があるが、一時的な空ページと区別できないので引き継ぐ")
                     continue
                 if (d < today or (d.year, d.month) not in res.verified
                         or k in res.unknown or k in res.seen):
@@ -419,6 +445,8 @@ def main(argv=None):
                 info["dropped"] = dropped
             if reverted:
                 info["reverted"] = reverted
+            if partial_list:
+                info["partial_list"] = partial_list
             if res.partial:
                 why = [f"{y}年{m}月: {r}" for (y, m), r in sorted(res.skipped.items())]
                 why += [f"{k}: {r}" for k, r in sorted(res.unknown.items())]

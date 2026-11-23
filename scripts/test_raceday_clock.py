@@ -679,6 +679,11 @@ def _run_probe(fake, args=("--probe",), deadline=None, prev=None, today="2026-11
 NK_1123 = {"races": 24, "venues": ["東京", "福島"], "source": "netkeiba"}
 
 
+def brc_list_complete(n, venues):
+    import build_race_calendar as brc
+    return brc.list_complete(n, venues)
+
+
 def test_probe():
     print("\n10. (Part D) build_race_calendar --probe (偽の scraper・実ページと同じ形の HTML、ネットワークに出ない)")
     db_only = {"2026-11-21", "2026-11-22", "2026-12-01"}
@@ -837,14 +842,42 @@ def test_probe():
     code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:12]}), prev=prev1, db_extra=six)
     check(cal["dates"].get("2026-11-23") == {"races": 12, "venues": ["東京"], "source": "db+netkeiba"},
           "DB がまだ追いついていない (6R) 時に一覧が 東京 12R に縮む → 一覧で補った 12R・東京 (福島は外れる)")
+    print("\n   一覧が空・途中まで (取得は成功) の時は前回の値を減らさない (#179 round 5 R4-revert-on-empty-or-partial-list)")
     code, cal, out = _run_probe(FakeScraper(lists={"20261123": []}), prev=prev1, db_extra=tokyo12)
-    check(cal["dates"].get("2026-11-23") == {"races": 12, "venues": ["東京"]} and cal["probe"].get("reverted") == ["2026-11-23"],
-          "DB にある日の一覧が空 (取得は成功) → 補いを外して DB 由来に戻す (開催日のまま・DB 由来は減らさない)")
+    check(cal["dates"].get("2026-11-23") == sup and "reverted" not in cal["probe"]
+          and cal["probe"].get("partial_list") == ["2026-11-23"] and "::warning::" in out,
+          f"DB 東京 12R + 一覧が空 → 一時的な空ページと区別できない → 前回の 24R・東京/福島 を警告して引き継ぐ "
+          f"({cal['dates'].get('2026-11-23')})")
+    for label, dbx, lst, today in (
+            ("DB 東京 1R (特別登録) + 一覧が空", one, [], "2026-11-20"),
+            ("DB 東京 6R + 一覧が空", six, [], "2026-11-20"),
+            ("DB 東京 6R + 一覧も 東京 R1-6 だけ", six, JRA_1123[:6], "2026-11-20"),
+            ("DB 東京 12R + 一覧は 東京 10R だけ (9/21 型の取りこぼし)", tokyo12, JRA_1123[:10], "2026-11-20"),
+            ("当日 (開催中) DB 東京 6R + 一覧が空", six, [], "2026-11-23"),
+            ("DB 東京 12R + 一覧は 東京 12R・福島 6R (福島が途中まで)", tokyo12, JRA_1123[:18], "2026-11-20")):
+        code, cal, out = _run_probe(FakeScraper(lists={"20261123": lst}), prev=prev1, db_extra=dbx, today=today)
+        d23 = cal["dates"].get("2026-11-23") or {}
+        check(d23.get("races") == 24 and d23.get("venues") == ["東京", "福島"] and sn.expected_races(d23) == 24
+              and "reverted" not in cal["probe"] and "2026-11-23" in cal["probe"].get("partial_list", []),
+              f"{label} → 前回の 24R・東京/福島 を減らさない (期待レース数 24) ({d23})")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:6]}), prev=prev1, db_extra=one)
+    d23 = cal["dates"].get("2026-11-23")
+    check(d23 == sup, f"DB 東京 1R + 一覧 東京 R1-6 (途中まで・DB より多い) → 一覧で 1R を補っても前回の 24R を下回らない ({d23})")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:6]}), prev={"2026-11-23": dict(NK_1123)})
+    d23 = cal["dates"].get("2026-11-23")
+    check(d23 == NK_1123 and "::warning::" in out,
+          f"DB に無い日で一覧が 東京 R1-6 だけ → 前回の 24R・東京/福島 (source=netkeiba) を減らさない ({d23})")
+    code, cal, out = _run_probe(FakeScraper(lists={"20261123": JRA_1123[:24]}), prev=prev1, db_extra=six, today="2026-11-23")
+    check(cal["dates"].get("2026-11-23") == sup and "partial_list" not in cal["probe"],
+          "当日 (開催中) に全場12Rそろった一覧 → いつもどおり 24R (途中までの扱いにならない)")
+    check(brc_list_complete(24, ["東京", "福島"]) and not brc_list_complete(0, [])
+          and not brc_list_complete(18, ["東京", "福島"]) and brc_list_complete(12, ["東京"]),
+          "list_complete: 全場12R = 完全 / 空・途中までは不完全")
     code, cal, out = _run_probe(FakeScraper(fail_list={"20261123"}), prev=prev1, db_extra=tokyo12)
     check(cal["dates"].get("2026-11-23") == sup and "2026-11-23" in cal["probe"].get("kept", []),
           "一覧を取れない (HTTP 500) → 判定できないので前回補った値を引き継ぐ")
     code, cal, out = _run_probe(FakeScraper(lists={"20261123": []}), prev={"2026-11-23": dict(NK_1123)})
-    check(cal["dates"].get("2026-11-23") == NK_1123 and "一覧が今回は空" in out and "::warning::" in out,
+    check(cal["dates"].get("2026-11-23") == NK_1123 and "一覧が空・途中まで" in out and "::warning::" in out,
           "DB に無い日 (netkeiba だけで見つけた日) の一覧が空 → 中止か一時的な空ページか区別できないので警告して引き継ぐ")
 
     print("\n   probe だけが見つけた日 (DB にレースが無い) で時計が動く")
