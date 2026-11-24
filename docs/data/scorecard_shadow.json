@@ -1,0 +1,202 @@
+{
+ "verdict": "pending",
+ "message": "確定 72R (判定は 300R から)。差 -7.0pt は参考",
+ "rule": {
+  "min_judge": 300,
+  "min_confirm": 1700,
+  "rollback": "7種平均の差の99.5%上限<0 (300R以上)",
+  "confirm": "99.5%下限>0 (1,700R以上)"
+ },
+ "coverage": {
+  "live": 72,
+  "paired": 72
+ },
+ "all": {
+  "races": 72,
+  "days": 3,
+  "from": "20261121",
+  "to": "20261123",
+  "same_axis_share": 0.6528,
+  "by": {
+   "basket": {
+    "roi": 85.0,
+    "base": 91.9,
+    "delta": -6.97,
+    "ci": [
+     -35.46,
+     23.09
+    ],
+    "ci995": [
+     -49.12,
+     38.4
+    ]
+   },
+   "tan1": {
+    "roi": 51.4,
+    "base": 61.4,
+    "delta": -10.0,
+    "ci": [
+     -24.72,
+     3.33
+    ],
+    "ci995": [
+     -31.94,
+     8.61
+    ]
+   },
+   "fuku1": {
+    "roi": 97.6,
+    "base": 93.6,
+    "delta": 4.03,
+    "ci": [
+     -14.31,
+     23.06
+    ],
+    "ci995": [
+     -22.36,
+     30.69
+    ]
+   },
+   "wide4": {
+    "roi": 96.6,
+    "base": 96.9,
+    "delta": -0.24,
+    "ci": [
+     -32.99,
+     33.16
+    ],
+    "ci995": [
+     -45.87,
+     48.72
+    ]
+   },
+   "umaren4": {
+    "roi": 67.6,
+    "base": 83.0,
+    "delta": -15.38,
+    "ci": [
+     -44.72,
+     17.64
+    ],
+    "ci995": [
+     -57.88,
+     32.36
+    ]
+   },
+   "trio_axis6": {
+    "roi": 112.6,
+    "base": 114.4,
+    "delta": -1.83,
+    "ci": [
+     -66.85,
+     64.19
+    ],
+    "ci995": [
+     -95.6,
+     89.98
+    ]
+   },
+   "trio_box10": {
+    "roi": 91.2,
+    "base": 89.9,
+    "delta": 1.35,
+    "ci": [
+     -37.24,
+     42.12
+    ],
+    "ci995": [
+     -57.86,
+     58.11
+    ]
+   },
+   "trifecta12": {
+    "roi": 77.7,
+    "base": 104.4,
+    "delta": -26.7,
+    "ci": [
+     -106.98,
+     57.96
+    ],
+    "ci995": [
+     -148.89,
+     108.41
+    ]
+   }
+  },
+  "refunded_races": 4,
+  "top_day": {
+   "day": "20261121",
+   "share_of_delta": 2.274
+  }
+ },
+ "posted": {
+  "races": 9,
+  "days": 1,
+  "from": "20261121",
+  "to": "20261121",
+  "same_axis_share": 0.8889,
+  "by": {
+   "basket": {
+    "roi": 69.9,
+    "base": 141.7,
+    "delta": -71.79,
+    "ci": null,
+    "ci995": null
+   },
+   "tan1": {
+    "roi": 156.7,
+    "base": 130.0,
+    "delta": 26.67,
+    "ci": null,
+    "ci995": null
+   },
+   "fuku1": {
+    "roi": 127.8,
+    "base": 125.6,
+    "delta": 2.22,
+    "ci": null,
+    "ci995": null
+   },
+   "wide4": {
+    "roi": 76.7,
+    "base": 171.4,
+    "delta": -94.72,
+    "ci": null,
+    "ci995": null
+   },
+   "umaren4": {
+    "roi": 65.3,
+    "base": 121.7,
+    "delta": -56.39,
+    "ci": null,
+    "ci995": null
+   },
+   "trio_axis6": {
+    "roi": 22.8,
+    "base": 196.9,
+    "delta": -174.07,
+    "ci": null,
+    "ci995": null
+   },
+   "trio_box10": {
+    "roi": 23.7,
+    "base": 121.4,
+    "delta": -97.78,
+    "ci": null,
+    "ci995": null
+   },
+   "trifecta12": {
+    "roi": 16.7,
+    "base": 125.1,
+    "delta": -108.43,
+    "ci": null,
+    "ci995": null
+   }
+  },
+  "refunded_races": 3,
+  "top_day": {
+   "day": "20261121",
+   "share_of_delta": 1.0
+  }
+ }
+}

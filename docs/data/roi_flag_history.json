@@ -1,7 +1,9 @@
 {
  "note": "#169: ROI 監視の要降格フラグの連続記録。weekly_retrain が scripts/roi_flag_alert.py で更新する。ISO週 (JST) ごとに1件。導入時点から数え始める (それ以前のフラグは母集団が誤っていたため)。",
  "min_streak": 2,
- "alerting": [],
+ "alerting": [
+  "trio_focus_band"
+ ],
  "weeks": {
   "2026-W46": {
    "recorded_at": "2026-11-09T20:13:12+09:00",
@@ -22,7 +24,27 @@
      "roi_pct": 72.6
     }
    }
+  },
+  "2026-W48": {
+   "recorded_at": "2026-11-24T22:32:56+09:00",
+   "roi_generated_at": "2026-11-24T13:32:54.537513",
+   "population": "169-funded-bets-v1",
+   "flagged": {
+    "trio_focus_band": {
+     "flag": "🔻 要降格レビュー (n>=50 & ROI<80%)",
+     "races": 70,
+     "spend": 111200,
+     "return": 80160,
+     "roi_pct": 72.1
+    }
+   }
   }
  },
- "notified_streaks": {}
+ "notified_streaks": {
+  "trio_focus_band": {
+   "start": "2026-W47",
+   "at": "2026-11-24T22:32:56+09:00"
+  }
+ },
+ "notified_week": "2026-W48"
 }
