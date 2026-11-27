@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-24T22:32:52.328002+09:00",
+ "generated_at": "2026-11-27T22:45:31.225014+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -202,9 +202,9 @@
  "confidence": {
   "available": true,
   "n": 400,
-  "sample": "点数表 roi の◎ (印として付いた◎ 40件 + 過去を roi で選び直した◎ 360件)",
+  "sample": "点数表 roi の◎ (印として付いた◎ 53件 + 過去を roi で選び直した◎ 347件)",
   "scorecard": "roi",
-  "sample_period": "2026-09-06〜2026-11-23",
+  "sample_period": "2026-09-06〜2026-11-29",
   "target_mix": {
    "S": 0.18,
    "A": 0.24,
@@ -220,38 +220,38 @@
   },
   "calibrated_on": "補正後 (confidence.post_adjust 込み) の最終構成比",
   "mix_before_adjust": {
-   "S": 0.125,
-   "A": 0.245,
-   "B": 0.34,
-   "C": 0.1775,
+   "S": 0.12,
+   "A": 0.2475,
+   "B": 0.345,
+   "C": 0.175,
    "D": 0.1125
   },
   "mix_after_adjust": {
    "S": 0.18,
    "A": 0.24,
-   "B": 0.29,
-   "C": 0.1775,
+   "B": 0.2925,
+   "C": 0.175,
    "D": 0.1125
   },
-  "adjusted_share": 0.105,
+  "adjusted_share": 0.1125,
   "realized_mix": {
-   "S": 0.2,
-   "A": 0.2,
-   "B": 0.4,
-   "C": 0.1,
-   "D": 0.1
+   "S": 0.2075,
+   "A": 0.2453,
+   "B": 0.3585,
+   "C": 0.1132,
+   "D": 0.0755
   },
-  "realized_n": 40,
+  "realized_n": 53,
   "realized_note": "各予測の時点の閾値・補正で付いた信頼度 (predictions_cache.confidence)",
   "realized_new_logic_since": "2026-11-07",
   "realized_new_logic_mix": {
-   "S": 0.2,
-   "A": 0.2,
-   "B": 0.4,
-   "C": 0.1,
-   "D": 0.1
+   "S": 0.2075,
+   "A": 0.2453,
+   "B": 0.3585,
+   "C": 0.1132,
+   "D": 0.0755
   },
-  "realized_new_logic_n": 40,
+  "realized_new_logic_n": 53,
   "by_scorecard": {
    "roi": {
     "available": true,
@@ -262,45 +262,45 @@
      "C": 6.9
     },
     "n": 400,
-    "sample": "点数表 roi の◎ (印として付いた◎ 40件 + 過去を roi で選び直した◎ 360件)",
-    "sample_period": "2026-09-06〜2026-11-23"
+    "sample": "点数表 roi の◎ (印として付いた◎ 53件 + 過去を roi で選び直した◎ 347件)",
+    "sample_period": "2026-09-06〜2026-11-29"
    },
    "base": {
     "available": true,
     "thresholds": {
      "S": 35.4,
-     "A": 22.5,
-     "B": 13.7,
-     "C": 9.3
+     "A": 22.4,
+     "B": 13.6,
+     "C": 9.4
     },
     "n": 400,
-    "sample": "点数表 base の◎ (影の印の◎ 40件 + #175 より前の◎ 360件)",
-    "sample_period": "2026-09-06〜2026-11-23"
+    "sample": "点数表 base の◎ (影の印の◎ 53件 + #175 より前の◎ 347件)",
+    "sample_period": "2026-09-06〜2026-11-29"
    }
   }
  },
  "bet_gate": {
   "available": true,
-  "n": 69,
+  "n": 67,
   "target_block_rate": {
    "top_prob": 0.3,
    "top3_sum": 0.25
   },
-  "model_deployed_at": "2026-11-22 06:56:30",
+  "model_deployed_at": "2026-11-24 22:33:15",
   "window_matches_model": false,
-  "model_retrained_uncommitted": true,
+  "model_retrained_uncommitted": false,
   "thresholds": {
-   "top_prob": 0.1484,
-   "top3_sum": 0.3862
+   "top_prob": 0.1512,
+   "top3_sum": 0.3905
   },
   "window_rule": "recent120",
-  "n_current": 14,
-  "n_older": 55,
-  "sd_median_current": 0.7941,
-  "sd_median_older": 0.7257,
-  "dispersion_ratio": 1.094,
+  "n_current": 13,
+  "n_older": 54,
+  "sd_median_current": 0.8683,
+  "sd_median_older": 0.7561,
+  "dispersion_ratio": 1.148,
   "dispersion_ratio_limit": 1.4,
-  "prev_model_deployed_at": null
+  "prev_model_deployed_at": "2026-11-22 06:56:30"
  },
  "confidence_adjust_watch": {
   "since": "2026-11-07",
