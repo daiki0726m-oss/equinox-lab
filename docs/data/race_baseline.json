@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-27T22:45:31.225014+09:00",
+ "generated_at": "2026-11-28T03:31:35.374662+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -213,7 +213,7 @@
    "D": 0.11
   },
   "thresholds": {
-   "S": 32.6,
+   "S": 32.5,
    "A": 19.9,
    "B": 12.4,
    "C": 6.9
@@ -222,33 +222,33 @@
   "mix_before_adjust": {
    "S": 0.12,
    "A": 0.2475,
-   "B": 0.345,
-   "C": 0.175,
+   "B": 0.3425,
+   "C": 0.1775,
    "D": 0.1125
   },
   "mix_after_adjust": {
    "S": 0.18,
    "A": 0.24,
-   "B": 0.2925,
-   "C": 0.175,
+   "B": 0.29,
+   "C": 0.1775,
    "D": 0.1125
   },
   "adjusted_share": 0.1125,
   "realized_mix": {
-   "S": 0.2075,
-   "A": 0.2453,
-   "B": 0.3585,
-   "C": 0.1132,
+   "S": 0.1887,
+   "A": 0.2642,
+   "B": 0.3396,
+   "C": 0.1321,
    "D": 0.0755
   },
   "realized_n": 53,
   "realized_note": "各予測の時点の閾値・補正で付いた信頼度 (predictions_cache.confidence)",
   "realized_new_logic_since": "2026-11-07",
   "realized_new_logic_mix": {
-   "S": 0.2075,
-   "A": 0.2453,
-   "B": 0.3585,
-   "C": 0.1132,
+   "S": 0.1887,
+   "A": 0.2642,
+   "B": 0.3396,
+   "C": 0.1321,
    "D": 0.0755
   },
   "realized_new_logic_n": 53,
@@ -256,7 +256,7 @@
    "roi": {
     "available": true,
     "thresholds": {
-     "S": 32.6,
+     "S": 32.5,
      "A": 19.9,
      "B": 12.4,
      "C": 6.9
@@ -268,9 +268,9 @@
    "base": {
     "available": true,
     "thresholds": {
-     "S": 35.4,
-     "A": 22.4,
-     "B": 13.6,
+     "S": 35.3,
+     "A": 22.6,
+     "B": 13.7,
      "C": 9.4
     },
     "n": 400,
@@ -290,15 +290,15 @@
   "window_matches_model": false,
   "model_retrained_uncommitted": false,
   "thresholds": {
-   "top_prob": 0.1512,
-   "top3_sum": 0.3905
+   "top_prob": 0.1517,
+   "top3_sum": 0.3883
   },
   "window_rule": "recent120",
   "n_current": 13,
   "n_older": 54,
-  "sd_median_current": 0.8683,
+  "sd_median_current": 0.8039,
   "sd_median_older": 0.7561,
-  "dispersion_ratio": 1.148,
+  "dispersion_ratio": 1.063,
   "dispersion_ratio_limit": 1.4,
   "prev_model_deployed_at": "2026-11-22 06:56:30"
  },
