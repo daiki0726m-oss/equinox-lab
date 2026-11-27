@@ -97,6 +97,76 @@ def fill_race_meta(local_path: str, origin_path: str) -> dict:
         conn.close()
 
 
+GARBLED = "char(65533)"   # 文字化けの置換文字 U+FFFD (#181)
+
+
+def fill_collected(local_path: str, origin_path: str, since: str) -> dict:
+    """#181: 後から集めたデータ (追い切り・通過順・血統) を古い DB の push で消さない。
+
+    実例 (2026-11-21〜23): fetch_weekend_races が追い切り 334〜421件を保存して push した2分後、
+    それより前に起動していた race_day_runner (起動時に1回だけ origin を取り込み、以後は10分ごとに
+    自分の DB を -X theirs で push する) が古い DB で上書きし、3日分の追い切りが全部消えた。
+    通過順も同じ日付だけ欠けていた。ここで commit 直前に origin の値を取り込む。
+
+    どれも「local に無い / 空 / 文字化け → origin の値」の一方向だけで、local の値は変えない:
+      - workouts: (race_id, horse_id) が local に無い行を追加 (UNIQUE なので重複しない)
+      - results: 通過順・上がり3F・厩舎が local で空、origin で非空なら埋める
+      - horses: 父・母・母父が local で空か文字化け、origin で非空かつ文字化けしていなければ埋める
+    走査は since 以降のレースに限る (origin の DB は索引を落として運ぶ #153 ので、全表の
+    突き合わせは避ける。UNIQUE と主キーの自動索引は残るので、行の照合はそれで引ける)。"""
+    conn = sqlite3.connect(local_path, timeout=30)
+    try:
+        conn.execute(f"ATTACH '{origin_path}' AS o")
+        done = {}
+        recent = "SELECT race_id FROM races WHERE race_date >= ?"
+        # 追い切り (列は local と origin の共通部分だけ。id は local の連番に任せる)
+        ocols = {c[1] for c in conn.execute("PRAGMA o.table_info(workouts)")}
+        wcols = [c[1] for c in conn.execute("PRAGMA table_info(workouts)")
+                 if c[1] != 'id' and c[1] in ocols]
+        if wcols:
+            cs = ",".join(wcols)
+            # INSERT OR IGNORE は使わない: 1行も入らなくても AUTOINCREMENT の連番 (sqlite_sequence) が
+            # 候補行の数だけ進み、DB の中身が毎回変わる (#181 レビュー)。無い行だけに絞ってから入れる。
+            cur = conn.execute(
+                f"INSERT INTO workouts ({cs}) SELECT {cs} FROM o.workouts ow "
+                f"WHERE ow.race_id IN ({recent}) AND NOT EXISTS (SELECT 1 FROM workouts w "
+                f"WHERE w.race_id = ow.race_id AND w.horse_id = ow.horse_id)", (since,))
+            done["workouts"] = cur.rowcount
+        # 通過順・上がり3F・厩舎 (results は UNIQUE(race_id, horse_number))
+        for col, empty in (("passing_order", "COALESCE({c}, '') = ''"),
+                           ("trainer_id", "COALESCE({c}, '') = ''"),
+                           ("last_3f", "COALESCE({c}, 0) = 0")):
+            e_local, e_origin = empty.format(c=col), empty.format(c=f"ox.{col}")
+            cur = conn.execute(f"""
+                UPDATE results SET {col} = (
+                    SELECT ox.{col} FROM o.results ox
+                    WHERE ox.race_id = results.race_id AND ox.horse_number = results.horse_number
+                      AND ox.horse_id = results.horse_id)
+                WHERE race_id IN ({recent}) AND {e_local}
+                  AND EXISTS (SELECT 1 FROM o.results ox
+                              WHERE ox.race_id = results.race_id
+                                AND ox.horse_number = results.horse_number
+                                AND ox.horse_id = results.horse_id AND NOT ({e_origin}))
+            """, (since,))
+            done[col] = cur.rowcount
+        # 血統 (horses の主キーで照合。対象は since 以降に走った/走る馬)
+        for col in ("sire", "dam", "damsire"):
+            cur = conn.execute(f"""
+                UPDATE horses SET {col} = (SELECT oh.{col} FROM o.horses oh
+                                           WHERE oh.horse_id = horses.horse_id)
+                WHERE horse_id IN (SELECT horse_id FROM results WHERE race_id IN ({recent}))
+                  AND (COALESCE({col}, '') = '' OR instr({col}, {GARBLED}) > 0)
+                  AND EXISTS (SELECT 1 FROM o.horses oh WHERE oh.horse_id = horses.horse_id
+                              AND COALESCE(oh.{col}, '') <> ''
+                              AND instr(oh.{col}, {GARBLED}) = 0)
+            """, (since,))
+            done[col] = cur.rowcount
+        conn.commit()
+        return done
+    finally:
+        conn.close()
+
+
 def main():
     today_jst = (datetime.now(timezone.utc) + timedelta(hours=9)).strftime('%Y-%m-%d')
     # origin/main の keiba.db.gz を取り出す (db_pack.sh 側で git fetch 済み前提)
@@ -136,6 +206,15 @@ def main():
                   f"{filled['track_condition']}件を取り込み (空で巻き戻すのを阻止, #169)")
     except Exception as e:
         print(f"🛡 race-meta guard: 失敗 ({e}) → skip (deploy は継続)")
+    # #181: 追い切り・通過順・血統の巻き戻し阻止 (直近45日のレースが対象。上と独立に必ず行う)
+    try:
+        since = (datetime.now(timezone.utc) + timedelta(hours=9) - timedelta(days=45)).strftime('%Y-%m-%d')
+        got = fill_collected('keiba.db', ORIGIN_TMP, since)
+        if any(got.values()):
+            print("🛡 collected-data guard: origin から取り込み (古い DB で消すのを阻止, #181): "
+                  + " / ".join(f"{k} {v}" for k, v in got.items() if v))
+    except Exception as e:
+        print(f"🛡 collected-data guard: 失敗 ({e}) → skip (deploy は継続)")
 
 
 if __name__ == '__main__':

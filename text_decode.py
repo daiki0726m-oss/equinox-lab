@@ -6,10 +6,13 @@ netkeiba は 2026 年に EUC-JP から UTF-8 へ順次移行しており、ペ�
 しかも run は success のまま値だけが壊れる (#85 / #169 / #181)。
 
 規則:
-  1. サーバが Content-Type で宣言した charset を最優先で、厳密に (errors="strict") 読む。
-  2. 宣言が無い・宣言どおりに読めない時は UTF-8 → EUC-JP の順に厳密に試す。
-  3. どれでも読めない時だけ、宣言 (無ければ UTF-8) で置換文字入りの文字列を返す。
-     その場合は呼び出し側が ``has_mojibake`` で検出して捨てる。
+  1. サーバが Content-Type で charset を宣言していれば、**その文字コードだけで**読む。
+     読めないバイトがあっても別の文字コードは試さず、そこだけ置換文字 (U+FFFD) にする。
+     UTF-8 のページを EUC-JP で読み直すと、置換文字の出ない「それらしい別の漢字」に化け、
+     ``has_mojibake`` で検出できなくなるため (宣言どおりに読めば化けるのは不正なバイトの所だけ)。
+  2. 宣言が無い時は UTF-8 → EUC-JP の順に厳密に (errors="strict") 試す。
+  3. どれでも読めない時は UTF-8 で置換文字入りの文字列を返す。
+  置換文字が入った値は、呼び出し側が ``has_mojibake`` で検出して保存しない。
 """
 
 import re
@@ -29,17 +32,17 @@ def decode_html(resp, fallbacks=("utf-8", "euc-jp")):
     """``requests.Response`` を文字列にする。上の規則を参照。"""
     raw = resp.content or b""
     declared = declared_charset(resp)
-    tried = []
-    for enc in ([declared] if declared else []) + list(fallbacks):
-        key = enc.lower().replace("_", "-")
-        if key in tried:
-            continue
-        tried.append(key)
+    if declared:
+        try:
+            return raw.decode(declared, errors="replace")
+        except LookupError:
+            pass        # 未知の文字コード名 → 宣言なしと同じ扱い
+    for enc in fallbacks:
         try:
             return raw.decode(enc)
         except (UnicodeDecodeError, LookupError):
             continue
-    return raw.decode(declared or "utf-8", errors="replace")
+    return raw.decode("utf-8", errors="replace")
 
 
 def has_mojibake(*values):

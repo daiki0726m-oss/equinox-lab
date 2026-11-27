@@ -1145,6 +1145,13 @@ class NetkeibaScraper:
                                      AND excluded.horse_name != ''
                                      AND excluded.horse_name NOT LIKE '%'||CHAR(65533)||'%'
                                 THEN excluded.horse_name ELSE horses.horse_name END,
+                            -- #181: 性別も同じ規則で自己修復 (6/17 の文字化けで 30頭が U+FFFD のまま残っていた)
+                            sex = CASE
+                                WHEN (horses.sex IS NULL OR horses.sex = ''
+                                      OR horses.sex LIKE '%'||CHAR(65533)||'%')
+                                     AND excluded.sex != ''
+                                     AND excluded.sex NOT LIKE '%'||CHAR(65533)||'%'
+                                THEN excluded.sex ELSE horses.sex END,
                             {BIRTH_YEAR_FILL_SQL}
                     """, (r["horse_id"], r.get("horse_name", ""), r.get("sex", ""),
                           birth_year_from_horse_id(r["horse_id"])))

@@ -96,13 +96,18 @@ jobs:
                     WHERE y.race_date = g.race_date AND x.finish_position > 0
                       AND COALESCE(x.passing_order, '') = '') AS no_passing,
                   (SELECT COUNT(*) FROM results x JOIN races y ON y.race_id = x.race_id
-                    WHERE y.race_date = g.race_date AND x.finish_position > 0) AS finished
+                    WHERE y.race_date = g.race_date AND x.finish_position > 0) AS finished,
+                         -- #181: 追い切りの行が1件も無いレース (11/21-23 は古い DB の push で全部消えた)
+                  SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM workouts w WHERE w.race_id = g.race_id)
+                           THEN 1 ELSE 0 END) AS no_workout,
+                  COUNT(*) AS n_races
                   FROM races g
                   WHERE g.race_date >= ? AND g.race_date < ?
                     AND CAST(substr(g.race_id, 5, 2) AS INT) BETWEEN 1 AND 10   -- JRA のみ
                     AND EXISTS (SELECT 1 FROM results r WHERE r.race_id = g.race_id)
                   GROUP BY g.race_date
                   HAVING missing > 0 OR (finished > 0 AND no_passing > 0.2 * finished)
+                      OR no_workout > 0.2 * n_races
                   ORDER BY g.race_date
               """, (lo, today.isoformat())).fetchall()
           dates = [r[0] for r in rows]
@@ -144,7 +149,7 @@ jobs:
           fi
           # 日付指定の時も欠け日の回収は必ず行う (平日開催が2日続いた時に1日目を取り残さない)
           DATES="$BASE $BACKFILL"
-          [ -n "$BACKFILL" ] && echo "🩹 着順・配当・通過順・天候/馬場 (#169) が欠けた過去の開催日を回収: $BACKFILL"
+          [ -n "$BACKFILL" ] && echo "🩹 着順・配当・通過順・天候/馬場 (#169)・追い切り (#181) が欠けた過去の開催日を回収: $BACKFILL"
           echo "dates=$(echo $DATES | xargs -n1 | sort -u | xargs)" >> $GITHUB_OUTPUT
           echo "today=$TODAY" >> $GITHUB_OUTPUT
 
@@ -156,6 +161,8 @@ jobs:
             python predict.py collect --date "$DATE" || echo "⚠️ collect エラー(継続)"
             python -c "from database import init_db, sync_cache_race_ids; init_db(); sync_cache_race_ids('$DATE')" || true
             python collect_payouts.py --date "$DATE" || echo "⚠️ 配当収集スキップ"
+            # #181: 追い切りが1件も無いレースだけ取り直す (揃っている日は netkeiba に問い合わせない)
+            python3 scripts/refetch_workouts.py --date "$DATE" || echo "⚠️ 追い切りの取り直しスキップ"
             # 🛡 Pre-flight は **今日だけ**。auto-fix は予測を再生成しうるので、
             # 過去日に走らせると確定済みの印を後出しで作り直す (#99 の look-ahead)。
             if [ "$DATE" = "$TODAY" ]; then
