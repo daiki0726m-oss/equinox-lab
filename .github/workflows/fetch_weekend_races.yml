@@ -116,14 +116,15 @@ jobs:
           init_db()
 
           with get_db() as conn:
-              rows = conn.execute('''
+              # #181: 空欄だけでなく文字化けした血統も取り直す (条件は collect_pedigree に一本化)
+              rows = conn.execute(f'''
                   SELECT DISTINCT h.horse_id FROM results r
                   JOIN races ra ON r.race_id=ra.race_id
                   LEFT JOIN horses h ON r.horse_id=h.horse_id
                   WHERE ra.race_date >= date('now')
                     AND ra.race_date <= date('now', '+10 days')
                     AND h.horse_id IS NOT NULL AND h.horse_id != ''
-                    AND (h.sire IS NULL OR h.sire = '' OR h.dam IS NULL OR h.dam = '')
+                    AND {collect_pedigree.NEEDS_PEDIGREE_SQL}
               ''').fetchall()
               horse_ids = [r['horse_id'] for r in rows]
 

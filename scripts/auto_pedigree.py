@@ -34,7 +34,7 @@ from pathlib import Path
 # プロジェクトルートを sys.path に追加
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from collect_pedigree import scrape_horse_pedigree, save_pedigree
+from collect_pedigree import scrape_horse_pedigree, save_pedigree, NEEDS_PEDIGREE_SQL
 
 
 def main():
@@ -62,15 +62,16 @@ def main():
 
     # 新しい馬から順に (最後に走る/走った日の降順)。--max で打ち切られても、
     # 予測に効く今週・直近の馬が必ず先に埋まる。
-    missing = conn.execute('''
+    # #181: 空欄だけでなく文字化けした血統 (U+FFFD を含む) も対象にする。
+    # 旧条件は空欄だけを見ていたので、化けた馬は一度も選ばれなかった。
+    missing = conn.execute(f'''
         SELECT h.horse_id, h.horse_name, MAX(ra.race_date) AS last_date
         FROM results r
         JOIN races ra ON r.race_id = ra.race_id
         JOIN horses h ON r.horse_id = h.horse_id
         WHERE ra.race_date BETWEEN ? AND ?
           AND h.horse_id <> ''
-          AND (h.sire IS NULL OR h.sire = '' OR h.damsire IS NULL OR h.damsire = ''
-               OR h.dam IS NULL OR h.dam = '')
+          AND {NEEDS_PEDIGREE_SQL}
         GROUP BY h.horse_id
         ORDER BY last_date DESC, h.horse_id DESC
         LIMIT ?
@@ -105,6 +106,19 @@ def main():
         time.sleep(0.3)  # netkeiba レート制限考慮
 
     print(f'✅ 完了: 保存 {saved} / 変化なし {unchanged} / 失敗 {failed} / 全 {n}')
+
+    # #181: 文字化けが残っていれば数を出す (run が success でも値が壊れたまま、を見えるように)
+    garbled = conn.execute('''
+        SELECT COUNT(DISTINCT h.horse_id)
+        FROM results r
+        JOIN races ra ON r.race_id = ra.race_id
+        JOIN horses h ON r.horse_id = h.horse_id
+        WHERE ra.race_date BETWEEN ? AND ?
+          AND instr(COALESCE(h.sire, '') || COALESCE(h.dam, '') || COALESCE(h.damsire, ''),
+                    char(65533)) > 0
+    ''', (date_from, date_to)).fetchone()[0]
+    if garbled:
+        print(f'🚨 血統が文字化けしたままの出走馬: {garbled}頭 ({date_from} 〜 {date_to})')
 
 
 if __name__ == '__main__':

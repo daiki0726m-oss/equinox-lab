@@ -139,6 +139,17 @@ jobs:
           c.execute(\"SELECT COUNT(*) FROM horses WHERE dam IS NULL OR dam=''\")
           dam_missing = c.fetchone()[0]
           print(f'📊 全馬: {total}頭 / 父が空: {missing}頭 ({missing/total*100:.0f}%) / 母が空: {dam_missing}頭 ({dam_missing/total*100:.0f}%)')
+          # #181: 直近〜今後の出走馬に文字化けした血統が残っていれば、この step を失敗させて見えるようにする
+          # (commit の後に置いているので、直せた分は push 済み)。
+          c.execute(\"\"\"SELECT COUNT(DISTINCT h.horse_id) FROM results r
+                       JOIN races ra ON r.race_id = ra.race_id JOIN horses h ON r.horse_id = h.horse_id
+                       WHERE ra.race_date >= date('now', '-14 days')
+                         AND instr(COALESCE(h.sire,'') || COALESCE(h.dam,'') || COALESCE(h.damsire,''), char(65533)) > 0\"\"\")
+          garbled = c.fetchone()[0]
+          if garbled:
+              print(f'🚨 直近〜今後の出走馬で血統が文字化けしたまま: {garbled}頭')
+              raise SystemExit(1)
+          print('✅ 直近〜今後の出走馬に血統の文字化けなし')
           "
 
 # #178: 新リポジトリでスケジュールを登録し直すための更新 (動作は変えない)

@@ -3001,8 +3001,10 @@ def get_entry_jockeys(race):
                           'AppleWebKit/537.36 (KHTML, like Gecko) '
                           'Chrome/120.0.0.0 Safari/537.36'
         }, timeout=15)
-        resp.encoding = 'euc-jp'
-        soup = BeautifulSoup(resp.text, 'lxml')
+        # #181: 旧実装は 'euc-jp' 決め打ちで、出馬表の UTF-8 化 (#85) 以降は騎手名が文字化けし、
+        # 「今週騎乗する騎手」での絞り込み (2026-06-04 の絶対ルール) が1人も一致しなかった。
+        from text_decode import decode_html
+        soup = BeautifulSoup(decode_html(resp), 'lxml')
         table = soup.find('table', class_='Shutuba_Table')
         if not table:
             return []

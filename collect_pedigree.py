@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.dirname(__file__))
 from database import init_db, get_db
+from text_decode import decode_html, has_mojibake
 
 
 HEADERS = {
@@ -52,11 +53,14 @@ def scrape_horse_pedigree(session, horse_id, max_retries=3):
     for attempt in range(max_retries):
         try:
             resp = session.get(url, timeout=20)
-            resp.encoding = "euc-jp"
             if resp.status_code != 200:
                 return None
 
-            soup = BeautifulSoup(resp.text, "html.parser")
+            # #181 (2026-11-27): 旧実装は resp.encoding = "euc-jp" を決め打ちしていた。
+            # 血統ページは 2026-11 中旬に UTF-8 (Content-Type で宣言) へ移行しており、
+            # 11/13 以降に登録された馬 380頭の父・母・母父が全部文字化けした (#85 と同じ型)。
+            # サーバの宣言を最優先で厳密に読み、読めなければ UTF-8 → EUC-JP の順に試す。
+            soup = BeautifulSoup(decode_html(resp), "html.parser")
             bt = soup.find("table", class_="blood_table")
             if not bt:
                 return None
@@ -87,6 +91,10 @@ def scrape_horse_pedigree(session, horse_id, max_retries=3):
                 if dam and damsire:
                     break
 
+            if has_mojibake(sire, dam, damsire):
+                # 文字化けした名前は保存しない (取得失敗として扱い、呼び出し側の失敗数に出す)
+                print(f"⚠️ 血統の文字化けを検出 (保存しない): {horse_id}")
+                return None
             if sire or damsire or dam:
                 return {"sire": sire, "dam": dam, "damsire": damsire,
                         "sire_id": sire_id, "dam_id": dam_id, "damsire_id": damsire_id}
@@ -112,6 +120,15 @@ PEDIGREE_FIELDS = ("sire", "dam", "damsire")
 PEDIGREE_ID_FIELDS = ("sire_id", "dam_id", "damsire_id")
 
 
+# 「埋めてよい」列の条件: 空 または 文字化け (U+FFFD = char(65533) を含む) (#181)
+_EMPTY_OR_GARBLED = "(COALESCE({k}, '') = '' OR instr({k}, char(65533)) > 0)"
+# 補完の対象を選ぶ SQL 断片 (父・母・母父のどれかが空か文字化け)。h. は horses の別名
+NEEDS_PEDIGREE_SQL = (
+    "(COALESCE(h.sire, '') = '' OR COALESCE(h.dam, '') = '' OR COALESCE(h.damsire, '') = ''"
+    " OR instr(COALESCE(h.sire, '') || COALESCE(h.dam, '') || COALESCE(h.damsire, ''),"
+    " char(65533)) > 0)")
+
+
 def _pedigree_columns(conn):
     """horses に存在する血統の列 (父・母・母父 + あれば各ID)。"""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(horses)").fetchall()}
@@ -135,14 +152,18 @@ def save_pedigree(conn, horse_id, p, overwrite=False):
     if not p:
         return 0
     fields = _pedigree_columns(conn)
-    vals = [str(p.get(k) or "").strip() for k in fields]
+    # 文字化けした値 (U+FFFD を含む) は書かない (#181)
+    vals = ["" if has_mojibake(v) else v
+            for v in (str(p.get(k) or "").strip() for k in fields)]
     if not any(vals):
         return 0
     if overwrite:
         sets = ", ".join(f"{k} = CASE WHEN ? <> '' THEN ? ELSE {k} END" for k in fields)
     else:
+        # 「空」には文字化けした値も含める (#181): 化けた値は空でないので、空欄だけ埋める
+        # 旧規則では二度と直らなかった (#90 の馬名と同じ型)。
         sets = ", ".join(
-            f"{k} = CASE WHEN COALESCE({k}, '') = '' AND ? <> '' THEN ? ELSE {k} END"
+            f"{k} = CASE WHEN {_EMPTY_OR_GARBLED.format(k=k)} AND ? <> '' THEN ? ELSE {k} END"
             for k in fields)
     params = []
     for v in vals:
@@ -152,7 +173,7 @@ def save_pedigree(conn, horse_id, p, overwrite=False):
     if not overwrite:
         # 実際に埋まる列がある行だけ更新 → rowcount が「埋めた頭数」になる (2回目は 0 = 冪等の確認に使える)
         where += " AND (" + " OR ".join(
-            f"(COALESCE({k}, '') = '' AND ? <> '')" for k in fields) + ")"
+            f"({_EMPTY_OR_GARBLED.format(k=k)} AND ? <> '')" for k in fields) + ")"
         wparams += vals
     cur = conn.execute(f"UPDATE horses SET {sets} WHERE {where}", (*params, *wparams))
     return cur.rowcount
@@ -162,13 +183,12 @@ def main():
     init_db()
 
     with get_db() as conn:
-        horses = conn.execute("""
-            SELECT horse_id, horse_name
-            FROM horses
-            WHERE (sire IS NULL OR sire = '' OR dam IS NULL OR dam = ''
-                   OR damsire IS NULL OR damsire = '')
-              AND horse_id != ''
-            ORDER BY horse_id DESC
+        horses = conn.execute(f"""
+            SELECT h.horse_id, h.horse_name
+            FROM horses h
+            WHERE {NEEDS_PEDIGREE_SQL}
+              AND h.horse_id != ''
+            ORDER BY h.horse_id DESC
         """).fetchall()
 
     total = len(horses)

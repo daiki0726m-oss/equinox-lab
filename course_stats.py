@@ -35,7 +35,9 @@ def _get(url, params=None):
     time.sleep(REQUEST_INTERVAL)
     try:
         res = requests.get(url, params=params, headers=HEADERS, timeout=30)
-        res.encoding = 'euc-jp'
+        # #181: 'euc-jp' 決め打ちをやめ、サーバが宣言した文字コードで読む (netkeiba の UTF-8 化)
+        from text_decode import declared_charset
+        res.encoding = declared_charset(res) or res.apparent_encoding or 'utf-8'
         if res.status_code == 200:
             return res
     except Exception as e:
