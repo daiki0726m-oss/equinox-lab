@@ -213,7 +213,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           HM=$((10#$(TZ=Asia/Tokyo date +%H%M)))
-          if [ "$HM" -lt 830 ] || [ "$HM" -ge 1830 ]; then echo "⏭️ runner の時間帯外 ($HM)"; exit 0; fi
+          # #182: 07:00 から起こす (runner は 08:25 まで中で待ってから始める = DB push の衝突は従来どおり無い)。
+          # 11/28 は 07:14 の予想生成の後に起動役が10時まで1本も動かず、確定 (9:30) が出なかった。
+          if [ "$HM" -lt 700 ] || [ "$HM" -ge 1830 ]; then echo "⏭️ runner の時間帯外 ($HM)"; exit 0; fi
           D=$(TZ=Asia/Tokyo date +%Y-%m-%d)
           RD=$(curl -sf --max-time 20 "https://raw.githubusercontent.com/${{ github.repository }}/main/docs/data/race_calendar.json" \
                | python3 -c "import json,sys; print('1' if (json.load(sys.stdin).get('dates') or {}).get('$D') else '0')" 2>/dev/null || echo "?")

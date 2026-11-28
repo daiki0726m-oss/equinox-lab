@@ -60,6 +60,25 @@ jobs:
       contents: write
       actions: write   # ← cron 不発時に auto_post_x.yml を内部 dispatch できるように
     steps:
+      # 🕖 #182 (2026-11-28): 朝の予想生成 (auto_post_x の ensure_runner、07時台) に早めに起こされた時は
+      # 08:25 JST まで待ってから始める。11/28 は 07:14 の予想生成の後、runner の起動 cron (08:30〜) と
+      # 9:30 の確定 (post_predict)・見張り (watchdog) が全部 GitHub の遅延で 10時まで動かず、
+      # ダッシュボードが「確定前」のまま止まった (GAS は PAT 切れ)。先に起動して中で待てば、
+      # その後の cron が全部遅れても runner 自身の時計で 9:00 の odds_flash・9:30 の確定・書き出しができる。
+      # 待つ間は DB を触らない (checkout も DB の取り込みもこの後 = 08:25 時点の最新から始める)。
+      # 待った秒数は 6時間上限 (MAX_LOOP_SEC) から引く (job の時間はここから数えられるため)。
+      - name: Wait until 08:25 JST if started early
+        run: |
+          HM=$((10#$(TZ=Asia/Tokyo date +%H%M)))
+          if [ "$HM" -ge 600 ] && [ "$HM" -lt 825 ]; then
+            WAIT=$(( $(TZ=Asia/Tokyo date -d '08:25' +%s) - $(date +%s) ))
+            if [ "$WAIT" -gt 0 ]; then
+              echo "🕖 早めに起動 (JST ${HM}) → 08:25 まで ${WAIT} 秒待ってから始める"
+              echo "MAX_LOOP_SEC=$(( 19200 - WAIT ))" >> "$GITHUB_ENV"
+              sleep "$WAIT"
+            fi
+          fi
+
       - uses: actions/checkout@v4
 
       - name: Restore keiba.db from cache
