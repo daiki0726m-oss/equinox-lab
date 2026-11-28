@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-28T07:09:21.425955+09:00",
+  "generated_at": "2026-11-28T13:01:55.317448+09:00",
   "today": "2026-11-28 (Sat)",
   "weekday": 5,
   "slots": {
@@ -23,23 +23,30 @@
     },
     "weekend_morning_predict": {
       "slot": "weekend_morning_predict",
-      "status": "ok_delayed",
+      "status": "ok_late",
       "expected": "07:00 JST",
-      "actual": "2026-11-28T05:17:21+09:00",
-      "delay_minutes": -103,
-      "event": "schedule",
+      "deadline": "09:30 JST",
+      "recent_success": {
+        "created_at": "2026-11-28T07:14:15+09:00",
+        "title": "predict",
+        "event": "workflow_dispatch",
+        "delay_minutes": 14
+      },
+      "delay_minutes": 14,
       "workflow": "auto_post_x.yml"
     },
     "odds_flash": {
       "slot": "odds_flash",
-      "status": "future",
+      "status": "missed",
       "expected": "09:00 JST",
+      "deadline": "09:15 JST",
       "workflow": "auto_post_x.yml"
     },
     "post_predict": {
       "slot": "post_predict",
-      "status": "future",
+      "status": "missed",
       "expected": "09:30 JST",
+      "deadline": "11:00 JST",
       "workflow": "auto_post_x.yml"
     },
     "results": {
@@ -68,11 +75,16 @@
     },
     "fetch_saturday": {
       "slot": "fetch_saturday",
-      "status": "missing",
+      "status": "ok_late",
       "expected": "05:00 JST",
       "deadline": "09:00 JST",
-      "fallback_mode": "auto",
-      "action": "gh workflow run auto_post_x.yml --ref main -f mode=auto",
+      "recent_success": {
+        "created_at": "2026-11-28T07:09:23+09:00",
+        "title": "📅 fetch weekend races",
+        "event": "workflow_dispatch",
+        "delay_minutes": 129
+      },
+      "delay_minutes": 129,
       "workflow": "fetch_weekend_races.yml"
     },
     "fetch_sunday": {
@@ -85,17 +97,30 @@
       "slot": "dashboard_predictions",
       "status": "ok",
       "expected": "開催日は常時",
-      "actual": "24レース (exported_at=2026-11-28T03:30:04.767237+09:00)"
+      "actual": "24レース (exported_at=2026-11-28T12:53:10.079505+09:00)"
     }
   },
   "summary": {
     "ok": 1,
-    "missing": 1,
-    "future": 3,
+    "missing": 0,
+    "future": 1,
     "not_today": 7,
-    "missed": 0,
-    "ok_delayed": 1,
-    "ok_late": 0
+    "missed": 2,
+    "ok_delayed": 0,
+    "ok_late": 2
   },
-  "missed_slots": []
+  "missed_slots": [
+    {
+      "slot": "odds_flash",
+      "workflow": "auto_post_x.yml",
+      "expected": "09:00 JST",
+      "deadline": "09:15 JST"
+    },
+    {
+      "slot": "post_predict",
+      "workflow": "auto_post_x.yml",
+      "expected": "09:30 JST",
+      "deadline": "11:00 JST"
+    }
+  ]
 }
