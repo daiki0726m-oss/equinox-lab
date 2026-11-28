@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-28T07:18:34.734680+09:00",
+ "generated_at": "2026-11-28T10:33:58.272657+09:00",
  "capture": {
   "groups": {
    "flat": {
@@ -66,10 +66,10 @@
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 153,
-      "cap5": 0.3333,
-      "cap7": 0.4837,
-      "avg_captured": 2.176
+      "n": 154,
+      "cap5": 0.3377,
+      "cap7": 0.487,
+      "avg_captured": 2.182
      },
      {
       "label": "13-14頭",
@@ -101,7 +101,7 @@
     ]
    }
   },
-  "period": "2026-05-10〜2026-11-23",
+  "period": "2026-05-10〜2026-11-28",
   "excluded_post_start": 126,
   "source": "predictions_cache に残る各レースの予測の印 (発走前に作られたものだけ。配信していないレースも含む) × 確定着順 (平場 / 未勝利・新馬・障害 を分けて集計)"
  },
@@ -165,9 +165,9 @@
       "label": "11-12頭",
       "min": 11,
       "max": 12,
-      "n": 1566,
-      "trio_median": 2960,
-      "trio_over10k": 0.1986
+      "n": 1567,
+      "trio_median": 2950,
+      "trio_over10k": 0.1985
      },
      {
       "label": "13-14頭",
@@ -196,7 +196,7 @@
     ]
    }
   },
-  "period": "2020-01-05〜2026-11-23",
+  "period": "2020-01-05〜2026-11-28",
   "source": "確定配当 (全レース、平場 / 未勝利・新馬・障害 を分けて集計)"
  },
  "confidence": {
@@ -277,6 +277,17 @@
     "sample": "点数表 base の◎ (影の印の◎ 54件 + #175 より前の◎ 346件)",
     "sample_period": "2026-09-06〜2026-11-29"
    }
+  },
+  "keep_reason": "週末の途中 (土曜の予想の確定 (9:30) 後)",
+  "if_rebuilt": {
+   "thresholds": {
+    "S": 32.3,
+    "A": 19.9,
+    "B": 12.4,
+    "C": 6.9
+   },
+   "n": 400,
+   "sample_period": "2026-09-06〜2026-11-29"
   }
  },
  "bet_gate": {
@@ -300,7 +311,14 @@
   "sd_median_older": 0.7561,
   "dispersion_ratio": 1.13,
   "dispersion_ratio_limit": 1.4,
-  "prev_model_deployed_at": "2026-11-22 06:56:30"
+  "prev_model_deployed_at": "2026-11-22 06:56:30",
+  "keep_reason": "週末の途中 (土曜の予想の確定 (9:30) 後)",
+  "sunday_check": {
+   "available": false,
+   "n": 14,
+   "model_deployed_at": "2026-11-24 22:33:15",
+   "note": "現モデルだけの窓の使えるレースが 14 件 (< 30) → 比較しない"
+  }
  },
  "confidence_adjust_watch": {
   "since": "2026-11-07",
